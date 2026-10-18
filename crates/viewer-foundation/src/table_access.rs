@@ -1,9 +1,6 @@
 use crate::errors::invalid;
-use replay::{
-    Hour,
-    frame::{DecodedFrame, TableView},
-    rows::{LexicalTokenRow, TableRows, TableSchema, tables},
-};
+use replay_data::{Hour, rows::LexicalTokenRow, rows::TableRows, rows::TableSchema, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::{collections::BTreeMap, io};
 
 /// What one table of one decoded hour actually holds.
@@ -253,7 +250,7 @@ fn typed<T: TableSchema>(rows: &TableRows, hour: Hour) -> io::Result<&[T::Row]> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{LexicalTokenRow, TableId};
+    use replay_data::{rows::LexicalTokenRow, rows::TableId};
 
     fn frame(view: TableView) -> DecodedFrame {
         let mut frame = DecodedFrame {
@@ -364,7 +361,7 @@ mod tests {
     /// or unavailable one), never taken as another country's.
     #[test]
     fn country_references_resolve_or_name_why_not() {
-        use replay::rows::CountryLinkRow;
+        use replay_data::rows::CountryLinkRow;
         let with = |view: TableView| {
             let mut frame = frame(TableView::Complete(TableRows::empty(
                 TableId::LexicalTokens,

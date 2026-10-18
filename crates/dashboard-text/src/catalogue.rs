@@ -6,15 +6,12 @@
 use crate::invalid;
 use base64::Engine;
 use dashboard_core::findings::{Finding, Kind};
-use installed_content::{
-    ResolvedLayers,
-    content::ResolvedContent,
-    gfx::SpriteSet,
-    gui::native::{resources, sprites::Plain},
-    image::Rgba8Image,
-    image::native::Decode,
-    localisation::{Argument, Localisation},
+use installed_content_core::{
+    ResolvedLayers, content::ResolvedContent, gui::native::resources, gui::native::sprites::Plain,
 };
+use installed_content_gfx::gfx::SpriteSet;
+use installed_content_image::{Rgba8Image, native::Decode};
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -158,11 +155,11 @@ impl<K: Ord + Clone, T> KeyedResults<K, T> {
 pub fn created_gui_sprite<'a>(
     sprites: &'a SpriteSet,
     name: &str,
-) -> io::Result<&'a installed_content::gfx::SpriteType> {
+) -> io::Result<&'a installed_content_gfx::gfx::SpriteType> {
     if let Some(sprite) = sprites.find(name).map_err(invalid)? {
         return Ok(sprite);
     }
-    let fallback = std::str::from_utf8(installed_content::gui::native::resources::FALLBACK_SPRITE)
+    let fallback = std::str::from_utf8(installed_content_core::gui::native::resources::FALLBACK_SPRITE)
         .expect("the executable's fallback sprite literal is ASCII");
     sprites
         .lookup(fallback)
@@ -175,7 +172,7 @@ pub fn created_gui_sprite<'a>(
 pub fn text_icon_sprite<'a>(
     sprites: &'a SpriteSet,
     alias: &str,
-) -> io::Result<&'a installed_content::gfx::SpriteType> {
+) -> io::Result<&'a installed_content_gfx::gfx::SpriteType> {
     let prefixed = format!("GFX_{alias}");
     if let Some(sprite) = sprites.find(&prefixed).map_err(invalid)? {
         return Ok(sprite);
@@ -220,7 +217,7 @@ pub fn localised_bytes(
     plain_text(&text)
 }
 
-/// `key` through the game's localiser (`installed_content::localisation`), with its
+/// `key` through the game's localiser (`installed_content_localisation::localisation`), with its
 /// substitution, depth and 0x1800-byte buffer. A key the content lacks is copied
 /// as its own bytes. Then read as `view` shows it ([`View`]) and made
 /// plain text ([`plain_text`]). The error names the key and why.
@@ -379,13 +376,13 @@ pub fn localised_in_details(
     })
 }
 
-/// Stored game text (`installed_content::localisation`) as plain text, read as the
-/// game's text layout reads it (`installed_content::localisation::pieces`): colour
+/// Stored game text (`installed_content_localisation::localisation`) as plain text, read as the
+/// game's text layout reads it (`installed_content_localisation::localisation::pieces`): colour
 /// codes are removed, inline images (a text icon or an inline flag) are left
 /// out of the plain text, and the 0x14 and 0x1A spacing controls, which have
 /// no plain-text form, are refused by name.
 pub fn plain_text(text: &str) -> Result<String, String> {
-    use installed_content::localisation::{Piece, pieces};
+    use installed_content_localisation::{localisation::Piece, localisation::pieces};
     let mut clean = String::new();
     for piece in pieces(text) {
         match piece {
@@ -691,9 +688,9 @@ pub struct Catalogue {
     pub localisation: Arc<Localisation>,
     pub sprites: SpriteSet,
     /// Shared native templates, loaded only when a consumer needs GUI declarations.
-    guis: OnceLock<Result<installed_content::gui::native::Guis, String>>,
+    guis: OnceLock<Result<installed_content_core::gui::native::Guis, String>>,
     /// The current client's texture decode settings, used by native GUI artwork.
-    pub gui_decode: Result<installed_content::image::native::Decode, String>,
+    pub gui_decode: Result<installed_content_image::native::Decode, String>,
     /// Notes from verifying the recording, such as unverified content allowed by the user.
     pub verification: Vec<String>,
     /// Standing notes about the recorded content, such as native reader logs.
@@ -709,7 +706,7 @@ pub struct Catalogue {
     /// Scripted localisation names and the recursion limit, read on first
     /// use ([`Catalogue::scripted_content`]).
     scripted: OnceLock<Result<crate::scripted_text::ScriptedContent, String>>,
-    war_names: OnceLock<Result<installed_content::wargoals::Names, String>>,
+    war_names: OnceLock<Result<installed_content_wargoals::wargoals::Names, String>>,
     /// State templates are usable without the scripted-localisation inputs.
     pub state_content: Arc<OnceLock<Result<crate::scripted_text::StateContent, String>>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -719,13 +716,13 @@ pub struct Catalogue {
 impl Catalogue {
     /// Load the complete native registry once, retaining its template order and
     /// post-load pass. A failure refuses GUI-dependent fields; text stays usable.
-    pub fn guis(&self) -> io::Result<&installed_content::gui::native::Guis> {
+    pub fn guis(&self) -> io::Result<&installed_content_core::gui::native::Guis> {
         self.guis
             .get_or_init(|| {
                 #[cfg(any(test, feature = "test-support"))]
                 self.content_loads
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                installed_content::gui::native::read_layers(&self.content.layers)
+                installed_content_core::gui::native::read_layers(&self.content.layers)
                     .map_err(|error| error.to_string())
             })
             .as_ref()
@@ -739,13 +736,14 @@ impl Catalogue {
         self.guis.get().is_some()
     }
 
-    pub fn war_names(&self) -> Result<&installed_content::wargoals::Names, String> {
+    pub fn war_names(&self) -> Result<&installed_content_wargoals::wargoals::Names, String> {
         self.war_names
             .get_or_init(|| {
                 #[cfg(any(test, feature = "test-support"))]
                 self.content_loads
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                installed_content::wargoals::read_names(&self.content.layers).map_err(|e| e.to_string())
+                installed_content_wargoals::wargoals::read_names(&self.content.layers)
+                    .map_err(|e| e.to_string())
             })
             .as_ref()
             .map_err(Clone::clone)
@@ -758,9 +756,9 @@ impl Catalogue {
         verification: Vec<String>,
         mut warnings: Vec<String>,
         recorded_language: String,
-        gui_decode: Result<installed_content::image::native::Decode, String>,
+        gui_decode: Result<installed_content_image::native::Decode, String>,
     ) -> io::Result<Self> {
-        let sprites = installed_content::gfx::read(&content.layers)?;
+        let sprites = installed_content_gfx::gfx::read(&content.layers)?;
         for (label, count) in [
             ("logged localisation diagnostics", localisation.logged.len()),
             ("refused localisation forms", localisation.refused.len()),
@@ -800,7 +798,9 @@ impl Catalogue {
 
     /// A content-only catalogue, without a recording or identity verification.
     pub fn of_layers(layers: ResolvedLayers, language: &str) -> io::Result<Self> {
-        let localisation = Arc::new(installed_content::localisation::read(&layers, language)?);
+        let localisation = Arc::new(installed_content_localisation::localisation::read(
+            &layers, language,
+        )?);
         let content = Arc::new(ResolvedContent {
             layers,
             stats: Default::default(),
@@ -1188,7 +1188,7 @@ pub fn gui_texture(layers: &ResolvedLayers, name: &[u8], decode: Decode) -> io::
             String::from_utf8_lossy(name)
         ))
     })?;
-    installed_content::image::rgba::dds_base(texture.image)
+    installed_content_image::rgba::dds_base(texture.image)
 }
 
 /// A GUI sprite frame returned as dashboard artwork.
@@ -1225,7 +1225,7 @@ pub fn image_frame_png(
 /// the content's resolved Up program, including overrides of the default effect.
 pub fn sprite_frame_png(
     layers: &ResolvedLayers,
-    sprite: &installed_content::gfx::SpriteType,
+    sprite: &installed_content_gfx::gfx::SpriteType,
     decode: Decode,
     frame: u32,
     max_edge: u32,
@@ -1237,7 +1237,7 @@ pub fn sprite_frame_png(
 }
 
 pub fn sprite_image_key(
-    sprite: &installed_content::gfx::SpriteType,
+    sprite: &installed_content_gfx::gfx::SpriteType,
     decode: Decode,
     frame: u32,
     max_edge: u32,
@@ -1252,12 +1252,12 @@ pub fn sprite_image_key(
 /// batch through the ordinary image reader, preserving each sprite's refusal.
 pub fn sprite_frames_png(
     layers: &ResolvedLayers,
-    sprites: &[&installed_content::gfx::SpriteType],
+    sprites: &[&installed_content_gfx::gfx::SpriteType],
     decode: Decode,
     frame: u32,
     max_edge: u32,
 ) -> io::Result<()> {
-    use installed_content::gui::native::sprites::SpriteKind;
+    use installed_content_core::gui::native::sprites::SpriteKind;
     let mut draws = Vec::new();
     let mut transient_bytes = 0_u64;
     for sprite in sprites {
@@ -1370,12 +1370,12 @@ impl SpriteImages {
 
 fn render_sprite_frame_png(
     layers: &ResolvedLayers,
-    sprite: &installed_content::gfx::SpriteType,
+    sprite: &installed_content_gfx::gfx::SpriteType,
     decode: Decode,
     frame: u32,
     max_edge: u32,
 ) -> io::Result<String> {
-    use installed_content::gui::native::sprites::SpriteKind;
+    use installed_content_core::gui::native::sprites::SpriteKind;
     let (plain, animated) = match &sprite.facts.kind {
         SpriteKind::Plain(plain) => (plain, None),
         // Frame-animated sprites share the plain sprite facts and add
@@ -1804,9 +1804,9 @@ pub mod tests {
 
     #[test]
     fn gui_sprite_binding_uses_native_inheritance_and_kind_local_names() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use installed_content::gui::native;
+        use installed_content_core::gui::native;
         let gui = native::read(
             br#"guiTypes = { containerWindowType = {
             name = topbar
@@ -1822,7 +1822,7 @@ pub mod tests {
         };
         let mut warnings = Vec::new();
         assert_eq!(
-            installed_content::gui::native::window_button_sprite(
+            installed_content_core::gui::native::window_button_sprite(
                 &guis,
                 "TOPBAR",
                 "PLAYER_FLAG",
@@ -1836,9 +1836,9 @@ pub mod tests {
 
     #[test]
     fn a_missing_gui_sprite_uses_the_native_fallback_but_a_refused_one_does_not() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let facts = installed_content::gui::native::sprites::read_sprites(
+        let facts = installed_content_core::gui::native::sprites::read_sprites(
             br#"spriteTypes = {
             spriteType = { name = GFX_default_fallback_texture texturefile = fallback.dds }
             spriteType = { name = refused noOfFrames = -1 }
@@ -1866,9 +1866,9 @@ pub mod tests {
 
     #[test]
     fn text_icon_sprite_selects_native_prefix_then_bare_and_keeps_named_refusal() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let facts = installed_content::gui::native::sprites::read_sprites(
+        let facts = installed_content_core::gui::native::sprites::read_sprites(
             br#"spriteTypes = {
                 spriteType = { name = GFX_mod_alias texturefile = prefixed.dds }
                 spriteType = { name = mod_alias texturefile = bare.dds }
@@ -1897,7 +1897,7 @@ pub mod tests {
 
     #[test]
     fn gui_artwork_uses_the_texture_resolver_and_client_power_of_two_setting() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (_, folder) = folder_catalogue(&[("gfx/interface/present.txt", "")]);
         let mut tga = vec![0; 18];
@@ -1913,7 +1913,7 @@ pub mod tests {
         let image = gui_texture(
             &layers,
             b"gfx/interface/icon.png",
-            installed_content::image::native::Decode {
+            installed_content_image::native::Decode {
                 force_pow2_textures: true,
             },
         )
@@ -1944,7 +1944,7 @@ pub mod tests {
     }
 
     /// Localisation as the game content loads it: `yml` is one file of a
-    /// folder layer, read by `installed_content::localisation::read`.
+    /// folder layer, read by `installed_content_localisation::localisation::read`.
     pub fn loaded(yml: &str) -> Localisation {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -1959,11 +1959,11 @@ pub mod tests {
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, format!("\u{feff}{yml}")).unwrap();
         let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-        installed_content::localisation::read(&layers, "english").unwrap()
+        installed_content_localisation::localisation::read(&layers, "english").unwrap()
     }
 
     /// A faction catalogue through the production reader, without a second parser.
-    pub fn loaded_templates(text: &str) -> Arc<installed_content::faction_templates::Catalog> {
+    pub fn loaded_templates(text: &str) -> Arc<installed_content_core::faction_templates::Catalog> {
         let (catalogue, _folder) =
             folder_catalogue(&[("common/factions/templates/test.txt", text)]);
         catalogue.content.layers.faction_templates().unwrap()
@@ -2007,8 +2007,8 @@ pub mod tests {
 
     /// The same catalogue seam for fixtures with several content layers.
     pub fn layers_catalogue(layers: ResolvedLayers) -> Catalogue {
-        let localisation = installed_content::localisation::read(&layers, "english").unwrap();
-        let sprites = installed_content::gfx::read(&layers).unwrap();
+        let localisation = installed_content_localisation::localisation::read(&layers, "english").unwrap();
+        let sprites = installed_content_gfx::gfx::read(&layers).unwrap();
         Catalogue {
             content: Arc::new(ResolvedContent {
                 layers,
@@ -2032,7 +2032,7 @@ pub mod tests {
 
     #[test]
     fn faction_templates_share_one_cache_and_report_each_warning_once() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder) = folder_catalogue(&[
             (
@@ -2048,21 +2048,21 @@ pub mod tests {
         let templates = catalogue.content.layers.faction_templates().unwrap();
         let scripted = catalogue.scripted_content().unwrap();
         let mut frame = crate::test_fixtures::source(1, 100, Some(1));
-        *frame.tables[replay::rows::TableId::Factions.index()] =
-            replay::frame::TableView::Complete(replay::rows::TableRows::Factions(vec![
-                replay::rows::FactionRow {
+        *frame.tables[replay_data::rows::TableId::Factions.index()] =
+            replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::Factions(vec![
+                replay_data::rows::FactionRow {
                     id: 5,
                     template_token: Some(17),
                     ..Default::default()
                 },
             ]));
-        *frame.tables[replay::rows::TableId::LexicalTokens.index()] =
-            replay::frame::TableView::Complete(replay::rows::TableRows::LexicalTokens(vec![
-                replay::rows::LexicalTokenRow {
+        *frame.tables[replay_data::rows::TableId::LexicalTokens.index()] =
+            replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::LexicalTokens(
+                vec![replay_data::rows::LexicalTokenRow {
                     token: 17,
                     literal: b"bad".to_vec(),
-                },
-            ]));
+                }],
+            ));
         let at =
             crate::scripted_text::ScriptedText::new(&frame, &catalogue.localisation, scripted, 0);
         assert!(
@@ -2153,7 +2153,7 @@ pub mod tests {
 
     #[test]
     fn plain_and_recorded_text_share_recovery_and_refusal_kinds() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder) = folder_catalogue(&[
             (
@@ -2316,7 +2316,7 @@ pub mod tests {
 
     #[test]
     fn catalogue_refusal_entries_keep_shared_read_warnings_uncounted() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder) =
             folder_catalogue(&[("outside_policy/synthetic.txt", "independent fixture")]);
@@ -2417,7 +2417,7 @@ pub mod tests {
     /// consumer used, read again on a stack that has not read them yet.
     #[test]
     fn own_scopes_report_the_warnings_of_the_readers_they_used() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let files = [(
             "common/factions/templates/test.txt",
@@ -2470,7 +2470,7 @@ pub mod tests {
     /// lines, as the reply boundary reports them, still carry both.
     #[test]
     fn own_scopes_leave_out_the_stacks_live_artwork_and_uncovered_read_diagnostics() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder) =
             folder_catalogue(&[("outside_policy/synthetic.txt", "another consumer's file")]);

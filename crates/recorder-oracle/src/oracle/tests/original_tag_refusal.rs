@@ -1,11 +1,11 @@
 use super::*;
-use replay::rows::CountryAppearanceRow;
+use replay_data::rows::CountryAppearanceRow;
 
 fn appearance_report(
     frame: &DecodedFrame,
     saved: &Save,
     membership: &save::PartialMapMembership,
-    equipment: &installed_content::equipment::Database,
+    equipment: &installed_content_core::equipment::Database,
 ) -> Report {
     let mut report = compare(frame, saved, membership, equipment).unwrap();
     report.attempt_table(TableId::CountryAppearance, |report| {

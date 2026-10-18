@@ -1,9 +1,7 @@
 use dashboard_base::test_fixtures::{CAMPAIGN, records, world_frame};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::sync::{Arc, atomic::AtomicBool};
 
 /// A subject's autonomy: (subject link, overlord link or none, state, score,
@@ -224,7 +222,7 @@ fn skipped_autonomy_keyframes_leave_every_recorded_unprepared_hour_pending() {
         .append(&[continuation_records(&recording, 1, frames[3..].to_vec())])
         .unwrap();
     for hour in [100, 104] {
-        recording.gaps.push(replay::branches::Gap {
+        recording.gaps.push(replay_frame::branches::Gap {
             branch: 1,
             first_hour: hour,
             last_hour: hour,
@@ -288,7 +286,7 @@ fn skipped_autonomy_keyframes_leave_every_recorded_unprepared_hour_pending() {
 
 /// A world frame (Austria included) with the autonomy and subject tables.
 fn autonomy_frame(hour: i32, statuses: &[Status]) -> DecodedFrame {
-    use replay::rows::{AutonomyRow, SubjectRow};
+    use replay_data::{rows::AutonomyRow, rows::SubjectRow};
     let mut frame = world_frame(hour, true);
     let mut statuses = statuses.to_vec();
     // Rows go in key order: Autonomy by subject, Subjects by overlord then subject.
@@ -475,7 +473,7 @@ fn progressive_autonomy_sampler_and_observer_agree_on_every_key_at_5000_countrie
         let mut frame = dashboard_base::test_fixtures::scale_frame(1, 100, count);
         *frame.tables[TableId::Subjects.index()] = TableView::Complete(TableRows::Subjects(
             (1..count)
-                .map(|index| replay::rows::SubjectRow {
+                .map(|index| replay_data::rows::SubjectRow {
                     subject: 100_000 + index,
                     overlord: 100_000,
                     autonomy_ratio: i64::from(index),
@@ -485,7 +483,7 @@ fn progressive_autonomy_sampler_and_observer_agree_on_every_key_at_5000_countrie
         ));
         *frame.tables[TableId::Autonomy.index()] = TableView::Complete(TableRows::Autonomy(
             (1..count)
-                .map(|index| replay::rows::AutonomyRow {
+                .map(|index| replay_data::rows::AutonomyRow {
                     subject: 100_000 + index,
                     state: b"recorded/mod-level".to_vec(),
                     score: -i64::from(index),
@@ -536,7 +534,7 @@ fn progressive_autonomy_sampler_and_observer_agree_on_every_key_at_5000_countrie
         let mut observer = ScannedAutonomy::default();
         observer.prepare(&frame).unwrap();
         let countries: std::collections::HashMap<_, _> = frame
-            .complete::<replay::rows::tables::Countries>()
+            .complete::<replay_data::rows::tables::Countries>()
             .unwrap()
             .iter()
             .map(|country| {
@@ -926,12 +924,12 @@ fn autonomy_levels_follow_a_mods_autonomy_states_in_their_order_and_count() {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, text).unwrap();
     }
-    let layers = installed_content::ResolvedLayers::from_folders(&[
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[
         (&base, &[][..]),
         (&modded, &["common/autonomous_states"][..]),
     ])
     .unwrap();
-    let (defined, warnings) = installed_content::autonomy::read(&layers).unwrap();
+    let (defined, warnings) = installed_content_core::autonomy::read(&layers).unwrap();
     let mut ids: Vec<_> = defined
         .states
         .iter()
@@ -1063,7 +1061,7 @@ fn prepared_autonomy_bulk_tail_reads_reuse_open_bands_after_resume_at_5000_count
             let mut frame = dashboard_base::test_fixtures::scale_frame(1, hour, count);
             *frame.tables[TableId::Subjects.index()] = TableView::Complete(TableRows::Subjects(
                 (1..count)
-                    .map(|index| replay::rows::SubjectRow {
+                    .map(|index| replay_data::rows::SubjectRow {
                         subject: 100_000 + index,
                         overlord: 100_000,
                         autonomy_ratio: i64::from(hour),
@@ -1073,7 +1071,7 @@ fn prepared_autonomy_bulk_tail_reads_reuse_open_bands_after_resume_at_5000_count
             ));
             *frame.tables[TableId::Autonomy.index()] = TableView::Complete(TableRows::Autonomy(
                 (1..count)
-                    .map(|index| replay::rows::AutonomyRow {
+                    .map(|index| replay_data::rows::AutonomyRow {
                         subject: 100_000 + index,
                         state: b"mod/state".to_vec(),
                         score: i64::from(hour) * 100_000 + i64::from(index),
@@ -1165,7 +1163,7 @@ fn autonomy_changes_keep_quiet_hours_and_closed_history_flat_and_join_only_chang
         frame_changes::FrameChangeTracker,
         observer_tests::{assert_flat, scaled_work, unchanged_frames},
     };
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let initial = autonomy_frame(100, &[(31, Some(11), b"level", 40, 0, 100, true, true)]);
     assert_flat(
         scaled_work(10, |hours| {
@@ -1324,7 +1322,7 @@ fn autonomy_relation_change_reuses_five_thousand_score_operands_and_observes_onl
         frame_changes::FrameChangeTracker,
         observer_tests::{Work, assert_flat, scaled_work},
     };
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     assert_flat(
         scaled_work(500, |countries| {
             let mut first = dashboard_base::test_fixtures::scale_frame(1, 100, countries as u32);
@@ -1332,7 +1330,7 @@ fn autonomy_relation_change_reuses_five_thousand_score_operands_and_observes_onl
                 TableView::Complete(TableRows::Subjects(vec![]));
             *first.tables[TableId::Autonomy.index()] = TableView::Complete(TableRows::Autonomy(
                 (1..countries)
-                    .map(|index| replay::rows::AutonomyRow {
+                    .map(|index| replay_data::rows::AutonomyRow {
                         subject: 100_000 + index as u32,
                         state: b"level".to_vec(),
                         score: index as i64,
@@ -1348,7 +1346,7 @@ fn autonomy_relation_change_reuses_five_thousand_score_operands_and_observes_onl
             let mut changed = first.clone();
             changed.hour = 101;
             *changed.tables[TableId::Subjects.index()] =
-                TableView::Complete(TableRows::Subjects(vec![replay::rows::SubjectRow {
+                TableView::Complete(TableRows::Subjects(vec![replay_data::rows::SubjectRow {
                     overlord: 100_000,
                     subject: 100_001,
                     autonomy_ratio: 20_000,
@@ -1412,7 +1410,7 @@ fn autonomy_numeric_values_resume_after_unknown_ratio_and_zero_width_bounds() {
     for frame in [&first, &missing, &restored] {
         scan.prepare_changed(
             frame,
-            &tracker.observe(frame, replay::format::FormatVersion::CURRENT),
+            &tracker.observe(frame, replay_data::format::FormatVersion::CURRENT),
         )
         .unwrap();
     }
@@ -1444,7 +1442,7 @@ fn autonomy_link_change_reuses_unchanged_country_scores_and_subject_tables() {
     );
     let mut scan = ScannedAutonomy::default();
     let mut tracker = FrameChangeTracker::new();
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     scan.prepare_changed(&first, &tracker.observe(&first, format))
         .unwrap();
     let before = scan.work;
@@ -1456,7 +1454,7 @@ fn autonomy_link_change_reuses_unchanged_country_scores_and_subject_tables() {
         let at = rows.partition_point(|row| row.id < 99);
         rows.insert(
             at,
-            replay::rows::CountryLinkRow {
+            replay_data::rows::CountryLinkRow {
                 id: 99,
                 canonical_slot: 9,
             },
@@ -1467,7 +1465,7 @@ fn autonomy_link_change_reuses_unchanged_country_scores_and_subject_tables() {
     assert_eq!(
         scan.work.row_visits - before.row_visits,
         changed
-            .complete::<replay::rows::tables::CountryLinks>()
+            .complete::<replay_data::rows::tables::CountryLinks>()
             .unwrap()
             .len()
     );

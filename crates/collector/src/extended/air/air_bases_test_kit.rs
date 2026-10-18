@@ -1,5 +1,5 @@
 use super::{AirBasesCopyContext, AirBasesCopyReport, AirBasesJob, Capacities, Captured};
-use engine::{Memory, memory::SliceMemory, walk::Outcome};
+use engine_native::{Memory, memory::SliceMemory, walk::Outcome};
 
 pub(crate) const BASE: usize = 0;
 pub(crate) const GAME_STATE: usize = 0x10000;
@@ -37,8 +37,8 @@ const S2: usize = 0x50200;
 const P2: usize = 0x51200;
 const CVEC2: usize = 0x66000;
 
-pub(crate) const WING_HANDLE_0: u64 = (0x77 << 32) | engine::cair_wing::TYPE as u64;
-pub(crate) const WING_HANDLE_1: u64 = (0x78 << 32) | engine::cair_wing::TYPE as u64;
+pub(crate) const WING_HANDLE_0: u64 = (0x77 << 32) | engine_native::cair_wing::TYPE as u64;
+pub(crate) const WING_HANDLE_1: u64 = (0x78 << 32) | engine_native::cair_wing::TYPE as u64;
 
 pub(crate) fn put32(bytes: &mut [u8], at: usize, value: u32) {
     bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
@@ -61,7 +61,7 @@ pub(crate) fn fixture() -> Vec<u8> {
 /// Alias country slot plus a rocket-vector base: exercises the census
 /// alias skip and a non-state base vector with the same shared takes.
 pub(crate) fn add_alias_and_rocket(bytes: &mut [u8]) {
-    use engine::{cair_base, cgame_state, cprovince, cstate, cstrategic_air_manager};
+    use engine_native::{cair_base, cgame_state, cprovince, cstate, cstrategic_air_manager};
     // Alias slot 3 publishing the slot-1 object once: its link entry
     // resolves to slot 1 like its id does.
     header(bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 4);
@@ -96,7 +96,7 @@ pub(crate) fn add_alias_and_rocket(bytes: &mut [u8]) {
 }
 
 fn fixture_inner() -> Vec<u8> {
-    use engine::{
+    use engine_native::{
         cair_base, cair_wing, cair_wing_pool, ccountry, ccountry_air_container, cgame_state,
         cprovince, cstate, cstrategic_air_manager, msvc_string,
     };
@@ -306,7 +306,7 @@ fn ace(
     names: [(&str, bool); 3],
 ) {
     #![allow(clippy::too_many_arguments)]
-    use engine::{cace, msvc_string};
+    use engine_native::{cace, msvc_string};
     put64(bytes, at, cace::VTABLE_RVA as u64);
     put64(bytes, at + cace::REFERENCE, (id << 32) | 0xace);
     put32(bytes, at + cace::AIRCRAFT_TYPE_MASK, 0xF);
@@ -359,7 +359,7 @@ pub(crate) struct SyntheticMemory<'a> {
 
 impl Memory for SyntheticMemory<'_> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        let address = if address == engine::cgui::SINGLETON_RVA && output.len() == 8 {
+        let address = if address == engine_native::cgui::SINGLETON_RVA && output.len() == 8 {
             GUI_SINGLETON
         } else {
             address
@@ -379,11 +379,16 @@ pub(crate) fn mod_fixture(count: usize) -> Vec<u8> {
     bytes.resize(aces + count * 8, 0);
     header(
         &mut bytes,
-        MANAGER + engine::cstrategic_air_manager::STATELESS_AIR_BASES,
+        MANAGER + engine_native::cstrategic_air_manager::STATELESS_AIR_BASES,
         bases,
         count as u32,
     );
-    header(&mut bytes, C0 + engine::ccountry::ACES, aces, count as u32);
+    header(
+        &mut bytes,
+        C0 + engine_native::ccountry::ACES,
+        aces,
+        count as u32,
+    );
     for index in 0..count {
         // State vectors require each state's id to equal its indexed slot.
         // Stateless vectors preserve these repeated original occurrences.
@@ -399,9 +404,9 @@ pub(crate) fn memory(bytes: &[u8]) -> SyntheticMemory<'_> {
 
 pub(crate) struct Split {
     pub bases_outcome: Outcome,
-    pub bases: Vec<engine::cair_base::Row>,
+    pub bases: Vec<engine_native::cair_base::Row>,
     pub aces_outcome: Outcome,
-    pub aces: Vec<engine::cace::Row>,
+    pub aces: Vec<engine_native::cace::Row>,
     pub ace_names: Vec<u8>,
     pub ace_bytes_len: usize,
     pub ace_required: usize,
@@ -415,7 +420,7 @@ pub(super) fn collect_typed(
     fog_rows: usize,
     fog_wings: usize,
 ) -> Split {
-    use engine::{cace, cair_base};
+    use engine_native::{cace, cair_base};
     let capacities = Capacities {
         rows: air_rows,
         ace_names,

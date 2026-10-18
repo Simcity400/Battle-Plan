@@ -510,7 +510,7 @@ mod tests {
         frame: &'a DecodedFrame,
         loc: &'a Localisation,
         vision: &'a Vision,
-        names: &'a installed_content::division_names::Database,
+        names: &'a installed_content_division_names::division_names::Database,
         units: &'a Result<units::Content, String>,
     ) -> Context<'a> {
         Context {
@@ -532,10 +532,8 @@ mod tests {
 
     #[test]
     fn invalid_warning_stops_at_first_demand_and_preserves_unknown_codes() {
-        use replay::{
-            frame::TableView,
-            rows::{Recorded, TableId, TableRows},
-        };
+        use replay_data::{rows::Recorded, rows::TableId, rows::TableRows};
+        use replay_frame::frame::TableView;
         let loc = [("UNITS_TOO_WEAK_TO_ATTACK".into(), "weak".into())]
             .into_iter()
             .collect::<Localisation>();
@@ -555,7 +553,7 @@ mod tests {
                 .collect(),
         ));
         let vision = Vision::sharing(1, []);
-        let names = installed_content::division_names::Database::default();
+        let names = installed_content_division_names::division_names::Database::default();
         let units = Err("unused".into());
         let hover = CounterHover {
             control: CounterControl::InvalidOrders,
@@ -627,7 +625,7 @@ mod tests {
     }
     #[test]
     fn dig_in_keeps_singleton_rounding_and_all_member_mean() {
-        use replay::rows::{Recorded, TableRows};
+        use replay_data::{rows::Recorded, rows::TableRows};
         use viewer_foundation::map::test_support::{test_frame, test_put as put};
         let loc: Localisation = [
             ("DIG_IN_UNIT".into(), "single $DIG|5$/$MAX|5$".into()),
@@ -671,7 +669,7 @@ mod tests {
             ]),
         );
         let vision = Vision::sharing(1, []);
-        let names = installed_content::division_names::Database::default();
+        let names = installed_content_division_names::division_names::Database::default();
         let units = Err("unused".into());
         let context = Context {
             dig_in_factor: Ok(876_543),
@@ -709,7 +707,7 @@ mod tests {
 
     #[test]
     fn early_attrition_actions_and_railway_warning_skip_only_proven_dangling_members() {
-        use replay::rows::{RailwayGunCounterInputRow, TableId, TableRows};
+        use replay_data::{rows::RailwayGunCounterInputRow, rows::TableId, rows::TableRows};
         use viewer_foundation::map::test_support::{test_frame, test_put as put};
         let loc: Localisation = [
             (
@@ -762,7 +760,7 @@ mod tests {
                     .collect(),
             ),
         );
-        let names = installed_content::division_names::Database::default();
+        let names = installed_content_division_names::division_names::Database::default();
         let units = Err("unused".into());
         let vision = Vision::sharing(1, []);
         let input = CounterHover {
@@ -810,7 +808,7 @@ mod tests {
         put(&mut frame, TableRows::RailwayGunCounterInputs(guns));
         assert_eq!(render(&frame, CounterControl::NoOrders).unwrap(), "");
         *frame.tables[TableId::RailwayGunCounterInputs.index()] =
-            replay::frame::TableView::Unavailable {
+            replay_frame::frame::TableView::Unavailable {
                 reason: "fixture incomplete gun census".into(),
             };
         assert!(
@@ -822,7 +820,7 @@ mod tests {
 
     #[test]
     fn no_orders_keeps_independent_border_and_missing_order_fragments() {
-        use replay::rows::{OrdersGroupCounterInputRow, Recorded, TableRows};
+        use replay_data::{rows::OrdersGroupCounterInputRow, rows::Recorded, rows::TableRows};
         use viewer_foundation::map::test_support::{test_frame, test_put as put};
         let loc: Localisation = [
             ("SOME_UNITS_IN_BORDER_WAR".into(), "border".into()),
@@ -884,7 +882,7 @@ mod tests {
             ]),
         );
         let vision = Vision::sharing(1, []);
-        let names = installed_content::division_names::Database::default();
+        let names = installed_content_division_names::division_names::Database::default();
         let units = Err("unused".into());
         let context = context(&frame, &loc, &vision, &names, &units);
         let mut hover = CounterHover {
@@ -928,9 +926,9 @@ mod tests {
 
     #[test]
     fn leader_enroute_uses_cooldown_days_and_cached_name_not_member_count() {
-        use replay::rows::{
-            ArmyIconInputRow, OrdersGroupCounterInputRow, OrdersGroupRow, Recorded, TableRows,
-            UnitLeaderRow,
+        use replay_data::{
+            rows::ArmyIconInputRow, rows::OrdersGroupCounterInputRow, rows::OrdersGroupRow,
+            rows::Recorded, rows::TableRows, rows::UnitLeaderRow,
         };
         use viewer_foundation::map::test_support::{test_frame, test_put as put};
         let loc: Localisation = [
@@ -955,7 +953,7 @@ mod tests {
         .into_iter()
         .collect();
         let vision = Vision::sharing(1, []);
-        let names = installed_content::division_names::Database::default();
+        let names = installed_content_division_names::division_names::Database::default();
         let units = Err("unused".into());
         let mut frame = test_frame(0);
         put(

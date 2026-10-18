@@ -8,7 +8,7 @@ use super::*;
 /// is a recording self-check along the branch.
 pub(super) struct CensusCheck {
     since: Hour,
-    branch: Option<replay::BranchId>,
+    branch: Option<replay_data::BranchId>,
     compared: usize,
     unavailable: usize,
 }

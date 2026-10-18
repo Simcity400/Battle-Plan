@@ -10,7 +10,7 @@
 //! it replaces.
 
 use crate::codec::{Decoder, invalid_static as invalid, put_varint};
-use engine::allocation;
+use engine_allocation as allocation;
 use std::io;
 
 /// Equal-length values merge differing runs closer than this many equal

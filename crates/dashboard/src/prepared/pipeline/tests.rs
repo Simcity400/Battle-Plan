@@ -1,10 +1,8 @@
 use super::*;
 use crate::test_fixtures::{CAMPAIGN, continuation_records, records, scale_frame};
-use replay::{
-    frame::TableView,
-    publication::replace_file,
-    rows::{CompletedFocusRow, FocusRow, TableRows},
-};
+use replay::publication::replace_file;
+use replay_data::{rows::CompletedFocusRow, rows::FocusRow, rows::TableRows};
+use replay_frame::frame::TableView;
 use std::{
     path::PathBuf,
     sync::{
@@ -535,26 +533,30 @@ fn assert_prepared_identities(source: &Source, branch: u64) {
 
 fn forces_frame(hour: i32) -> DecodedFrame {
     let mut frame = crate::products::army_size::test_fixtures::frame(hour);
-    let divisions = frame.complete::<replay::rows::tables::Divisions>().unwrap();
+    let divisions = frame
+        .complete::<replay_data::rows::tables::Divisions>()
+        .unwrap();
     *frame.tables[TableId::DivisionStatus.index()] =
         TableView::Complete(TableRows::DivisionStatus(
             divisions
                 .iter()
-                .map(|row| replay::rows::DivisionStatusRow {
+                .map(|row| replay_data::rows::DivisionStatusRow {
                     division: row.id,
                     supply_ratio: if hour % 2 == 0 { 0 } else { 100_000 },
-                    supply_grace_maximum: replay::rows::Recorded::Value(1_000_000),
-                    supply_grace_remaining: replay::rows::Recorded::Value(0),
+                    supply_grace_maximum: replay_data::rows::Recorded::Value(1_000_000),
+                    supply_grace_remaining: replay_data::rows::Recorded::Value(0),
                     ..Default::default()
                 })
                 .collect(),
         ));
-    let divisions = frame.complete::<replay::rows::tables::Divisions>().unwrap();
+    let divisions = frame
+        .complete::<replay_data::rows::tables::Divisions>()
+        .unwrap();
     *frame.tables[TableId::DivisionLandInputs.index()] =
         TableView::Complete(TableRows::DivisionLandInputs(
             divisions
                 .iter()
-                .map(|row| replay::rows::DivisionLandInputsRow {
+                .map(|row| replay_data::rows::DivisionLandInputsRow {
                     division: row.id,
                     ..Default::default()
                 })
@@ -698,7 +700,7 @@ fn assert_forces(source: &Source, context: &crate::products::LoadContext) {
     ignore = "slow: runs in the full suite (--features slow-tests)"
 )]
 fn prepared_forces_match_oracles_across_batches_resume_append_and_aliases() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for composition parity");
     let mut first = Replay::from_records(
         CAMPAIGN.into(),
@@ -805,7 +807,7 @@ fn prepared_forces_match_oracles_across_batches_resume_append_and_aliases() {
 
 #[test]
 fn prepared_pipeline_keeps_ledger_and_other_families_when_advisor_define_is_missing() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for ledger content parity");
     use crate::products::{
         Product,
@@ -941,8 +943,8 @@ fn prepared_pipeline_keeps_other_families_when_raid_buildings_are_missing() {
         country_measure::{CountryMeasure, Measure, MeasureParams},
         raids::{Raids, RaidsParams, RaidsView},
     };
-    use engine::craid_instance as native;
-    engine::executable_tables::initialize_for_tests()
+    use engine_native::craid_instance as native;
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for raid content metadata");
     let frames: Vec<_> = [100, 101]
         .into_iter()
@@ -951,7 +953,7 @@ fn prepared_pipeline_keeps_other_families_when_raid_buildings_are_missing() {
             frame.metrics.table_ns[TableId::Raids.index()] = 1;
             *frame.tables[TableId::RaidCountries.index()] =
                 TableView::Complete(TableRows::RaidCountries(vec![
-                    replay::rows::RaidCountryRow {
+                    replay_data::rows::RaidCountryRow {
                         canonical_slot: 7,
                         country: 11,
                         eligible_types: vec![50],
@@ -959,7 +961,7 @@ fn prepared_pipeline_keeps_other_families_when_raid_buildings_are_missing() {
                     },
                 ]));
             *frame.tables[TableId::Raids.index()] =
-                TableView::Complete(TableRows::Raids(vec![replay::rows::RaidRow {
+                TableView::Complete(TableRows::Raids(vec![replay_data::rows::RaidRow {
                     id: 1,
                     reference_type: native::REFERENCE_TYPE_VALUE,
                     parent_slot: 7,
@@ -1085,7 +1087,7 @@ fn prepared_pipeline_keeps_other_families_when_raid_buildings_are_missing() {
 fn prepared_pipeline_keeps_project_completions_when_advisor_define_is_missing() {
     use super::super::series::{self, Reader};
     use crate::products::special_projects::{completion_events, prepared::completion_stream};
-    use replay::rows::{LexicalTokenRow, ProjectRow, ProjectState};
+    use replay_data::{rows::LexicalTokenRow, rows::ProjectRow, rows::ProjectState};
 
     let frames: Vec<_> = [100, 101]
         .into_iter()
@@ -1338,7 +1340,7 @@ fn prepared_army_top_first_page_reads_prepared_ranks_at_5000_countries() {
         *frame.tables[TableId::DivisionCensus.index()] =
             TableView::Complete(TableRows::DivisionCensus(
                 (0..5000)
-                    .map(|index| replay::rows::DivisionCensusRow {
+                    .map(|index| replay_data::rows::DivisionCensusRow {
                         country: 100_000 + index,
                         grouped: index % 101,
                         ungrouped: 0,
@@ -2551,11 +2553,13 @@ fn prepared_ideas_replace_one_range_and_reload_it_after_append() {
     let make = |hour| {
         let mut frame = frame(1, hour, 3);
         *frame.tables[TableId::ActiveIdeas.index()] =
-            TableView::Complete(TableRows::ActiveIdeas(vec![replay::rows::ActiveIdeaRow {
-                country: 100_000,
-                ordinal: 0,
-                token: b"mod_idea".to_vec(),
-            }]));
+            TableView::Complete(TableRows::ActiveIdeas(vec![
+                replay_data::rows::ActiveIdeaRow {
+                    country: 100_000,
+                    ordinal: 0,
+                    token: b"mod_idea".to_vec(),
+                },
+            ]));
         *frame.tables[TableId::HiredAdvisors.index()] =
             TableView::Complete(TableRows::HiredAdvisors(vec![]));
         frame
@@ -2600,7 +2604,7 @@ fn prepared_ideas_replace_one_range_and_reload_it_after_append() {
 fn prepared_idea_query_waits_for_its_state_even_with_complete_other_sections() {
     let replay = recording();
     let mut fixture = Fixture::new(&replay);
-    engine::executable_tables::initialize_for_tests().unwrap();
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
     std::fs::create_dir_all(fixture.root.join("content/common/defines")).unwrap();
     std::fs::write(
         fixture.root.join("content/common/defines/mod.lua"),
@@ -2672,7 +2676,7 @@ fn prepared_subjects_keep_changes_across_commits_cancel_resume_append_and_5000_c
         let mut frame = frame(1, hour, count);
         frame.tables[TableId::Subjects.index()] = TableView::Complete(TableRows::Subjects(
             (1..count)
-                .map(|index| replay::rows::SubjectRow {
+                .map(|index| replay_data::rows::SubjectRow {
                     overlord: 100_000,
                     subject: 100_000 + index,
                     start_hour: 9,
@@ -2683,7 +2687,7 @@ fn prepared_subjects_keep_changes_across_commits_cancel_resume_append_and_5000_c
         .into();
         frame.tables[TableId::Autonomy.index()] = TableView::Complete(TableRows::Autonomy(
             (1..count)
-                .map(|index| replay::rows::AutonomyRow {
+                .map(|index| replay_data::rows::AutonomyRow {
                     subject: 100_000 + index,
                     state: if hour < 12 {
                         b"mod/low".to_vec()
@@ -2798,7 +2802,7 @@ fn prepared_autonomy_matches_oracle_after_commits_cancel_resume_append_and_5000_
         let mut frame = frame(1, hour, count);
         frame.tables[TableId::Subjects.index()] = TableView::Complete(TableRows::Subjects(
             (1..count)
-                .map(|index| replay::rows::SubjectRow {
+                .map(|index| replay_data::rows::SubjectRow {
                     overlord: 100_000,
                     subject: 100_000 + index,
                     autonomy_ratio: i64::from(hour),
@@ -2809,7 +2813,7 @@ fn prepared_autonomy_matches_oracle_after_commits_cancel_resume_append_and_5000_
         .into();
         frame.tables[TableId::Autonomy.index()] = TableView::Complete(TableRows::Autonomy(
             (1..count)
-                .map(|index| replay::rows::AutonomyRow {
+                .map(|index| replay_data::rows::AutonomyRow {
                     subject: 100_000 + index,
                     state: if hour < 12 {
                         b"mod/low".to_vec()
@@ -2946,9 +2950,9 @@ fn prepared_tension_matches_oracle_after_commits_cancel_resume_append_and_5000_c
         let sum: i64 = (0..count).map(amount).sum();
         frame.tables[TableId::WorldTension.index()] =
             TableView::Complete(TableRows::WorldTension(vec![
-                replay::rows::WorldTensionRow {
-                    total_raw: sum.clamp(0, engine::cworld_threat::CLAMP_CEILING)
-                        / engine::cworld_threat::SCALAR_DIVISOR,
+                replay_data::rows::WorldTensionRow {
+                    total_raw: sum.clamp(0, engine_stability::cworld_threat::CLAMP_CEILING)
+                        / engine_stability::cworld_threat::SCALAR_DIVISOR,
                     source_count: count as i32,
                     country_aggregate_count: count as i32,
                 },
@@ -2957,7 +2961,7 @@ fn prepared_tension_matches_oracle_after_commits_cancel_resume_append_and_5000_c
         frame.tables[TableId::ThreatCountryAggregates.index()] =
             TableView::Complete(TableRows::ThreatCountryAggregates(
                 (0..count)
-                    .map(|index| replay::rows::ThreatCountryAggregateRow {
+                    .map(|index| replay_data::rows::ThreatCountryAggregateRow {
                         country_slot: index,
                         total_raw: amount(index),
                     })
@@ -2967,7 +2971,7 @@ fn prepared_tension_matches_oracle_after_commits_cancel_resume_append_and_5000_c
         frame.tables[TableId::ThreatSources.index()] =
             TableView::Complete(TableRows::ThreatSources(
                 (0..count)
-                    .map(|index| replay::rows::ThreatSourceRow {
+                    .map(|index| replay_data::rows::ThreatSourceRow {
                         ordinal: index,
                         country: 100_000 + index,
                         date: 9,
@@ -3344,7 +3348,7 @@ fn progressive_autonomy_queries_join_prepared_prefix_and_tail_then_zoom_exactly_
         *frame.tables[TableId::Autonomy.index()] = TableView::Complete(TableRows::Autonomy(
             subjects
                 .iter()
-                .map(|&subject| replay::rows::AutonomyRow {
+                .map(|&subject| replay_data::rows::AutonomyRow {
                     subject,
                     state: if hour >= 7 {
                         b"recorded/mod-next".to_vec()
@@ -3367,7 +3371,7 @@ fn progressive_autonomy_queries_join_prepared_prefix_and_tail_then_zoom_exactly_
         *frame.tables[TableId::Subjects.index()] = TableView::Complete(TableRows::Subjects(
             subjects
                 .iter()
-                .map(|&subject| replay::rows::SubjectRow {
+                .map(|&subject| replay_data::rows::SubjectRow {
                     subject,
                     overlord: 21,
                     autonomy_ratio: 23_456,
@@ -3538,7 +3542,7 @@ fn air_superiority_unprepared_regional_spans_remain_pending_without_a_frame_samp
         let mut frame = frame(1, hour, 2);
         *frame.tables[TableId::RaidAirScores.index()] =
             TableView::Complete(TableRows::RaidAirScores(vec![
-                replay::rows::RaidAirScoreRow {
+                replay_data::rows::RaidAirScoreRow {
                     country: 100_000,
                     region: 7000,
                     friendly: i64::from(hour),
@@ -3646,7 +3650,7 @@ fn naval_losses_unprepared_spans_are_pending_not_zero() {
     fn sinking_frame(hour: i32) -> DecodedFrame {
         let mut frame = crate::test_fixtures::source(1, hour, Some(0));
         let entries = if hour >= 2 {
-            vec![replay::rows::SunkShipEntry {
+            vec![replay_data::rows::SunkShipEntry {
                 ship_name: b"synthetic retained sinking".to_vec(),
                 victim_country: 9001,
                 attacker_country: 9001,
@@ -3656,11 +3660,10 @@ fn naval_losses_unprepared_spans_are_pending_not_zero() {
         } else {
             Vec::new()
         };
-        frame.tables[TableId::SunkShips.index()] =
-            TableView::Complete(TableRows::SunkShips(vec![replay::rows::SunkShipsRow {
-                entries,
-            }]))
-            .into();
+        frame.tables[TableId::SunkShips.index()] = TableView::Complete(TableRows::SunkShips(vec![
+            replay_data::rows::SunkShipsRow { entries },
+        ]))
+        .into();
         frame.metrics.table_ns[TableId::SunkShips.index()] = 1;
         frame
     }
@@ -3770,7 +3773,7 @@ fn progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_w
             if let TableView::Complete(TableRows::Countries(rows)) =
                 &mut *frame.tables[TableId::Countries.index()]
             {
-                rows.push(replay::rows::CountryRow {
+                rows.push(replay_data::rows::CountryRow {
                     id: 333,
                     canonical_slot: 8,
                     tag: b"tail only".to_vec(),
@@ -3783,7 +3786,7 @@ fn progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_w
             if let TableView::Complete(TableRows::CountryLinks(rows)) =
                 &mut *frame.tables[TableId::CountryLinks.index()]
             {
-                rows.push(replay::rows::CountryLinkRow {
+                rows.push(replay_data::rows::CountryLinkRow {
                     id: 333,
                     canonical_slot: 8,
                 });
@@ -3980,10 +3983,10 @@ fn progressive_stability_parts_join_prepared_prefix_and_tail_then_zoom_exactly_w
             inputs.clone(),
             hour,
             if hour >= 2 {
-                vec![replay::rows::CountryStabilityLineRow {
+                vec![replay_data::rows::CountryStabilityLineRow {
                     country: 9001,
                     key: 0x8d,
-                    kind: replay::rows::CountryStabilityLineRow::IDEA,
+                    kind: replay_data::rows::CountryStabilityLineRow::IDEA,
                     identity: b"mod/tail".to_vec(),
                     value: 10_000,
                     ..Default::default()
@@ -3996,7 +3999,7 @@ fn progressive_stability_parts_join_prepared_prefix_and_tail_then_zoom_exactly_w
             if let TableView::Complete(TableRows::Countries(rows)) =
                 &mut *frame.tables[TableId::Countries.index()]
             {
-                rows.push(replay::rows::CountryRow {
+                rows.push(replay_data::rows::CountryRow {
                     id: 333,
                     canonical_slot: 8,
                     tag: b"tail only".to_vec(),
@@ -4007,7 +4010,7 @@ fn progressive_stability_parts_join_prepared_prefix_and_tail_then_zoom_exactly_w
             if let TableView::Complete(TableRows::CountryLinks(rows)) =
                 &mut *frame.tables[TableId::CountryLinks.index()]
             {
-                rows.push(replay::rows::CountryLinkRow {
+                rows.push(replay_data::rows::CountryLinkRow {
                     id: 333,
                     canonical_slot: 8,
                 });
@@ -4023,7 +4026,7 @@ fn progressive_stability_parts_join_prepared_prefix_and_tail_then_zoom_exactly_w
             if let TableView::Complete(TableRows::SliceReads(rows)) =
                 &mut *frame.tables[TableId::SliceReads.index()]
             {
-                rows.push(replay::rows::SliceReadRow {
+                rows.push(replay_data::rows::SliceReadRow {
                     owner: 333,
                     table: TableId::CountryStabilityInputs as u32,
                     sample_hour: hour,
@@ -4186,7 +4189,7 @@ fn unprepared_research_span_returns_pending_through_the_real_query_path() {
 }
 
 fn check_research_pending() {
-    engine::executable_tables::initialize_for_tests().unwrap();
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
     use crate::products::research::{prepared, test_fixtures::sliced_research_frame};
 
     let frames = vec![
@@ -4389,7 +4392,7 @@ fn progressive_fuel_factories_and_nukes() {
         frame.metrics.table_ns[TableId::CountryFuel.index()] = 1;
         *frame.tables[TableId::CountryFuel.index()] = TableView::Complete(TableRows::CountryFuel(
             (0..count)
-                .map(|index| replay::rows::CountryFuelRow {
+                .map(|index| replay_data::rows::CountryFuelRow {
                     country: 100_000 + index,
                     current_raw: amount + i64::from(index),
                     maximum_raw: 32768,
@@ -4400,7 +4403,7 @@ fn progressive_fuel_factories_and_nukes() {
         *frame.tables[TableId::CountryFactories.index()] =
             TableView::Complete(TableRows::CountryFactories(
                 (0..count)
-                    .map(|index| replay::rows::CountryFactoriesRow {
+                    .map(|index| replay_data::rows::CountryFactoriesRow {
                         country: 100_000 + index,
                         military_total_raw: (amount + i64::from(index)) * 100_000,
                         ..Default::default()
@@ -4409,7 +4412,7 @@ fn progressive_fuel_factories_and_nukes() {
             ));
         *frame.tables[TableId::Nukes.index()] = TableView::Complete(TableRows::Nukes(
             (0..count)
-                .map(|index| replay::rows::NukeRow {
+                .map(|index| replay_data::rows::NukeRow {
                     country: 100_000 + index,
                     nuke_type: 0,
                     amount_raw: (amount + i64::from(index)) * 100_000_000,
@@ -4637,7 +4640,7 @@ fn progressive_nukes_origin() {
         }
         *frame.tables[TableId::Nukes.index()] = TableView::Complete(TableRows::Nukes(
             (0..2)
-                .map(|index| replay::rows::NukeRow {
+                .map(|index| replay_data::rows::NukeRow {
                     country: 100_000 + index,
                     nuke_type: 0,
                     amount_raw: if hour == 29 {
@@ -4744,7 +4747,7 @@ fn territory_progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly
 fn territory_progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing_hourly()
  {
     use crate::products::{LoadContext, country_history::HistoryScan, territory};
-    use replay::rows::{CountryLinkRow, CountryRow, ProvinceRow};
+    use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::ProvinceRow};
     fn sampled(hour: i32) -> DecodedFrame {
         let mut frame = crate::test_fixtures::ownership_frame(1, hour, 44);
         if hour >= 2 {
@@ -5205,14 +5208,14 @@ fn prepared_air_force_matches_native_replies_after_two_commits_resume_append_gap
     let make = |hour| {
         let mut frame = scale_frame(1, hour, 3);
         *frame.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(vec![
-            replay::rows::AirWingRow {
+            replay_data::rows::AirWingRow {
                 id: 1,
                 owner: 100_000,
                 country_override: 100_001,
                 planes: if hour < 103 { 10 } else { 20 },
                 ..Default::default()
             },
-            replay::rows::AirWingRow {
+            replay_data::rows::AirWingRow {
                 id: 2,
                 owner: 100_001,
                 country_override: 0,
@@ -5222,13 +5225,13 @@ fn prepared_air_force_matches_native_replies_after_two_commits_resume_append_gap
         ]));
         *frame.tables[TableId::WingEquipment.index()] =
             TableView::Complete(TableRows::WingEquipment(vec![
-                replay::rows::WingEquipmentRow {
+                replay_data::rows::WingEquipmentRow {
                     wing: 1,
                     ordinal: 0,
                     variant: 77,
                     amount_raw: 1_000_000,
                 },
-                replay::rows::WingEquipmentRow {
+                replay_data::rows::WingEquipmentRow {
                     wing: 2,
                     ordinal: 0,
                     variant: 78,
@@ -5316,7 +5319,7 @@ fn prepared_air_force_top_first_page_at_five_thousand_countries_uses_rank_positi
     let mut frame = scale_frame(1, 100, 5000);
     *frame.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(
         (0..5000)
-            .map(|index| replay::rows::AirWingRow {
+            .map(|index| replay_data::rows::AirWingRow {
                 id: u64::from(index),
                 owner: 100_000 + index,
                 planes: (index % 101) as i32,
@@ -5365,7 +5368,10 @@ fn prepared_air_force_top_first_page_at_five_thousand_countries_uses_rank_positi
 fn prepared_navy_matches_native_after_two_commits_resume_append_gaps_aliases_and_five_thousand_countries()
  {
     use crate::products::{LoadContext, Product, navy::*};
-    use replay::rows::{LexicalTokenRow, ShipCounterInputs, ShipModelRow, ShipRow, TaskForceRow};
+    use replay_data::{
+        rows::LexicalTokenRow, rows::ShipCounterInputs, rows::ShipModelRow, rows::ShipRow,
+        rows::TaskForceRow,
+    };
     let make = |hour| {
         let mut frame = scale_frame(1, hour, 5000);
         *frame.tables[TableId::TaskForces.index()] = TableView::Complete(TableRows::TaskForces(
@@ -5497,7 +5503,7 @@ fn prepared_country_nukes_matches_native_after_two_commits_resume_append_gaps_al
         let mut frame = scale_frame(1, hour, 5000);
         *frame.tables[TableId::Nukes.index()] = TableView::Complete(TableRows::Nukes(
             (0..5000)
-                .map(|index| replay::rows::NukeRow {
+                .map(|index| replay_data::rows::NukeRow {
                     country: 100_000 + index,
                     nuke_type: if index == 1 && hour >= 104 { 1 } else { 0 },
                     amount_raw: i64::from(if hour == 103 { 0 } else { index % 101 }) * 100_000_000,
@@ -5606,7 +5612,7 @@ fn prepared_country_factories_matches_native_after_two_commits_resume_append_gap
         *frame.tables[TableId::CountryFactories.index()] =
             TableView::Complete(TableRows::CountryFactories(
                 (0..5000)
-                    .map(|index| replay::rows::CountryFactoriesRow {
+                    .map(|index| replay_data::rows::CountryFactoriesRow {
                         country: 100_000 + index,
                         military_total_raw: i64::from(index % 101) * 100_000,
                         naval_total_raw: i64::from(index % 17) * 100_000,
@@ -5837,7 +5843,7 @@ fn check_prepared_feed_prefix() {
             let mut frame = crate::products::event_feed::prepared::tests::frame(hour, 3);
             *frame.tables[TableId::Nukes.index()] = TableView::Complete(TableRows::Nukes(
                 (0..3)
-                    .map(|index| replay::rows::NukeRow {
+                    .map(|index| replay_data::rows::NukeRow {
                         country: 100_000 + index,
                         amount_raw: i64::from(hour - 100) * 100_000_000,
                         ..Default::default()
@@ -5909,7 +5915,7 @@ fn progressive_game_score_state_reads_unprepared_hour_and_tail_only_countries_wi
         game_score::{self, GameScore},
     };
     use crate::transport::ProductRequest;
-    use replay::rows::{CountryGameScoreInputRow, GameScoreMultiplierRow};
+    use replay_data::{rows::CountryGameScoreInputRow, rows::GameScoreMultiplierRow};
     fn score_frame(hour: i32, count: u32, army: i32) -> DecodedFrame {
         let mut frame = scale_frame(1, hour, count);
         for rows in [
@@ -6142,8 +6148,8 @@ fn preparation_stack_type_sizes() {
     report::<BranchState>("BranchState");
     report::<Checkpoint>("Checkpoint");
     report::<Accepted>("Accepted");
-    report::<replay::frame::DecodedFrame>("DecodedFrame");
-    report::<replay::frame::Frame>("Frame");
+    report::<replay_frame::frame::DecodedFrame>("DecodedFrame");
+    report::<replay_frame::frame::Frame>("Frame");
     report::<Source>("Source");
     report::<serde_json::Value>("Value");
     report::<super::super::series::Accumulator>("series.Accumulator");

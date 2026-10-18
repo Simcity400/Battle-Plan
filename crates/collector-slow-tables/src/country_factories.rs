@@ -2,12 +2,12 @@
 //! the military, naval and civilian groups and the civilian consumers, one
 //! row per canonical country, read hourly in the Slow job.
 use crate::{clock::qpc, table_capture::CaptureRows, table_conversion::table};
-use engine::{Memory, cproduction_status as native, walk::Outcome};
-use replay::{
-    cadence::{SKIPPED_REASON, should_walk},
-    frame::TableView,
-    rows::{CountryFactoriesRow, TableId, tables},
+use engine_native::{Memory, cproduction_status as native, walk::Outcome};
+use replay_data::{
+    cadence::SKIPPED_REASON, cadence::should_walk, rows::CountryFactoriesRow, rows::TableId,
+    rows::tables,
 };
+use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::CountryFactories];
@@ -129,8 +129,8 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::SliceMemory;
-    use replay::rows::TableRows;
+    use engine_native::memory::SliceMemory;
+    use replay_data::rows::TableRows;
 
     #[test]
     fn unreadable_census_is_unavailable_and_rows_keep_each_group_apart() {

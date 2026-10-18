@@ -9,10 +9,11 @@ use super::family_lanes::{assert_payloads_equal, payloads};
 use super::*;
 use crate::prepared::prepass;
 use crate::products::intelligence_prepared::{HISTORY_READS, KEPT_HOURS, QUIET_HOURS};
-use replay::rows::{
-    CountryAppearanceRow, CryptologyRow, IntelligenceAgencyRow, LexicalTokenRow,
-    OperationAssignmentRow, OperationCompletionRow, OperationRow, OperativeMembershipRow,
-    PoliticsRow, RaidIntelInputRow, Recorded, ReservedCountryNamingRow, SimulationFeatureRow,
+use replay_data::{
+    rows::CountryAppearanceRow, rows::CryptologyRow, rows::IntelligenceAgencyRow,
+    rows::LexicalTokenRow, rows::OperationAssignmentRow, rows::OperationCompletionRow,
+    rows::OperationRow, rows::OperativeMembershipRow, rows::PoliticsRow, rows::RaidIntelInputRow,
+    rows::Recorded, rows::ReservedCountryNamingRow, rows::SimulationFeatureRow,
 };
 
 type Payloads = BTreeMap<(String, u64), Vec<u8>>;

@@ -1,6 +1,8 @@
 //! The scriptable weights used by random localisation lists.
 
-use installed_content::scripted_localisation::{RandomList, RandomMember};
+use installed_content_scripted_localisation::{
+    scripted_localisation::RandomList, scripted_localisation::RandomMember,
+};
 
 use super::{Scopes, eval::Evaluator, world::fixed_round};
 use crate::state_resources::ONE;
@@ -79,7 +81,8 @@ impl Evaluator<'_, '_> {
                     // the authenticated engine reader; only the instance id
                     // is content/runtime.
                     reference_hash(
-                        (u64::from(id) << 32) | u64::from(engine::ccharacter::REFERENCE_TYPE),
+                        (u64::from(id) << 32)
+                            | u64::from(engine_native::ccharacter::REFERENCE_TYPE),
                     )
                 } else {
                     0

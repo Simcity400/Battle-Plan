@@ -28,10 +28,8 @@
 
 use super::engaged::{self, Removal};
 use crate::map::tables::rows;
-use replay::{
-    frame::DecodedFrame,
-    rows::{TableId, tables},
-};
+use replay_data::{rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 
 pub struct NavalSides;

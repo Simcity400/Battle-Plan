@@ -1,5 +1,5 @@
 //! Allocation-free observation of every production tick
-//! ([`engine::line_output_sites`]): the units each production line completes,
+//! ([`engine_production::line_output_sites`]): the units each production line completes,
 //! which the game counts nowhere per line. A detour only records and calls the
 //! original; it never changes game behaviour and calls no game function.
 //!
@@ -37,12 +37,12 @@ use crate::{
     output_hooks,
     output_log::{DrainCounters, Log},
 };
-use engine::{
-    Memory,
-    line_output_sites::{
-        CREDIT, DELIVERY, HookSite, LINE_HANDLE, LINE_ORGANISATION, LINE_VARIANT, UNIT_SCALE,
-        VARIANT_HANDLE,
-    },
+use engine_native::Memory;
+use engine_production::{
+    line_output_sites::CREDIT, line_output_sites::DELIVERY, line_output_sites::HookSite,
+    line_output_sites::LINE_HANDLE, line_output_sites::LINE_ORGANISATION,
+    line_output_sites::LINE_VARIANT, line_output_sites::UNIT_SCALE,
+    line_output_sites::VARIANT_HANDLE,
 };
 use std::{
     cell::Cell,
@@ -86,9 +86,9 @@ struct Storage {
 impl Storage {
     /// Off-thread; an advisory offer may fail without stopping capture.
     fn new(capacity: usize) -> Option<Box<Self>> {
-        let mut slots = engine::allocation::vec(capacity).ok()?;
+        let mut slots = engine_allocation::vec(capacity).ok()?;
         slots.resize_with(capacity, Slot::default);
-        engine::allocation::boxed(Self { slots }).ok()
+        engine_allocation::boxed(Self { slots }).ok()
     }
 }
 
@@ -111,7 +111,7 @@ static FAILED_OFFERS: AtomicU64 = AtomicU64::new(0);
 /// Loader/spool thread: offer storage for the live output event demand. Never
 /// shrink or replace an equally large offer; allocation stays off-thread.
 pub fn presize(events: usize) {
-    engine::allocation::advisory(|| presize_storage(events));
+    engine_allocation::advisory(|| presize_storage(events));
 }
 
 fn presize_storage(events: usize) {
@@ -251,7 +251,7 @@ pub struct Entry {
 pub enum OutputKind {
     #[default]
     Equipment,
-    Spending(engine::line_output_sites::RocketFailure),
+    Spending(engine_production::line_output_sites::RocketFailure),
     Delivery {
         units_known: bool,
     },
@@ -271,7 +271,7 @@ impl OutputKind {
         match raw {
             0 => Some(Self::Equipment),
             1..=6 => Some(Self::Spending(
-                engine::line_output_sites::RocketFailure::from_raw(raw - 1),
+                engine_production::line_output_sites::RocketFailure::from_raw(raw - 1),
             )),
             7 => Some(Self::Delivery { units_known: true }),
             8 => Some(Self::Delivery { units_known: false }),
@@ -288,13 +288,13 @@ impl Entry {
         match self.kind {
             OutputKind::Equipment => Rocket::Equipment,
             OutputKind::Spending(mut failure) => {
-                if failure == engine::line_output_sites::RocketFailure::None
+                if failure == engine_production::line_output_sites::RocketFailure::None
                     && self.spending.is_none()
                 {
-                    failure = engine::line_output_sites::RocketFailure::Amount;
+                    failure = engine_production::line_output_sites::RocketFailure::Amount;
                 }
                 let (spent_raw, instant_raw) = self.spending.unwrap_or_default();
-                Rocket::Spending(engine::line_output_sites::RocketTick {
+                Rocket::Spending(engine_production::line_output_sites::RocketTick {
                     country: self.country,
                     variant: self.variant,
                     spent_raw,
@@ -421,8 +421,8 @@ fn observe_credit(line: usize, speed: i64, count: i32, caller: usize, pending: P
         }
     };
     // The serial native pass keeps the line, status and country alive here.
-    let memory = unsafe { engine::memory::LiveMemory::new() };
-    let country = match engine::line_output_sites::producing_country(
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let country = match engine_production::line_output_sites::producing_country(
         &memory,
         BASE.load(Ordering::Relaxed),
         line,
@@ -437,7 +437,7 @@ fn observe_credit(line: usize, speed: i64, count: i32, caller: usize, pending: P
     let spending = producer
         .ok_or("production output producer unsupported")
         .and_then(|producer| {
-            engine::line_output_sites::applied_spending(
+            engine_production::line_output_sites::applied_spending(
                 &memory,
                 BASE.load(Ordering::Relaxed),
                 country,
@@ -527,12 +527,12 @@ fn entry(slot: &Slot) -> Entry {
 /// Copy settled entries without allocating; short storage defers the rest.
 #[cfg(any(test, feature = "test-support"))]
 pub fn drain(output: &mut [Entry]) -> Result<Drained, &'static str> {
-    drain_buffer(engine::walk::Buffer::Fixed(output))
+    drain_buffer(engine_native::walk::Buffer::Fixed(output))
 }
 pub fn drain_growing(output: &mut Vec<Entry>) -> Result<Drained, &'static str> {
-    drain_buffer(engine::walk::Buffer::Growing(output))
+    drain_buffer(engine_native::walk::Buffer::Growing(output))
 }
-fn drain_buffer(output: engine::walk::Buffer<'_, Entry>) -> Result<Drained, &'static str> {
+fn drain_buffer(output: engine_native::walk::Buffer<'_, Entry>) -> Result<Drained, &'static str> {
     let log = log();
     let unavailable = || {
         if native_retention_required() {
@@ -726,7 +726,7 @@ mod tests {
     #[test]
     fn common_projection_keeps_missing_spending_and_signed_delivery_independent() {
         use crate::rocket_output::Entry as Rocket;
-        use engine::line_output_sites::{RocketFailure, RocketTick};
+        use engine_production::{line_output_sites::RocketFailure, line_output_sites::RocketTick};
         let missing = Entry {
             kind: OutputKind::Spending(RocketFailure::None),
             country: 5001,
@@ -775,15 +775,15 @@ mod tests {
             let mut owned_variant = vec![0_u64; 4];
             owned_variant[VARIANT_HANDLE / 8] = variant;
             let mut line = vec![0_u64; 0x20];
-            let mut status = vec![0_u64; (engine::cproduction_status::COUNTRY + 8) / 8];
-            let mut country = vec![0_u64; (engine::ccountry::PRODUCTION_STATUS + 8) / 8];
-            status[0] = engine::cproduction_status::VTABLE_RVA as u64;
-            country[0] = engine::ccountry::VTABLE_RVA as u64;
-            country[engine::ccountry::ID / 8] = 5001;
-            country[engine::ccountry::PRODUCTION_STATUS / 8] = status.as_ptr() as u64;
-            status[engine::cproduction_status::COUNTRY / 8] = country.as_ptr() as u64;
-            line[0] = engine::cmilitary_production_line::VTABLE_RVA as u64;
-            line[engine::cproduction_line::PRODUCTION_STATUS / 8] = status.as_ptr() as u64;
+            let mut status = vec![0_u64; (engine_native::cproduction_status::COUNTRY + 8) / 8];
+            let mut country = vec![0_u64; (engine_native::ccountry::PRODUCTION_STATUS + 8) / 8];
+            status[0] = engine_native::cproduction_status::VTABLE_RVA as u64;
+            country[0] = engine_native::ccountry::VTABLE_RVA as u64;
+            country[engine_native::ccountry::ID / 8] = 5001;
+            country[engine_native::ccountry::PRODUCTION_STATUS / 8] = status.as_ptr() as u64;
+            status[engine_native::cproduction_status::COUNTRY / 8] = country.as_ptr() as u64;
+            line[0] = engine_native::cmilitary_production_line::VTABLE_RVA as u64;
+            line[engine_native::cproduction_line::PRODUCTION_STATUS / 8] = status.as_ptr() as u64;
             line[LINE_HANDLE / 8] = handle;
             line[LINE_VARIANT / 8] = owned_variant.as_ptr() as u64;
             line[LINE_ORGANISATION / 8] = mio;
@@ -1100,7 +1100,7 @@ mod tests {
         observe_for_test(true);
         let mut a = Line::new(0x11_0000_0021, 0x5_0000_0046, 0);
         let before = drained(8).0.unwrap();
-        a.country[engine::ccountry::ID / 8] = 0;
+        a.country[engine_native::ccountry::ID / 8] = 0;
         produce_for_test(a.address(), MILITARY, 1, Some(UNIT_SCALE));
         let (after, entries) = drained(8);
         assert!(entries.is_empty());
@@ -1292,7 +1292,7 @@ mod tests {
     fn unrecognised_prologues_leave_the_table_unavailable() {
         let _lock = test_lock();
         let bytes = vec![0_u8; 0x10];
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         };

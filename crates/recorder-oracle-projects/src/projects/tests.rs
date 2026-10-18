@@ -1,16 +1,15 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{
-        NukeRow, ProjectBreakthroughRow, ProjectContext, ProjectHistoryRow, ProjectProgramRow,
-        ProjectRow, ProjectState, RaidCooldownRow, RaidCountryRow, RaidRow, RaidScope, RaidSource,
-        RaidTargetRow, RaidTargetStatusRow, TableId, TableRows,
-    },
+use replay_data::{
+    rows::NukeRow, rows::ProjectBreakthroughRow, rows::ProjectContext, rows::ProjectHistoryRow,
+    rows::ProjectProgramRow, rows::ProjectRow, rows::ProjectState, rows::RaidCooldownRow,
+    rows::RaidCountryRow, rows::RaidRow, rows::RaidScope, rows::RaidSource, rows::RaidTargetRow,
+    rows::RaidTargetStatusRow, rows::TableId, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 
 fn scientist_pack() -> characters_saved::Pack {
     characters_saved::parse(
-        &installed_content::parser::parse(
+        &installed_content_core::parser::parse(
             br#"character_manager={ historical={
                 character={ id={ id=265 type=73 } token="a" country="GER"
                     scientist={ traits={ "t1" "t2" }
@@ -30,32 +29,33 @@ fn scientist_frame() -> DecodedFrame {
     let mut frame = DecodedFrame {
         branch: 1,
         // Every project table is current at the programs' daily slot.
-        hour: replay::cadence::refresh_slot(TableId::ProjectPrograms).unwrap() as i32,
+        hour: replay_data::cadence::refresh_slot(TableId::ProjectPrograms).unwrap() as i32,
         tables: std::array::from_fn(|index| {
             TableView::Complete(TableRows::empty(TableId::ALL[index]))
         })
         .map(Into::into),
         metrics: Default::default(),
     };
-    *frame.tables[TableId::Scientists.index()] =
-        TableView::Complete(TableRows::Scientists(vec![replay::rows::ScientistRow {
+    *frame.tables[TableId::Scientists.index()] = TableView::Complete(TableRows::Scientists(vec![
+        replay_data::rows::ScientistRow {
             character: 265,
             country: 7,
             ordinal: 0,
             trait_count: 2,
             skill_count: 2,
-            active: replay::rows::Recorded::Value(Some(0)),
-        }]));
+            active: replay_data::rows::Recorded::Value(Some(0)),
+        },
+    ]));
     *frame.tables[TableId::ScientistSkills.index()] =
         TableView::Complete(TableRows::ScientistSkills(vec![
-            replay::rows::ScientistSkillRow {
+            replay_data::rows::ScientistSkillRow {
                 character: 265,
                 ordinal: 0,
                 token: 0x56c6,
                 level: 2,
                 experience_raw: 0,
             },
-            replay::rows::ScientistSkillRow {
+            replay_data::rows::ScientistSkillRow {
                 character: 265,
                 ordinal: 1,
                 token: 0x56c7,
@@ -106,7 +106,7 @@ fn scientist_active_oracle_checks_truth_and_preserves_older_rows() {
     else {
         unreachable!()
     };
-    rows[0].active = replay::rows::Recorded::Value(Some(1));
+    rows[0].active = replay_data::rows::Recorded::Value(Some(1));
     let report = run_scientists(&frame);
     assert_eq!(report.differences.len(), 1);
     assert!(report.differences[0].contains("scientist 265.active"));
@@ -115,14 +115,14 @@ fn scientist_active_oracle_checks_truth_and_preserves_older_rows() {
     else {
         unreachable!()
     };
-    rows[0].active = replay::rows::Recorded::Value(Some(0));
+    rows[0].active = replay_data::rows::Recorded::Value(Some(0));
     assert!(run_scientists(&frame).differences.is_empty());
     let TableView::Complete(TableRows::Scientists(rows)) =
         &mut *frame.tables[TableId::Scientists.index()]
     else {
         unreachable!()
     };
-    rows[0].active = replay::rows::Recorded::Value(None);
+    rows[0].active = replay_data::rows::Recorded::Value(None);
     let report = run_scientists(&frame);
     assert_eq!(report.differences.len(), 1);
     assert!(report.differences[0].contains("capture refused"));
@@ -133,7 +133,7 @@ fn scientist_active_oracle_checks_truth_and_preserves_older_rows() {
     else {
         unreachable!()
     };
-    rows[0].active = replay::rows::Recorded::NotRecorded;
+    rows[0].active = replay_data::rows::Recorded::NotRecorded;
     assert!(
         run_scientists(&frame)
             .limitations
@@ -245,20 +245,20 @@ fn a_saved_scientist_with_a_country_must_be_recorded_and_an_extra_row_is_reporte
     else {
         unreachable!()
     };
-    rows.push(replay::rows::ScientistRow {
+    rows.push(replay_data::rows::ScientistRow {
         character: 266,
         country: 7,
         ordinal: 1,
         trait_count: 0,
         skill_count: 1,
-        active: replay::rows::Recorded::Value(Some(0)),
+        active: replay_data::rows::Recorded::Value(Some(0)),
     });
     let TableView::Complete(TableRows::ScientistSkills(skills)) =
         &mut *frame.tables[TableId::ScientistSkills.index()]
     else {
         unreachable!()
     };
-    skills.push(replay::rows::ScientistSkillRow {
+    skills.push(replay_data::rows::ScientistSkillRow {
         character: 266,
         ordinal: 0,
         token: 0x56c6,
@@ -307,7 +307,7 @@ fn raid_fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
     let mut frame = DecodedFrame {
         branch: 1,
         // Every project table is current at the programs' daily slot.
-        hour: replay::cadence::refresh_slot(TableId::ProjectPrograms).unwrap() as i32,
+        hour: replay_data::cadence::refresh_slot(TableId::ProjectPrograms).unwrap() as i32,
         tables: std::array::from_fn(|index| {
             TableView::Complete(TableRows::empty(TableId::ALL[index]))
         })
@@ -316,7 +316,7 @@ fn raid_fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
     };
     let source = br"countries={GER={nukes={{amount=90071992547.40993 nukes_ready=-1}{amount=0 nukes_ready=0}} program_status={project_pool={project={}} breakthrough={}}}}
         raids={targets={target={valid=yes target={state=291} detected={ 1 0 }}} countries={{tag=GER priority=-1 raid_instance={{id={id=4294967295 type=84} phase=PREPARED prep_time=-2 distance=22.1 target={state=291}}} target_cooldowns={{target={state=291} type=oilfield_raid cooldown=3}}}}} peace_conference={}";
-    let pack = saved::parse(&installed_content::parser::parse(source).unwrap().items).unwrap();
+    let pack = saved::parse(&installed_content_core::parser::parse(source).unwrap().items).unwrap();
     *frame.tables[TableId::Nukes.index()] = TableView::Complete(TableRows::Nukes(vec![
         NukeRow {
             country: 102,
@@ -364,7 +364,7 @@ fn raid_fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
     // The prepared raid's pool, which is empty in the save.
     *frame.tables[TableId::RaidEquipment.index()] =
         TableView::Complete(TableRows::RaidEquipment(vec![
-            replay::rows::RaidEquipmentRow {
+            replay_data::rows::RaidEquipmentRow {
                 reference_type: 84,
                 id: u32::MAX,
                 phase: 3,
@@ -549,8 +549,8 @@ fn a_building_source_compares_template_and_location() {
 
 #[test]
 fn tooltip_operand_oracle_checks_references_ordinals_and_missing_census() {
-    use engine::raid_tooltip_operands::*;
-    use replay::rows::RaidTooltipOperandRow;
+    use engine_native::raid_tooltip_operands::*;
+    use replay_data::rows::RaidTooltipOperandRow;
     let (mut frame, pack, _) = raid_fixture();
     let raid = u64::from(u32::MAX) << 32 | 84;
     let rows = vec![
@@ -597,8 +597,8 @@ fn tooltip_operand_oracle_checks_references_ordinals_and_missing_census() {
 
 #[test]
 fn tooltip_operand_oracle_compares_wing_name_bytes_and_reports_capture_failures() {
-    use engine::raid_tooltip_operands::*;
-    use replay::rows::RaidTooltipOperandRow;
+    use engine_native::raid_tooltip_operands::*;
+    use replay_data::rows::RaidTooltipOperandRow;
     let (mut frame, mut pack, _) = raid_fixture();
     let raid = pack.raids.as_mut().unwrap()[0]
         .instances
@@ -780,7 +780,7 @@ fn raid_equipment_needs_a_row_for_every_saved_recorded_raid() {
 #[test]
 fn raid_censuses_follow_the_readers_rules_over_the_saved_raids() {
     use installed_content_save::{GameDate, SavedDate};
-    use replay::rows::{RaidEquipmentRow, RaidSpeedInputRow};
+    use replay_data::{rows::RaidEquipmentRow, rows::RaidSpeedInputRow};
     let (mut frame, pack, _) = raid_fixture();
     frame.hour = GameDate::parse(b"1943.4.22.7")
         .unwrap()
@@ -867,7 +867,7 @@ fn raid_censuses_follow_the_readers_rules_over_the_saved_raids() {
 /// `equipment` pool and `nukes`.
 #[test]
 fn raid_equipment_compares_the_saved_pool_and_nukes() {
-    use replay::rows::RaidEquipmentRow;
+    use replay_data::rows::RaidEquipmentRow;
     let (mut frame, mut pack, _) = raid_fixture();
     let raid = &mut pack.raids.as_mut().unwrap()[0].instances[0];
     raid.nukes = 1;
@@ -911,7 +911,7 @@ fn totals_fixture(items: &[(u64, &str)], definitions: bool) -> (DecodedFrame, sa
         Decimal,
         production::{Equipment, Pool},
     };
-    use replay::rows::VariantDefinitionRow;
+    use replay_data::rows::VariantDefinitionRow;
     let (mut frame, mut pack, _) = raid_fixture();
     pack.raids.as_mut().unwrap()[0].instances[0].equipment = Some(Pool {
         equipment: items
@@ -948,7 +948,7 @@ fn run_totals(
     let mut frame = frame.clone();
     *frame.tables[TableId::RaidEquipment.index()] =
         TableView::Complete(TableRows::RaidEquipment(vec![
-            replay::rows::RaidEquipmentRow {
+            replay_data::rows::RaidEquipmentRow {
                 reference_type: 84,
                 id: u32::MAX,
                 phase: 3,
@@ -1161,7 +1161,7 @@ fn raid_target_statuses_join_on_their_native_ordinal() {
 /// certifies nothing either way.
 #[test]
 fn raid_path_verdicts_need_both_searches_to_differ() {
-    use installed_content::province_graph::RaidPath::{Land, Naval};
+    use installed_content_core::{province_graph::RaidPath::Land, province_graph::RaidPath::Naval};
     let failed = || Err("undecidable".to_owned());
     assert_eq!(
         path_verdict(Some(5), &[(Naval, failed()), (Land, Ok(Some(5)))]),
@@ -1337,7 +1337,7 @@ fn missing_tokens_limit_fields_while_presence_census_and_native_values_still_com
     status.program_order.push(program_id);
     *frame.tables[TableId::RaidFacilities.index()] =
         TableView::Complete(TableRows::RaidFacilities(vec![
-            replay::rows::RaidFacilityRow {
+            replay_data::rows::RaidFacilityRow {
                 country: 102,
                 ordinal: 0,
                 id: 7,
@@ -1427,7 +1427,7 @@ fn populated_dictionary_checks_project_names_and_breakthrough_points() {
         }}}
         breakthrough={specialization=-2147483648}
     }}}";
-    let mut parsed = saved::parse(&installed_content::parser::parse(source).unwrap().items).unwrap();
+    let mut parsed = saved::parse(&installed_content_core::parser::parse(source).unwrap().items).unwrap();
     pack.countries.get_mut(b"GER".as_slice()).unwrap().status =
         parsed.countries.remove(b"GER".as_slice()).unwrap().status;
     let definition = 0x1234;
@@ -1436,7 +1436,7 @@ fn populated_dictionary_checks_project_names_and_breakthrough_points() {
     let specialization = i32::MAX as u32;
     *frame.tables[TableId::RaidFacilities.index()] =
         TableView::Complete(TableRows::RaidFacilities(vec![
-            replay::rows::RaidFacilityRow {
+            replay_data::rows::RaidFacilityRow {
                 country: 102,
                 ordinal: 0,
                 id: 7,
@@ -1592,7 +1592,7 @@ fn optional_token_presence_is_not_inferred_from_zero_or_empty_literal() {
 
 #[test]
 fn hourly_facilities_compare_order_duplicates_and_unresolved_project_tokens() {
-    use replay::rows::RaidFacilityRow;
+    use replay_data::rows::RaidFacilityRow;
     let (mut frame, mut pack, country) = raid_fixture();
     let countries = BTreeMap::from([(102, &country)]);
     let source = br"countries={GER={program_status={
@@ -1602,7 +1602,7 @@ fn hourly_facilities_compare_order_duplicates_and_unresolved_project_tokens() {
             building=building unread_prototype_rewards=0 project=definition}
         project_pool={project={}} breakthrough={}
     }}}";
-    let mut parsed = saved::parse(&installed_content::parser::parse(source).unwrap().items).unwrap();
+    let mut parsed = saved::parse(&installed_content_core::parser::parse(source).unwrap().items).unwrap();
     pack.countries.get_mut(b"GER".as_slice()).unwrap().status =
         parsed.countries.remove(b"GER".as_slice()).unwrap().status;
     let original: Vec<_> = (0..2)
@@ -1712,7 +1712,7 @@ fn facility_flags_must_lie_on_saved_program_provinces() {
             },
         );
     }
-    let flag = |province| replay::rows::FacilityMapFlagRow { province, flag: 1 };
+    let flag = |province| replay_data::rows::FacilityMapFlagRow { province, flag: 1 };
     *frame.tables[TableId::FacilityMapFlags.index()] =
         TableView::Complete(TableRows::FacilityMapFlags(vec![flag(1), flag(5)]));
     let mut report = Report::default();
@@ -1730,10 +1730,8 @@ fn facility_flags_must_lie_on_saved_program_provinces() {
 
 #[test]
 fn staggered_off_hours_skips_projects_and_prints_refresh_hour() {
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{TableId, TableRows},
-    };
+    use replay_data::{rows::TableId, rows::TableRows};
+    use replay_frame::{frame::Metrics, frame::TableView};
     let frame = DecodedFrame {
         branch: 1,
         hour: 0,
@@ -1757,7 +1755,7 @@ fn staggered_off_hours_skips_projects_and_prints_refresh_hour() {
     let (_, stale) = report
         .limitations
         .iter()
-        .find(|(reason, _)| reason.contains(replay::cadence::STAGGER_LIMITATION))
+        .find(|(reason, _)| reason.contains(replay_data::cadence::STAGGER_LIMITATION))
         .unwrap_or_else(|| panic!("{:?}", report.limitations.keys()));
     assert_eq!(stale.len(), 2, "{stale:?}");
     assert!(stale[0].starts_with("ProjectPrograms "), "{stale:?}");

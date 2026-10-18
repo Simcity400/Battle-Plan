@@ -14,18 +14,24 @@ doctest = false
 slow-tests = []
 
 [dependencies]
+replay.workspace = true
+engine-native.workspace = true
+installed-content-core.workspace = true
+installed-content-gfx.workspace = true
+installed-content-image.workspace = true
+installed-content-states.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
 dashboard-base.workspace = true
 dashboard-core.workspace = true
 dashboard-text.workspace = true
-engine.workspace = true
-installed-content.workspace = true
-replay.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
 store = { path = "../store" }
 ts-rs = "11.1"
 
 [dev-dependencies]
+engine-executable.workspace = true
 base64 = "0.22.1"
 dashboard-base = { workspace = true, features = ["test-support"] }
 png.workspace = true

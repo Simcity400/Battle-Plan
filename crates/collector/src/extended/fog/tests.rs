@@ -1,8 +1,8 @@
 use super::*;
-use engine::{
+use engine_native::{
     carmy, cfleet, cgame_state, cprovince, cstate, ctask_force, cunit, memory::SliceMemory,
 };
-use replay::rows::TableSchema;
+use replay_data::rows::TableSchema;
 
 const BASE: usize = 0x10000;
 const COUNTRY: usize = 0x11000;
@@ -54,7 +54,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         COUNTRY + ccountry::RADARS_POOL,
-        &(engine::cradars_pool::VTABLE_RVA as u64).to_le_bytes(),
+        &(engine_native::cradars_pool::VTABLE_RVA as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -212,11 +212,11 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         MANAGER,
-        &(engine::cstrategic_air_manager::VTABLE_RVA as u64).to_le_bytes(),
+        &(engine_native::cstrategic_air_manager::VTABLE_RVA as u64).to_le_bytes(),
     );
     array(
         &mut bytes,
-        MANAGER + engine::cstrategic_air_manager::STATE_AIR_BASES,
+        MANAGER + engine_native::cstrategic_air_manager::STATE_AIR_BASES,
         0x11600,
         1,
     );
@@ -241,21 +241,21 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         CONTAINER,
-        &(engine::ccountry_air_container::VTABLE_RVA as u64).to_le_bytes(),
+        &(engine_native::ccountry_air_container::VTABLE_RVA as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
-        CONTAINER + engine::ccountry_air_container::COUNTRY,
+        CONTAINER + engine_native::ccountry_air_container::COUNTRY,
         &2_u32.to_le_bytes(),
     );
     put(
         &mut bytes,
-        CONTAINER + engine::ccountry_air_container::CAPACITY_RAW,
-        &engine::ccountry_air_container::INITIAL_CAPACITY_RAW.to_le_bytes(),
+        CONTAINER + engine_native::ccountry_air_container::CAPACITY_RAW,
+        &engine_native::ccountry_air_container::INITIAL_CAPACITY_RAW.to_le_bytes(),
     );
     array(
         &mut bytes,
-        CONTAINER + engine::ccountry_air_container::POOLS,
+        CONTAINER + engine_native::ccountry_air_container::POOLS,
         0x11800,
         1,
     );
@@ -263,28 +263,33 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         POOL,
-        &(engine::cair_wing_pool::VTABLE_RVA as u64).to_le_bytes(),
+        &(engine_native::cair_wing_pool::VTABLE_RVA as u64).to_le_bytes(),
     );
-    array(&mut bytes, POOL + engine::cair_wing_pool::WINGS, 0x11900, 1);
+    array(
+        &mut bytes,
+        POOL + engine_native::cair_wing_pool::WINGS,
+        0x11900,
+        1,
+    );
     put(&mut bytes, 0x11900, &(WING as u64).to_le_bytes());
     put(
         &mut bytes,
         WING,
-        &(engine::cair_wing::VTABLE_RVA as u64).to_le_bytes(),
+        &(engine_native::cair_wing::VTABLE_RVA as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
-        WING + engine::cair_wing::SECONDARY,
-        &(engine::cair_wing::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+        WING + engine_native::cair_wing::SECONDARY,
+        &(engine_native::cair_wing::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
-        WING + engine::cair_wing::REFERENCE_TYPE,
-        &((77_u64 << 32) | u64::from(engine::cair_wing::TYPE)).to_le_bytes(),
+        WING + engine_native::cair_wing::REFERENCE_TYPE,
+        &((77_u64 << 32) | u64::from(engine_native::cair_wing::TYPE)).to_le_bytes(),
     );
     put(
         &mut bytes,
-        WING + engine::cair_wing::POOL,
+        WING + engine_native::cair_wing::POOL,
         &(POOL as u64).to_le_bytes(),
     );
     bytes
@@ -384,8 +389,8 @@ fn every_family_keeps_native_order_widths_and_absent_values() {
         &[rows::AirBaseRegistrationRow {
             base: (4 << 32) | u64::from(cair_base::TYPE),
             slot: 1,
-            capacity_raw: engine::ccountry_air_container::INITIAL_CAPACITY_RAW,
-            wings: vec![(77 << 32) | u64::from(engine::cair_wing::TYPE)],
+            capacity_raw: engine_native::ccountry_air_container::INITIAL_CAPACITY_RAW,
+            wings: vec![(77 << 32) | u64::from(engine_native::cair_wing::TYPE)],
             carrier: rows::Recorded::Value(None),
             transport_planes: rows::Recorded::Value(rows::Retired),
         }]
@@ -657,7 +662,7 @@ fn areas_and_stationed_units_share_one_traversal_every_hour() {
         wings: 8,
     });
     for hour in 0..24 {
-        assert!(replay::cadence::should_walk(
+        assert!(replay_data::cadence::should_walk(
             TableId::TheatreAreas,
             hour,
             false
@@ -695,7 +700,7 @@ fn areas_and_stationed_units_share_one_traversal_every_hour() {
 #[test]
 fn radar_split_copy_matches_direct_walk() {
     use super::radar_test_kit as kit;
-    use engine::memory::{CountedMemory, ReadCounts};
+    use engine_native::{memory::CountedMemory, memory::ReadCounts};
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let direct = kit::direct(&memory);
@@ -750,12 +755,12 @@ fn radar_truncation_matrix_matches_direct_with_same_caps() {
 #[test]
 fn radar_split_copy_matches_direct_walk_on_fault_matrix() {
     use super::radar_test_kit as kit;
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: std::ops::Range<usize>,
     }
-    impl engine::Memory for Fault<'_> {
+    impl engine_native::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let Some(end) = address.checked_add(output.len()) else {
                 return false;
@@ -767,11 +772,11 @@ fn radar_split_copy_matches_direct_walk_on_fault_matrix() {
         }
     }
     for fault in [
-        kit::GAME_STATE + engine::cgame_state::COUNTRIES,
+        kit::GAME_STATE + engine_native::cgame_state::COUNTRIES,
         kit::C0,
-        kit::C0 + engine::ccountry::RADARS_POOL,
+        kit::C0 + engine_native::ccountry::RADARS_POOL,
         kit::GROUP,
-        kit::GROUP + engine::radar_group::STATE,
+        kit::GROUP + engine_map_air::radar_group::STATE,
     ] {
         let bytes = kit::fixture();
         let memory = Fault {
@@ -822,10 +827,10 @@ fn radar_copy_sizes_cover_documented_read_set() {
     // through the real pass. Census words (4/8), array headers (16),
     // group words (8/4) and coverage chunks (4-byte words).
     use super::radar_test_kit as kit;
-    use engine::Memory;
+    use engine_native::Memory;
     use std::collections::BTreeSet;
     struct Recorder<'a> {
-        inner: engine::memory::SliceMemory<'a>,
+        inner: engine_native::memory::SliceMemory<'a>,
         sizes: std::cell::RefCell<BTreeSet<usize>>,
     }
     impl Memory for Recorder<'_> {
@@ -852,10 +857,10 @@ fn radar_copy_sizes_cover_documented_read_set() {
 
 #[test]
 fn intel_tables_are_hourly_tier_h_with_no_refresh_gate() {
-    use replay::rows::TableId;
-    assert!(!replay::cadence::is_staggered(TableId::UnitIntel));
+    use replay_data::rows::TableId;
+    assert!(!replay_data::cadence::is_staggered(TableId::UnitIntel));
     for hour in [0, 1, 2, 3, 60_820_531] {
-        assert!(replay::cadence::is_refresh(TableId::UnitIntel, hour));
+        assert!(replay_data::cadence::is_refresh(TableId::UnitIntel, hour));
     }
 }
 
@@ -898,12 +903,12 @@ fn intel_truncation_matrix_matches_direct_with_same_caps() {
 #[test]
 fn intel_split_copy_matches_direct_walk_on_fault_matrix() {
     use super::intel_test_kit as kit;
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: std::ops::Range<usize>,
     }
-    impl engine::Memory for Fault<'_> {
+    impl engine_native::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let Some(end) = address.checked_add(output.len()) else {
                 return false;
@@ -915,13 +920,13 @@ fn intel_split_copy_matches_direct_walk_on_fault_matrix() {
         }
     }
     for fault in [
-        kit::GAME_STATE + engine::cgame_state::COUNTRIES,
+        kit::GAME_STATE + engine_native::cgame_state::COUNTRIES,
         kit::C0,
-        kit::C0 + engine::ccountry::DIVISIONS,
+        kit::C0 + engine_native::ccountry::DIVISIONS,
         kit::DIVISION,
-        kit::DIVISION + engine::cunit::HANDLE,
+        kit::DIVISION + engine_native::cunit::HANDLE,
         kit::VIEWERS,
-        kit::C0 + engine::ccountry::FLEETS,
+        kit::C0 + engine_native::ccountry::FLEETS,
     ] {
         let bytes = kit::fixture();
         let memory = Fault {
@@ -970,10 +975,10 @@ fn intel_copy_sizes_cover_documented_read_set() {
     // through the real pass. Census words (4/8/16), roster headers (16),
     // unit words (8) and viewer batches (count x 24).
     use super::intel_test_kit as kit;
-    use engine::Memory;
+    use engine_native::Memory;
     use std::collections::BTreeSet;
     struct Recorder<'a> {
-        inner: engine::memory::SliceMemory<'a>,
+        inner: engine_native::memory::SliceMemory<'a>,
         sizes: std::cell::RefCell<BTreeSet<usize>>,
     }
     impl Memory for Recorder<'_> {

@@ -6,15 +6,12 @@ use crate::{
     output_log::Drained,
     table_capture::{grow_capacity, grow_vec},
 };
-use engine::allocation::{copy_vec, default_vec, owned_vec, reserve_map};
-use replay::{
-    BranchId,
-    frame::{TableInput, TableView},
-    rows::{
-        FuelAwardDay, FuelAwardDayRecipient, FuelAwardHour, FuelAwardRecipient, Recorded, Retired,
-        TableId, TableRows,
-    },
+use engine_allocation::{copy_vec, default_vec, owned_vec, reserve_map};
+use replay_data::{
+    BranchId, rows::FuelAwardDay, rows::FuelAwardDayRecipient, rows::FuelAwardHour,
+    rows::FuelAwardRecipient, rows::Recorded, rows::Retired, rows::TableId, rows::TableRows,
 };
+use replay_frame::{frame::TableInput, frame::TableView};
 use std::{
     collections::{HashMap, VecDeque},
     io,
@@ -41,7 +38,7 @@ impl Captured {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             entries: owned_vec(default_vec(capacity.entries)),
-            names: owned_vec(engine::allocation::filled(capacity.names, 0)),
+            names: owned_vec(engine_allocation::filled(capacity.names, 0)),
             drained: None,
         }
     }
@@ -223,7 +220,7 @@ impl Windows {
             }
             if entry.recipient.is_some() {
                 let root = recipients.entry(entry.root).or_default();
-                engine::allocation::reserve(root, 1)?;
+                engine_allocation::reserve(root, 1)?;
                 root.push(entry);
                 continue;
             }
@@ -235,7 +232,7 @@ impl Windows {
             }
             let mut rows = Vec::new();
             let part = recipients.remove(&entry.root).unwrap_or_default();
-            engine::allocation::reserve_exact(&mut rows, part.len())?;
+            engine_allocation::reserve_exact(&mut rows, part.len())?;
             let mut received = [0_i64; 3];
             let mut valid = true;
             for part in part {
@@ -358,7 +355,7 @@ fn sum_day(hours: &VecDeque<FuelAwardHour>) -> io::Result<Option<FuelAwardDay>> 
     let mut received = [0_i128; 3];
     let (mut own, mut quantity, mut consumed) = (0_i128, 0_i128, 0_i128);
     let mut receipts: Vec<Receipt<'_>> = Vec::new();
-    engine::allocation::reserve_exact(
+    engine_allocation::reserve_exact(
         &mut receipts,
         hours.iter().map(|entry| entry.recipients.len()).sum(),
     )?;
@@ -373,7 +370,7 @@ fn sum_day(hours: &VecDeque<FuelAwardHour>) -> io::Result<Option<FuelAwardDay>> 
             *sum += i128::from(raw);
         }
         own += i128::from(entry.own_gain_raw);
-        quantity += i128::from(engine::fuel_awards::quantity(entry.own_gain_raw));
+        quantity += i128::from(engine_fuel::fuel_awards::quantity(entry.own_gain_raw));
         consumed += i128::from(entry.consumed_raw);
         for part in &entry.recipients {
             receipts.push((
@@ -398,7 +395,7 @@ fn sum_day(hours: &VecDeque<FuelAwardHour>) -> io::Result<Option<FuelAwardDay>> 
         .filter(|(index, receipt)| *index == 0 || receipts[index - 1].0 != receipt.0)
         .count();
     let mut recipients = Vec::new();
-    engine::allocation::reserve_exact(&mut recipients, groups)?;
+    engine_allocation::reserve_exact(&mut recipients, groups)?;
     let mut at = 0;
     while at < receipts.len() {
         let identity = receipts[at].0;
@@ -477,10 +474,10 @@ fn sum_day(hours: &VecDeque<FuelAwardHour>) -> io::Result<Option<FuelAwardDay>> 
 
 fn reserve_history(history: &mut VecDeque<FuelAwardHour>) -> io::Result<()> {
     if history.len() == history.capacity() {
-        engine::allocation::allocation_attempt()?;
+        engine_allocation::allocation_attempt()?;
         history
             .try_reserve(1)
-            .map_err(|_| engine::allocation::oom())?;
+            .map_err(|_| engine_allocation::oom())?;
     }
     Ok(())
 }

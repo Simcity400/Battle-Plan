@@ -1,5 +1,5 @@
 use super::*;
-use replay::rows::{CountryLinkRow, NavalResultCountryRow};
+use replay_data::{rows::CountryLinkRow, rows::NavalResultCountryRow};
 use viewer_foundation::tooltip_text::NoIcons;
 
 fn links() -> Vec<CountryLinkRow> {
@@ -604,7 +604,7 @@ fn mixed_grids_keep_each_template_and_a_refused_flag_keeps_counts() {
 
 #[test]
 fn pride_loss_tint_reads_stacked_rgba_or_hsv_and_preserves_the_sprite_on_refusal() {
-    let defines = installed_content::defines::Defines::new().unwrap();
+    let defines = installed_content_core::defines::Defines::new().unwrap();
     defines.load("synthetic.lua", b"NDefines = { NGraphics = { PRIDE_OF_THE_FLEET_MODULATE = { 0.5, 0.25, 1, 0.75, 99 } } }").unwrap();
     assert_eq!(
         pride_color(&defines).unwrap(),

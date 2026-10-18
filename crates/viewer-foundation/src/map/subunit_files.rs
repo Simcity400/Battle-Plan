@@ -1,6 +1,6 @@
 //! Authored sub-unit file and key reads shared by counters and model content.
 use crate::errors::invalid;
-use installed_content::{ResolvedLayers, parser};
+use installed_content_core::{ResolvedLayers, parser};
 use std::{collections::BTreeSet, io};
 
 /// Sub-units live in the files directly under `common/units`; its child

@@ -40,7 +40,7 @@ impl Prepared {
     fn observe_with_content(
         &mut self,
         frame: &DecodedFrame,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
     ) -> io::Result<()> {
         let changes = dashboard_base::prepared::frame_changes::FrameChangeTracker::new()
             .observe(frame, format);
@@ -49,11 +49,11 @@ impl Prepared {
     pub fn observe_changed(
         &mut self,
         frame: &DecodedFrame,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         content: Option<&Content>,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("raids:observe");
+        let _cpu = ::replay_frame::cpu::scope_phase("raids:observe");
         self.scan.format = format;
         if !self.present
             && [TableId::RaidCountries, TableId::Raids]
@@ -516,10 +516,8 @@ mod tests {
     use super::*;
     use dashboard_base::prepared::series::tests::Fixture;
     use dashboard_core::test_fixtures::scale_frame;
-    use replay::{
-        frame::TableView,
-        rows::{RaidCountryRow, TableRows},
-    };
+    use replay_data::{rows::RaidCountryRow, rows::TableRows};
+    use replay_frame::frame::TableView;
 
     #[test]
     fn raids_shared_driver_equal_reads_materialise_preparation_at_the_exact_boundary() {
@@ -726,7 +724,7 @@ mod tests {
             let mut writer = fixture.writer();
             for frame in chunk {
                 state
-                    .observe_with_content(frame, replay::format::FormatVersion::default())
+                    .observe_with_content(frame, replay_data::format::FormatVersion::default())
                     .unwrap();
             }
             state.flush(&mut writer, 1, &flag).unwrap();
@@ -739,7 +737,7 @@ mod tests {
         state = Prepared::read(&fixture.store, &fixture.key, Some(&previous), 1).unwrap();
         for frame in &frames[3..] {
             state
-                .observe_with_content(frame, replay::format::FormatVersion::default())
+                .observe_with_content(frame, replay_data::format::FormatVersion::default())
                 .unwrap();
         }
         state.flush(&mut writer, 1, &flag).unwrap();
@@ -834,7 +832,7 @@ mod tests {
         for frame in &frames {
             let mut writer = fixture.writer();
             state
-                .observe_with_content(frame, replay::format::FormatVersion::default())
+                .observe_with_content(frame, replay_data::format::FormatVersion::default())
                 .unwrap();
             state.flush(&mut writer, 1, &flag).unwrap();
             writer.commit().unwrap();
@@ -873,7 +871,7 @@ mod tests {
                     rows[0].preparation_hours = hour;
                 }
                 state
-                    .observe_with_content(&observed, replay::format::FormatVersion::default())
+                    .observe_with_content(&observed, replay_data::format::FormatVersion::default())
                     .unwrap();
             }
             state.flush(&mut writer, 1, &flag).unwrap();

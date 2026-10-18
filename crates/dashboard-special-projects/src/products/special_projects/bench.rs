@@ -2,16 +2,19 @@
 use super::*;
 use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
 use replay::container::Replay;
-use replay::rows::{CountryLinkRow, CountryRow, LexicalTokenRow, ProjectProgramRow, TableRows};
+use replay_data::{
+    rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow, rows::ProjectProgramRow,
+    rows::TableRows,
+};
 use std::time::Instant;
 
 #[test]
 #[ignore = "requires BATTLE_PLAN_SP_GAME read-only content"]
 fn vanilla_scoped_name_audit() {
     let folder = std::path::PathBuf::from(std::env::var_os("BATTLE_PLAN_SP_GAME").or_else(|| std::env::var_os("HOI4_SP_GAME")).expect("BATTLE_PLAN_SP_GAME"));
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&folder, &[][..])]).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&folder, &[][..])]).unwrap();
     let definitions = Catalog::read(&layers).unwrap();
-    let loc = installed_content::localisation::read(&layers, "english").unwrap();
+    let loc = installed_content_localisation::localisation::read(&layers, "english").unwrap();
     let names = layers.key_names().unwrap();
     let mut scoped = std::collections::BTreeSet::new();
     for (token, definition) in &definitions.projects {
@@ -44,7 +47,7 @@ fn vanilla_scoped_name_audit() {
 #[test]
 #[ignore = "requires BATTLE_PLAN_SP_PART_Q and constructs a ten-year offline recording"]
 fn offline_scan_timings() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let cancelled = AtomicBool::new(false);
     let recording_path = std::env::var_os("BATTLE_PLAN_SP_PART_Q").or_else(|| std::env::var_os("HOI4_SP_PART_Q")).expect("BATTLE_PLAN_SP_PART_Q");
@@ -95,7 +98,7 @@ fn offline_scan_timings() {
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(file, body).unwrap();
     }
-    let layers = installed_content::ResolvedLayers::from_folders(&[(folder, &[][..])]).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(folder, &[][..])]).unwrap();
     let catalogue = Arc::new(Catalogue::of_layers(layers, "english").unwrap());
     let mut content = Content {
         definitions: Catalog::read(&catalogue.content.layers).unwrap(),
@@ -114,10 +117,11 @@ fn offline_scan_timings() {
         TableId::CharacterPortraits,
         TableId::CountryAppearance,
     ] {
-        *sample.tables[table.index()] = replay::frame::TableView::Complete(TableRows::empty(table));
+        *sample.tables[table.index()] =
+            replay_frame::frame::TableView::Complete(TableRows::empty(table));
     }
     *sample.tables[TableId::Countries.index()] =
-        replay::frame::TableView::Complete(TableRows::Countries(
+        replay_frame::frame::TableView::Complete(TableRows::Countries(
             (1..=countries)
                 .map(|id| CountryRow {
                     id,
@@ -128,7 +132,7 @@ fn offline_scan_timings() {
                 .collect(),
         ));
     *sample.tables[TableId::CountryLinks.index()] =
-        replay::frame::TableView::Complete(TableRows::CountryLinks(
+        replay_frame::frame::TableView::Complete(TableRows::CountryLinks(
             (1..=countries)
                 .map(|id| CountryLinkRow {
                     id,
@@ -137,7 +141,7 @@ fn offline_scan_timings() {
                 .collect(),
         ));
     *sample.tables[TableId::ProjectPrograms.index()] =
-        replay::frame::TableView::Complete(TableRows::ProjectPrograms(
+        replay_frame::frame::TableView::Complete(TableRows::ProjectPrograms(
             (1..=countries)
                 .map(|id| ProjectProgramRow {
                     id,
@@ -148,7 +152,7 @@ fn offline_scan_timings() {
                 .collect(),
         ));
     *sample.tables[TableId::LexicalTokens.index()] =
-        replay::frame::TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+        replay_frame::frame::TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
             token: 8,
             literal: b"mod_project".to_vec(),
         }]));
@@ -158,7 +162,7 @@ fn offline_scan_timings() {
         sample.metrics.table_ns[TableId::ProjectPrograms.index()] = u64::from(offset % 24 == 0);
         if offset % 24 == 0 {
             *sample.tables[TableId::Projects.index()] =
-                replay::frame::TableView::Complete(TableRows::Projects(
+                replay_frame::frame::TableView::Complete(TableRows::Projects(
                     (1..=countries)
                         .map(|owner| ProjectRow {
                             owner,
@@ -166,7 +170,7 @@ fn offline_scan_timings() {
                             definition_id: 8,
                             program_reference: (u64::from(owner) << 32) | 83,
                             started: 1,
-                            state: replay::rows::ProjectState {
+                            state: replay_data::rows::ProjectState {
                                 current_offset: 0x18,
                                 not_completed: 1,
                                 prototype_progress: offset / 24 % 100,

@@ -9,7 +9,7 @@ use dashboard_base::prepared::{
     series::{self, Reader},
 };
 use dashboard_text::{cryptology, metadata::check_cancel};
-use replay::frame::DecodedFrame;
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -71,7 +71,7 @@ impl Accumulator {
         let changes = self
             .test_changes
             .get_or_insert_with(dashboard_base::prepared::frame_changes::FrameChangeTracker::new)
-            .observe(frame, replay::format::FormatVersion::default());
+            .observe(frame, replay_data::format::FormatVersion::default());
         self.test_countries.update(frame, Some(&changes));
         let countries = std::mem::take(&mut self.test_countries);
         let result = self.observe_bound(frame, &changes, &countries, defines, &[]);
@@ -87,8 +87,8 @@ impl Accumulator {
         defines: Result<cryptology::Defines, &str>,
         warnings: &[String],
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("intelligence:decryption");
-        use replay::rows::TableId;
+        let _cpu = ::replay_frame::cpu::scope_phase("intelligence:decryption");
+        use replay_data::rows::TableId;
         let hour = frame.hour;
         let previous = self.last;
         if !self.configured {
@@ -463,11 +463,11 @@ pub(crate) fn first_view(
         first,
         last,
         &[
-            replay::rows::TableId::Campaign,
-            replay::rows::TableId::Countries,
-            replay::rows::TableId::CountryLinks,
-            replay::rows::TableId::Cryptology,
-            replay::rows::TableId::RaidIntelInputs,
+            replay_data::rows::TableId::Campaign,
+            replay_data::rows::TableId::Countries,
+            replay_data::rows::TableId::CountryLinks,
+            replay_data::rows::TableId::Cryptology,
+            replay_data::rows::TableId::RaidIntelInputs,
         ],
         cancelled,
         |frame| {

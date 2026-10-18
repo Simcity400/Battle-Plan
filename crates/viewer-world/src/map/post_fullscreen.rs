@@ -2,7 +2,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use eframe::wgpu::{self, util::DeviceExt};
-use installed_content::pdxshader::program::Stage;
+use installed_content_core::pdxshader::program::Stage;
 use shader_pipeline::{
     binding, gpu,
     library::{Effect, Selection},

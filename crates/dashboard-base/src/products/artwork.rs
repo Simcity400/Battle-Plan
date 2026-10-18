@@ -17,7 +17,7 @@ use std::{
 };
 
 /// The fallback sprite for a focus without an icon.
-const UNKNOWN_FOCUS_ICON: &str = installed_content::focus::UNKNOWN_ICON;
+const UNKNOWN_FOCUS_ICON: &str = installed_content_focus::focus::UNKNOWN_ICON;
 
 /// Longest side of returned product artwork previews.
 pub const ICON_EDGE: u32 = 96;
@@ -31,15 +31,15 @@ pub enum Kind {
 }
 
 struct TechnologyName {
-    presentation: Result<installed_content::technology::PresentationName, String>,
+    presentation: Result<installed_content_core::technology::PresentationName, String>,
     children: std::sync::OnceLock<Result<Vec<String>, String>>,
 }
 
 #[cfg(test)]
 fn technology_name(
-    presentation: &installed_content::technology::PresentationName,
+    presentation: &installed_content_core::technology::PresentationName,
     world: Result<&crate::triggers::World<'_>, String>,
-    database: Option<&Arc<installed_content::equipment::Database>>,
+    database: Option<&Arc<installed_content_core::equipment::Database>>,
 ) -> Result<String, String> {
     let mut children = technology_children(presentation, world, database)?;
     Ok(if children.len() == 1 {
@@ -50,9 +50,9 @@ fn technology_name(
 }
 
 fn technology_children(
-    presentation: &installed_content::technology::PresentationName,
+    presentation: &installed_content_core::technology::PresentationName,
     world: Result<&crate::triggers::World<'_>, String>,
-    database: Option<&Arc<installed_content::equipment::Database>>,
+    database: Option<&Arc<installed_content_core::equipment::Database>>,
 ) -> Result<Vec<String>, String> {
     presentation.children(
         |body| {
@@ -71,7 +71,7 @@ fn technology_children(
             let enabled = world
                 .as_ref()
                 .map(|world| {
-                    engine::dlc_feature_state::NAME_MASKS
+                    engine_dlc::dlc_feature_state::NAME_MASKS
                         .iter()
                         .any(|(name, mask)| mask & (1 << 7) != 0 && world.has_dlc(name))
                 })
@@ -96,22 +96,22 @@ struct PreparedContent {
 }
 
 struct Preparation {
-    definitions: Arc<BTreeMap<String, installed_content::focus::FocusDefinition>>,
+    definitions: Arc<BTreeMap<String, installed_content_focus::focus::FocusDefinition>>,
     point_days: Option<f64>,
     technology_names: Arc<BTreeMap<String, TechnologyName>>,
     inventory: Vec<String>,
-    preparation_warnings: Vec<installed_content::Diagnostic>,
+    preparation_warnings: Vec<installed_content_core::Diagnostic>,
     warnings: Vec<String>,
     /// Each technology's research folders in authored order.
     technology_folders: Arc<BTreeMap<String, Vec<String>>>,
     /// The research folders `common/technology_tags` defines, in content order.
-    folder_definitions: Arc<Vec<installed_content::technology::FolderDefinition>>,
+    folder_definitions: Arc<Vec<installed_content_core::technology::FolderDefinition>>,
     /// Notes from reading research folders; only research replies carry them.
     folder_warnings: Vec<String>,
 }
 
 impl Preparation {
-    fn read(layers: &installed_content::ResolvedLayers, kind: Kind) -> io::Result<Self> {
+    fn read(layers: &installed_content_core::ResolvedLayers, kind: Kind) -> io::Result<Self> {
         let mut warnings = Vec::new();
         let mut technology_folders = BTreeMap::new();
         let mut folder_definitions = Vec::new();
@@ -119,7 +119,7 @@ impl Preparation {
         let (definitions, point_days, technology_names, inventory, preparation_warnings) =
             match kind {
                 Kind::Focus => {
-                    let (definitions, definition_warnings) = installed_content::focus::read(layers)?;
+                    let (definitions, definition_warnings) = installed_content_focus::focus::read(layers)?;
                     warnings.extend(
                         definition_warnings
                             .iter()
@@ -128,18 +128,18 @@ impl Preparation {
                     let inventory = definitions.keys().cloned().collect();
                     (
                         definitions,
-                        installed_content::focus::point_days(layers)?,
+                        installed_content_focus::focus::point_days(layers)?,
                         BTreeMap::new(),
                         inventory,
                         definition_warnings,
                     )
                 }
                 Kind::Technology => {
-                    let read = installed_content::technology::Database::read(layers)?;
+                    let read = installed_content_core::technology::Database::read(layers)?;
                     technology_folders = read.folders;
                     // Folders only colour and group research; a failure to read
                     // them never withholds technology text or artwork.
-                    match installed_content::technology::read_folders(layers) {
+                    match installed_content_core::technology::read_folders(layers) {
                         Ok(folders) => {
                             folder_definitions = folders.folders;
                             folder_warnings
@@ -206,14 +206,14 @@ pub struct Context {
     artwork_cache: BTreeMap<String, (Artwork, Vec<String>)>,
     artwork_bytes: usize,
     icon_cache: BTreeMap<String, Result<Option<String>, String>>,
-    definitions: Arc<BTreeMap<String, installed_content::focus::FocusDefinition>>,
+    definitions: Arc<BTreeMap<String, installed_content_focus::focus::FocusDefinition>>,
     focus_text_needs_frame: OnceLock<bool>,
     point_days: Option<f64>,
     warnings: Vec<String>,
     inventory: Vec<String>,
-    preparation_warnings: Vec<installed_content::Diagnostic>,
+    preparation_warnings: Vec<installed_content_core::Diagnostic>,
     technology_folders: Arc<BTreeMap<String, Vec<String>>>,
-    folder_definitions: Arc<Vec<installed_content::technology::FolderDefinition>>,
+    folder_definitions: Arc<Vec<installed_content_core::technology::FolderDefinition>>,
     folder_warnings: Vec<String>,
     /// Each folder's tab availability, decided once from content.
     folder_availability: OnceLock<Vec<Option<bool>>>,
@@ -237,12 +237,12 @@ pub fn ensure<'a>(
 }
 
 /// A focus country's canonical slot at `frame`'s hour, None when absent.
-fn focus_slot(frame: &replay::frame::DecodedFrame, tag: &str) -> Result<Option<u32>, String> {
+fn focus_slot(frame: &replay_frame::frame::DecodedFrame, tag: &str) -> Result<Option<u32>, String> {
     let countries = frame
-        .complete::<replay::rows::tables::Countries>()
+        .complete::<replay_data::rows::tables::Countries>()
         .map_err(|error| error.to_string())?;
     let links = frame
-        .complete::<replay::rows::tables::CountryLinks>()
+        .complete::<replay_data::rows::tables::CountryLinks>()
         .map_err(|error| error.to_string())?;
     match crate::metadata::tagged_country(countries, links, tag) {
         crate::metadata::TaggedCountry::Found(_, slot) => Ok(Some(slot)),
@@ -268,7 +268,7 @@ pub enum FocusProjection {
 /// Immutable scoped inputs for one accepted hour. Each expansion still owns
 /// its fresh caller scopes, random counters and variable session.
 pub struct FocusFrame<'a> {
-    pub frame: &'a replay::frame::DecodedFrame,
+    pub frame: &'a replay_frame::frame::DecodedFrame,
     catalogue: &'a Catalogue,
     text: OnceLock<Result<crate::scripted_text::ScriptedText<'a>, String>>,
     /// Each recorded input reread this hour, read once however many
@@ -280,7 +280,7 @@ pub struct FocusFrame<'a> {
 }
 
 impl<'a> FocusFrame<'a> {
-    pub fn new(frame: &'a replay::frame::DecodedFrame, catalogue: &'a Catalogue) -> Self {
+    pub fn new(frame: &'a replay_frame::frame::DecodedFrame, catalogue: &'a Catalogue) -> Self {
         Self {
             frame,
             catalogue,
@@ -343,7 +343,7 @@ impl FocusProjection {
     }
 }
 
-fn focus_icons_need_frame(definition: &installed_content::focus::FocusDefinition) -> bool {
+fn focus_icons_need_frame(definition: &installed_content_focus::focus::FocusDefinition) -> bool {
     definition
         .icons
         .cases
@@ -358,7 +358,7 @@ fn focus_icons_need_frame(definition: &installed_content::focus::FocusDefinition
 
 fn focus_needs_frame(
     catalogue: &Catalogue,
-    definition: &installed_content::focus::FocusDefinition,
+    definition: &installed_content_focus::focus::FocusDefinition,
     include_descriptions: bool,
 ) -> bool {
     focus_icons_need_frame(definition)
@@ -673,7 +673,7 @@ impl Context {
         &self,
         token: &str,
     ) -> io::Result<(
-        Option<&installed_content::gfx::SpriteType>,
+        Option<&installed_content_gfx::gfx::SpriteType>,
         Vec<dashboard_core::findings::Finding>,
     )> {
         use dashboard_core::findings::{Finding, Kind as FindingKind};
@@ -762,7 +762,7 @@ impl Context {
         ))
     }
 
-    pub fn tokens(&self) -> (&[String], &[installed_content::Diagnostic]) {
+    pub fn tokens(&self) -> (&[String], &[installed_content_core::Diagnostic]) {
         (&self.inventory, &self.preparation_warnings)
     }
 
@@ -922,7 +922,7 @@ impl Context {
     pub fn focuses_at(
         &mut self,
         requests: &[(&str, &str)],
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
     ) -> Vec<ResolvedArt> {
         self.focuses(requests, frame, false, FocusProjection::Full, |items| {
             items.collect()
@@ -933,7 +933,7 @@ impl Context {
     pub fn focus_tree_at<T>(
         &mut self,
         requests: &[(&str, &str)],
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         collect: impl FnOnce(&mut dyn Iterator<Item = ResolvedArt>) -> T,
     ) -> T {
         self.focuses(requests, frame, true, FocusProjection::Full, collect)
@@ -943,7 +943,7 @@ impl Context {
     pub fn focus_text_at<T>(
         &mut self,
         requests: &[(&str, &str)],
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         collect: impl FnOnce(&mut dyn Iterator<Item = ResolvedArt>) -> T,
     ) -> T {
         self.focuses(requests, frame, true, FocusProjection::Text, collect)
@@ -953,7 +953,7 @@ impl Context {
     pub fn focus_titles_at<T>(
         &mut self,
         requests: &[(&str, &str)],
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         collect: impl FnOnce(&mut dyn Iterator<Item = ResolvedArt>) -> T,
     ) -> T {
         self.focuses(requests, frame, true, FocusProjection::Titles, collect)
@@ -963,7 +963,7 @@ impl Context {
     pub fn focus_display_at<T>(
         &mut self,
         requests: &[(&str, &str)],
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         collect: impl FnOnce(&mut dyn Iterator<Item = ResolvedArt>) -> T,
     ) -> T {
         self.focuses(requests, frame, true, FocusProjection::Display, collect)
@@ -973,7 +973,7 @@ impl Context {
     pub fn focus_icons_at<T>(
         &mut self,
         requests: &[(&str, &str)],
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         collect: impl FnOnce(&mut dyn Iterator<Item = ResolvedArt>) -> T,
     ) -> T {
         self.focuses(requests, frame, true, FocusProjection::Icons, collect)
@@ -982,7 +982,7 @@ impl Context {
     fn focuses<T>(
         &mut self,
         requests: &[(&str, &str)],
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         tree: bool,
         projection: FocusProjection,
         collect: impl FnOnce(&mut dyn Iterator<Item = ResolvedArt>) -> T,
@@ -1202,7 +1202,7 @@ impl Context {
         collect(&mut items)
     }
 
-    fn prefetch_icons(&self, sprites: Vec<&installed_content::gfx::SpriteType>) {
+    fn prefetch_icons(&self, sprites: Vec<&installed_content_gfx::gfx::SpriteType>) {
         let Ok(decode) = self.catalogue.gui_decode.as_ref() else {
             return;
         };
@@ -1376,8 +1376,8 @@ impl Context {
 /// container. Its sole icon supplies the artwork through the authored sprite;
 /// ambiguous content refuses by authored paths.
 pub fn nuke_icon(catalogue: &Catalogue) -> io::Result<Option<String>> {
-    use installed_content::gui::native::{Fields, Kind};
-    let (_, root) = installed_content::gui::native::kept_container_window(
+    use installed_content_core::{gui::native::Fields, gui::native::Kind};
+    let (_, root) = installed_content_core::gui::native::kept_container_window(
         catalogue.guis()?,
         "topbar",
         &mut Vec::new(),
@@ -1466,16 +1466,14 @@ pub(crate) fn artwork_bytes(art: &Artwork) -> usize {
 mod tests {
     use super::*;
     use crate::catalogue::texture_tests::{from_url, png_bytes, texture_catalogue};
-    use installed_content::image::{Rgba8Image, native::Decode};
+    use installed_content_image::{Rgba8Image, native::Decode};
 
     #[test]
     fn focus_text_keeps_authored_titles_without_reaching_conditional_icons() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use replay::{
-            frame::{DecodedFrame, TableView},
-            rows::{TableId, TableRows},
-        };
+        use replay_data::{rows::TableId, rows::TableRows};
+        use replay_frame::{frame::DecodedFrame, frame::TableView};
         let (catalogue, _folders) = texture_catalogue(
             &[
                 (
@@ -1552,12 +1550,10 @@ mod tests {
         ignore = "slow: runs in the full suite (--features slow-tests)"
     )]
     fn focus_display_projections_do_not_reach_unrequested_scoped_descriptions() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use replay::{
-            frame::{DecodedFrame, TableView},
-            rows::{CountryLinkRow, CountryRow, TableId, TableRows},
-        };
+        use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::TableRows};
+        use replay_frame::{frame::DecodedFrame, frame::TableView};
         let (catalogue, _folders) = texture_catalogue(
             &[
                 (
@@ -1663,12 +1659,10 @@ mod tests {
         ignore = "slow: runs in the full suite (--features slow-tests)"
     )]
     fn focus_icons_evaluate_native_cases_and_preserve_caller_overrides() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use replay::{
-            frame::{DecodedFrame, TableView},
-            rows::{CountryRow, TableId, TableRows, tables},
-        };
+        use replay_data::{rows::CountryRow, rows::TableId, rows::TableRows, rows::tables};
+        use replay_frame::{frame::DecodedFrame, frame::TableView};
         let icon = |value| Rgba8Image {
             width: 1,
             height: 1,
@@ -1765,14 +1759,13 @@ mod tests {
 
     #[test]
     fn focus_art_uses_the_row_country_and_only_refuses_a_missing_random_seed() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use replay::{
-            frame::{DecodedFrame, TableView},
-            rows::{
-                ClockRow, CountryLinkRow, CountryRow, PoliticalPartyRow, TableId, TableRows, tables,
-            },
+        use replay_data::{
+            rows::ClockRow, rows::CountryLinkRow, rows::CountryRow, rows::PoliticalPartyRow,
+            rows::TableId, rows::TableRows, rows::tables,
         };
+        use replay_frame::{frame::DecodedFrame, frame::TableView};
         let (catalogue, _folders) = texture_catalogue(
             &[
                 (
@@ -1844,7 +1837,7 @@ mod tests {
             ]));
         *frame.tables[TableId::CountryCounterInputs.index()] =
             TableView::Complete(TableRows::CountryCounterInputs(vec![
-                replay::rows::CountryCounterInputRow {
+                replay_data::rows::CountryCounterInputRow {
                     country: 7,
                     owned_state_count: 1,
                     ..Default::default()
@@ -1964,7 +1957,7 @@ mod tests {
         if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
             &mut *frame.tables[TableId::CountryCounterInputs.index()]
         {
-            rows.push(replay::rows::CountryCounterInputRow {
+            rows.push(replay_data::rows::CountryCounterInputRow {
                 country: 8,
                 owned_state_count: 1,
                 ..Default::default()
@@ -2031,11 +2024,11 @@ mod tests {
         ignore = "slow: runs in the full suite (--features slow-tests)"
     )]
     fn technology_limits_use_load_time_dlcs_empty_scope_and_unknown_globals() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         // The selected DLC name maps to bit 7, which feature 0x21 tests.
         // No content key is hard-coded here.
-        let feature_dlc = engine::dlc_feature_state::NAME_MASKS
+        let feature_dlc = engine_dlc::dlc_feature_state::NAME_MASKS
             .iter()
             .find(|(_, mask)| *mask == 1 << 7)
             .unwrap()
@@ -2058,15 +2051,15 @@ mod tests {
             &[],
         );
         let layers = &catalogue.content.layers;
-        let presentation = installed_content::technology::Database::read(layers).unwrap();
+        let presentation = installed_content_core::technology::Database::read(layers).unwrap();
         let registry = layers.key_names().unwrap();
         let again = layers.key_names().unwrap();
         assert!(Arc::ptr_eq(
             registry.equipment_database().unwrap(),
             again.equipment_database().unwrap()
         ));
-        let triggers = installed_content::trigger_keys::TriggerNames::default();
-        let aliases = Arc::new(installed_content::tag_aliases::TagAliases::default());
+        let triggers = installed_content_core::trigger_keys::TriggerNames::default();
+        let aliases = Arc::new(installed_content_core::tag_aliases::TagAliases::default());
         let empty = BTreeSet::new();
         let world = crate::triggers::World::unrecorded(&empty, &triggers, &aliases);
         let select = |key: &str| {
@@ -2123,7 +2116,7 @@ mod tests {
 
     #[test]
     fn technology_catalogue_keeps_parent_text_and_skips_unrequested_children() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folders) = texture_catalogue(
             &[
@@ -2168,7 +2161,7 @@ mod tests {
         ignore = "slow: runs in the full suite (--features slow-tests)"
     )]
     fn technology_descriptions_use_distinct_child_gate_and_archetype_fallback() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folders) = texture_catalogue(
             &[
@@ -2224,7 +2217,7 @@ mod tests {
 
     #[test]
     fn nuke_artwork_uses_the_recorded_gui_sprite_and_authored_frame() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let sheet = Rgba8Image {
             width: 2,
@@ -2269,7 +2262,7 @@ mod tests {
         ignore = "slow: runs in the full suite (--features slow-tests)"
     )]
     fn mod_png_artwork_and_native_refusals_reach_the_catalogue_reply() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let image = Rgba8Image {
             width: 6,
@@ -2345,7 +2338,7 @@ mod tests {
 
     #[test]
     fn every_texture_refusal_reaches_artwork_warnings() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let refusals = crate::catalogue::texture_tests::refusal_textures();
         let sprites = format!(
@@ -2403,7 +2396,7 @@ mod tests {
         ignore = "slow: runs in the full suite (--features slow-tests)"
     )]
     fn unknown_gui_decode_is_the_items_problem_and_keeps_its_text() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut catalogue, _folders) = texture_catalogue(
             &[
@@ -2447,14 +2440,14 @@ mod tests {
 #[cfg(test)]
 mod catalogue_reads {
     use crate::catalogue::{Catalogue, tests::folder_catalogue};
-    use installed_content::ResolvedLayers;
+    use installed_content_core::ResolvedLayers;
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
     #[test]
     fn refused_gui_reads_keep_focus_and_resource_titles_and_retry_on_a_fresh_stack() {
         use crate::products::{artwork, resources};
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use std::sync::atomic::AtomicBool;
 
@@ -2535,13 +2528,13 @@ mod catalogue_reads {
 mod interface_refusals {
     use crate::catalogue::{Catalogue, tests::folder_catalogue};
     use crate::products::artwork;
-    use installed_content::ResolvedLayers;
+    use installed_content_core::ResolvedLayers;
     use std::collections::BTreeSet;
     use std::sync::{Arc, atomic::AtomicBool};
 
     #[test]
     fn d16_fresh_text_only_reply_keeps_interface_refusal_summary() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (_, folder) = folder_catalogue(&[
             (

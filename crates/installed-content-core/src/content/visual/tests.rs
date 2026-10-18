@@ -419,7 +419,7 @@ fn a_mods_interface_file_with_refusals_reads_the_recordings_file() {
     );
     machine.local("art.mod", "name=\"Art\"", "art");
     // Past the texture id the anchor reaches the animation records: refused.
-    let zeros = vec!["0"; 12].join(" ");
+    let zeros = ["0"; 12].join(" ");
     machine.write(
         "art/interface/a.gfx",
         format!(

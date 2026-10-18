@@ -8,7 +8,7 @@ use viewer_foundation::tooltip_text::NoIcons;
 
 #[test]
 fn naval_disengage_requires_viewing_country_on_a_primary_side() {
-    let mut detail = replay::rows::NavalCombatDetailsRow::default();
+    let mut detail = replay_data::rows::NavalCombatDetailsRow::default();
     detail.sides[0].summary.countries = vec![12];
     detail.sides[1].summary.countries = vec![56];
     let aliases = BTreeMap::from([(12, 340), (56, 560)]);
@@ -47,7 +47,7 @@ fn naval_disengage_requires_viewing_country_on_a_primary_side() {
 
 #[test]
 fn naval_disengage_uses_the_matched_sides_retreat_state() {
-    let mut detail = replay::rows::NavalCombatDetailsRow::default();
+    let mut detail = replay_data::rows::NavalCombatDetailsRow::default();
     detail.sides[0].summary.countries = vec![12];
     detail.sides[1].summary.countries = vec![56];
     let aliases = BTreeMap::from([(12, 340), (56, 560)]);
@@ -85,7 +85,7 @@ fn naval_disengage_uses_the_matched_sides_retreat_state() {
 
 #[test]
 fn combat_raster_initiative_border_rasterises_before_display_stretch() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use viewer_foundation::map::{
         native_gui::{self, lifecycle::Tick},
@@ -154,7 +154,7 @@ fn combat_raster_initiative_border_rasterises_before_display_stretch() {
 
 #[test]
 fn combat_raster_active_row_ellipsis_and_thin_glyphs() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use viewer_foundation::map::{
         native_gui::{Resources, lifecycle::Tick},
@@ -283,7 +283,7 @@ fn combat_raster_active_row_ellipsis_and_thin_glyphs() {
 #[test]
 fn naval_progress_uses_defender_list_for_both_participant_perspectives() {
     let aliases = BTreeMap::from([(12, 120), (34, 340), (56, 560)]);
-    let mut detail = replay::rows::NavalCombatDetailsRow::default();
+    let mut detail = replay_data::rows::NavalCombatDetailsRow::default();
     detail.sides[0].summary.countries = vec![12, 34];
     detail.sides[1].summary.countries = vec![56];
     let mut values = Values::new();
@@ -359,9 +359,9 @@ const HALF: Condition = Condition {
 fn committed_strength_and_side_attack_use_distinct_native_operands() {
     let row = LandCombatDivisionRow {
         strength_combat_factor: 50_000,
-        scales: [200_000, 50_000, 150_000, 100_000].map(replay::rows::Recorded::Value),
+        scales: [200_000, 50_000, 150_000, 100_000].map(replay_data::rows::Recorded::Value),
         stat_values: [8_000_000, 6_000_000, 0, 10_000_000, 2_000_000]
-            .map(replay::rows::Recorded::Value),
+            .map(replay_data::rows::Recorded::Value),
         ..Default::default()
     };
     let entry = |committed| {
@@ -393,9 +393,9 @@ fn missing_parent_keeps_recorded_row_values_and_truncates_live_defence() {
     let row = LandCombatDivisionRow {
         side: 1,
         strength_combat_factor: 100_000,
-        scales: [99_000, 99_000, 100_000, 100_000].map(replay::rows::Recorded::Value),
+        scales: [99_000, 99_000, 100_000, 100_000].map(replay_data::rows::Recorded::Value),
         stat_values: [36_958_320, 7_635_582, 833, 23_127_045, 5_736_750]
-            .map(replay::rows::Recorded::Value),
+            .map(replay_data::rows::Recorded::Value),
         ..Default::default()
     };
     let mut out = Bindings::default();
@@ -448,7 +448,7 @@ fn missing_parent_keeps_recorded_row_values_and_truncates_live_defence() {
 /// the refusal names the table's state.
 #[test]
 fn a_missing_status_row_hides_each_bar_by_its_own_maximum() {
-    use replay::rows::DivisionRow;
+    use replay_data::rows::DivisionRow;
     let mut frame = window_frame(None, None);
     *frame.tables[TableId::Divisions.index()] =
         TableView::Complete(TableRows::Divisions(vec![DivisionRow {
@@ -532,13 +532,13 @@ fn committed_names_carry_the_owner_flag_on_the_side_the_native_entry_writes() {
 
 #[test]
 fn names_prefer_a_custom_name_then_the_selected_group_in_the_content() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut localisation = Localisation::default();
     localisation.language = "english".into();
-    let names = installed_content::division_names::parse(
+    let names = installed_content_division_names::division_names::parse(
         br#"SOV_INF_01 = { ordered = { 144 = { "%dya Strelkovaya Diviziya" } } }"#,
-        &installed_content::key_names::KeyNames::default(),
+        &installed_content_core::key_names::KeyNames::default(),
     )
     .unwrap();
     let mut row = LandCombatDivisionRow {
@@ -603,7 +603,7 @@ fn names_prefer_a_custom_name_then_the_selected_group_in_the_content() {
 
 #[test]
 fn combat_names_use_the_retained_getter_and_never_mask_cache_failures() {
-    use replay::rows::{DivisionStatusRow, Recorded};
+    use replay_data::{rows::DivisionStatusRow, rows::Recorded};
     let names = Database::default();
     let mut loc = Localisation::default();
     loc.language = "english".into();
@@ -659,11 +659,11 @@ fn combat_names_use_the_retained_getter_and_never_mask_cache_failures() {
 /// with its group and ordinal.
 #[test]
 fn unnamed_divisions_are_reported_by_cause_with_their_identities() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let names = installed_content::division_names::parse(
+    let names = installed_content_division_names::division_names::parse(
         br#"INF = { ordered = { 1 = { "First" } } unordered = { loose = { "Loose" } } }"#,
-        &installed_content::key_names::KeyNames::default(),
+        &installed_content_core::key_names::KeyNames::default(),
     )
     .unwrap();
     let row = |division, group: &[u8], order, ordered: u8| LandCombatDivisionRow {
@@ -749,7 +749,7 @@ fn initiative_adds_the_reconnaissance_define_before_comparing_skills() {
 
 #[test]
 fn several_directions_compare_locations_or_the_source_in_the_combat_province() {
-    let combat = replay::rows::LandCombatRow {
+    let combat = replay_data::rows::LandCombatRow {
         province: 362,
         attackers: vec![1, 2],
         ..Default::default()
@@ -809,7 +809,7 @@ fn several_directions_compare_locations_or_the_source_in_the_combat_province() {
 
 #[test]
 fn a_missing_modifier_row_leaves_the_combat_class_undecided() {
-    use replay::rows::LandCombatModifierRow;
+    use replay_data::rows::LandCombatModifierRow;
     let row = |combat, side, border_values| LandCombatModifierRow {
         combat,
         side,
@@ -831,7 +831,7 @@ fn a_missing_modifier_row_leaves_the_combat_class_undecided() {
 
 #[test]
 fn a_division_listed_twice_on_a_side_keeps_its_first_modifier_row() {
-    use replay::rows::{CombatModifierValue, LandCombatDivisionModifierRow};
+    use replay_data::{rows::CombatModifierValue, rows::LandCombatDivisionModifierRow};
     let row = |combat, side, ordinal, division, id| LandCombatDivisionModifierRow {
         combat,
         side,
@@ -901,13 +901,11 @@ fn fallback_roles_use_full_side_ordinal_without_inventing_commitment() {
     assert_eq!(role_rosters(&rows, 1), [vec![50], vec![]]);
 }
 
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{
-        LandCombatDetailsRow, LandCombatRow, LandCombatSideDetails, TableId, TableRows,
-        WeatherProvinceRow,
-    },
+use replay_data::{
+    rows::LandCombatDetailsRow, rows::LandCombatRow, rows::LandCombatSideDetails, rows::TableId,
+    rows::TableRows, rows::WeatherProvinceRow,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 
 const COMBAT: u64 = 62;
 const PROVINCE: u32 = 3_000;

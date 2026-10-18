@@ -4,15 +4,10 @@
 use std::{cmp::Reverse, collections::BTreeMap, io};
 use viewer_foundation::map::count_math::{count_range_seeded, ratio};
 
-use installed_content::{
-    defines::Defines,
-    localisation::{Argument, Localisation},
-    unit_leader::{SubUnit, SubUnits},
-};
-use replay::{
-    frame::DecodedFrame,
-    rows::{DivisionTemplateIconRow, tables},
-};
+use installed_content_core::{defines::Defines, unit_leader::SubUnit, unit_leader::SubUnits};
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use replay_data::{rows::DivisionTemplateIconRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use viewer_foundation::{map::perspective::Vision, table_access::TokenNames};
 

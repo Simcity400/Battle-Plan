@@ -5,7 +5,7 @@ use crate::{
     prepared_stability::StabilityAccumulator,
     test_fixtures::{stability_frame, stability_inputs},
 };
-use replay::rows::CountryCommandPowerRow;
+use replay_data::rows::CountryCommandPowerRow;
 use serde_json::Value;
 
 const MEASURES: [&str; 3] = ["stability", "warSupport", "maxCommandPower"];
@@ -352,7 +352,7 @@ fn stability_sampler_matches_the_branch_scan_for_every_measure_at_5000_countries
             ));
         *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(
             (0..COUNT)
-                .map(|index| replay::rows::SliceReadRow {
+                .map(|index| replay_data::rows::SliceReadRow {
                     owner: 100_000 + index,
                     table: TableId::CountryStabilityInputs as u32,
                     sample_hour: hour - i32::from(index % 2 == 1),

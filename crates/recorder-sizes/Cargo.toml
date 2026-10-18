@@ -11,6 +11,8 @@ doctest = false
 
 [dependencies]
 replay.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
 serde_json.workspace = true
 zstd = "0.13"
 

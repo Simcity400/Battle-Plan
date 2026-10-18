@@ -2,11 +2,9 @@
 //! the spool thread. An unavailable conference remains a manifest row.
 pub use crate::peace_settlements::Capacities;
 use crate::peace_settlements::Storage;
-use engine::walk::Outcome;
-use replay::{
-    frame::TableView,
-    rows::{self, TableId, TableRows},
-};
+use engine_native::walk::Outcome;
+use replay_data::{rows, rows::TableId, rows::TableRows};
+use replay_frame::frame::TableView;
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::PeaceSettlements];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
@@ -71,7 +69,7 @@ impl Captured {
     }
     pub fn capture_bids(
         &mut self,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
         base: usize,
         state: usize,
         hour: i32,
@@ -79,17 +77,17 @@ impl Captured {
         self.reset();
         let attempt = (|| {
             let array = state
-                .checked_add(engine::cgame_state::PEACE_CONFERENCES_DATA)
-                .and_then(|at| engine::cpdx_array::Array::read(memory, at, 8))
+                .checked_add(engine_native::cgame_state::PEACE_CONFERENCES_DATA)
+                .and_then(|at| engine_native::cpdx_array::Array::read(memory, at, 8))
                 .ok_or("peace bid roster unreadable or invalid")?;
             if self.storage.events.len() < array.count as usize {
-                engine::allocation::resize_default(&mut self.storage.events, array.count as usize)
+                engine_allocation::resize_default(&mut self.storage.events, array.count as usize)
                     .map_err(|_| "peace bid event allocation failed")?;
             }
             for index in 0..array.count {
                 let pointer = array
                     .element(index, 8)
-                    .and_then(|at| engine::read::<u64>(memory, at))
+                    .and_then(|at| engine_native::read::<u64>(memory, at))
                     .ok_or("peace bid roster pointer unreadable")?
                     as usize;
                 self.storage
@@ -121,10 +119,10 @@ impl Captured {
     pub fn tables(&self) -> [TableView; N] {
         if let Err(reason) = self.drained {
             return [TableView::Unavailable {
-                reason: engine::allocation::string(reason).unwrap_or_default(),
+                reason: engine_allocation::string(reason).unwrap_or_default(),
             }];
         }
-        let events = engine::allocation::owned_vec(self.convert());
+        let events = engine_allocation::owned_vec(self.convert());
         let rows = TableRows::PeaceSettlements(events);
         [if self.omitted() == 0 {
             TableView::Complete(rows)
@@ -136,7 +134,7 @@ impl Captured {
         }]
     }
     fn convert(&self) -> std::io::Result<Vec<rows::PeaceSettlementRow>> {
-        use engine::allocation::{copy_vec, map_slice, vec};
+        use engine_allocation::{copy_vec, map_slice, vec};
         let storage = &self.storage;
         let mut events = vec(storage.used[0])?;
         for e in &storage.events[..storage.used[0]] {
@@ -218,18 +216,18 @@ mod tests {
         let mut captured = Captured::vacant();
         for (countries, actions, name_len) in [(1_500, 8_193, 5_001), (5_000, 16_385, 10_003)] {
             let mut fixture = Fixture::new(countries, actions);
-            fixture.bytes[0x100 + engine::peace_conference::FINALIZED] = 0;
+            fixture.bytes[0x100 + engine_peace::peace_conference::FINALIZED] = 0;
             let payload = fixture.bytes.len();
             fixture.bytes.resize(payload + name_len + 1, b'x');
             fixture.bytes[payload + name_len] = 0;
-            let text = 0x20000 + engine::peace_action::CACHED_NAME;
+            let text = 0x20000 + engine_peace::peace_action::CACHED_NAME;
             fixture.u64(text, payload as u64);
-            fixture.u64(text + engine::msvc_string::LENGTH, name_len as u64);
-            fixture.u64(text + engine::msvc_string::CAPACITY, name_len as u64);
+            fixture.u64(text + engine_native::msvc_string::LENGTH, name_len as u64);
+            fixture.u64(text + engine_native::msvc_string::CAPACITY, name_len as u64);
             let roster = fixture.bytes.len();
             fixture.bytes.resize(roster + 16, 0);
             fixture.array(
-                0x10000 + engine::cgame_state::PEACE_CONFERENCES_DATA,
+                0x10000 + engine_native::cgame_state::PEACE_CONFERENCES_DATA,
                 roster,
                 2,
                 8,
@@ -256,20 +254,26 @@ mod tests {
         let _globals = crate::peace_settlements::TEST_GLOBALS.lock().unwrap();
         let mut fixture = crate::peace_settlement_tests::fixture::Fixture::new(1, 4);
         let forms = [
-            (engine::ctake_state_action::VTABLE_RVA, "Loaded state"),
+            (engine_peace::ctake_state_action::VTABLE_RVA, "Loaded state"),
             (
-                engine::cliberate_country_action::VTABLE_RVA,
+                engine_peace::cliberate_country_action::VTABLE_RVA,
                 "Loaded release",
             ),
-            (engine::cpuppet_country_action::VTABLE_RVA, "Loaded puppet"),
-            (engine::cforce_government_action::VTABLE_RVA, "Loaded rule"),
+            (
+                engine_peace::cpuppet_country_action::VTABLE_RVA,
+                "Loaded puppet",
+            ),
+            (
+                engine_peace::cforce_government_action::VTABLE_RVA,
+                "Loaded rule",
+            ),
         ];
         for (index, (vtable, name)) in forms.iter().enumerate() {
             let at = 0x20000 + index * 0x70;
             fixture.u64(at, *vtable as u64);
-            let text = at + engine::peace_action::CACHED_NAME;
+            let text = at + engine_peace::peace_action::CACHED_NAME;
             fixture.bytes[text..text + name.len()].copy_from_slice(name.as_bytes());
-            fixture.u64(text + engine::msvc_string::LENGTH, name.len() as u64);
+            fixture.u64(text + engine_native::msvc_string::LENGTH, name.len() as u64);
         }
         let mut captured = Captured::with_capacities(&Capacities::for_counts(1, 4));
         assert!(
@@ -295,11 +299,14 @@ mod tests {
         let heap = fixture.bytes.len();
         fixture.bytes.extend_from_slice(&name);
         fixture.bytes.push(0);
-        let text = 0x20000 + engine::peace_action::CACHED_NAME;
+        let text = 0x20000 + engine_peace::peace_action::CACHED_NAME;
         fixture.u64(text, heap as u64);
-        fixture.u64(text + engine::msvc_string::LENGTH, name.len() as u64);
-        fixture.u64(text + engine::msvc_string::CAPACITY, name.len() as u64);
-        let demand = engine::peace_settlement::demand(&fixture.memory(), 0, 0x100);
+        fixture.u64(text + engine_native::msvc_string::LENGTH, name.len() as u64);
+        fixture.u64(
+            text + engine_native::msvc_string::CAPACITY,
+            name.len() as u64,
+        );
+        let demand = engine_peace::peace_settlement::demand(&fixture.memory(), 0, 0x100);
         assert_eq!(demand.failure, None);
         assert_eq!(demand.name_bytes, name.len());
         let mut capacity = Capacities::for_counts(1, 1);
@@ -356,11 +363,11 @@ mod tests {
         OWNER.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
         // Process-wide hooks must stop only the allocation-denial owner.
         let tables = crate::test_support::with_allocations_denied(|| {
-            engine::allocation::set_hooks(None, Some(failed));
-            engine::allocation::set_stop_hook(Some(stopped));
+            engine_allocation::set_hooks(None, Some(failed));
+            engine_allocation::set_stop_hook(Some(stopped));
             let tables = captured.tables();
-            engine::allocation::set_stop_hook(None);
-            engine::allocation::set_hooks(None, None);
+            engine_allocation::set_stop_hook(None);
+            engine_allocation::set_hooks(None, None);
             tables
         });
         OWNER.store(0, Ordering::Release);
@@ -406,18 +413,18 @@ mod tests {
         assert_eq!(capacity.actions, count + 1);
         assert_eq!(capacity.transfers, count);
         let mut fixture = Fixture::new(65_537, count);
-        fixture.bytes[0x100 + engine::peace_conference::FINALIZED] = 0;
+        fixture.bytes[0x100 + engine_peace::peace_conference::FINALIZED] = 0;
         let roster = fixture.bytes.len();
         fixture.bytes.resize(roster + 8, 0);
         fixture.array(
-            0x10000 + engine::cgame_state::PEACE_CONFERENCES_DATA,
+            0x10000 + engine_native::cgame_state::PEACE_CONFERENCES_DATA,
             roster,
             1,
             8,
         );
         fixture.u64(roster, 0x100);
         captured.capture_bids(
-            &engine::memory::SliceMemory {
+            &engine_native::memory::SliceMemory {
                 base: 0,
                 bytes: &fixture.bytes,
             },
@@ -438,11 +445,11 @@ mod tests {
         use crate::peace_settlement_tests::fixture::Fixture;
         let count = 65_537;
         let mut fixture = Fixture::new(0, 0);
-        fixture.bytes[0x100 + engine::peace_conference::FINALIZED] = 0;
+        fixture.bytes[0x100 + engine_peace::peace_conference::FINALIZED] = 0;
         let roster = fixture.bytes.len();
         fixture.bytes.resize(roster + count * 8, 0);
         fixture.array(
-            0x10000 + engine::cgame_state::PEACE_CONFERENCES_DATA,
+            0x10000 + engine_native::cgame_state::PEACE_CONFERENCES_DATA,
             roster,
             count,
             8,
@@ -458,7 +465,7 @@ mod tests {
             name_bytes: 0,
         });
         captured.capture_bids(
-            &engine::memory::SliceMemory {
+            &engine_native::memory::SliceMemory {
                 base: 0,
                 bytes: &fixture.bytes,
             },

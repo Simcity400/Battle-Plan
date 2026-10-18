@@ -6,13 +6,14 @@ use crate::{
     table_capture::{Arena, CaptureRows},
     table_conversion::{table, unavailable},
 };
-use engine::allocation::{copy_vec, owned_vec};
-use engine::{Memory, nindustrial_organisation_corganisation as native, walk::Outcome};
-use replay::{
-    cadence::{SKIPPED_REASON, should_walk},
-    frame::TableView,
-    rows::{IndustrialOrganisationHistoryRow, IndustrialOrganisationRow, TableId, tables},
+use engine_allocation::{copy_vec, owned_vec};
+use engine_native::{Memory, walk::Outcome};
+use engine_production::nindustrial_organisation_corganisation as native;
+use replay_data::{
+    cadence::SKIPPED_REASON, cadence::should_walk, rows::IndustrialOrganisationHistoryRow,
+    rows::IndustrialOrganisationRow, rows::TableId, rows::tables,
 };
+use replay_frame::frame::TableView;
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [
@@ -125,7 +126,7 @@ impl Captured {
         [self.organisations.outcome, self.history.outcome]
     }
     pub fn tables(&self) -> [TableView; N] {
-        fn text(bytes: &[u8], span: engine::cequipment_variant::TextSpan) -> Option<&[u8]> {
+        fn text(bytes: &[u8], span: engine_native::cequipment_variant::TextSpan) -> Option<&[u8]> {
             span.start
                 .checked_add(span.len)
                 .and_then(|end| bytes.get(span.start..end))
@@ -175,11 +176,11 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
 
     #[test]
     fn walks_only_on_the_production_lines_slot_or_a_full_hour() {
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -219,8 +220,8 @@ mod tests {
             ordinal: 7,
             owner: 0x8000_0000,
             token: u32::MAX - 1,
-            name: engine::cequipment_variant::TextSpan { start: 0, len: 3 },
-            icon: engine::cequipment_variant::TextSpan { start: 3, len: 0 },
+            name: engine_native::cequipment_variant::TextSpan { start: 0, len: 3 },
+            icon: engine_native::cequipment_variant::TextSpan { start: 3, len: 0 },
         };
         captured.organisations.outcome = Outcome::Rows { len: 1 };
         captured.history.rows[0] = native::HistoryRow {

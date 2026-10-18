@@ -60,7 +60,8 @@ fn army_progressive_sampler_matches_observer_every_key_at_5000_countries() {
 #[test]
 fn phase_b_army_work_is_flat_over_hours_history_and_one_changed_row() {
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    use replay::{frame::TableView, rows::TableRows};
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
     let measure = |history: usize, hours: i32| -> io::Result<observer_tests::Work> {
         let mut first = frame(100, 128);
         for table in [
@@ -133,10 +134,8 @@ fn phase_b_army_work_is_flat_over_hours_history_and_one_changed_row() {
 fn phase_b_army_deferred_native_runs_match_eager_after_checkpoints_resume_append_gaps_and_aliases()
 {
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    use replay::{
-        frame::{FrameDecoder, FrameEncoder, TableView},
-        rows::TableRows,
-    };
+    use replay_data::rows::TableRows;
+    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder, frame::TableView};
     let initial = frame(100, 3);
     let replay =
         Replay::from_records(CAMPAIGN.into(), &[records(1, vec![initial.clone()])]).unwrap();
@@ -193,9 +192,11 @@ fn phase_b_army_deferred_native_runs_match_eager_after_checkpoints_resume_append
 }
 
 /// A complete fixture table's rows.
-fn rows<T: replay::rows::TableSchema>(frame: &mut DecodedFrame) -> &mut Vec<T::Row> {
+fn rows<T: replay_data::rows::TableSchema>(frame: &mut DecodedFrame) -> &mut Vec<T::Row> {
     match &mut *frame.tables[T::ID.index()] {
-        replay::frame::TableView::Complete(rows) => rows.rows_mut::<T>().expect("fixture rows"),
+        replay_frame::frame::TableView::Complete(rows) => {
+            rows.rows_mut::<T>().expect("fixture rows")
+        }
         _ => unreachable!("fixture tables are complete"),
     }
 }
@@ -207,7 +208,7 @@ fn division(frame: &mut DecodedFrame, id: u64) -> &mut DivisionRow {
         .expect("fixture division")
 }
 
-fn land(frame: &mut DecodedFrame, id: u64) -> &mut replay::rows::DivisionLandInputsRow {
+fn land(frame: &mut DecodedFrame, id: u64) -> &mut replay_data::rows::DivisionLandInputsRow {
     rows::<tables::DivisionLandInputs>(frame)
         .iter_mut()
         .find(|row| row.division == id)
@@ -224,21 +225,21 @@ fn census(frame: &mut DecodedFrame, country: u32) -> &mut DivisionCensusRow {
 /// The recording codec: each input hour is encoded and decoded as the
 /// preparation pipeline reads it, with its recorded updates.
 struct Recorded {
-    encoder: replay::frame::FrameEncoder,
-    decoder: replay::frame::FrameDecoder,
+    encoder: replay_frame::frame::FrameEncoder,
+    decoder: replay_frame::frame::FrameDecoder,
 }
 impl Recorded {
     fn new() -> Self {
         Self {
-            encoder: replay::frame::FrameEncoder::new(),
-            decoder: replay::frame::FrameDecoder::new(),
+            encoder: replay_frame::frame::FrameEncoder::new(),
+            decoder: replay_frame::frame::FrameDecoder::new(),
         }
     }
     fn next(
         &mut self,
         input: &DecodedFrame,
         keyframe: bool,
-    ) -> (DecodedFrame, Arc<replay::frame::Frame>) {
+    ) -> (DecodedFrame, Arc<replay_frame::frame::Frame>) {
         let wire = self.encoder.encode(input.clone(), keyframe).unwrap();
         let decoded = self.decoder.advance(&wire).unwrap().clone();
         (decoded, Arc::new(wire))
@@ -428,15 +429,16 @@ fn track_runs(track: &Track, value: impl Fn(&RawRun) -> Option<i128>) -> Vec<Run
 #[test]
 fn army_rows_observation_matches_whole_tables_and_scan_across_keyframe_gap_and_resume() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use replay::rows::{
-        CountryLinkRow, DivisionLandInputsRow, DivisionManpowerContributor,
-        DivisionTemplateIconRow, LexicalTokenRow, TableRows, TemplateSubunit,
+    use replay_data::{
+        rows::CountryLinkRow, rows::DivisionLandInputsRow, rows::DivisionManpowerContributor,
+        rows::DivisionTemplateIconRow, rows::LexicalTokenRow, rows::TableRows,
+        rows::TemplateSubunit,
     };
     let flag = AtomicBool::new(false);
     let step = DivisionRow::HIT_POINTS_STEP.raw();
     let mut input = frame(100, 6);
     *input.tables[TableId::LexicalTokens.index()] =
-        replay::frame::TableView::Complete(TableRows::LexicalTokens(vec![
+        replay_frame::frame::TableView::Complete(TableRows::LexicalTokens(vec![
             LexicalTokenRow {
                 token: 1,
                 literal: b"infantry".to_vec(),
@@ -519,27 +521,30 @@ fn army_rows_observation_matches_whole_tables_and_scan_across_keyframe_gap_and_r
             120 => continue,
             122 => {
                 stashed_divisions = Some(std::mem::take(rows::<tables::Divisions>(&mut input)));
-                *input.tables[TableId::Divisions.index()] = replay::frame::TableView::Unavailable {
-                    reason: "synthetic missing divisions".into(),
-                };
+                *input.tables[TableId::Divisions.index()] =
+                    replay_frame::frame::TableView::Unavailable {
+                        reason: "synthetic missing divisions".into(),
+                    };
             }
             123 => {
-                *input.tables[TableId::Divisions.index()] = replay::frame::TableView::Complete(
-                    TableRows::Divisions(stashed_divisions.take().unwrap()),
-                );
+                *input.tables[TableId::Divisions.index()] =
+                    replay_frame::frame::TableView::Complete(TableRows::Divisions(
+                        stashed_divisions.take().unwrap(),
+                    ));
                 division(&mut input, 1).hit_points += step;
             }
             124 => {
                 stashed_census = Some(std::mem::take(rows::<tables::DivisionCensus>(&mut input)));
                 *input.tables[TableId::DivisionCensus.index()] =
-                    replay::frame::TableView::Unavailable {
+                    replay_frame::frame::TableView::Unavailable {
                         reason: "synthetic missing census".into(),
                     };
             }
             125 => {
-                *input.tables[TableId::DivisionCensus.index()] = replay::frame::TableView::Complete(
-                    TableRows::DivisionCensus(stashed_census.take().unwrap()),
-                );
+                *input.tables[TableId::DivisionCensus.index()] =
+                    replay_frame::frame::TableView::Complete(TableRows::DivisionCensus(
+                        stashed_census.take().unwrap(),
+                    ));
                 census(&mut input, 100_000).grouped += 1;
             }
             // A second link to the first country, then its census row.
@@ -757,7 +762,7 @@ fn unchanged_army_window_reuses_values_warnings_and_compositions_before_its_cut_
     let first = records(1, vec![frame(0, 5000), frame(1, 5000)]);
     let replay = Replay::from_records(CAMPAIGN.into(), &[first]).unwrap();
     let mut refused = frame(7, 5000);
-    *refused.tables[TableId::Divisions.index()] = replay::frame::TableView::Unavailable {
+    *refused.tables[TableId::Divisions.index()] = replay_frame::frame::TableView::Unavailable {
         reason: "synthetic window refusal".into(),
     };
     let replay = replay

@@ -4,7 +4,7 @@ use super::{
     operation_outcomes, peace_settlements, politics,
 };
 use crate::sampling::qpc;
-use replay::rows::TableId;
+use replay_data::rows::TableId;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const N: usize = 8;
@@ -111,7 +111,7 @@ impl ObserverBoundaryRequest {
         let begin = qpc();
         self.construction.drain_growing();
         if prepare_outputs_at(self.hour, self.continuous, self.recovery) {
-            let memory = unsafe { engine::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native::memory::LiveMemory::new() };
             prepare_outputs(&memory, self.base);
         }
         crate::construction_ic::install_offered();
@@ -197,7 +197,7 @@ impl ObserverBoundaryRequest {
 fn prepare_outputs_at(hour: i32, continuous: bool, recovery: bool) -> bool {
     !continuous || recovery || hour.rem_euclid(24) == 23
 }
-fn prepare_outputs(memory: &impl engine::Memory, base: usize) {
+fn prepare_outputs(memory: &impl engine_native::Memory, base: usize) {
     crate::line_output::collect();
     crate::construction_ic::collect();
     crate::line_output::presize(
@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn native_daily_boundary_sizes_cold_output_logs_without_a_wall_clock_poll() {
         use super::super::production::production_rest_test_kit as kit;
-        use engine::{Memory, cgame_state, cproduction_status};
+        use engine_native::{Memory, cgame_state, cproduction_status};
         let _construction = crate::construction_ic::test_lock();
         let _lines = crate::line_output::test_lock();
         struct Loaded(Vec<u8>);
@@ -337,7 +337,7 @@ mod tests {
                     output.copy_from_slice(&(kit::BASE as u64).to_le_bytes());
                     true
                 } else {
-                    engine::memory::SliceMemory {
+                    engine_native::memory::SliceMemory {
                         base: kit::BASE,
                         bytes: &self.0,
                     }
@@ -384,7 +384,7 @@ mod tests {
             set(
                 &mut memory.0,
                 0x11900,
-                &(engine::cbuilding_production_line::VTABLE_RVA as u64).to_le_bytes(),
+                &(engine_production::cbuilding_production_line::VTABLE_RVA as u64).to_le_bytes(),
             );
             assert!(prepare_outputs_at(11, false, false));
             assert!(prepare_outputs_at(23, true, false));

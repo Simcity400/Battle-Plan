@@ -27,7 +27,7 @@ use crate::map::province_map::HeightField;
 use crate::map::tables::rows;
 use crate::movement_timing::Etas;
 use crate::unit_class::CounterClass;
-use installed_content::movement::MovementMap;
+use installed_content_core::movement::MovementMap;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -124,7 +124,7 @@ pub struct UnitRoute<'a> {
 }
 
 impl<'a> UnitRoute<'a> {
-    pub fn division(row: &'a replay::rows::DivisionMovementRow) -> Self {
+    pub fn division(row: &'a replay_data::rows::DivisionMovementRow) -> Self {
         Self {
             class: CounterClass::Division,
             combat_role: row.combat_role,
@@ -141,7 +141,7 @@ impl<'a> UnitRoute<'a> {
 
     /// A class-13 railway gun's route. Its routes are recorded whole, so each total is its
     /// route's length.
-    pub fn railway_gun(row: &'a replay::rows::RailwayGunCounterInputRow) -> Self {
+    pub fn railway_gun(row: &'a replay_data::rows::RailwayGunCounterInputRow) -> Self {
         Self {
             class: CounterClass::RailwayGun,
             combat_role: row.combat_role,
@@ -159,7 +159,7 @@ impl<'a> UnitRoute<'a> {
     /// A class-1 task force's route. Its routes are recorded whole, so each total is its
     /// route's length; its first combat's role is all of its combat a task force's stack kind
     /// reads.
-    pub fn task_force(row: &'a replay::rows::TaskForceMapMotionRow) -> Self {
+    pub fn task_force(row: &'a replay_data::rows::TaskForceMapMotionRow) -> Self {
         Self {
             class: CounterClass::TaskForce,
             combat_role: row.combat_role,
@@ -428,12 +428,12 @@ impl DivisionRoutes {
     /// `anchor` is a province's `Standstill` anchor: a route through a province
     /// without one is not placed.
     pub fn read(
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         etas: &Etas,
         map: Option<&MovementMap>,
         anchor: &dyn Fn(u32) -> Option<[f32; 3]>,
     ) -> std::io::Result<Self> {
-        use replay::rows::tables;
+        use replay_data::rows::tables;
         let location: BTreeMap<u64, u32> = rows::<tables::Divisions>(frame)?
             .rows()
             .iter()

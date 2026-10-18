@@ -3,7 +3,7 @@
 
 use super::*;
 use installed_content_save::ActualCountry;
-use replay::rows::{CountryIntelRow, ReservedCountryNamingRow};
+use replay_data::{rows::CountryIntelRow, rows::ReservedCountryNamingRow};
 
 const LABEL: &str = "ReservedCountryNaming.country_intel_sample";
 

@@ -1,5 +1,5 @@
 //! Synthetic unit-type definitions shared by composition and glyph-inventory tests.
-use installed_content::unit_leader::SubUnits;
+use installed_content_core::unit_leader::SubUnits;
 
 pub fn subunits() -> SubUnits {
     let mut subunits = SubUnits::default();

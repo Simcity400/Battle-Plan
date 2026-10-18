@@ -3,12 +3,10 @@ use std::{collections::BTreeMap, time::Duration};
 
 /// A map's aircraft assets over one plane entity and one geometry-less entity.
 fn assets(name: &str) -> Arc<AircraftAssets> {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
-    let root = std::env::temp_dir().join(format!(
-        "viewer-fly-aircraft-{name}-{}",
-        std::process::id()
-    ));
+    let root =
+        std::env::temp_dir().join(format!("viewer-fly-aircraft-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let mut mesh = b"@@b@[object\0[[frame\0[[[mesh\0".to_vec();
     for (name, values) in [
@@ -41,8 +39,8 @@ fn assets(name: &str) -> Arc<AircraftAssets> {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
     }
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let map = installed_content::map::MapData {
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let map = installed_content_core::map::MapData {
         width: 1,
         height: 1,
         province_ids: vec![0],
@@ -51,11 +49,11 @@ fn assets(name: &str) -> Arc<AircraftAssets> {
     };
     let assets = AircraftAssets::load(
         &layers,
-        installed_content::image::native::Decode::default(),
+        installed_content_image::native::Decode::default(),
         &map,
         (
-            &installed_content::defines::Defines::new().unwrap(),
-            &installed_content::defines::Defines::new().unwrap(),
+            &installed_content_core::defines::Defines::new().unwrap(),
+            &installed_content_core::defines::Defines::new().unwrap(),
         ),
         &BTreeMap::new(),
         &mut Vec::new(),
@@ -131,7 +129,10 @@ fn a_chosen_aircraft_reports_loading_then_ready_and_bakes_again_for_a_new_map() 
         settle(&mut fly, &second),
         status(Some("plane_entity"), FlyAircraftState::Ready)
     );
-    assert_eq!(second.library().slot("plane_entity"), Some(fly.ready(&second).unwrap().slot));
+    assert_eq!(
+        second.library().slot("plane_entity"),
+        Some(fly.ready(&second).unwrap().slot)
+    );
     // A slot of the old map's library is never handed out for another.
     assert!(fly.ready(&first).is_none());
     fly.choose(None);
@@ -178,7 +179,10 @@ fn fly_mode_draws_the_chosen_plane_and_no_aircraft_without_a_choice() {
     });
     let mut fly = FlyAircraft::default();
     fly.poll(Some(&assets), || {});
-    assert_eq!(placed(fly.ready(&assets).map(|plane| plane.slot), view), None);
+    assert_eq!(
+        placed(fly.ready(&assets).map(|plane| plane.slot), view),
+        None
+    );
     fly.choose(Some("plane_entity".into()));
     settle(&mut fly, &assets);
     let slot = assets.library().slot("plane_entity").unwrap();
@@ -189,5 +193,8 @@ fn fly_mode_draws_the_chosen_plane_and_no_aircraft_without_a_choice() {
     assert_eq!(assets.library().meshes[slot].name, "plane_entity");
     fly.choose(None);
     fly.poll(Some(&assets), || {});
-    assert_eq!(placed(fly.ready(&assets).map(|plane| plane.slot), view), None);
+    assert_eq!(
+        placed(fly.ready(&assets).map(|plane| plane.slot), view),
+        None
+    );
 }

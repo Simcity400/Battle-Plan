@@ -78,7 +78,7 @@ fn descriptor_selection_preserves_small_fallback_and_native_draw_count() {
 
 #[test]
 fn shown_weather_entities_present_their_sound_events_while_their_region_keeps_its_weather() {
-    let sound = |effect: &str, time: f32| installed_content::weather::WeatherSound {
+    let sound = |effect: &str, time: f32| installed_content_weather::weather::WeatherSound {
         effect: effect.into(),
         time,
     };
@@ -104,7 +104,10 @@ fn shown_weather_entities_present_their_sound_events_while_their_region_keeps_it
     let mut presentation = Presentation::default();
     presentation.transition(&Field::default(), &field, Continuity::Continue);
     let graphics = reference_defines();
-    let accepting = [([0.0; 3], [viewer_foundation::map::province_admission::OPEN; 6])];
+    let accepting = [(
+        [0.0; 3],
+        [viewer_foundation::map::province_admission::OPEN; 6],
+    )];
     let mut starts = SoundStarts::new();
     let mut collect = |height: f32, time: f32, field: &Field, presentation: &Presentation| {
         let mut names = super::super::sound_events::Names::default();
@@ -445,7 +448,7 @@ pub(crate) fn activation_test_emitter() -> Emitter {
         turbulence: 0.0,
         noise_division: 1,
         local_space: false,
-        render: installed_content::particles::RenderDescriptor::read(&[]).unwrap(),
+        render: installed_content_core::particles::RenderDescriptor::read(&[]).unwrap(),
         system_local_space: false,
     }
 }
@@ -504,7 +507,7 @@ fn fresh_emitter_accumulates_births_only_after_frame_updates() {
 
 #[test]
 fn native_births_interpolate_motion_without_retransforming_survivors() {
-    use installed_content::mesh::Transform;
+    use installed_content_core::mesh::Transform;
     let mut emitter = activation_test_emitter();
     emitter.emission = 2.;
     emitter.velocity.base = 0.;

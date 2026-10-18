@@ -5,19 +5,16 @@ use super::{Builder, EventFeedCause, EventFeedKind, EventFeedRow, check_cancel};
 use crate::metadata::validate_campaign;
 #[cfg(test)]
 use crate::products::country_history::NativeNames as Names;
-use replay::{
-    container::Replay,
-    event_feed_rows::{
-        EventFeedCause as NativeCause, EventFeedCountry, EventFeedCoverage, EventFeedHistoryRow,
-        EventFeedRoute, EventFeedSource,
-    },
-    rows::Recorded,
+use replay::container::Replay;
+use replay_data::{
+    event_feed_rows::EventFeedCause as NativeCause, event_feed_rows::EventFeedCountry,
+    event_feed_rows::EventFeedCoverage, event_feed_rows::EventFeedHistoryRow,
+    event_feed_rows::EventFeedRoute, event_feed_rows::EventFeedSource, rows::Recorded,
 };
 #[cfg(test)]
-use replay::{
-    frame::FrameDecoder,
-    rows::{TableId, tables},
-};
+use replay_data::{rows::TableId, rows::tables};
+#[cfg(test)]
+use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::collections::BTreeMap;
@@ -276,7 +273,7 @@ pub(super) fn scan(
                                 .chain(ally),
                         );
                     }
-                    packs.push(replay::rows::RowCodec::try_clone(pack)?);
+                    packs.push(replay_data::rows::RowCodec::try_clone(pack)?);
                 }
             }
             Ok(())
@@ -471,9 +468,8 @@ fn route_words(route: EventFeedRoute) -> Option<&'static str> {
 }
 
 #[cfg(test)]
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryExperienceGainRow, CountryRow},
-};
+use replay_data::{rows::CountryExperienceGainRow, rows::CountryRow};
+#[cfg(test)]
+use replay_frame::frame::DecodedFrame;
 #[cfg(test)]
 mod tests;

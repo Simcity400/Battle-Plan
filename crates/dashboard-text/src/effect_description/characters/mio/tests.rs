@@ -4,7 +4,8 @@ use crate::{
     effect_description::tests::Fixture,
     scripted_text::{EventObject, EventScope, Link},
 };
-use replay::{frame::TableView, rows::*};
+use replay_data::rows::*;
+use replay_frame::frame::TableView;
 
 const MIO: u64 = 79 | 1 << 32;
 const EFFECTS: [(&str, &str, &str); 2] = [
@@ -115,7 +116,7 @@ fn scopes() -> EventScopes {
 // A block operand explicitly enables modifier text.
 #[test]
 fn unlock_mio_trait_tooltip() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
@@ -133,7 +134,7 @@ fn unlock_mio_trait_tooltip() {
 // A scalar selects a trait without modifiers.
 #[test]
 fn complete_mio_trait() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
@@ -147,7 +148,7 @@ fn complete_mio_trait() {
 
 #[test]
 fn mio_missing_traits_keep_raw_token_and_show_modifiers_can_be_disabled() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     for (body, expected) in [
@@ -187,7 +188,7 @@ fn mio_missing_traits_keep_raw_token_and_show_modifiers_can_be_disabled() {
 
 #[test]
 fn mio_catalogue_is_cached_once_per_stack() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, folder) = fixture();
     let content = fixture
@@ -223,7 +224,7 @@ fn mio_catalogue_is_cached_once_per_stack() {
 
 #[test]
 fn mio_repeated_trait_and_valid_boolean_assignments_keep_the_last_value() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     for body in [
@@ -241,7 +242,7 @@ fn mio_repeated_trait_and_valid_boolean_assignments_keep_the_last_value() {
 
 #[test]
 fn mio_production_bonus_uses_q15_rounding_and_quantized_zero_sign() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     for (key, _, header) in EFFECTS {
@@ -293,13 +294,13 @@ fn mio_production_percent_keeps_sign_rounding_and_wrapping() {
 
 #[test]
 fn mio_policy_uses_the_same_production_bonus_formatter() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
-    let mut database = installed_content::industrial_organisations::Database::default();
+    let mut database = installed_content_core::industrial_organisations::Database::default();
     database.policies.read_file(
         b"synthetic_policy={name=SYN_TRAIT production_bonus={SYN_TRAIT={production_capacity_factor=0.30006 production_cost_factor=-0.00001}}}",
-        &installed_content::key_names::KeyNames::default(),
+        &installed_content_core::key_names::KeyNames::default(),
     ).unwrap();
     let TableView::Complete(TableRows::LexicalTokens(rows)) =
         &mut *fixture.frame.tables[TableId::LexicalTokens.index()]
@@ -333,7 +334,7 @@ fn mio_policy_uses_the_same_production_bonus_formatter() {
 
 #[test]
 fn mio_inherited_organisation_block_refuses_only_that_fragment() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::LexicalTokens(tokens)) =
@@ -371,7 +372,7 @@ fn mio_inherited_organisation_block_refuses_only_that_fragment() {
 
 #[test]
 fn mio_organisation_eligibility_or_formatter_error_keeps_bonus_fragments() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::ModifierDefinitions.index()] =
@@ -415,7 +416,7 @@ fn mio_organisation_eligibility_or_formatter_error_keeps_bonus_fragments() {
 
 #[test]
 fn mio_effective_empty_gate_uses_the_recorded_feature_mask() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::ModifierDefinitions(definitions)) =

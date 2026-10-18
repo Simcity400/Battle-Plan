@@ -1,9 +1,10 @@
 //! Recorded land combat condition, modifier and survival-score arithmetic.
 use crate::map::tables::rows;
-use replay::{
-    frame::DecodedFrame,
-    rows::{LandCombatDetailsRow, LandCombatDivisionRow, LandDivisionContext, tables},
+use replay_data::{
+    rows::LandCombatDetailsRow, rows::LandCombatDivisionRow, rows::LandDivisionContext,
+    rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 
 pub type Divisions<'a> = BTreeMap<(u8, u64), &'a LandCombatDivisionRow>;
@@ -94,7 +95,7 @@ pub struct ScoreDefines {
 }
 
 impl ScoreDefines {
-    pub fn read(defines: &installed_content::defines::Defines) -> io::Result<Self> {
+    pub fn read(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
         Ok(Self {
             avoid_with_defence: defines.fixed5("NMilitary", "BASE_CHANCE_TO_AVOID_HIT")?,
             avoid_without_defence: defines.fixed5("NMilitary", "CHANCE_TO_AVOID_HIT_AT_NO_DEF")?,

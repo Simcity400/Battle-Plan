@@ -1,14 +1,12 @@
 use dashboard_base::test_fixtures::{CAMPAIGN, ownership_frame, records};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{CountryLinkRow, CountryRow, TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::sync::atomic::AtomicBool;
 
 #[test]
 fn prepared_observer_roundtrip_preserves_reply_names_with_and_without_content() {
-    engine::executable_tables::initialize_for_tests().unwrap();
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
     use crate::products::subjects::{Scan, SubjectParams, Subjects};
     use dashboard_base::products::Product;
     use dashboard_core::config::{ContentOptions, LoadContext};
@@ -24,7 +22,7 @@ fn prepared_observer_roundtrip_preserves_reply_names_with_and_without_content() 
         ("settings.txt", "language=\"l_english\""),
     ]);
     let options = ContentOptions {
-        options: installed_content::ResolveOptions {
+        options: installed_content_core::ResolveOptions {
             game_dir: folder.0.clone(),
             user_dir: folder.0.clone(),
             cache_dir: folder.0.join("cache"),
@@ -89,7 +87,7 @@ fn subject_frame(
     let mut rows: Vec<_> = relations
         .iter()
         .map(
-            |&(overlord, subject, start_hour)| replay::rows::SubjectRow {
+            |&(overlord, subject, start_hour)| replay_data::rows::SubjectRow {
                 overlord,
                 subject,
                 start_hour,
@@ -103,7 +101,7 @@ fn subject_frame(
         Some(levels) => {
             let mut rows: Vec<_> = levels
                 .iter()
-                .map(|&(subject, state)| replay::rows::AutonomyRow {
+                .map(|&(subject, state)| replay_data::rows::AutonomyRow {
                     subject,
                     state: state.as_bytes().to_vec(),
                     ..Default::default()
@@ -385,7 +383,7 @@ fn subjects_leave_unknown_countries_out_and_mark_the_hour() {
 #[test]
 fn subject_levels_follow_the_content_order_and_keep_unknown_ids_last() {
     use crate::products::subjects::levels;
-    use installed_content::autonomy::{AutonomyState, AutonomyStates};
+    use installed_content_core::{autonomy::AutonomyState, autonomy::AutonomyStates};
     let state = |id: &str, min_freedom_level| AutonomyState {
         id: id.into(),
         min_freedom_level,
@@ -463,12 +461,12 @@ fn subject_levels_follow_a_modded_content_stack() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
     }
-    let layers = installed_content::ResolvedLayers::from_folders(&[
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[
         (&base, &[][..]),
         (&modded, &["common/autonomous_states"][..]),
     ])
     .unwrap();
-    let (states, warnings) = installed_content::autonomy::read(&layers).unwrap();
+    let (states, warnings) = installed_content_core::autonomy::read(&layers).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
     // The scripted level is refused by name, not assumed.
     assert_eq!(warnings.len(), 1, "{warnings:?}");
@@ -570,7 +568,7 @@ fn subject_changes_keep_quiet_hours_and_closed_history_flat_and_reuse_holder_joi
         observer_tests::{assert_flat, scaled_work, unchanged_frames},
         series::{Accumulator, LateIndex},
     };
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let initial = subject_frame(100, &[(9001, 44, 40)], Some(&[(44, "level")]));
     assert_flat(
         scaled_work(10, |hours| {
@@ -771,13 +769,13 @@ fn subject_level_change_revisits_one_of_five_thousand_relations_and_keeps_other_
         observer_tests::{Work, assert_flat, scaled_work},
         series::{Accumulator, LateIndex},
     };
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     assert_flat(
         scaled_work(500, |countries| {
             let mut first = dashboard_base::test_fixtures::scale_frame(1, 100, countries as u32);
             *first.tables[TableId::Subjects.index()] = TableView::Complete(TableRows::Subjects(
                 (1..countries)
-                    .map(|index| replay::rows::SubjectRow {
+                    .map(|index| replay_data::rows::SubjectRow {
                         overlord: 100_000,
                         subject: 100_000 + index as u32,
                         ..Default::default()
@@ -785,7 +783,7 @@ fn subject_level_change_revisits_one_of_five_thousand_relations_and_keeps_other_
                     .collect(),
             ));
             *first.tables[TableId::Autonomy.index()] =
-                TableView::Complete(TableRows::Autonomy(vec![replay::rows::AutonomyRow {
+                TableView::Complete(TableRows::Autonomy(vec![replay_data::rows::AutonomyRow {
                     subject: 100_001,
                     state: b"before".to_vec(),
                     ..Default::default()
@@ -846,14 +844,14 @@ fn subject_holder_change_reuses_unchanged_native_relation_level_and_link_tables(
     };
     let mut first = dashboard_base::test_fixtures::world_frame(100, true);
     *first.tables[TableId::Subjects.index()] =
-        TableView::Complete(TableRows::Subjects(vec![replay::rows::SubjectRow {
+        TableView::Complete(TableRows::Subjects(vec![replay_data::rows::SubjectRow {
             overlord: 11,
             subject: 31,
             start_hour: 90,
             ..Default::default()
         }]));
     *first.tables[TableId::Autonomy.index()] =
-        TableView::Complete(TableRows::Autonomy(vec![replay::rows::AutonomyRow {
+        TableView::Complete(TableRows::Autonomy(vec![replay_data::rows::AutonomyRow {
             subject: 31,
             state: b"level".to_vec(),
             ..Default::default()
@@ -869,7 +867,7 @@ fn subject_holder_change_reuses_unchanged_native_relation_level_and_link_tables(
     let mut events = Accumulator::default();
     let mut late = LateIndex::default();
     let mut tracker = FrameChangeTracker::new();
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     scan.prepare_changes_changed(
         &first,
         &tracker.observe(&first, format),
@@ -888,7 +886,7 @@ fn subject_holder_change_reuses_unchanged_native_relation_level_and_link_tables(
     assert_eq!(
         scan.work.row_visits - before.row_visits,
         renamed
-            .complete::<replay::rows::tables::Countries>()
+            .complete::<replay_data::rows::tables::Countries>()
             .unwrap()
             .len()
     );

@@ -46,7 +46,7 @@ use {
 pub struct MapLayers<'a> {
     pub content: &'a crate::document::Content,
     /// The hour drawn, and its map events for the viewing country.
-    pub at: (replay::BranchId, i32),
+    pub at: (replay_data::BranchId, i32),
     pub map_text: &'a viewer_world::map::animated_map_text::events::Prepared,
     pub omitted: Omissions,
     /// The hour's compact political region inputs.

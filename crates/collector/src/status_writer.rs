@@ -83,7 +83,7 @@ impl StatusHandle {
         if allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
-        engine::allocation::reserve(&mut state.pending, 1)?;
+        engine_allocation::reserve(&mut state.pending, 1)?;
         if let Some(index) = position {
             let index = index.min(state.pending.len());
             state.pending.insert(index, pending);
@@ -177,7 +177,7 @@ fn measure(pending: &mut Pending) -> io::Result<()> {
 pub(crate) fn measure_bytes(bytes: &mut Vec<u8>, directories: &[PathBuf]) -> io::Result<()> {
     let value = spool_bytes(directories)?;
     // Comma, key, maximum u64 decimal digits, and the closing brace.
-    engine::allocation::reserve(bytes, 1 + b"\"spool_bytes\":".len() + 20 + 1)?;
+    engine_allocation::reserve(bytes, 1 + b"\"spool_bytes\":".len() + 20 + 1)?;
     if bytes.last() != Some(&b'}') {
         return Err(io::ErrorKind::InvalidData.into());
     }
@@ -243,7 +243,7 @@ fn run(inner: &Inner, write: &impl Fn(&Path, &[u8]) -> io::Result<()>) {
                     if pending.bytes.capacity() > old.bytes.capacity() {
                         *old = pending;
                     }
-                } else if engine::allocation::reserve(&mut state.recycled, 1).is_ok() {
+                } else if engine_allocation::reserve(&mut state.recycled, 1).is_ok() {
                     state.recycled.push(pending);
                 }
                 continue;
@@ -255,7 +255,7 @@ fn run(inner: &Inner, write: &impl Fn(&Path, &[u8]) -> io::Result<()>) {
                 if state.pending.iter().any(|entry| entry.path == pending.path) {
                     state.coalesced += 1;
                 } else {
-                    if engine::allocation::reserve(&mut state.pending, 1).is_err() {
+                    if engine_allocation::reserve(&mut state.pending, 1).is_err() {
                         return;
                     }
                     state.pending.push(pending);
@@ -306,7 +306,7 @@ impl AllocationProbe {
         let _phase = allocation::enter(allocation::Phase::Status);
         allocation::attempted_hour(None);
         let mut directories = Vec::new();
-        engine::allocation::reserve_exact(&mut directories, 1)?;
+        engine_allocation::reserve_exact(&mut directories, 1)?;
         directories.push(self.directory.clone());
         let published = self.writer.handle().publish_measured(
             &self.status,

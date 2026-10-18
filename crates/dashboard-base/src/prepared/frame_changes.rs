@@ -1,12 +1,9 @@
 //! Runtime facts shared by all preparation observers of one admitted frame.
-use replay::{
-    BranchId, Hour,
-    format::FormatVersion,
-    frame::{
-        DecodedFrame, IntoRecordedFrame, RecordedFrame, TABLE_COUNT, TableUpdate, TableView,
-        ViewIdentity,
-    },
-    rows::{DeltaRow, TableId},
+use replay_data::rows::TABLE_COUNT;
+use replay_data::{BranchId, Hour, format::FormatVersion, rows::DeltaRow, rows::TableId};
+use replay_frame::{
+    frame::DecodedFrame, frame::IntoRecordedFrame, frame::RecordedFrame, frame::TableUpdate,
+    frame::TableView, frame::ViewIdentity,
 };
 use std::sync::Arc;
 
@@ -49,7 +46,7 @@ pub fn field_mask(table: TableId, names: &[&str]) -> u64 {
 
 /// Compare ordered snapshot rows once when no recorded delta is available.
 /// Callers retain these keys until their next supplying read consumes them.
-pub fn differing_keys<T: replay::rows::RowCodec>(
+pub fn differing_keys<T: replay_data::rows::RowCodec>(
     before: &[T],
     now: &[T],
 ) -> std::collections::BTreeSet<u128> {
@@ -88,7 +85,7 @@ impl FrameChanges {
     /// The facts of an hour observed with no hour before it, as preparation
     /// observes the first hour of every block: any row may have changed.
     pub fn alone(frame: &DecodedFrame, format: FormatVersion) -> Self {
-        let _cpu = ::replay::cpu::scope("frame changes", None);
+        let _cpu = ::replay_frame::cpu::scope("frame changes", None);
         Self::alone_inner(frame, format)
     }
 
@@ -114,7 +111,7 @@ impl FrameChanges {
         continues: bool,
         rebuilt: impl Fn(TableId) -> bool,
     ) -> Self {
-        let _cpu = ::replay::cpu::scope("frame changes", None);
+        let _cpu = ::replay_frame::cpu::scope("frame changes", None);
         let mut changes = Self::alone_inner(frame, format);
         if continues {
             changes.rows_changed = TableId::ALL.map(rebuilt);
@@ -198,7 +195,7 @@ impl FrameChangeTracker {
         updates: impl IntoRecordedFrame,
         format: FormatVersion,
     ) -> FrameChanges {
-        let _cpu = ::replay::cpu::scope("frame changes", None);
+        let _cpu = ::replay_frame::cpu::scope("frame changes", None);
         let updates = updates.into_recorded();
         let continuous = self.continues(frame);
         let mut changes = self.observe_inner(frame, format);
@@ -224,7 +221,7 @@ impl FrameChangeTracker {
     }
 
     pub fn observe(&mut self, frame: &DecodedFrame, format: FormatVersion) -> FrameChanges {
-        let _cpu = ::replay::cpu::scope("frame changes", None);
+        let _cpu = ::replay_frame::cpu::scope("frame changes", None);
         self.observe_inner(frame, format)
     }
 

@@ -8,17 +8,16 @@ use crate::{
     table_capture::{Arena, CaptureRows},
     table_conversion::{table, table_iter, unavailable},
 };
-use engine::{
+use engine_native::{
     Memory, ccountry, cname_group_member, creference_registry, crelation_status, cship,
     walk::Outcome,
 };
-use replay::{
-    frame::TableView,
-    rows::{
-        CountryAttackModifiers, CountryCivilWarRow, CountryCounterInputRow,
-        CountryMovementModifiers, Recorded, Retired, TableId, Witnessed, tables,
-    },
+use replay_data::{
+    rows::CountryAttackModifiers, rows::CountryCivilWarRow, rows::CountryCounterInputRow,
+    rows::CountryMovementModifiers, rows::Recorded, rows::Retired, rows::TableId, rows::Witnessed,
+    rows::tables,
 };
+use replay_frame::frame::TableView;
 
 mod carry;
 pub use carry::CounterStore;
@@ -89,7 +88,7 @@ impl Navies {
         state: usize,
         hour: i32,
         launch: &mut naval::Launch,
-    ) -> engine::country_naval_movement_inputs::Reader<'a, M> {
+    ) -> engine_naval_history::country_naval_movement_inputs::Reader<'a, M> {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
         let reader = self.holder.begin(memory, base, state, Some(hour), launch);
@@ -142,7 +141,7 @@ impl RosterWork {
         let index = match self.refusals.binary_search_by_key(&reason, |entry| entry.0) {
             Ok(index) => index,
             Err(index) => {
-                engine::allocation::reserve(&mut self.refusals, 1)?;
+                engine_allocation::reserve(&mut self.refusals, 1)?;
                 self.refusals.insert(index, (reason, 0));
                 index
             }
@@ -153,7 +152,7 @@ impl RosterWork {
 
     pub fn observe_occupied(
         &mut self,
-        rows: &[engine::ccountry_occupation_status::Row],
+        rows: &[engine_occupation::ccountry_occupation_status::Row],
         arena: &Arena<u32>,
     ) -> std::io::Result<()> {
         for row in rows {
@@ -416,9 +415,9 @@ struct RelationRow {
     zero_war: Option<[u8; 2]>,
     co_reason: Option<&'static str>,
     zero_reason: Option<&'static str>,
-    zero_subject: Option<replay::rows::ZeroSubjectInputs>,
+    zero_subject: Option<replay_data::rows::ZeroSubjectInputs>,
     zero_subject_reason: Option<&'static str>,
-    forward_visibility: Option<replay::rows::ReverseZeroVisibilityInputs>,
+    forward_visibility: Option<replay_data::rows::ReverseZeroVisibilityInputs>,
     forward_visibility_reason: Option<&'static str>,
     forward_visibility_failures: [Option<&'static str>; 4],
 }
@@ -557,15 +556,15 @@ impl Captured {
                 store.begin(memory, base, state);
             }
             let mut rosters = ccountry::CounterRosters {
-                states: engine::walk::Buffer::Growing(&mut self.states.first),
-                leaders: engine::walk::Buffer::Growing(&mut self.leaders.first),
+                states: engine_native::walk::Buffer::Growing(&mut self.states.first),
+                leaders: engine_native::walk::Buffer::Growing(&mut self.leaders.first),
                 state_len: 0,
                 leader_len: 0,
                 required: Default::default(),
             };
             let mut effects = ccountry::EffectRosters {
-                neighbors: engine::walk::Buffer::Growing(&mut self.neighbors.first),
-                policies: engine::walk::Buffer::Growing(&mut self.policies.first),
+                neighbors: engine_native::walk::Buffer::Growing(&mut self.neighbors.first),
+                policies: engine_native::walk::Buffer::Growing(&mut self.policies.first),
                 neighbor_len: 0,
                 policy_len: 0,
                 required: Default::default(),
@@ -659,7 +658,9 @@ impl Captured {
         self.pride_names.reset();
         let len = self.rows.outcome.len();
         self.relations.required = len;
-        if let Err(reason) = engine::walk::Buffer::Growing(&mut self.relations.first).ensure(len) {
+        if let Err(reason) =
+            engine_native::walk::Buffer::Growing(&mut self.relations.first).ensure(len)
+        {
             self.rows.outcome = Outcome::Unavailable { reason };
             return 0;
         }
@@ -735,9 +736,9 @@ impl Captured {
             {
                 let start = self.co_belligerents.len;
                 let mut output = if GROWING {
-                    engine::walk::Buffer::GrowingFrom(&mut self.co_belligerents.first, start)
+                    engine_native::walk::Buffer::GrowingFrom(&mut self.co_belligerents.first, start)
                 } else {
-                    engine::walk::Buffer::Fixed(&mut self.co_belligerents.first[start..])
+                    engine_native::walk::Buffer::Fixed(&mut self.co_belligerents.first[start..])
                 };
                 if output.ensure(targets.len()) == Ok(true) && targets.len() <= output.len() {
                     output[..targets.len()].copy_from_slice(targets);
@@ -771,12 +772,12 @@ impl Captured {
             }
             let mut forward = crelation_status::ForwardZeroObservation::default();
             let targets = if GROWING {
-                engine::walk::Buffer::GrowingFrom(
+                engine_native::walk::Buffer::GrowingFrom(
                     &mut self.co_belligerents.first,
                     self.co_belligerents.len,
                 )
             } else {
-                engine::walk::Buffer::Fixed(
+                engine_native::walk::Buffer::Fixed(
                     &mut self.co_belligerents.first[self.co_belligerents.len..],
                 )
             };
@@ -802,15 +803,15 @@ impl Captured {
                 visibility
                     .value
                     .ok()
-                    .map(|value| replay::rows::ReverseZeroVisibilityInputs {
+                    .map(|value| replay_data::rows::ReverseZeroVisibilityInputs {
                         target: value.target,
                         war: value.war,
-                        subject: value
-                            .subject
-                            .map(|subject| replay::rows::ZeroSubjectInputs {
+                        subject: value.subject.map(|subject| {
+                            replay_data::rows::ZeroSubjectInputs {
                                 relation_type: subject.relation_type,
                                 parties: subject.parties,
-                            }),
+                            }
+                        }),
                         military_access: value.military_access,
                     });
             if let (Some(request), Some(source)) = (reverse.as_mut(), source.as_ref()) {
@@ -844,7 +845,7 @@ impl Captured {
             match inputs.zero_subject {
                 Ok(value) => {
                     row.zero_subject_reason = value.read_refusal();
-                    row.zero_subject = Some(replay::rows::ZeroSubjectInputs {
+                    row.zero_subject = Some(replay_data::rows::ZeroSubjectInputs {
                         relation_type: value.relation_type,
                         parties: value.parties,
                     });
@@ -989,7 +990,7 @@ impl Captured {
                     pride_name: Recorded::Value(relation.and_then(|row| row.pride_name).and_then(
                         |(start, count)| {
                             valid_span(&self.pride_names, start, count).then(|| {
-                                engine::allocation::owned_vec(engine::allocation::copy_vec(
+                                engine_allocation::owned_vec(engine_allocation::copy_vec(
                                     &self.pride_names.first[start..start + count],
                                 ))
                             })
@@ -1001,20 +1002,20 @@ impl Captured {
     }
 
     fn state_list(&self, span: ccountry::RosterSpan) -> Vec<u32> {
-        engine::allocation::owned_vec(engine::allocation::copy_vec(
+        engine_allocation::owned_vec(engine_allocation::copy_vec(
             &self.states.first[span.start..span.start + span.count],
         ))
     }
 
     fn leader_list(&self, span: ccountry::RosterSpan) -> Vec<u64> {
-        engine::allocation::owned_vec(engine::allocation::copy_vec(
+        engine_allocation::owned_vec(engine_allocation::copy_vec(
             &self.leaders.first[span.start..span.start + span.count],
         ))
     }
 
     fn effect_list(&self, arena: &Arena<u32>, span: ccountry::RosterSpan) -> Option<Vec<u32>> {
         valid_span(arena, span.start, span.count).then(|| {
-            engine::allocation::owned_vec(engine::allocation::copy_vec(
+            engine_allocation::owned_vec(engine_allocation::copy_vec(
                 &arena.first[span.start..span.start + span.count],
             ))
         })
@@ -1100,7 +1101,7 @@ pub fn co_belligerent_demand(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
 
     const PRIDE_HANDLE: u64 = (91_u64 << 32) | cship::HANDLE_TYPE as u64;
     const PRIDE_SHIP: usize = 0x17000;
@@ -1148,7 +1149,7 @@ mod tests {
     }
 
     fn pride_world(text: &[u8]) -> Vec<u8> {
-        use engine::reference_bucket as bucket;
+        use engine_native::reference_bucket as bucket;
         let mut bytes = co_world();
         co_put64(&mut bytes, PRIDE_SHIP, cship::VTABLE_RVA as u64);
         co_put64(&mut bytes, PRIDE_SHIP + cship::HANDLE, PRIDE_HANDLE);
@@ -1240,7 +1241,10 @@ mod tests {
     fn pride_name_grows_on_the_first_descriptor_and_relation_failure_preserves_current_bytes() {
         let text = b"Current\0peaceful ship name with suffix";
         let bytes = pride_world(text);
-        let memory = pride_memory(&bytes, Some(CO_STATE + engine::cgame_state::COUNTRIES));
+        let memory = pride_memory(
+            &bytes,
+            Some(CO_STATE + engine_native::cgame_state::COUNTRIES),
+        );
         let mut capture = co_capture(4);
         capture.rows.rows[0].pride_of_the_fleet = PRIDE_HANDLE;
         capture.capture_relations(&memory, 0, CO_STATE);
@@ -1258,7 +1262,7 @@ mod tests {
         capture.grow(&mut capacity);
         assert!(capacity.pride_names >= text.len());
         capture.capture_relations(&memory, 0, CO_STATE);
-        let TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)) =
+        let TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)) =
             capture.counter_table()
         else {
             panic!("prefix lost")
@@ -1280,7 +1284,7 @@ mod tests {
         capture.capture_relations(&pride_memory(&bytes, None), 0, CO_STATE);
         assert_eq!(capture.pride_names.required, 0);
         assert_eq!(capture.relations.first[0].pride_name, Some((0, 0)));
-        let TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)) =
+        let TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)) =
             capture.counter_table()
         else {
             panic!("prefix lost")
@@ -1312,7 +1316,7 @@ mod tests {
         co_put32(bytes, at + 12, count);
     }
     fn co_world() -> Vec<u8> {
-        use engine::{cdiplomacy_status as diplomacy, cgame_state};
+        use engine_native::{cdiplomacy_status as diplomacy, cgame_state};
         let mut bytes = vec![0_u8; 0x20000];
         co_header(&mut bytes, CO_STATE + cgame_state::COUNTRIES, 0x3000, 3);
         co_put64(&mut bytes, 0x3000, u64::MAX);
@@ -1408,7 +1412,7 @@ mod tests {
             ),
             (1, 3)
         );
-        let TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)) =
+        let TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)) =
             capture.counter_table()
         else {
             panic!("prefix lost")
@@ -1425,7 +1429,7 @@ mod tests {
         capture.grow(&mut capacity);
         assert!(capacity.co_belligerents >= 3);
         capture.capture_relations(&memory, 0, CO_STATE);
-        let TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)) =
+        let TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)) =
             capture.counter_table()
         else {
             panic!("prefix lost")
@@ -1447,7 +1451,7 @@ mod tests {
             CO_STATE,
         );
         assert_eq!(capture.co_belligerents.len, 0);
-        let TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)) =
+        let TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)) =
             capture.counter_table()
         else {
             panic!("prefix lost")
@@ -1499,7 +1503,7 @@ mod tests {
         let mut capture = co_capture(3);
         capture.capture_relations(&memory, 0, CO_STATE);
         assert_eq!(memory.attempts.get(), 1);
-        let TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)) =
+        let TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)) =
             capture.counter_table()
         else {
             panic!("prefix lost")
@@ -1528,7 +1532,7 @@ mod tests {
         let mut capture = co_capture(3);
         capture.capture_relations(&memory, 0, CO_STATE);
         assert_eq!(memory.attempts.get(), 1);
-        let TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)) =
+        let TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)) =
             capture.counter_table()
         else {
             panic!("country prefix lost");
@@ -1548,7 +1552,7 @@ mod tests {
 
     #[test]
     fn zero_subject_known_zero_survives_first_fault_and_counts_only_attempted_refusal() {
-        use engine::{crelation, csubject_relation};
+        use engine_native::{crelation, csubject_relation};
 
         let subject = 0x18000;
         for (first, fault_offset, expected, attempts, reason) in [
@@ -1587,14 +1591,14 @@ mod tests {
             capture.capture_relations(&memory, 0, CO_STATE);
             assert_eq!(memory.attempts.get(), attempts);
             assert_eq!(capture.relations.first[0].zero_subject_reason, reason);
-            let TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)) =
+            let TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)) =
                 capture.counter_table()
             else {
                 panic!("country prefix lost after partial zero-subject read");
             };
             assert_eq!(
                 rows[0].zero_subject,
-                Recorded::Value(Some(replay::rows::ZeroSubjectInputs {
+                Recorded::Value(Some(replay_data::rows::ZeroSubjectInputs {
                     relation_type: Some(csubject_relation::TYPE_VALUE),
                     parties: Some(expected),
                 }))
@@ -1655,7 +1659,7 @@ mod tests {
             start: usize::MAX,
             count: 1,
         });
-        let TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)) =
+        let TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)) =
             capture.counter_table()
         else {
             panic!("prefix lost")
@@ -1742,7 +1746,7 @@ mod tests {
             co_belligerents: Some(Default::default()),
             zero_war: Some([0, 0]),
             zero_subject: Some(Default::default()),
-            forward_visibility: Some(replay::rows::ReverseZeroVisibilityInputs {
+            forward_visibility: Some(replay_data::rows::ReverseZeroVisibilityInputs {
                 target: Some(0),
                 war: Some([0, 0]),
                 subject: Some(Default::default()),
@@ -1751,7 +1755,8 @@ mod tests {
             ..Default::default()
         };
         let tables = captured.tables();
-        let TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)) = &tables[0]
+        let TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)) =
+            &tables[0]
         else {
             panic!("existing country row lost");
         };
@@ -1793,8 +1798,8 @@ mod tests {
         };
         capture.civil_wars.outcome = Outcome::Rows { len: 1 };
         let [
-            TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)),
-            TableView::Complete(replay::rows::TableRows::CountryCivilWars(wars)),
+            TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)),
+            TableView::Complete(replay_data::rows::TableRows::CountryCivilWars(wars)),
         ] = capture.tables()
         else {
             panic!("complete");
@@ -1925,7 +1930,7 @@ mod tests {
         captured.states.len = 45_000;
         captured.leaders.len = 30_000;
         let [
-            TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)),
+            TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)),
             _,
         ] = captured.tables()
         else {
@@ -1991,7 +1996,7 @@ mod tests {
         };
         captured.rows.outcome = Outcome::Rows { len: 1 };
         let [
-            TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)),
+            TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)),
             _,
         ] = captured.tables()
         else {
@@ -2002,7 +2007,8 @@ mod tests {
         captured.rows.rows[0].state_rosters = Some([ccountry::RosterSpan::default(); 3]);
         captured.rows.rows[0].leader_rosters = Some([ccountry::RosterSpan::default(); 2]);
         let views = captured.tables();
-        let TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)) = &views[0]
+        let TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)) =
+            &views[0]
         else {
             panic!("observed empty rosters are present");
         };
@@ -2048,7 +2054,7 @@ mod tests {
                 co_belligerents: Some(Default::default()),
                 zero_war: Some([0, 0]),
                 zero_subject: Some(Default::default()),
-                forward_visibility: Some(replay::rows::ReverseZeroVisibilityInputs {
+                forward_visibility: Some(replay_data::rows::ReverseZeroVisibilityInputs {
                     target: Some(0),
                     war: Some([0, 0]),
                     subject: Some(Default::default()),
@@ -2058,7 +2064,7 @@ mod tests {
             };
         }
         let [
-            TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)),
+            TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)),
             _,
         ] = captured.tables()
         else {
@@ -2128,7 +2134,7 @@ mod tests {
         let mut bytes = co_world();
         co_header(
             &mut bytes,
-            CO_STATE + engine::cgame_state::COUNTRY_LINKS,
+            CO_STATE + engine_native::cgame_state::COUNTRY_LINKS,
             0x3100,
             5,
         );
@@ -2149,7 +2155,7 @@ mod tests {
         };
         let mut capture = co_capture(3);
         capture.capture_relations(&memory, 0, CO_STATE);
-        let TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)) =
+        let TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)) =
             capture.counter_table()
         else {
             panic!("prefix lost");
@@ -2160,7 +2166,7 @@ mod tests {
         assert_eq!(rows[0].co_belligerents, Recorded::Value(None));
         assert_eq!(
             rows[0].forward_visibility,
-            Recorded::Value(Some(replay::rows::ReverseZeroVisibilityInputs {
+            Recorded::Value(Some(replay_data::rows::ReverseZeroVisibilityInputs {
                 target: Some(4),
                 war: Some([0, 0]),
                 subject: Some(Default::default()),
@@ -2171,7 +2177,7 @@ mod tests {
         assert_eq!(rows[1].zero_war, Recorded::Value(Some([0, 0])));
         assert_eq!(
             rows[1].forward_visibility,
-            Recorded::Value(Some(replay::rows::ReverseZeroVisibilityInputs {
+            Recorded::Value(Some(replay_data::rows::ReverseZeroVisibilityInputs {
                 target: Some(0),
                 war: Some([0, 0]),
                 subject: Some(Default::default()),
@@ -2194,7 +2200,7 @@ mod tests {
         let mut capture = co_capture(3);
         capture.capture_relations(&memory, 0, CO_STATE);
         assert_eq!(memory.attempts.get(), 1);
-        let TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)) =
+        let TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)) =
             capture.counter_table()
         else {
             panic!("prefix lost");

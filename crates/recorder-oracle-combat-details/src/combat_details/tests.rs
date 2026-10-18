@@ -1,15 +1,13 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{
-        AirBaseRow, AirWingRow, NavalCombatAirBaseWingHandlesRow, NavalCombatShipRow, Recorded,
-        TableRows,
-    },
+use replay_data::{
+    rows::AirBaseRow, rows::AirWingRow, rows::NavalCombatAirBaseWingHandlesRow,
+    rows::NavalCombatShipRow, rows::Recorded, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 
 #[test]
 fn missing_retained_details_report_incomplete_coverage_without_waiving_differences() {
-    use replay::rows::NavalCombatResultDetailsRow;
+    use replay_data::rows::NavalCombatResultDetailsRow;
     let (mut frame, mut save, ..) = super::super::fixtures::fixture();
     save.naval_history.results.clear();
     for id in [101, 102] {
@@ -65,7 +63,9 @@ fn missing_retained_details_report_incomplete_coverage_without_waiving_differenc
 
 #[test]
 fn border_marker_witnesses_compare_stored_country_state_and_event_strings() {
-    use replay::rows::{LandBorderWarInputs, LandBorderWarSide, LandCombatDetailsRow};
+    use replay_data::{
+        rows::LandBorderWarInputs, rows::LandBorderWarSide, rows::LandCombatDetailsRow,
+    };
     let (mut frame, mut save, ..) = super::super::fixtures::fixture();
     let combat = (7_u64 << 32) | 62;
     let border = LandBorderWarInputs {
@@ -159,7 +159,7 @@ fn border_marker_witnesses_compare_stored_country_state_and_event_strings() {
 /// their display step, each written only when positive.
 #[test]
 fn cas_operands_compare_anti_air_exactly_and_prevented_damage_at_its_step() {
-    use replay::rows::{LandCombatDetailsRow, LandCombatSideInputs};
+    use replay_data::{rows::LandCombatDetailsRow, rows::LandCombatSideInputs};
     let (mut frame, mut save, ..) = super::super::fixtures::fixture();
     let combat = (7_u64 << 32) | 62;
     let mut details = save::combat_details::LandDetails::default();
@@ -255,7 +255,7 @@ fn cas_operands_compare_anti_air_exactly_and_prevented_damage_at_its_step() {
 /// refusal, is a difference; a refused share is a named limitation.
 #[test]
 fn reserve_speed_shares_sit_exactly_on_the_saved_reserves() {
-    use replay::rows::LandCombatDivisionRow;
+    use replay_data::rows::LandCombatDivisionRow;
     let (mut frame, mut save, ..) = super::super::fixtures::fixture();
     let combat = (7_u64 << 32) | 62;
     let (committed, reserve) = (0x9000_0001_u64, 0x9000_0002_u64);
@@ -361,7 +361,7 @@ fn reserve_speed_shares_sit_exactly_on_the_saved_reserves() {
 
 #[test]
 fn border_width_oracle_compares_zero_precision_and_unconditional_presence() {
-    use replay::rows::{LandBorderWarInputs, LandCombatDetailsRow};
+    use replay_data::{rows::LandBorderWarInputs, rows::LandCombatDetailsRow};
     let (mut frame, mut save, ..) = super::super::fixtures::fixture();
     let combat = (7_u64 << 32) | 62;
     let mut details = save::combat_details::LandDetails {
@@ -480,7 +480,7 @@ fn air_base_wing_rows_must_be_exactly_the_referenced_bases_in_the_air_censuses()
     assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
 }
 
-use replay::rows::LandCombatCommanderTimedTrait;
+use replay_data::rows::LandCombatCommanderTimedTrait;
 
 #[test]
 fn naval_air_localized_cache_is_not_a_saved_plane_comparator() {
@@ -505,7 +505,7 @@ fn naval_air_localized_cache_is_not_a_saved_plane_comparator() {
         naval_hits: Vec::new(),
         air_hits: Vec::new(),
     };
-    let row = replay::rows::NavalCombatPlane {
+    let row = replay_data::rows::NavalCombatPlane {
         carrier_slot: -1,
         date: date.engine_hour().unwrap(),
         ..Default::default()
@@ -528,10 +528,8 @@ fn naval_air_localized_cache_is_not_a_saved_plane_comparator() {
 /// Each side's task forces compare with the saved `unit` list in writer order.
 #[test]
 fn naval_side_units_compare_with_the_saved_unit_list_in_order() {
-    use replay::{
-        frame::TableView,
-        rows::{NavalCombatDetailsRow, TableId, TableRows},
-    };
+    use replay_data::{rows::NavalCombatDetailsRow, rows::TableId, rows::TableRows};
+    use replay_frame::frame::TableView;
     let (frame, mut saved, _, _) = recorder_oracle_support::fixtures::fixture();
     let combat = (5_u64 << 32) | 4713;
     let zero = || installed_content_save::Decimal::parse(b"0").unwrap();
@@ -625,14 +623,14 @@ fn timed_traits_compare_saved_tokens_and_signed_days_in_vector_order() {
         .get_mut(&commander)
         .unwrap()
         .category = 2;
-    let mut naval = replay::rows::NavalCommanderInputs {
+    let mut naval = replay_data::rows::NavalCommanderInputs {
         commander,
         category: 2,
         skills: [1, 0, 0, 0, 0],
         timed_traits: Recorded::Value(traits.clone()),
         ..Default::default()
     };
-    let compare_naval = |actual: &replay::rows::NavalCommanderInputs| {
+    let compare_naval = |actual: &replay_data::rows::NavalCommanderInputs| {
         let mut report = Report::default();
         naval_commander_values(&mut report, "naval", actual, &save, &tokens).unwrap();
         report
@@ -664,11 +662,12 @@ fn timed_traits_compare_saved_tokens_and_signed_days_in_vector_order() {
 
 #[test]
 fn null_naval_commander_is_a_limitation_only_at_an_observed_load_hour() {
-    use replay::branches::BranchReason::{
-        HourDiscontinuity as Gap, LoadSignal as Load, SessionStart as Start,
+    use replay_data::{rows::NavalCombatDetailsRow, rows::NavalCombatSideDetails};
+    use replay_frame::{
+        branches::BranchReason::HourDiscontinuity as Gap,
+        branches::BranchReason::LoadSignal as Load, branches::BranchReason::SessionStart as Start,
     };
-    use replay::branches::{BranchStart, Parentage};
-    use replay::rows::{NavalCombatDetailsRow, NavalCombatSideDetails};
+    use replay_frame::{branches::BranchStart, branches::Parentage};
 
     let (mut frame, mut save, _, _) = super::super::fixtures::fixture();
     let zero = Decimal::parse(b"0").unwrap();
@@ -796,7 +795,7 @@ fn positive_only_writer_does_not_invent_zero_or_waive_missing_positive() {
 }
 #[test]
 fn hit_comparison_keeps_missing_entries_and_raw_damage_differences() {
-    let a = replay::rows::NavalCombatHit {
+    let a = replay_data::rows::NavalCombatHit {
         target_slot: u32::MAX,
         target_name: b"Convoy".to_vec(),
         convoy: 2,
@@ -874,7 +873,7 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         },
     };
     // An ordered historical member: every conditional key is omitted.
-    let row = replay::rows::LandCombatDivisionRow {
+    let row = replay_data::rows::LandCombatDivisionRow {
         name_order: 0,
         name_ordered: 1,
         name_group: b"SOV_INF_01".to_vec(),
@@ -900,7 +899,7 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
     );
     assert_eq!(report.differences.len(), 1);
     // A player's name, an unordered member and a nonzero order word.
-    let custom = replay::rows::LandCombatDivisionRow {
+    let custom = replay_data::rows::LandCombatDivisionRow {
         name_order: -1,
         name_custom: b"Guards".to_vec(),
         ..Default::default()
@@ -922,7 +921,7 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     // A programmatic override with a set group is not shown
     // and not recorded: the group is compared instead.
-    let programmatic = replay::rows::LandCombatDivisionRow {
+    let programmatic = replay_data::rows::LandCombatDivisionRow {
         name_programmatic: 1,
         name_custom: Vec::new(),
         name_group: b"SOV_INF_01".to_vec(),
@@ -944,7 +943,7 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
     assert!(report.limitations.is_empty());
     // With a null group (the fake-intel template saves none) the game
     // shows it, and it is compared.
-    let shown = replay::rows::LandCombatDivisionRow {
+    let shown = replay_data::rows::LandCombatDivisionRow {
         name_custom: b"1. Strelkovaya".to_vec(),
         name_group: Vec::new(),
         ..programmatic.clone()
@@ -958,7 +957,7 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
     );
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     // Whole-roster operands share the flat rows' displayed override rule.
-    let operands = replay::rows::NameOperands {
+    let operands = replay_data::rows::NameOperands {
         order: custom.name_order,
         ordered: custom.name_ordered,
         programmatic: 1,
@@ -1003,7 +1002,7 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
     naming(
         &mut report,
         "ship",
-        &replay::rows::LandCombatDivisionRow {
+        &replay_data::rows::LandCombatDivisionRow {
             name_type: 1,
             ..programmatic.clone()
         },
@@ -1187,7 +1186,7 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
 
 #[test]
 fn combat_members_take_their_witnessed_template_from_the_division_status() {
-    use replay::rows::{DivisionStatusRow, LandCombatDivisionRow, Witnessed};
+    use replay_data::{rows::DivisionStatusRow, rows::LandCombatDivisionRow, rows::Witnessed};
     let (mut frame, mut save, ..) = super::super::fixtures::fixture();
     let combat = (7_u64 << 32) | 62;
     let division = 0x9000_0001_u64;
@@ -1253,7 +1252,7 @@ fn combat_members_take_their_witnessed_template_from_the_division_status() {
                 role: 1,
                 province: 2,
                 division,
-                context: replay::rows::LandDivisionContext {
+                context: replay_data::rows::LandDivisionContext {
                     template: standard,
                     ..Default::default()
                 },
@@ -1294,7 +1293,7 @@ fn combat_members_take_their_witnessed_template_from_the_division_status() {
     *frame.tables[TableId::DivisionStatus.index()] = status(Some(deleted));
     *frame.tables[TableId::DivisionTemplates.index()] =
         TableView::Complete(TableRows::DivisionTemplates(vec![
-            replay::rows::DivisionTemplateRow {
+            replay_data::rows::DivisionTemplateRow {
                 template: deleted,
                 ..Default::default()
             },
@@ -1311,7 +1310,7 @@ fn combat_members_take_their_witnessed_template_from_the_division_status() {
 #[test]
 fn commander_formations_match_the_saved_leader_group() {
     let formations = BTreeMap::from([(7_u64, 11_u64)]);
-    let side = |commander, commander_formation| replay::rows::LandCombatSideDetails {
+    let side = |commander, commander_formation| replay_data::rows::LandCombatSideDetails {
         commander,
         commander_formation,
         commander_category: 0,
@@ -1333,7 +1332,9 @@ fn commander_formations_match_the_saved_leader_group() {
 
 #[test]
 fn organisation_loss_compares_the_recorded_sum_with_the_saved_samples() {
-    use replay::rows::{LandBorderWarInputs, LandBorderWarSide, LandCombatDetailsRow};
+    use replay_data::{
+        rows::LandBorderWarInputs, rows::LandBorderWarSide, rows::LandCombatDetailsRow,
+    };
     let (mut frame, mut save, ..) = super::super::fixtures::fixture();
     let combat = (7_u64 << 32) | 63;
     let border = LandBorderWarInputs {
@@ -1415,7 +1416,9 @@ fn organisation_loss_compares_the_recorded_sum_with_the_saved_samples() {
 /// commanders a reserve selects.
 #[test]
 fn reserve_trees_name_exactly_the_reserves_sources() {
-    use replay::rows::{DivisionRow, LandCombatDivisionRow, ReserveModifierTreeRow};
+    use replay_data::{
+        rows::DivisionRow, rows::LandCombatDivisionRow, rows::ReserveModifierTreeRow,
+    };
     let (mut frame, ..) = super::super::fixtures::fixture();
     let mut reserve = LandCombatDivisionRow {
         role: 2,

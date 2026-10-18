@@ -14,7 +14,7 @@ use crate::{
     codec::{invalid_static as invalid, put_varint},
     rows::TableRows,
 };
-use engine::allocation;
+use engine_allocation as allocation;
 use std::{io, ops::Range};
 
 /// The listed owners' replacement rows for an owner-sliced table's baseline.

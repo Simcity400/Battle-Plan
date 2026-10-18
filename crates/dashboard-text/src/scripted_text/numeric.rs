@@ -45,16 +45,16 @@ impl<'a> ScriptedText<'a> {
         let value = value.map_err(within)?;
         // Numeric output is appended directly, without another scripted-text
         // recursion step. Colour controls and surrounding newlines survive.
-        Ok(installed_content::localisation::format_scripted_variable(
-            value, format,
-        ))
+        Ok(installed_content_localisation::localisation::format_scripted_variable(value, format))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{ScriptVariableEntry, ScriptVariablesRow, TableId, TableRows};
+    use replay_data::{
+        rows::ScriptVariableEntry, rows::ScriptVariablesRow, rows::TableId, rows::TableRows,
+    };
 
     pub(super) fn fixture(
         scripted: &str,
@@ -76,7 +76,7 @@ mod tests {
             TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
                 scope_kind: 1,
                 scope_id: 100,
-                seed: replay::rows::Recorded::Value(None),
+                seed: replay_data::rows::Recorded::Value(None),
                 entries: vec![
                     ScriptVariableEntry {
                         name: b"attack".to_vec(),

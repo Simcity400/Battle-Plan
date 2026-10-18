@@ -1,6 +1,6 @@
 //! Shared typed acquisition buffers. Growth runs off the game thread.
 
-use engine::walk::Outcome;
+use engine_native::walk::Outcome;
 use std::mem::size_of;
 
 const UNAVAILABLE: Outcome = Outcome::Unavailable {
@@ -33,7 +33,7 @@ pub struct CaptureRows<R> {
 impl<R: Default> CaptureRows<R> {
     pub fn new(capacity: usize) -> Self {
         Self {
-            rows: engine::allocation::owned_vec(engine::allocation::default_vec(capacity)),
+            rows: engine_allocation::owned_vec(engine_allocation::default_vec(capacity)),
             outcome: UNAVAILABLE,
             failed_len: 0,
             failed_required: 0,
@@ -101,7 +101,7 @@ pub fn grow_capacity(capacity: &mut usize, required: usize) {
 
 pub fn grow_vec<T: Default>(rows: &mut Vec<T>, capacity: usize) -> bool {
     if rows.len() < capacity {
-        return engine::allocation::resize_default(rows, capacity).is_ok();
+        return engine_allocation::resize_default(rows, capacity).is_ok();
     }
     true
 }
@@ -134,7 +134,7 @@ pub struct Arena<T> {
 impl<T: Default> Arena<T> {
     pub fn new(capacity: usize) -> Self {
         Self {
-            first: engine::allocation::owned_vec(engine::allocation::default_vec(capacity)),
+            first: engine_allocation::owned_vec(engine_allocation::default_vec(capacity)),
             len: 0,
             required: 0,
         }

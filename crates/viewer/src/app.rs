@@ -290,7 +290,7 @@ fn pace_profiled_frame() -> Duration {
 /// waits for the map.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Playhead {
-    branch: replay::BranchId,
+    branch: replay_data::BranchId,
     hour: i32,
     fraction: f32,
 }
@@ -298,7 +298,7 @@ struct Playhead {
 /// What the frame path keeps of the hour on screen once its layers are uploaded.
 struct ShownHour {
     epoch: u64,
-    branch: replay::BranchId,
+    branch: replay_data::BranchId,
     hour: i32,
     /// Why the hour draws nothing: a recorded gap or a failed builder part.
     error: Option<String>,
@@ -531,7 +531,7 @@ type MatchGame = ((u64, usize), (Raster, Option<String>));
 /// counter options.
 #[derive(PartialEq)]
 struct OverlayKey {
-    branch: replay::BranchId,
+    branch: replay_data::BranchId,
     hour: i32,
     camera: Camera,
     pixels: [u32; 2],
@@ -896,7 +896,7 @@ pub struct Viewer {
     visual_stale_campaign: Option<String>,
     map_preferences_seen: Option<(
         String,
-        Option<Vec<installed_content::content::visual::Choice>>,
+        Option<Vec<installed_content_core::content::visual::Choice>>,
         u32,
         u8,
     )>,
@@ -916,7 +916,7 @@ pub struct Viewer {
     /// The builders' generation the window keeps hours of.
     epoch: u64,
     /// Built hours not yet shown.
-    ready: BTreeMap<(replay::BranchId, i32), hours::Built>,
+    ready: BTreeMap<(replay_data::BranchId, i32), hours::Built>,
     /// The hour whose layers are in the scene.
     shown: Option<ShownHour>,
     /// The camera the last frame drew, which the next hours' icons are built for.
@@ -939,7 +939,11 @@ pub struct Viewer {
     convoy_refused: BTreeMap<String, usize>,
     // names
     placements: Option<Arc<Placements>>,
-    placements_at: Option<(replay::BranchId, i32, viewer_world::map::map_mode::MapMode)>,
+    placements_at: Option<(
+        replay_data::BranchId,
+        i32,
+        viewer_world::map::map_mode::MapMode,
+    )>,
     /// `None` until the first frame seeds it settled at that frame's own camera
     /// height; see [`Viewer::map`].
     fade: Option<LayerFade>,
@@ -983,7 +987,7 @@ pub struct Viewer {
     /// this only pays on pans and zooms; without it each of those frames
     /// re-parsed every table the layout reads.
     overlay_tables: Option<(
-        replay::BranchId,
+        replay_data::BranchId,
         i32,
         Choice,
         crate::document::OverlayTables,
@@ -4539,7 +4543,7 @@ fn present_raids(
 trait Delivered {
     /// The [`hours::Want`] generation it was built for.
     fn epoch(&self) -> u64;
-    fn at(&self) -> (replay::BranchId, i32);
+    fn at(&self) -> (replay_data::BranchId, i32);
     fn current(&self) -> &crate::playback::Current;
 }
 
@@ -4548,7 +4552,7 @@ impl Delivered for hours::Built {
         self.epoch
     }
 
-    fn at(&self) -> (replay::BranchId, i32) {
+    fn at(&self) -> (replay_data::BranchId, i32) {
         (self.branch, self.hour)
     }
 
@@ -4579,9 +4583,9 @@ fn feed_raids(lane: &crate::raid_lane::RaidLane, built: &impl Delivered) {
 /// hours of `epoch` are kept in `ready`, other epochs' go to `stale`.
 fn wait_for_hour<B: Delivered>(
     lane: &crate::raid_lane::RaidLane,
-    (target, epoch): ((replay::BranchId, i32), u64),
+    (target, epoch): ((replay_data::BranchId, i32), u64),
     mut wait: impl FnMut() -> std::io::Result<B>,
-    ready: &mut BTreeMap<(replay::BranchId, i32), B>,
+    ready: &mut BTreeMap<(replay_data::BranchId, i32), B>,
     mut stale: impl FnMut(B),
 ) -> std::io::Result<B> {
     loop {
@@ -4605,8 +4609,8 @@ fn wait_for_hour<B: Delivered>(
 /// buildings: the scene then treats it as a seek. An hour never built is
 /// passed over when `passes_unbuilt`, and otherwise also makes it a seek.
 fn skipped_hours<T>(
-    shown: Option<(replay::BranchId, i32)>,
-    (branch, next): (replay::BranchId, i32),
+    shown: Option<(replay_data::BranchId, i32)>,
+    (branch, next): (replay_data::BranchId, i32),
     passes_unbuilt: bool,
     built: impl Fn(i32) -> Option<Option<T>>,
 ) -> Option<Vec<T>> {
@@ -4641,10 +4645,10 @@ fn advance_clock(playhead: &mut Playhead, fraction: f64, last: i32) -> bool {
 
 /// The newest `usable` hour of `target`'s branch at or before it.
 fn latest_built_key<T>(
-    ready: &BTreeMap<(replay::BranchId, i32), T>,
-    target: (replay::BranchId, i32),
+    ready: &BTreeMap<(replay_data::BranchId, i32), T>,
+    target: (replay_data::BranchId, i32),
     usable: impl Fn(&T) -> bool,
-) -> Option<(replay::BranchId, i32)> {
+) -> Option<(replay_data::BranchId, i32)> {
     ready
         .range((target.0, i32::MIN)..=target)
         .rev()
@@ -4665,8 +4669,8 @@ fn presentation_matches(rendered: Playhead, target: Playhead, playing: bool) -> 
 /// seek or a prebuilt hour settles on the exact flag, and an overlay laid out
 /// with the index is never redone for it.
 fn engaged_relayout(
-    shown: Option<(bool, replay::BranchId, i32)>,
-    covers: impl Fn(replay::BranchId, i32) -> bool,
+    shown: Option<(bool, replay_data::BranchId, i32)>,
+    covers: impl Fn(replay_data::BranchId, i32) -> bool,
 ) -> bool {
     shown.is_some_and(|(covered, branch, hour)| !covered && covers(branch, hour))
 }
@@ -4677,7 +4681,7 @@ pub(crate) mod tests {
 
     #[test]
     fn task_force_children_outside_the_plate_keep_its_priority_and_block_unknown_hit_forms() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use {
             viewer_foundation::map::counter_hovers::task_force::Control,
@@ -4718,7 +4722,10 @@ pub(crate) mod tests {
             rect: [0., 0., 40., 40.],
             layer: layer(11, 0, 0),
         });
-        assert_eq!(top_map_hit(point, &report, &[], None, None), Some(MapHit::Base));
+        assert_eq!(
+            top_map_hit(point, &report, &[], None, None),
+            Some(MapHit::Base)
+        );
         report.base_hits.clear();
         report.task_force_hovers[0].supported = false;
         assert_eq!(
@@ -4756,7 +4763,7 @@ pub(crate) mod tests {
             top_map_hit(point, &report, &[], None, None),
             Some(MapHit::Blocked)
         );
-        let gui = installed_content::gui::native::read(
+        let gui = installed_content_core::gui::native::read(
             br#"guiTypes = { iconType = {
             name = unbound pdx_tooltip = TITLE
         } }"#,
@@ -4807,9 +4814,15 @@ pub(crate) mod tests {
             Some(MapHit::Unit(0))
         );
         report.base_hits[0].layer = layer(4, 0, 0);
-        assert_eq!(top_map_hit(point, &report, &[], None, None), Some(MapHit::Base));
+        assert_eq!(
+            top_map_hit(point, &report, &[], None, None),
+            Some(MapHit::Base)
+        );
         report.faction_pin_hovers[0].layer = layer(5, 0, 0);
-        assert_eq!(top_map_hit(point, &report, &[], None, None), Some(MapHit::Pin(0)));
+        assert_eq!(
+            top_map_hit(point, &report, &[], None, None),
+            Some(MapHit::Pin(0))
+        );
         report.faction_pin_hovers.clear();
         let raid = viewer_raids::map::raids::tooltips::Hit {
             origin: [0.0, 0.0],
@@ -4834,12 +4847,24 @@ pub(crate) mod tests {
         let mut same_layer_raid = raid.clone();
         same_layer_raid.layer = report.unit_hits[0].layer;
         assert_eq!(
-            top_map_hit(point, &report, std::slice::from_ref(&same_layer_raid), None, None),
+            top_map_hit(
+                point,
+                &report,
+                std::slice::from_ref(&same_layer_raid),
+                None,
+                None
+            ),
             Some(MapHit::Unit(0))
         );
         report.unit_hits[0].port = true;
         assert_eq!(
-            top_map_hit(point, &report, std::slice::from_ref(&same_layer_raid), None, None),
+            top_map_hit(
+                point,
+                &report,
+                std::slice::from_ref(&same_layer_raid),
+                None,
+                None
+            ),
             Some(MapHit::Raid)
         );
         report.unit_hits[0].port = false;
@@ -4903,11 +4928,23 @@ pub(crate) mod tests {
         let mut refused_raid = raid.clone();
         refused_raid.supported = false;
         assert_eq!(
-            top_map_hit(point, &report, std::slice::from_ref(&refused_raid), None, None),
+            top_map_hit(
+                point,
+                &report,
+                std::slice::from_ref(&refused_raid),
+                None,
+                None
+            ),
             Some(MapHit::Blocked)
         );
         assert_eq!(
-            top_map_hit([20.0, 5.0], &report, std::slice::from_ref(&raid), None, None),
+            top_map_hit(
+                [20.0, 5.0],
+                &report,
+                std::slice::from_ref(&raid),
+                None,
+                None
+            ),
             None
         );
         // An intel entry takes the point at its higher layer. A missing CPU mask
@@ -4933,7 +4970,10 @@ pub(crate) mod tests {
             top_map_hit(point, &report, &[], None, Some(&intel)),
             Some(MapHit::Intel)
         );
-        assert_eq!(top_map_hit([30.0, 30.0], &report, &[], None, Some(&intel)), None);
+        assert_eq!(
+            top_map_hit([30.0, 30.0], &report, &[], None, Some(&intel)),
+            None
+        );
     }
 
     #[test]
@@ -5043,7 +5083,7 @@ pub(crate) mod tests {
     #[test]
     fn overlays_relayout_once_when_the_engaged_index_arrives() {
         let covered_to =
-            |last: i32| move |branch: replay::BranchId, hour: i32| branch == 1 && hour <= last;
+            |last: i32| move |branch: replay_data::BranchId, hour: i32| branch == 1 && hour <= last;
         assert!(!engaged_relayout(None, covered_to(10)));
         // Paused at hour 5: not yet covered, then covered.
         assert!(!engaged_relayout(Some((false, 1, 5)), covered_to(4)));
@@ -5073,7 +5113,7 @@ pub(crate) mod tests {
             self.epoch
         }
 
-        fn at(&self) -> (replay::BranchId, i32) {
+        fn at(&self) -> (replay_data::BranchId, i32) {
             (1, self.hour)
         }
 
@@ -5141,7 +5181,7 @@ pub(crate) mod tests {
     #[test]
     fn the_raid_cycle_resets_exactly_with_the_trains_and_weather() {
         use viewer_foundation::map::presentation::{Continuity, Target, continuity};
-        let gap = replay::branches::Gap {
+        let gap = replay_frame::branches::Gap {
             branch: 1,
             first_hour: 45,
             last_hour: 49,
@@ -5260,7 +5300,7 @@ pub(crate) mod tests {
         ];
         for (name, previous, next, viewing, sought, expected) in cases {
             let perspective = Choice::default();
-            let shown = |at: (replay::BranchId, i32)| crate::playback::Current::Gap {
+            let shown = |at: (replay_data::BranchId, i32)| crate::playback::Current::Gap {
                 branch: at.0,
                 hour: at.1,
                 reason: String::new(),
@@ -5388,10 +5428,10 @@ pub(crate) mod tests {
 
     #[test]
     fn unload_releases_campaign_map_admission_and_discards_a_late_loader() {
-        use replay::{
-            container::Replay,
-            identity::{Identity, Roster, SampleBoundary, SessionStart, Verification},
-            spool::Record,
+        use replay::{container::Replay, spool::Record};
+        use replay_data::{
+            identity::Identity, identity::Roster, identity::SampleBoundary, identity::SessionStart,
+            identity::Verification,
         };
         let path = PathBuf::from("memory.battleplan");
         let session = SessionStart {
@@ -5603,7 +5643,7 @@ pub(crate) mod tests {
 
     #[test]
     fn partial_recording_notice_names_the_failure_without_diagnostics() {
-        use replay::spool::{ControlRecord, Record};
+        use replay::{spool::ControlRecord, spool::Record};
         let healthy = crate::playback::tests::fixture();
         let partial = healthy
             .append(&[vec![

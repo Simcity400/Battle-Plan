@@ -1,7 +1,7 @@
 //! Simulation-dependent regional scenario laws.
 //! Random choices and presentation time belong to the viewer.
 
-use replay::rows::Recorded;
+use replay_data::rows::Recorded;
 
 use super::{
     AirBaseRow, AirMissionInputRow, AirWingRow, Caps, FlightDefines, MissionCountry, Random,
@@ -762,7 +762,7 @@ mod tests {
 
     #[test]
     fn missile_wings_follow_scouts_with_their_cap_division_and_launch_rules() {
-        use replay::rows::AIR_MISSION_BASE_EQUIPMENT_FLAGS;
+        use replay_data::rows::AIR_MISSION_BASE_EQUIPMENT_FLAGS;
         let base = AirBaseRow {
             province: Some(40),
             ..Default::default()

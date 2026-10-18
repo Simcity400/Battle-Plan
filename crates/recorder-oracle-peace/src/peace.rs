@@ -4,7 +4,7 @@
 mod tests;
 use super::*;
 use installed_content_save::projects;
-use replay::rows::{PeaceSettlementRow, SettledPeaceAction};
+use replay_data::{rows::PeaceSettlementRow, rows::SettledPeaceAction};
 
 pub const DESTROYED_ACTIONS: &str = "PeaceSettlements destroyed-actions limitation: normal finalization destroys bidding turns and ordered actions before a completed save; a completed save cannot independently certify action types, order, negotiators or operands.";
 
@@ -281,7 +281,7 @@ pub fn compare_recorded_settlements(
 
 fn drain_busy(frame: &DecodedFrame) -> bool {
     matches!(&*frame.tables[TableId::PeaceSettlements.index()], TableView::Unavailable { reason }
-        if reason == replay::rows::PEACE_DRAIN_BUSY)
+        if reason == replay_data::rows::PEACE_DRAIN_BUSY)
 }
 
 #[cfg(test)]
@@ -453,7 +453,7 @@ fn compare_settlements_after<F: std::borrow::Borrow<DecodedFrame>>(
     if drain_busy(frame) {
         report.deferred_tables.insert(
             TableId::PeaceSettlements,
-            replay::rows::PEACE_DRAIN_BUSY.into(),
+            replay_data::rows::PEACE_DRAIN_BUSY.into(),
         );
         report.compared(
             "PeaceSettlements conferences deferred by busy drain",

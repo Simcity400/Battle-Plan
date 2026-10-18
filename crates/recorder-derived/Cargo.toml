@@ -10,7 +10,12 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-engine.workspace = true
 replay.workspace = true
-installed-content.workspace = true
+engine-executable.workspace = true
+installed-content-core.workspace = true
+installed-content-regions.workspace = true
+installed-content-weather.workspace = true
+replay-data.workspace = true
+replay-derive.workspace = true
+replay-frame.workspace = true
 recorder-platform.workspace = true

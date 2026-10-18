@@ -30,7 +30,7 @@ pub(crate) fn allocation_failure_exercise() -> std::io::Result<()> {
         with_allocations_denied(|| serde_json::to_writer(&mut count, value))
             .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
         let mut bytes = Vec::new();
-        engine::allocation::reserve_exact(&mut bytes, count.0)?;
+        engine_allocation::reserve_exact(&mut bytes, count.0)?;
         with_allocations_denied(|| serde_json::to_writer(&mut bytes, value))
             .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
         assert_eq!(bytes.len(), count.0);
@@ -40,7 +40,7 @@ pub(crate) fn allocation_failure_exercise() -> std::io::Result<()> {
     let projection = crate::projection::ProjectionScratch::default();
     let value = with_allocations_denied(|| {
         status!({
-            "debug": DebugValue(replay::rows::TableId::Clock),
+            "debug": DebugValue(replay_data::rows::TableId::Clock),
             "display": DisplayValue(Label),
             "advisor": crate::advisor_changes::status(),
             "portrait": crate::portrait_changes::status(),

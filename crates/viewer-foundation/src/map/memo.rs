@@ -1,7 +1,7 @@
 //! Small caches for hour layers that the next hours usually rebuild unchanged.
 //!
 //! A decoded hour shares each table it did not change with the hour before it
-//! (`replay::frame::SharedView`), so "this table did not change" is one pointer
+//! (`replay_frame::frame::SharedView`), so "this table did not change" is one pointer
 //! comparison. A layer whose value depends only on static content and a fixed
 //! list of the hour's tables can therefore be keyed on those tables' identities
 //! ([`TableKey`]) and built once for every run of hours that leaves them alone.
@@ -26,10 +26,9 @@ use std::{
     sync::{Arc, Condvar, Mutex},
 };
 
-use replay::{
-    frame::{DecodedFrame, Metrics, SharedView, TABLE_COUNT, TableView},
-    rows::TableId,
-};
+use replay_data::rows::TABLE_COUNT;
+use replay_data::rows::TableId;
+use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::SharedView, frame::TableView};
 
 /// The recent values of one layer, keyed by what they were built from.
 pub struct Recent<K, V> {

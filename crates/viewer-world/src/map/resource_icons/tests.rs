@@ -1,6 +1,6 @@
 use super::*;
 use crate::map::map_mode::{MapMode, Stock, visibility};
-use replay::rows::{ProvinceRow, TableRows};
+use replay_data::{rows::ProvinceRow, rows::TableRows};
 use viewer_foundation::{
     map::{
         camera::{MapDefines, MapSize, Pose},
@@ -257,7 +257,7 @@ fn placed(text: bool, rows: usize, flag: Option<u32>) -> PreparedResourceIcons {
 
 #[test]
 fn the_window_lists_its_rows_and_keeps_row_windows_the_rows_leave() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = gui::fixture();
     let windows = gui::windows(GUI);

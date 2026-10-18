@@ -106,7 +106,7 @@ fn multiple_producers_name_the_first_unavailable_dependency() {
 #[ignore = "requires the pinned shader compiler and a GPU"]
 fn world_rolls_back_all_retained_bindings_and_keeps_successful_binds() -> io::Result<()> {
     use super::super::super::scene_faults::Probe;
-    use installed_content::pdxshader::program::Stage;
+    use installed_content_core::pdxshader::program::Stage;
     let (_serial, device, queue) = tests::device();
     let probe = Probe::new()?;
     let texture = |colour| {
@@ -136,10 +136,10 @@ fn world_rolls_back_all_retained_bindings_and_keeps_successful_binds() -> io::Re
                     state.stream.bind_blend(None, wgpu::ColorWrites::empty());
                     state
                         .stream
-                        .bind_rasterizer(installed_content::pdxshader::RasterizerState::default());
+                        .bind_rasterizer(installed_content_core::pdxshader::RasterizerState::default());
                     state
                         .stream
-                        .bind_depth_stencil(installed_content::pdxshader::DepthStencilState {
+                        .bind_depth_stencil(installed_content_core::pdxshader::DepthStencilState {
                             depth_function: 0,
                             ..Default::default()
                         });
@@ -205,7 +205,7 @@ fn world_rolls_back_all_retained_bindings_and_keeps_successful_binds() -> io::Re
 #[ignore = "requires the pinned shader compiler and a GPU"]
 fn shader_initialization_refuses_only_actually_read_unknown_bytes() -> io::Result<()> {
     use super::super::super::scene_faults::Probe;
-    use installed_content::pdxshader::program::Stage;
+    use installed_content_core::pdxshader::program::Stage;
     use shader_pipeline::{binding, gpu};
     let (_serial, device, queue) = tests::device();
     let probe = Probe::new()?;

@@ -1,10 +1,10 @@
 //! Tree caster vertex declaration and submission to the light depth map.
 use eframe::wgpu;
-use installed_content::{
-    ResolvedLayers,
-    image::native::Decode,
-    pdxshader::{DepthStencilState, RasterizerState, program::Stage},
+use installed_content_core::{
+    ResolvedLayers, pdxshader::DepthStencilState, pdxshader::RasterizerState,
+    pdxshader::program::Stage,
 };
+use installed_content_image::native::Decode;
 use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
 use std::{collections::BTreeMap, io, sync::Arc};
 

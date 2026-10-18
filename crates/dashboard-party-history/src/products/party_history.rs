@@ -12,7 +12,7 @@
 //! appearance records it (`CountryAppearance.leader_ideology` and
 //! `leader_character`), named through `Characters` like an advisor. The
 //! portrait uses the civilian role and large size: the recorded holder's entry
-//! [`replay::rows::portrait_entry`] finds, when it is set and content has its
+//! [`replay_data::rows::portrait_entry`] finds, when it is set and content has its
 //! sprite or texture. Otherwise the game generates a portrait from inputs
 //! the recording lacks, so it is left out and said to be.
 //!
@@ -39,12 +39,11 @@ use dashboard_text::{
     metadata::{CountryKeys, link_slot, tagged_countries},
     party_names::party_key_for_tag_checked,
 };
-use replay::rows::{TableId, tables};
 #[cfg(any(test, feature = "test-support"))]
-use replay::{
-    container::Replay,
-    frame::{FrameDecoder, ViewIdentity},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::tables};
+#[cfg(any(test, feature = "test-support"))]
+use replay_frame::{frame::FrameDecoder, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
 use std::{collections::VecDeque, sync::Arc};
@@ -67,7 +66,7 @@ pub const CACHED_BRANCHES: usize = 2;
 #[cfg(test)]
 const CACHED_COUNTRIES: usize = 8;
 
-fn party_popularity(row: &replay::rows::PoliticalPartyRow) -> Option<(&str, i128)> {
+fn party_popularity(row: &replay_data::rows::PoliticalPartyRow) -> Option<(&str, i128)> {
     let token = std::str::from_utf8(&row.token)
         .ok()
         .filter(|token| !token.is_empty())?;
@@ -141,7 +140,7 @@ pub struct IdeologyInfo {
 }
 
 /// The chart's bytes of an ideology group's colour (red, green, blue,
-/// alpha, as installed_content::ideologies reads it): the widget draws its own
+/// alpha, as installed_content_core::ideologies reads it): the widget draws its own
 /// chart, so each channel is the stored float clamped to 0..1 and scaled to
 /// a byte, rounded; the alpha is not drawn.
 fn chart_color(color: [f32; 4]) -> [u8; 3] {
@@ -250,14 +249,14 @@ pub fn recorded_party_key(
 type PartyNamingRows = BTreeMap<
     u32,
     (
-        replay::rows::CountryRow,
-        Option<replay::rows::CountryAppearanceRow>,
+        replay_data::rows::CountryRow,
+        Option<replay_data::rows::CountryAppearanceRow>,
     ),
 >;
 #[cfg(any(test, feature = "test-support"))]
 pub fn party_naming_rows(
-    decoded: &replay::frame::DecodedFrame,
-    countries: &[replay::rows::CountryRow],
+    decoded: &replay_frame::frame::DecodedFrame,
+    countries: &[replay_data::rows::CountryRow],
 ) -> PartyNamingRows {
     let appearances: BTreeMap<_, _> = decoded
         .complete::<tables::CountryAppearance>()
@@ -281,22 +280,23 @@ pub fn party_naming_rows(
 }
 
 fn recorded_party_tags(
-    decoded: &replay::frame::DecodedFrame,
+    decoded: &replay_frame::frame::DecodedFrame,
     raw: u32,
     rows: Option<&PartyNamingRows>,
     current: (
-        &replay::rows::CountryRow,
+        &replay_data::rows::CountryRow,
         u32,
-        Option<&replay::rows::CountryAppearanceRow>,
+        Option<&replay_data::rows::CountryAppearanceRow>,
     ),
 ) -> (Option<String>, Result<String, String>) {
     // Raw zero maps to the reserved singleton.
     if raw == 0 {
         return (
-            installed_content::country_names::reserved_zero_tag(decoded)
+            installed_content_country_names::country_names::reserved_zero_tag(decoded)
                 .ok()
                 .map(str::to_owned),
-            installed_content::country_names::original_or_own_tag(decoded, 0).map(str::to_owned),
+            installed_content_country_names::country_names::original_or_own_tag(decoded, 0)
+                .map(str::to_owned),
         );
     }
     let resolved = (|| {
@@ -307,8 +307,9 @@ fn recorded_party_tags(
             link_slot(links, raw).ok_or_else(|| format!("party tag link {raw} is unresolved"))?;
         if slot == 0 {
             return Ok((
-                installed_content::country_names::reserved_zero_tag(decoded)?,
-                installed_content::country_names::original_or_own_tag(decoded, 0).map(str::to_owned),
+                installed_content_country_names::country_names::reserved_zero_tag(decoded)?,
+                installed_content_country_names::country_names::original_or_own_tag(decoded, 0)
+                    .map(str::to_owned),
             ));
         }
         // Selected-country scans already hold their owner/appearance. Only a
@@ -337,7 +338,9 @@ fn recorded_party_tags(
         let tag = std::str::from_utf8(&country.tag).map_err(|_| "party tag is not UTF-8")?;
         let selected = appearance
             .ok_or_else(|| format!("party tag slot {slot} has no complete CountryAppearance row"))
-            .and_then(|appearance| installed_content::country_names::original_tag(country, appearance))
+            .and_then(|appearance| {
+                installed_content_country_names::country_names::original_tag(country, appearance)
+            })
             .map(str::to_owned);
         Ok::<_, String>((tag, selected))
     })();
@@ -392,14 +395,14 @@ pub fn ideology_infos(
 /// The portrait entry the leader views ask character `id`'s recorded holder for:
 /// civilian, large, else the first large entry, used only when set.
 fn leader_portrait(
-    holders: Option<&[replay::rows::CharacterPortraitRow]>,
+    holders: Option<&[replay_data::rows::CharacterPortraitRow]>,
     id: u32,
 ) -> RecordedPortrait {
     dashboard_base::products::character_portraits::recorded_portrait(
         holders,
         id,
-        replay::rows::PORTRAIT_CIVILIAN,
-        replay::rows::PORTRAIT_LARGE,
+        replay_data::rows::PORTRAIT_CIVILIAN,
+        replay_data::rows::PORTRAIT_LARGE,
     )
 }
 
@@ -440,11 +443,11 @@ struct CountryScan {
 }
 
 struct CountryRead<'a> {
-    pub country: &'a replay::rows::CountryRow,
+    pub country: &'a replay_data::rows::CountryRow,
     slot: u32,
-    parties: Option<(&'a [replay::rows::PoliticalPartyRow], &'a [usize])>,
-    appearance: Option<&'a replay::rows::CountryAppearanceRow>,
-    politics: Option<&'a replay::rows::PoliticsRow>,
+    parties: Option<(&'a [replay_data::rows::PoliticalPartyRow], &'a [usize])>,
+    appearance: Option<&'a replay_data::rows::CountryAppearanceRow>,
+    politics: Option<&'a replay_data::rows::PoliticsRow>,
 }
 
 impl CountryScan {
@@ -495,7 +498,7 @@ impl CountryScan {
 
     fn observe(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
+        decoded: &replay_frame::frame::DecodedFrame,
         read: CountryRead<'_>,
         naming_rows: Option<&PartyNamingRows>,
         topic: bool,
@@ -755,22 +758,22 @@ struct TopicScan {
 #[derive(Default)]
 struct TopicInputs {
     keys: Option<CountryKeys>,
-    country_view: Option<replay::frame::ViewIdentity>,
-    countries: Option<Vec<replay::rows::CountryRow>>,
-    links: Option<Vec<replay::rows::CountryLinkRow>>,
+    country_view: Option<replay_frame::frame::ViewIdentity>,
+    countries: Option<Vec<replay_data::rows::CountryRow>>,
+    links: Option<Vec<replay_data::rows::CountryLinkRow>>,
     holders: BTreeMap<String, (usize, u32)>,
     by_slot: BTreeMap<u32, Vec<String>>,
     by_id: BTreeMap<u32, Vec<String>>,
-    parties: Option<Vec<replay::rows::PoliticalPartyRow>>,
+    parties: Option<Vec<replay_data::rows::PoliticalPartyRow>>,
     owned: BTreeMap<u32, Vec<usize>>,
-    appearances: BTreeMap<u32, replay::rows::CountryAppearanceRow>,
-    politics_rows: Vec<replay::rows::PoliticsRow>,
-    politics: BTreeMap<u32, replay::rows::PoliticsRow>,
+    appearances: BTreeMap<u32, replay_data::rows::CountryAppearanceRow>,
+    politics_rows: Vec<replay_data::rows::PoliticsRow>,
+    politics: BTreeMap<u32, replay_data::rows::PoliticsRow>,
     naming: PartyNamingRows,
     naming_users: BTreeMap<u32, BTreeSet<String>>,
     leader_users: BTreeMap<u32, BTreeSet<String>>,
-    characters: Option<BTreeMap<u32, replay::rows::CharacterRow>>,
-    portraits: Option<BTreeMap<u32, replay::rows::CharacterPortraitRow>>,
+    characters: Option<BTreeMap<u32, replay_data::rows::CharacterRow>>,
+    portraits: Option<BTreeMap<u32, replay_data::rows::CharacterPortraitRow>>,
     lexical: Option<BTreeMap<u32, Vec<u8>>>,
     script_users: BTreeMap<u32, BTreeSet<String>>,
     duplicates: BTreeSet<String>,
@@ -780,10 +783,10 @@ struct TopicInputs {
 impl TopicInputs {
     fn refresh(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
     ) -> BTreeSet<String> {
-        let _cpu = ::replay::cpu::scope_phase("parties:inputs");
+        let _cpu = ::replay_frame::cpu::scope_phase("parties:inputs");
         let changed =
             |table: TableId| changes.is_none_or(|changes| changes.rows_changed[table.index()]);
         let mut roster = false;
@@ -861,7 +864,7 @@ impl TopicInputs {
                     owners.insert(row.country);
                 }
                 for owner in owners {
-                    let group = |rows: &[replay::rows::PoliticalPartyRow]| {
+                    let group = |rows: &[replay_data::rows::PoliticalPartyRow]| {
                         let first = rows.partition_point(|row| row.country < owner);
                         let last = rows.partition_point(|row| row.country <= owner);
                         (first, last)
@@ -923,7 +926,7 @@ impl TopicInputs {
                 .map(|row| {
                     (
                         row.country,
-                        replay::rows::CountryAppearanceRow {
+                        replay_data::rows::CountryAppearanceRow {
                             country: row.country,
                             leader_character: row.leader_character,
                             leader_ideology: row.leader_ideology.clone(),
@@ -1023,7 +1026,7 @@ impl TopicInputs {
                     .map(|row| {
                         (
                             row.id,
-                            replay::rows::CharacterRow {
+                            replay_data::rows::CharacterRow {
                                 id: row.id,
                                 name_token_id: row.name_token_id,
                                 token: row.token.clone(),
@@ -1130,7 +1133,7 @@ impl TopicInputs {
 impl TopicScan {
     fn observe(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
+        decoded: &replay_frame::frame::DecodedFrame,
         requested: Option<&str>,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
     ) {

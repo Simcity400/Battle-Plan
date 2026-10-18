@@ -1,8 +1,6 @@
 use super::*;
-use replay::{
-    frame::{TableInput, TableView},
-    rows::{CountryFuelRow, TableRows},
-};
+use replay_data::{rows::CountryFuelRow, rows::TableRows};
+use replay_frame::{frame::TableInput, frame::TableView};
 
 #[test]
 fn owned_5000_country_index_preserves_signed_cache_name_refusal_and_alias_topology() {
@@ -214,7 +212,7 @@ impl AirMemory {
         self.put(address + 12, &count.to_le_bytes());
     }
     fn registry(&mut self, handle: u64, pointer: usize, table: usize) {
-        use engine::{creference_registry as registry, reference_bucket as bucket};
+        use engine_native::{creference_registry as registry, reference_bucket as bucket};
         let root = registry::LOW_ROOTS_RVA + handle as u32 as usize * 8;
         let entries = table + 0x100;
         self.span(root, 8);
@@ -240,7 +238,7 @@ impl AirMemory {
 #[test]
 fn cold_and_later_populated_5000_country_capture_grows_air_text_and_weather_from_original_headers()
 {
-    use engine::{
+    use engine_native::{
         air_fuel_defines as defines, air_mission, cair_base, cair_wing, cair_wing_pool, ccountry,
         ccountry_air_container as container, cgame_state, cprovince, cstrategic_air,
         cstrategic_air_manager, cstrategic_region, cweather_manager, msvc_string,
@@ -502,10 +500,10 @@ fn cold_and_later_populated_5000_country_capture_grows_air_text_and_weather_from
             &row.demand,
             Recorded::Value(pack) if pack.sites.is_empty() && pack.contexts.is_empty()
         )));
-        let assembled = rows::with_demand_parts(
+        let assembled = replay_frame::rows::with_demand_parts(
             headers,
             &TableView::Complete(TableRows::FuelDemandParts(parts)),
-            replay::format::FormatVersion::CURRENT,
+            replay_data::format::FormatVersion::CURRENT,
         )
         .unwrap();
         for (row, (_, pack)) in assembled.iter().zip(&owned) {

@@ -2,7 +2,7 @@
 //! declarations and constants are native; historical simulation/order is separate.
 use super::{Emitter, Simulation};
 use eframe::wgpu::{self, util::DeviceExt};
-use installed_content::{mesh::Transform, particles::RenderDescriptor, pdxshader::program::Stage};
+use installed_content_core::{mesh::Transform, particles::RenderDescriptor, pdxshader::program::Stage};
 use shader_pipeline::{binding, gpu, library::Effect};
 use std::collections::BTreeSet;
 use std::{
@@ -390,7 +390,7 @@ struct Program {
     selection: shader_pipeline::library::Selection,
     layouts: Vec<gpu::VertexLayout>,
     state: gpu::State,
-    raster: installed_content::pdxshader::RasterizerState,
+    raster: installed_content_core::pdxshader::RasterizerState,
 }
 
 impl Renderer {
@@ -450,7 +450,7 @@ impl Renderer {
         let mut ordinary_offset = 0;
         let mut ring = InstanceRing::new(allocation_size(self.max_particles, 48)?);
         let trail_size = allocation_size(self.max_particles, 56 * 28)?;
-        let depth = installed_content::pdxshader::DepthStencilState {
+        let depth = installed_content_core::pdxshader::DepthStencilState {
             depth_enable: true,
             depth_write_mask: 0,
             depth_function: 3,
@@ -688,7 +688,7 @@ mod tests {
         rig.nodes[0].clips[0]
             .state
             .events
-            .push(installed_content::mesh::EntityEvent {
+            .push(installed_content_core::mesh::EntityEvent {
                 particle: Some("wake".into()),
                 keep_particle: true,
                 ..Default::default()

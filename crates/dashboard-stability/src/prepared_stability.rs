@@ -12,12 +12,12 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
 
 /// The complete recorded tables the stateless stability sampler reads.
-pub const TABLES: &[replay::rows::TableId] = &[
-    replay::rows::TableId::Countries,
-    replay::rows::TableId::CountryLinks,
-    replay::rows::TableId::CountryStabilityInputs,
-    replay::rows::TableId::CountryCommandPower,
-    replay::rows::TableId::SliceReads,
+pub const TABLES: &[replay_data::rows::TableId] = &[
+    replay_data::rows::TableId::Countries,
+    replay_data::rows::TableId::CountryLinks,
+    replay_data::rows::TableId::CountryStabilityInputs,
+    replay_data::rows::TableId::CountryCommandPower,
+    replay_data::rows::TableId::SliceReads,
 ];
 /// Displayed measures, in the order the production step yields them.
 const MEASURES: [&str; 3] = ["stability", "warSupport", "maxCommandPower"];
@@ -30,7 +30,7 @@ use dashboard_base::prepared_measure::query::READ_HOUR;
 /// frame cannot compute has no holder, so it ends the native segment exactly
 /// as the observer's unknown value does.
 pub fn sample(
-    frame: &replay::frame::DecodedFrame,
+    frame: &replay_frame::frame::DecodedFrame,
     requested: Option<&[(String, String)]>,
 ) -> io::Result<dashboard_base::prepared::query::progressive::Samples> {
     if requested.is_some_and(|keys| {
@@ -106,16 +106,16 @@ impl StabilityAccumulator {
         self.batch.bytes() + self.parts.bytes()
     }
     #[cfg(any(test, feature = "test-support"))]
-    pub fn observe(&mut self, frame: &replay::frame::DecodedFrame) -> io::Result<()> {
+    pub fn observe(&mut self, frame: &replay_frame::frame::DecodedFrame) -> io::Result<()> {
         let changes = self
             .test_changes
             .get_or_insert_with(dashboard_base::prepared::frame_changes::FrameChangeTracker::new)
-            .observe(frame, replay::format::FormatVersion::CURRENT);
+            .observe(frame, replay_data::format::FormatVersion::CURRENT);
         self.observe_timed(frame, &changes, &mut None)
     }
     pub fn observe_timed(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         changes: &FrameChanges,
         timings: &mut Option<
             BTreeMap<&'static str, dashboard_base::prepared::timing::FamilyTimings>,
@@ -127,10 +127,10 @@ impl StabilityAccumulator {
         result?;
         let adjacent = self.last.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
         self.last = Some(frame.hour);
-        let cpu = ::replay::cpu::scope_phase("stability:series_observe");
+        let cpu = ::replay_frame::cpu::scope_phase("stability:series_observe");
         self.batch.advance(frame.hour)?;
         drop(cpu);
-        let cpu = ::replay::cpu::scope_phase("stability:measures_projection_series");
+        let cpu = ::replay_frame::cpu::scope_phase("stability:measures_projection_series");
         let Self {
             stability,
             actors,
@@ -183,7 +183,7 @@ impl StabilityAccumulator {
             },
         )?;
         drop(cpu);
-        let _cpu = ::replay::cpu::scope_phase("stability:pruning");
+        let _cpu = ::replay_frame::cpu::scope_phase("stability:pruning");
         for tag in &stability.removed {
             for measure in ["readHour", "stability", "warSupport", "maxCommandPower"] {
                 if let Some(actor) = actors.get_mut(&series::field_key(tag, measure)) {
@@ -211,7 +211,7 @@ impl StabilityAccumulator {
             BTreeMap<&'static str, dashboard_base::prepared::timing::FamilyTimings>,
         >,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("stability:series_flush");
+        let _cpu = ::replay_frame::cpu::scope_phase("stability:series_flush");
         if let Some(last) = self.last {
             let started = dashboard_base::prepared::timing::start_timing(timings);
             let result = self.parts.flush(writer, branch, cancelled);
@@ -260,8 +260,8 @@ impl ExperienceAccumulator {
     #[cfg(any(test, feature = "test-support"))]
     pub fn observe(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
-        format: replay::format::FormatVersion,
+        frame: &replay_frame::frame::DecodedFrame,
+        format: replay_data::format::FormatVersion,
     ) -> io::Result<()> {
         let changes = self
             .test_changes
@@ -271,11 +271,11 @@ impl ExperienceAccumulator {
     }
     pub fn observe_changes(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
-        format: replay::format::FormatVersion,
+        frame: &replay_frame::frame::DecodedFrame,
+        format: replay_data::format::FormatVersion,
         changes: &FrameChanges,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("experience:series_observe");
+        let _cpu = ::replay_frame::cpu::scope_phase("experience:series_observe");
         self.last = Some(frame.hour);
         self.batch.advance(frame.hour)?;
         #[cfg(test)]
@@ -289,7 +289,7 @@ impl ExperienceAccumulator {
                 if !whole && read.first_hour != frame.hour {
                     return Ok(());
                 }
-                let _cpu = ::replay::cpu::scope_phase("experience:projection_series");
+                let _cpu = ::replay_frame::cpu::scope_phase("experience:projection_series");
                 #[cfg(test)]
                 {
                     self.projections += 1;

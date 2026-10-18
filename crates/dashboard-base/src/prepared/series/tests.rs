@@ -2443,7 +2443,10 @@ fn compact_payload_operands_do_not_expand_constant_spans() {
     let mut identity = Vec::new();
     let expected = payload_input(&rows.runs, &rows.state, &mut identity);
     for _ in 0..5_000 {
-        assert_eq!(payload_input(&rows.runs, &rows.state, &mut identity), expected);
+        assert_eq!(
+            payload_input(&rows.runs, &rows.state, &mut identity),
+            expected
+        );
     }
     assert_eq!(SPAN_BUCKET_WORK.with(std::cell::Cell::get), before);
 }

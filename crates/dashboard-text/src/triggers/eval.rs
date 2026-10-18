@@ -6,16 +6,14 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
-use installed_content::{
-    parser::Item,
-    scope::{Keyword as ScopeKeyword, Names, Scope as Parsed, ScopeKind, TriggerScopes},
-    scripted_triggers::Template,
-    trigger_keys::{
-        CountKind, Dispatch, Dispatched, ScopeStep, cycle, describe, equipment_category_mask,
-        frame, registered_trigger, trigger_class,
-    },
+use installed_content_core::{
+    parser::Item, scope::Keyword as ScopeKeyword, scope::Names, scope::Scope as Parsed,
+    scope::ScopeKind, scope::TriggerScopes, scripted_triggers::Template, trigger_keys::CountKind,
+    trigger_keys::Dispatch, trigger_keys::Dispatched, trigger_keys::ScopeStep, trigger_keys::cycle,
+    trigger_keys::describe, trigger_keys::equipment_category_mask, trigger_keys::frame,
+    trigger_keys::registered_trigger, trigger_keys::trigger_class,
 };
-use replay::rows::{BuildingRow, tables};
+use replay_data::{rows::BuildingRow, rows::tables};
 
 use super::{
     Eval, Scope, Scopes,
@@ -371,7 +369,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(Some(result))
     }
 
-    /// The scope kinds a scope carries (installed_content::scope::ScopeKind): a
+    /// The scope kinds a scope carries (installed_content_core::scope::ScopeKind): a
     /// scope key's target only its own kind after clearing,
     /// the combat scope only the combat, a unit
     /// leader's its character, the null state nothing. Only test operands
@@ -709,7 +707,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             Err(_) => ScopeStep::Unknown(format!(
                 "trigger {name} is not UTF-8, so its text cannot be read as a scope"
             )),
-            Ok(text) => match installed_content::scope::parse(text, quoted, &names) {
+            Ok(text) => match installed_content_core::scope::parse(text, quoted, &names) {
                 Parsed::Unknown(_) => match names.asked.take() {
                     Some(why) => ScopeStep::Unknown(why),
                     None => ScopeStep::NotScope,
@@ -722,8 +720,8 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         let Dispatched {
             dispatch,
             unless_scope,
-        } = installed_content::trigger_keys::dispatch(
-            installed_content::trigger_keys::Key {
+        } = installed_content_core::trigger_keys::dispatch(
+            installed_content_core::trigger_keys::Key {
                 keyword: keyword.as_ref().map(|keyword| keyword.text()),
                 text: item.key.as_deref().unwrap_or_default(),
                 quoted: item.key_quoted,
@@ -736,8 +734,10 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                     .triggers
                     .ok()
                     .and_then(|triggers| match triggers.scripted.lookup(text) {
-                        installed_content::scripted_triggers::Lookup::Template(template) => Some(template),
-                        installed_content::scripted_triggers::Lookup::Missing => None,
+                        installed_content_core::scripted_triggers::Lookup::Template(template) => {
+                            Some(template)
+                        }
+                        installed_content_core::scripted_triggers::Lookup::Missing => None,
                     })
             },
         )?;
@@ -1258,14 +1258,14 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     /// division by 100000. In a country scope the country's resources
     /// of that index, produced plus adjustment.
     /// CountryResources is hourly
-    /// (replay::cadence names the pools' writers).
+    /// (replay_data::cadence names the pools' writers).
     ///
     /// A state scope accumulates resource amounts
     /// of the state and reads the pool slot of the
     /// resource's index: crate::state_resources, over the state's
     /// recorded operands (keyed by the resource's token) and its
     /// controller's building overrides. Those tables are sliced
-    /// (replay::cadence): the operands are the state's and its controller's
+    /// (replay_data::cadence): the operands are the state's and its controller's
     /// at their daily reads, so an amount can lag up to a day.
     fn resource_amount(&self, index: u32, token: u32, target: Target) -> Result<i64, String> {
         let slot = match target {
@@ -1755,7 +1755,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
 
 /// A table the count and character triggers read, complete this hour, or
 /// why not.
-fn counted<'a, T: replay::rows::TableSchema>(
+fn counted<'a, T: replay_data::rows::TableSchema>(
     world: &World<'a>,
     name: &str,
 ) -> Result<&'a [T::Row], String> {

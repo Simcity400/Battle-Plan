@@ -1,11 +1,10 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{
-        ArmyGroupMemberRow, DivisionTemplateIconRow, OrdersGroupCounterInputRow,
-        OrdersGroupMemberRow, OrdersGroupRow, Recorded, SimulationFeatureRow, TableId, TableRows,
-    },
+use replay_data::{
+    rows::ArmyGroupMemberRow, rows::DivisionTemplateIconRow, rows::OrdersGroupCounterInputRow,
+    rows::OrdersGroupMemberRow, rows::OrdersGroupRow, rows::Recorded, rows::SimulationFeatureRow,
+    rows::TableId, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 #[cfg(test)]
 use viewer_foundation::tooltip_text::NoIcons;
 
@@ -29,7 +28,7 @@ fn with_context<R>(frame: &DecodedFrame, run: impl FnOnce(&Context<'_>) -> R) ->
     .map(|(key, value)| (key.into(), value.into()))
     .collect();
     let vision = Vision::sharing(1, []);
-    let names = installed_content::division_names::Database::default();
+    let names = installed_content_division_names::division_names::Database::default();
     let units = Err("unused".into());
     run(&Context {
         nato: false,

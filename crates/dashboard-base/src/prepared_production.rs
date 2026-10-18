@@ -13,11 +13,8 @@ use crate::products::equipment_produced::{
     ProducedCount, ProducedGrouping, ProducedKey, ProducedMeasure, ProducedParams, ProducedType,
     ScannedProduced, month_before,
 };
-use replay::{
-    format::FormatVersion,
-    frame::{DecodedFrame, TableView},
-    rows::{Recorded, TableId, tables},
-};
+use replay_data::{format::FormatVersion, rows::Recorded, rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -28,7 +25,7 @@ use std::{
 /// Owning content handles keep the ordinary recorded-stack naming loader alive.
 pub struct ProductionNaming {
     catalogue: Option<std::sync::Arc<crate::catalogue::Catalogue>>,
-    units: Option<std::sync::Arc<installed_content::equipment::Database>>,
+    units: Option<std::sync::Arc<installed_content_core::equipment::Database>>,
     pub warnings: Vec<String>,
 }
 impl ProductionNaming {
@@ -229,7 +226,7 @@ impl ProductionVariants {
         countries: Option<&crate::products::territory::CountryReads>,
         tracks: [&BTreeMap<String, TagHistory>; 2],
     ) {
-        let _cpu = ::replay::cpu::scope_phase("production:inventory_changes");
+        let _cpu = ::replay_frame::cpu::scope_phase("production:inventory_changes");
         for (source, tracks) in tracks.into_iter().enumerate() {
             let held = &mut self.inventory[source];
             let removed: Vec<_> = held
@@ -895,7 +892,7 @@ impl ProductionAccumulator {
             let key = (row.line, row.ordinal);
             seen.insert(key);
             let refit = match kinds.get(&row.line) {
-                Some(kind) => *kind == engine::cequipment_production_line::KIND_SHIP_REFIT,
+                Some(kind) => *kind == engine_native::cequipment_production_line::KIND_SHIP_REFIT,
                 None => {
                     unlisted.insert(row.line);
                     false
@@ -1344,7 +1341,7 @@ impl ProductionAccumulator {
         cancelled: &AtomicBool,
         changes: &crate::prepared::frame_changes::FrameChanges,
     ) -> io::Result<Option<EndpointPage>> {
-        let _cpu = ::replay::cpu::scope_phase("production:observe_apply");
+        let _cpu = ::replay_frame::cpu::scope_phase("production:observe_apply");
         check_cancel(cancelled)?;
         self.spent.advance(frame.hour)?;
         let consecutive = self.last_frame.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
@@ -1491,9 +1488,9 @@ impl ProductionAccumulator {
         cancelled: &AtomicBool,
     ) -> io::Result<Option<EndpointPage>> {
         let changes = crate::prepared::frame_changes::FrameChanges {
-            rows_changed: [true; replay::frame::TABLE_COUNT],
-            table_read: [true; replay::frame::TABLE_COUNT],
-            slot_read: [true; replay::frame::TABLE_COUNT],
+            rows_changed: [true; replay_data::rows::TABLE_COUNT],
+            table_read: [true; replay_data::rows::TABLE_COUNT],
+            slot_read: [true; replay_data::rows::TABLE_COUNT],
             updates: None,
         };
         self.ingest_changed(format, frame, named, cancelled, &changes)
@@ -1508,7 +1505,7 @@ impl ProductionAccumulator {
         equipment_changed: bool,
         rocket_changed: bool,
     ) -> io::Result<Option<EndpointPage>> {
-        let cpu = ::replay::cpu::scope_phase("production:settle_reconcile");
+        let cpu = ::replay_frame::cpu::scope_phase("production:settle_reconcile");
         check_cancel(cancelled)?;
         if self.schema != 1 {
             return Err(io::Error::new(
@@ -1539,7 +1536,7 @@ impl ProductionAccumulator {
         let diagnostics_before = self.diagnostic_counts();
         let consecutive = self.last_frame.and_then(|last| last.checked_add(1)) == Some(frame.hour);
         drop(cpu);
-        let cpu = ::replay::cpu::scope_phase("production:observe_apply");
+        let cpu = ::replay_frame::cpu::scope_phase("production:observe_apply");
         self.observe(format, frame, equipment_changed, rocket_changed)?;
         for (values, origin, restart) in [
             (
@@ -1564,7 +1561,7 @@ impl ProductionAccumulator {
             }
         }
         drop(cpu);
-        let cpu = ::replay::cpu::scope_phase("production:spending_projection_series");
+        let cpu = ::replay_frame::cpu::scope_phase("production:spending_projection_series");
         self.observe_spent(frame.hour)?;
         drop(cpu);
         let numeric_read = slot_read(
@@ -1590,7 +1587,7 @@ impl ProductionAccumulator {
             check_cancel(cancelled)?;
             return Ok(None);
         }
-        let cpu = ::replay::cpu::scope_phase("production:presentation");
+        let cpu = ::replay_frame::cpu::scope_phase("production:presentation");
         // A fresh hourly catalogue is empty outside a complete variant read.
         // At a complete read only changed operands need building again.
         let complete_names = VariantCatalogue::hour_of(format, frame) == VariantHour::Read;
@@ -1674,7 +1671,7 @@ impl ProductionAccumulator {
             }
         }
         drop(cpu);
-        let _cpu = ::replay::cpu::scope_phase("production:endpoint_projection");
+        let _cpu = ::replay_frame::cpu::scope_phase("production:endpoint_projection");
         let mut countries = Vec::new();
         let tags: BTreeSet<_> = self
             .country_reads
@@ -1856,7 +1853,7 @@ impl ProductionAccumulator {
                 None
             }
         };
-        let _pruning = ::replay::cpu::scope_phase("production:pruning");
+        let _pruning = ::replay_frame::cpu::scope_phase("production:pruning");
         // Only current supplying reads and retained row counters survive a frame.
         for tag in &self.result.active {
             compact(
@@ -2763,7 +2760,7 @@ pub fn publish_endpoint_to(
             "Prepared production schema or branch mismatch",
         ));
     }
-    let _cpu = ::replay::cpu::scope_phase("production:series_flush");
+    let _cpu = ::replay_frame::cpu::scope_phase("production:series_flush");
     let mut header = page.clone();
     let mut active = BTreeSet::new();
     for row in &mut header.countries {

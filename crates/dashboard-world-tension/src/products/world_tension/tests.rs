@@ -1,10 +1,8 @@
 use super::test_fixtures::{Threat, tension_frame, tension_slot};
 use dashboard_base::test_fixtures::{CAMPAIGN, records};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{CountryLinkRow, TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::CountryLinkRow, rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::sync::{Arc, atomic::AtomicBool};
 
 #[test]
@@ -24,7 +22,7 @@ fn prepared_tension_requires_history_for_disappeared_country_names() {
         &[(9, 10_000)],
         &[(31, 90, b"Recorded cause", 10_000, 10_000)],
     );
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let mut remembered = Scan::default();
     remembered.observe(format, &first).unwrap();
     remembered.observe(format, &tail).unwrap();
@@ -230,7 +228,7 @@ fn prepared_tension_share_keeps_wide_amounts_without_intermediate_overflow() {
     let fixture = dashboard_base::prepared::series::tests::Fixture::new();
     let flag = AtomicBool::new(false);
     let mut scan = super::Scan::default();
-    scan.prepare(replay::format::FormatVersion::CURRENT, &frame)
+    scan.prepare(replay_data::format::FormatVersion::CURRENT, &frame)
         .unwrap();
     let mut writer = fixture.writer();
     scan.flush(&mut writer, 1, &flag).unwrap();
@@ -248,7 +246,7 @@ fn prepared_tension_share_keeps_wide_amounts_without_intermediate_overflow() {
     );
     assert_eq!(
         reader.value_at(6, 100).unwrap().unwrap().value,
-        i128::from(i64::MAX) * i128::from(engine::cworld_threat::SCALAR_DIVISOR)
+        i128::from(i64::MAX) * i128::from(engine_stability::cworld_threat::SCALAR_DIVISOR)
     );
 }
 
@@ -750,7 +748,7 @@ fn tension_changes_keep_quiet_hours_and_closed_history_flat_and_source_changes_a
         frame_changes::FrameChangeTracker,
         observer_tests::{assert_flat, scaled_work, unchanged_frames},
     };
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let initial = tension_frame(
         100,
         true,
@@ -916,7 +914,7 @@ fn tension_deferred_sources_and_refusal_rates_match_oracle_after_quiet_commits_r
 fn tension_identity_change_reuses_unchanged_aggregate_and_source_operands() {
     use super::Scan;
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let initial = tension_frame(
         100,
         true,
@@ -942,7 +940,7 @@ fn tension_identity_change_reuses_unchanged_aggregate_and_source_operands() {
             .tag = b"RENAMED".to_vec();
     }
     let changed_rows = changed
-        .complete::<replay::rows::tables::Countries>()
+        .complete::<replay_data::rows::tables::Countries>()
         .unwrap()
         .len();
     scan.prepare_changed(format, &changed, &tracker.observe(&changed, format))
@@ -971,8 +969,9 @@ fn tension_one_source_change_never_walks_five_thousand_held_contributions() {
             let mut first = dashboard_base::test_fixtures::scale_frame(1, 100, countries as u32);
             *first.tables[TableId::WorldTension.index()] =
                 TableView::Complete(TableRows::WorldTension(vec![
-                    replay::rows::WorldTensionRow {
-                        total_raw: countries as i64 / engine::cworld_threat::SCALAR_DIVISOR,
+                    replay_data::rows::WorldTensionRow {
+                        total_raw: countries as i64
+                            / engine_stability::cworld_threat::SCALAR_DIVISOR,
                         source_count: 1,
                         country_aggregate_count: countries as i32,
                     },
@@ -980,7 +979,7 @@ fn tension_one_source_change_never_walks_five_thousand_held_contributions() {
             *first.tables[TableId::ThreatCountryAggregates.index()] =
                 TableView::Complete(TableRows::ThreatCountryAggregates(
                     (0..countries)
-                        .map(|slot| replay::rows::ThreatCountryAggregateRow {
+                        .map(|slot| replay_data::rows::ThreatCountryAggregateRow {
                             country_slot: slot as u32,
                             total_raw: 1,
                         })
@@ -988,7 +987,7 @@ fn tension_one_source_change_never_walks_five_thousand_held_contributions() {
                 ));
             *first.tables[TableId::ThreatSources.index()] =
                 TableView::Complete(TableRows::ThreatSources(vec![
-                    replay::rows::ThreatSourceRow {
+                    replay_data::rows::ThreatSourceRow {
                         ordinal: 0,
                         country: 100_000,
                         current_raw: countries as i64,
@@ -999,7 +998,7 @@ fn tension_one_source_change_never_walks_five_thousand_held_contributions() {
                     },
                 ]));
             first.metrics.table_ns[TableId::WorldTension.index()] = 1;
-            let format = replay::format::FormatVersion::CURRENT;
+            let format = replay_data::format::FormatVersion::CURRENT;
             let mut scan = Scan::default();
             let mut tracker = FrameChangeTracker::new();
             scan.prepare_changed(format, &first, &tracker.observe(&first, format))?;

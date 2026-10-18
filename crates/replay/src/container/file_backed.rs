@@ -55,7 +55,7 @@ impl Replay {
             return Err(invalid("invalid trailer extent"));
         }
         let read = |file: &mut dyn Read, length: u64| -> io::Result<Vec<u8>> {
-            let mut bytes = engine::allocation::filled(to_usize(length)?, 0)?;
+            let mut bytes = engine_allocation::filled(to_usize(length)?, 0)?;
             file.read_exact(&mut bytes)?;
             Ok(bytes)
         };
@@ -63,7 +63,7 @@ impl Replay {
         let trailer = read(file, trailer_length)?;
         let mut warnings = Vec::new();
         if crc32fast::hash(&trailer) != crc {
-            engine::allocation::reserve(&mut warnings, 1)?;
+            engine_allocation::reserve(&mut warnings, 1)?;
             warnings.push("trailer CRC mismatch".into());
         }
         // The existing header has two length-prefixed values after its fixed prefix.
@@ -121,7 +121,7 @@ impl Replay {
     }
 
     pub(super) fn held_block_bytes(&self, index: &BlockIndex) -> io::Result<Vec<u8>> {
-        let mut bytes = engine::allocation::filled(to_usize(index.length)?, 0)?;
+        let mut bytes = engine_allocation::filled(to_usize(index.length)?, 0)?;
         self.read_at(index.offset, &mut bytes)?;
         Ok(bytes)
     }
@@ -150,7 +150,7 @@ impl Replay {
             .checked_add(offset as u64)
             .ok_or_else(|| invalid("block offset overflow"))?;
         if self.file.is_some() {
-            let mut bytes = engine::allocation::filled(length, 0)?;
+            let mut bytes = engine_allocation::filled(length, 0)?;
             self.read_at(start, &mut bytes)?;
             return Ok(Cow::Owned(bytes));
         }

@@ -3,7 +3,11 @@ use crate::extended::bench_world::{self, Shape, World};
 
 /// The median and p95 of the LandTheatres header copy, of the order of
 /// battle copy and of the callback's registry census it walks, in µs.
-fn time_copies(memory: &impl engine::Memory, world: &World, job: &mut NavalJob) -> [(f64, f64); 3] {
+fn time_copies(
+    memory: &impl engine_native::Memory,
+    world: &World,
+    job: &mut NavalJob,
+) -> [(f64, f64); 3] {
     let theatres = bench_world::time(50, || {
         job.log.clear();
         copy_naval_theatres(
@@ -31,7 +35,7 @@ fn time_copies(memory: &impl engine::Memory, world: &World, job: &mut NavalJob) 
 }
 
 /// The callback's registry census of the pass into the job's snapshot.
-fn census_roots(memory: &impl engine::Memory, world: &World, job: &mut NavalJob) {
+fn census_roots(memory: &impl engine_native::Memory, world: &World, job: &mut NavalJob) {
     let mut roots = vec![corders_group::Root::default(); world.groups as usize];
     let outcome = corders_group::walk_roots(memory, world.base, &mut roots);
     job.capture_roots(&roots, outcome);
@@ -52,8 +56,8 @@ fn l3b_bench_hourly_land_theatres_and_order_of_battle_ordinals() {
             let slice = world.slice();
             // The callback's country census of the hour, as the Naval job
             // sees it: every copy reads through its roster view.
-            let mut countries_cache = engine::country_memory::Cache::try_with_capacity(
-                engine::country_memory::Cache::cells_for_countries(
+            let mut countries_cache = engine_native::country_memory::Cache::try_with_capacity(
+                engine_native::country_memory::Cache::cells_for_countries(
                     countries as usize + 1,
                     crate::country_scale::MIN_COUNTRY_CELLS,
                 ),
@@ -100,7 +104,10 @@ fn l3b_bench_hourly_land_theatres_and_order_of_battle_ordinals() {
                 copy_naval_oob(&mut job, &countries_cache.roster_view(memory), world.base);
             });
             let all = |counts| {
-                bench_world::work(bench_world::total(&counts, &replay::rows::TableId::ALL))
+                bench_world::work(bench_world::total(
+                    &counts,
+                    &replay_data::rows::TableId::ALL,
+                ))
             };
             println!(
                 "naval-work countries={countries} theatre_links={theatre_links}: LandTheatres copy {}; order-of-battle copy {}; roots census {}",

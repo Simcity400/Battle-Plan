@@ -193,7 +193,9 @@ pub enum Phase {
     },
     /// Its heading line has no point where it could fly again under the content's
     /// `CAMERA_MAX_HEIGHT`; the camera holds at `eye` over the wreck.
-    Wrecked { eye: [f32; 3] },
+    Wrecked {
+        eye: [f32; 3],
+    },
 }
 
 /// One flight.
@@ -303,8 +305,7 @@ impl Flight {
                 seconds, exploded, ..
             } => {
                 *seconds += dt;
-                *exploded =
-                    *exploded || !airframe.explodes || airframe.ground.exploded(played);
+                *exploded = *exploded || !airframe.explodes || airframe.ground.exploded(played);
                 if *exploded && *seconds >= RESPAWN_AFTER {
                     self.respawn(map, floor, airframe, footprints);
                 }
@@ -353,8 +354,8 @@ impl Flight {
         // Looking around turns the chase camera away and springs back when let go.
         if free_look {
             self.look[0] = (self.look[0] + frame.look[0] * MOUSE_AIM).clamp(-PI, PI);
-            self.look[1] = (self.look[1] - frame.look[1] * MOUSE_AIM)
-                .clamp(-LOOK_RANGE[1], LOOK_RANGE[1]);
+            self.look[1] =
+                (self.look[1] - frame.look[1] * MOUSE_AIM).clamp(-LOOK_RANGE[1], LOOK_RANGE[1]);
         } else {
             self.look = [0, 1].map(|axis| {
                 approach(
@@ -407,9 +408,10 @@ impl Flight {
             self.position[1] = self.position[1].min(ceiling);
             // Each probe is swept along its path before the position wraps onto the first copy.
             let after = self.probes(airframe.size);
-            let struck = before.iter().zip(&after).any(|(from, to)| {
-                sweeps_into(floor, width, *from, *to, airframe.ground.offset)
-            });
+            let struck = before
+                .iter()
+                .zip(&after)
+                .any(|(from, to)| sweeps_into(floor, width, *from, *to, airframe.ground.offset));
             self.position[0] = self.position[0].rem_euclid(width);
             if struck {
                 self.phase = Phase::Crashed {
@@ -429,8 +431,14 @@ impl Flight {
     fn probes(&self, size: f32) -> [[f32; 3]; 5] {
         let [right, _, forward] = self.attitude().axes();
         let reach = size.max(0.0);
-        [[0.0; 3], forward, forward.map(|v| -v), right, right.map(|v| -v)]
-            .map(|axis| std::array::from_fn(|i| self.position[i] + axis[i] * reach))
+        [
+            [0.0; 3],
+            forward,
+            forward.map(|v| -v),
+            right,
+            right.map(|v| -v),
+        ]
+        .map(|axis| std::array::from_fn(|i| self.position[i] + axis[i] * reach))
     }
 
     /// [`Flight::update`] with footprints of its own, for tests, with an explosion clip played
@@ -442,7 +450,14 @@ impl Flight {
             Phase::Crashed { seconds, .. } => Some(Some((seconds, f32::INFINITY))),
             _ => None,
         };
-        self.update(frame, map, floor, airframe, played, &mut Footprints::default());
+        self.update(
+            frame,
+            map,
+            floor,
+            airframe,
+            played,
+            &mut Footprints::default(),
+        );
     }
 
     /// Whether the aircraft's origin, nose, tail or a wingtip is at or below the drawn ground or
@@ -474,7 +489,13 @@ impl Flight {
         let (sin, cos) = self.yaw.sin_cos();
         let ahead = speed * RESPAWN_AHEAD;
         let [x, z] = [self.position[0], self.position[2]];
-        let here = highest(floor, width, [x, z], [x + sin * ahead, z + cos * ahead], reach) + lift;
+        let here = highest(
+            floor,
+            width,
+            [x, z],
+            [x + sin * ahead, z + cos * ahead],
+            reach,
+        ) + lift;
         let found = if here <= ceiling {
             Some([x.rem_euclid(width), here, z])
         } else {
@@ -591,11 +612,7 @@ impl Flight {
         camera.hold_free(&lifted, pose.lens.near * CAMERA_CLEARANCE);
         // The eye moved onto the first copy; the aircraft moves with it.
         let shift = ((camera.center[0] - eye[0]) / width).round() * width;
-        let position = [
-            self.position[0] + shift,
-            self.position[1],
-            self.position[2],
-        ];
+        let position = [self.position[0] + shift, self.position[1], self.position[2]];
         let aircraft = match self.phase {
             Phase::Flying => (self.view == View::Chase).then(|| self.instance(position)),
             // It explodes where it struck until the explosion has played, then goes.
@@ -642,7 +659,13 @@ impl Flight {
 /// `x - z = n` and `x + z = n` for whole `n` (its cells and either of their diagonals), and so is
 /// the water under it, so the probe's height over each, and over the higher of the two, is linear
 /// between consecutive crossings of those lines: testing both ends and every crossing is exact.
-pub fn sweeps_into(floor: Floor<'_>, width: f32, from: [f32; 3], to: [f32; 3], offset: f32) -> bool {
+pub fn sweeps_into(
+    floor: Floor<'_>,
+    width: f32,
+    from: [f32; 3],
+    to: [f32; 3],
+    offset: f32,
+) -> bool {
     let meets = |t: f32| {
         let point: [f32; 3] = std::array::from_fn(|i| from[i] + (to[i] - from[i]) * t);
         point[1] <= ground(floor, width, point[0], point[2]) + offset

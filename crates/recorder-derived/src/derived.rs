@@ -1,11 +1,11 @@
 //! Offline proof that playback's derivations reproduce what a recording holds,
 //! province by province and hour by hour, with the recording's own content
-//! stack: the day/night clocks of `WeatherProvinces` ([`replay::day_night`]),
-//! its temperatures ([`replay::temperature`], [`temperature`]) and the
+//! stack: the day/night clocks of `WeatherProvinces` ([`replay_data::day_night`]),
+//! its temperatures ([`replay_data::temperature`], [`temperature`]) and the
 //! selected army's attack operands against the native ones a recording made
 //! with the collector's `attack_witness` diagnostic holds ([`attack`]), and the
 //! power-balance description trees against their native witnesses
-//! ([`replay::power_balance_derive`], [`power_balance`]). A recording from a
+//! ([`replay_derive::power_balance_derive`], [`power_balance`]). A recording from a
 //! `naval_tree_oracle` collector also checks the naval hover trees' join and
 //! carry against their fresh native samples ([`naval_trees`]). Every division
 //! that keeps its edge across two consecutive hours also compares playback's
@@ -24,13 +24,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use installed_content::ResolveOptions;
-use replay::{
-    container::Replay,
-    day_night::{self, Clock, HourOperands, ProvinceClock},
-    frame::{DecodedFrame, Frame, FrameDecoder, TABLE_COUNT, TableUpdate, TableView},
-    identity::Verification,
-    rows::{ClockState, Recorded, TableId, tables},
+use installed_content_core::ResolveOptions;
+use replay::container::Replay;
+use replay_data::rows::TABLE_COUNT;
+use replay_data::{
+    day_night, day_night::Clock, day_night::HourOperands, day_night::ProvinceClock,
+    identity::Verification, rows::ClockState, rows::Recorded, rows::TableId, rows::tables,
+};
+use replay_frame::{
+    frame::DecodedFrame, frame::Frame, frame::FrameDecoder, frame::TableUpdate, frame::TableView,
 };
 
 mod attack;
@@ -69,11 +71,11 @@ struct Content {
     /// Day/night geometry constants by province id.
     clocks: BTreeMap<u32, ProvinceClock>,
     /// What the hourly temperature pass reads.
-    temperature: Result<replay::temperature::Content, String>,
+    temperature: Result<replay_data::temperature::Content, String>,
     /// Each terrain category's own adjuster attack, in database order.
     terrains: Result<Vec<i64>, String>,
     /// The verified stack, for lazily read databases (static modifiers).
-    layers: installed_content::ResolvedLayers,
+    layers: installed_content_core::ResolvedLayers,
 }
 
 fn content(
@@ -117,14 +119,14 @@ fn content(
     };
     // The movement speed's modifier keys are checked against the installation's
     // executable metadata, as the save comparison checks them.
-    engine::executable_tables::initialize(&options.game_dir)?;
-    let resolved = installed_content::resolve(&session.identity, &options)?;
-    let defines = installed_content::defines::read(&resolved.layers)?;
+    engine_executable::executable_tables::initialize(&options.game_dir)?;
+    let resolved = installed_content_core::resolve(&session.identity, &options)?;
+    let defines = installed_content_core::defines::read(&resolved.layers)?;
     let defines = day_night::Defines::read(
         |section, name| defines.int32(section, name),
         |section, name| defines.fixed5(section, name),
     )?;
-    let geometry = installed_content::province_geometry::ProvinceGeometry::read(&resolved.layers)?;
+    let geometry = installed_content_core::province_geometry::ProvinceGeometry::read(&resolved.layers)?;
     let map = [geometry.width, geometry.height];
     let clocks = geometry
         .centroids
@@ -138,9 +140,9 @@ fn content(
         map[1],
         defines
     );
-    let temperature =
-        installed_content::weather::temperature::read(&resolved.layers).map_err(|error| error.to_string());
-    let terrains = installed_content::terrain::read_definitions(&resolved.layers)
+    let temperature = installed_content_weather::weather::temperature::read(&resolved.layers)
+        .map_err(|error| error.to_string());
+    let terrains = installed_content_core::terrain::read_definitions(&resolved.layers)
         .map(|terrain| {
             terrain
                 .categories

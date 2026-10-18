@@ -1,5 +1,5 @@
 //! Allocation-free notifications from the native writers of the country air
-//! histories AirNavalPatrolHistories records ([`engine::air_history_mutations`]).
+//! histories AirNavalPatrolHistories records ([`engine_air_history::air_history_mutations`]).
 //! A detour only notifies the shared watch registry ([`WatchRegistry`]),
 //! counts its writer site and calls the original; it never changes game
 //! behaviour. Receivers are strategic air objects and histories the collector
@@ -10,7 +10,8 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{Memory, air_history_mutations::MUTATIONS};
+use engine_air_history::air_history_mutations::MUTATIONS;
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -19,8 +20,8 @@ use std::{
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
 static READS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
-static SCENARIO_REFUSALS: [AtomicU64; engine::air_kamikaze::SCENARIO_REFUSALS.len()] =
-    [const { AtomicU64::new(0) }; engine::air_kamikaze::SCENARIO_REFUSALS.len()];
+static SCENARIO_REFUSALS: [AtomicU64; engine_air_history::air_kamikaze::SCENARIO_REFUSALS.len()] =
+    [const { AtomicU64::new(0) }; engine_air_history::air_kamikaze::SCENARIO_REFUSALS.len()];
 /// Hours that copied every held history afresh, by cause: an invalidation,
 /// a larger watch table, or the hour before failing or being dropped.
 static RESTARTS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
@@ -211,7 +212,9 @@ pub fn record(counts: &crate::air_histories::Counts) {
     }
 }
 
-pub fn record_scenario_refusals(counts: &[u64; engine::air_kamikaze::SCENARIO_REFUSALS.len()]) {
+pub fn record_scenario_refusals(
+    counts: &[u64; engine_air_history::air_kamikaze::SCENARIO_REFUSALS.len()],
+) {
     for (target, &count) in SCENARIO_REFUSALS.iter().zip(counts) {
         target.fetch_add(count, Ordering::Relaxed);
     }
@@ -254,7 +257,7 @@ pub fn status() -> impl serde::Serialize {
         "sampled_mismatches": SAMPLED.mismatches(),
         "last_mismatch": SAMPLED.last_mismatch(),
         "slice": SAMPLED.slice(),
-        "scenario_refusals": crate::status::map(engine::air_kamikaze::SCENARIO_REFUSALS.into_iter()
+        "scenario_refusals": crate::status::map(engine_air_history::air_kamikaze::SCENARIO_REFUSALS.into_iter()
             .zip(SCENARIO_REFUSALS.iter().map(|count| count.load(Ordering::Relaxed)))),
         "events": events,
         "watches": WATCHES.registry.status(),
@@ -285,7 +288,7 @@ impl Hooks {
                 advance as *const () as usize,
             ];
             for (index, site) in MUTATIONS.iter().enumerate() {
-                if engine::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+                if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
                     return Err("air history hook sentinel differs");
                 }
                 let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }

@@ -3,7 +3,7 @@
 
 use super::*;
 use installed_content_save::naval_launch::CountryNavalLaunchOccurrence;
-use replay::rows::{LaunchNavalBases, Recorded, ReservedCountryNamingRow};
+use replay_data::{rows::LaunchNavalBases, rows::Recorded, rows::ReservedCountryNamingRow};
 
 const LABEL: &str = "ReservedCountryNaming.launch_sources";
 

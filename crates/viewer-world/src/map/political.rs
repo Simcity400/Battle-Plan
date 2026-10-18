@@ -20,7 +20,7 @@
 //! scoped to those countries and visible rather than blanking land.
 
 #[cfg(test)]
-use replay::rows::SubjectRow;
+use replay_data::rows::SubjectRow;
 use std::sync::Arc;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -29,14 +29,10 @@ use std::{
 };
 use viewer_foundation::map::color_inheritance::{active_subject, inheritance, slot_of};
 
-use installed_content::{
-    map::{MapData, ProvinceKind},
-    regions::StrategicRegion,
-};
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryRow, ProvinceRow, tables},
-};
+use installed_content_core::{map::MapData, map::ProvinceKind};
+use installed_content_regions::regions::StrategicRegion;
+use replay_data::{rows::CountryRow, rows::ProvinceRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use {
     super::gradient::NO_REGION,

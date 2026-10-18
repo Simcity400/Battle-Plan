@@ -1,7 +1,7 @@
 //! Native names for the additional event scope carriers.
 
 use super::*;
-use replay::rows::{RaidScope, tables};
+use replay_data::{rows::RaidScope, rows::tables};
 
 #[cfg(test)]
 mod tests;
@@ -65,13 +65,13 @@ impl Renderer<'_, '_, '_> {
             && let Some(wing) = wings.iter().find(|row| row.id == reference)
         {
             let bytes = match &wing.name {
-                replay::rows::Recorded::Value(Some(bytes)) => bytes.as_slice(),
-                replay::rows::Recorded::Value(None) => {
+                replay_data::rows::Recorded::Value(Some(bytes)) => bytes.as_slice(),
+                replay_data::rows::Recorded::Value(None) => {
                     return Err(format!(
                         "AirWings UNIT {reference:#x} stored name unavailable: guarded read or name arena refusal"
                     ));
                 }
-                replay::rows::Recorded::NotRecorded => {
+                replay_data::rows::Recorded::NotRecorded => {
                     let bytes = self.context.world()?.raid_wing_name(reference)?;
                     return crate::scripted_text::stored_text(
                         self.context.localisation,
@@ -161,7 +161,7 @@ impl Renderer<'_, '_, '_> {
             let database = cache
                 .raids
                 .get_or_init(|| {
-                    installed_content::raids::read(&self.context.text.content().layers.layers)
+                    installed_content_raids::raids::read(&self.context.text.content().layers.layers)
                         .map_err(|why| why.to_string())
                 })
                 .as_ref()
@@ -209,7 +209,7 @@ impl Renderer<'_, '_, '_> {
     fn raid_target_name(
         &self,
         scope: &RaidScope,
-        kind: Option<&installed_content::raids::RaidType>,
+        kind: Option<&installed_content_raids::raids::RaidType>,
     ) -> Result<String, String> {
         let province = if scope.province != 0 {
             scope.province

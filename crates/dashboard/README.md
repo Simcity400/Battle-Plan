@@ -672,7 +672,7 @@ the deposited blocks as `independent.shared_deposited`; a family's own read
 rows keep its wait and its reconstruction.
 
 A pre-pass family may declare the fields it reads (`Family::fields`, as
-`replay::TableFields`, a table optionally visited at every read). Its blocks
+`replay::container::TableFields`, a table optionally visited at every read). Its blocks
 are then read only at the hours those fields, row keys or availability change
 (`Replay::read_block_changes`): its extract observes the block's first hour and
 each such hour with the change facts the block read alone has there
@@ -3339,11 +3339,13 @@ and smoke workflow in [recorder](../recorder/README.md).
 
 Rust owns [ui/src/generated/dashboard.ts](../../ui/src/generated/dashboard.ts);
 do not hand-edit it. From the repository root, generate changed types and check
-that the committed contract matches:
+that the committed contract matches. The `export-types` feature enables contract
+assembly and the registry's declaration entry points; ordinary host builds omit
+them. Unit tests retain the same contract checks without needing the feature.
 
 ```powershell
-cargo run -q --profile test -p dashboard --bin export-types
-cargo run -q --profile test -p dashboard --bin export-types -- --check
+cargo run -q --profile test -p dashboard --features export-types --bin export-types
+cargo run -q --profile test -p dashboard --features export-types --bin export-types -- --check
 ```
 
 UI changes also need `npm.cmd run check:ui` and `npm.cmd run test:ui`, as described
@@ -3769,7 +3771,7 @@ countries, native holders and selected tables have distinct entries.
 
 ## Fold CPU measurements
 
-When `replay::cpu` is enabled, independent family workers split their CPU into
+When `replay_frame::cpu` is enabled, independent family workers split their CPU into
 `fold driver`, `fold binds`, `fold facts`, `fold frame` and `fold observe`.
 Driver scopes cover a block, each kept hour, and each quiet hour or span the
 family consumes. Existing family phases retain their names inside observation.

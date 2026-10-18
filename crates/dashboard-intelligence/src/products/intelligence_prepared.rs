@@ -24,14 +24,15 @@ use dashboard_base::{
 };
 use dashboard_core::config::LoadContext;
 use replay::{
-    container::{BlockIndex, QuietHours, Replay, TableFields},
-    format::FormatVersion,
-    frame::{DecodedFrame, SharedView, TABLE_COUNT, TableView},
-    rows::{
-        AutonomyRow, CountryAppearanceRow, CountryRow, IntelligenceAgencyRow, PoliticalPartyRow,
-        PoliticsRow, RaidIntelInputRow, TableId, TableSchema, tables,
-    },
+    container::BlockIndex, container::QuietHours, container::Replay, container::TableFields,
 };
+use replay_data::rows::TABLE_COUNT;
+use replay_data::{
+    format::FormatVersion, rows::AutonomyRow, rows::CountryAppearanceRow, rows::CountryRow,
+    rows::IntelligenceAgencyRow, rows::PoliticalPartyRow, rows::PoliticsRow,
+    rows::RaidIntelInputRow, rows::TableId, rows::TableSchema, rows::tables,
+};
+use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView};
 use std::{
     any::Any,
     io,
@@ -136,7 +137,7 @@ impl Observer {
         key: &store::SourceKey,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("intelligence:observe");
+        let _cpu = ::replay_frame::cpu::scope_phase("intelligence:observe");
         self.countries.update(frame, Some(changes));
         self.decryption.observe_bound(
             frame,
@@ -195,7 +196,7 @@ impl Observer {
     ) -> io::Result<()> {
         self.roster.note_rebuilt(rebuilt);
         let changes = {
-            let _cpu = ::replay::cpu::scope("frame changes", None);
+            let _cpu = ::replay_frame::cpu::scope("frame changes", None);
             let mut changes = FrameChanges {
                 rows_changed: [false; TABLE_COUNT],
                 table_read: [false; TABLE_COUNT],
@@ -663,7 +664,7 @@ impl State {
 
     /// The content hourly preparation binds before its first frame.
     fn bind(&mut self, source: &Source, context: &LoadContext) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope("fold binds", None);
+        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
         if self.content.is_none() {
             self.content = Some(Content::load(source, context)?);
         }
@@ -684,9 +685,9 @@ impl State {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<(Folded, Option<i32>)> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         let facts = {
-            let _cpu = ::replay::cpu::scope("fold facts", None);
+            let _cpu = ::replay_frame::cpu::scope("fold facts", None);
             facts
                 .downcast::<BlockFacts>()
                 .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -706,14 +707,14 @@ impl State {
         let mut last: Option<DecodedFrame> = None;
         let mut reached = None;
         for hour in facts.hours {
-            let _cpu = ::replay::cpu::scope("fold driver", None);
+            let _cpu = ::replay_frame::cpu::scope("fold driver", None);
             check()?;
             match hour {
                 Hour::Kept { frame, changes } => {
                     prepass::note(KEPT_HOURS);
                     reached = Some(frame.hour);
                     let result = {
-                        let _cpu = ::replay::cpu::scope("fold observe", None);
+                        let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                         observer
                             .observe(source, content, &frame, &changes, &store, &key, &cancelled)
                     };
@@ -724,7 +725,7 @@ impl State {
                 }
                 Hour::Quiet { first, rebuilt } => {
                     let mut frame = {
-                        let _cpu = ::replay::cpu::scope("fold frame", None);
+                        let _cpu = ::replay_frame::cpu::scope("fold frame", None);
                         last.clone().ok_or_else(|| {
                             io::Error::other(
                                 "Intelligence hours were quiet before the block's first",
@@ -735,7 +736,7 @@ impl State {
                     // keeps its hour.
                     frame.metrics.table_ns = [0; TABLE_COUNT];
                     for (offset, bits) in rebuilt.into_iter().enumerate() {
-                        let _cpu = ::replay::cpu::scope("fold driver", None);
+                        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
                         check()?;
                         let hour = i32::try_from(offset)
                             .ok()
@@ -751,7 +752,7 @@ impl State {
                                 .is_some_and(|bit| bits & (1 << bit) != 0)
                         };
                         let result = {
-                            let _cpu = ::replay::cpu::scope("fold observe", None);
+                            let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                             observer.observe_quiet(
                                 source, content, &frame, &rebuilt, &store, &key, &cancelled,
                             )
@@ -790,7 +791,7 @@ impl State {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         self.bind(source, context)?;
         let (store, key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
         let cancelled = AtomicBool::new(false);
@@ -808,14 +809,14 @@ impl State {
             index,
             TABLES,
             |raw, frame| {
-                let _cpu = ::replay::cpu::scope("fold driver", None);
+                let _cpu = ::replay_frame::cpu::scope("fold driver", None);
                 let facts = tracker.observe_updates(frame, Arc::new(raw), replay.format);
                 if stopped {
                     return Ok(());
                 }
                 reached = Some(frame.hour);
                 let result = {
-                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     observer.observe(source, content, frame, &facts, &store, &key, &cancelled)
                 };
                 match observed(frame.hour, result) {
@@ -918,14 +919,12 @@ mod tests {
         prepared::{frame_changes::FrameChangeTracker, observer_tests, series::tests::Fixture},
         test_fixtures,
     };
-    use replay::{
-        container::Replay,
-        frame::TableView,
-        rows::{
-            CountryLinkRow, CountryRow, IntelligenceAgencyRow, SimulationFeatureRow, TableId,
-            TableRows,
-        },
+    use replay::container::Replay;
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::IntelligenceAgencyRow,
+        rows::SimulationFeatureRow, rows::TableId, rows::TableRows,
     };
+    use replay_frame::frame::TableView;
     use std::sync::Arc;
 
     fn frame() -> DecodedFrame {
@@ -976,7 +975,7 @@ mod tests {
             TableView::Complete(TableRows::Operations(Vec::new()));
         *input.tables[TableId::OperationCompletions.index()] =
             TableView::Complete(TableRows::OperationCompletions(Vec::new()));
-        input.metrics.table_ns = [0; replay::frame::TABLE_COUNT];
+        input.metrics.table_ns = [0; replay_data::rows::TABLE_COUNT];
         input.metrics.table_ns[TableId::OperativeMemberships.index()] = 1;
         input
     }
@@ -1072,7 +1071,7 @@ mod tests {
 
     #[test]
     fn intel_shared_driver_database_success_and_failure_bind_before_observation() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for metadata tables");
         for success in [true, false] {
             let files = if success {
@@ -1089,7 +1088,7 @@ mod tests {
             let fixture = Fixture::new();
             let flag = AtomicBool::new(false);
             let options = dashboard_core::config::ContentOptions {
-                options: installed_content::ResolveOptions {
+                options: installed_content_core::ResolveOptions {
                     game_dir: folder.0.clone(),
                     user_dir: folder.0.join("user"),
                     cache_dir: folder.0.join("cache"),

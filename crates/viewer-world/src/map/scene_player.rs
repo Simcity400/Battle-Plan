@@ -55,7 +55,10 @@ impl Player {
         queue: &wgpu::Queue,
         model: PlayerModel<'_>,
     ) -> io::Result<()> {
-        if slot.as_ref().is_none_or(|player| player.label != model.label) {
+        if slot
+            .as_ref()
+            .is_none_or(|player| player.label != model.label)
+        {
             *slot = Some(Self {
                 pass: ModelPass::new(model.library, model.label),
                 label: model.label,
@@ -84,9 +87,15 @@ impl Player {
         );
         player.pass.replace_field(model.library, &mut player.field);
         if entity_changed {
-            player.pass.make_field_resident(device, queue, model.library)?;
+            player
+                .pass
+                .make_field_resident(device, queue, model.library)?;
         }
-        let bound = model.library.meshes.get(model.mesh).map_or(0.0, |mesh| mesh.bound);
+        let bound = model
+            .library
+            .meshes
+            .get(model.mesh)
+            .map_or(0.0, |mesh| mesh.bound);
         player.sphere = (model.instance.position, bound * model.instance.scale);
         player.placed = Some(placement);
         Ok(())
@@ -115,11 +124,10 @@ pub fn copies(camera: &Camera, viewport: [u32; 2], (centre, radius): Sphere, out
     }
     let lens = camera.lens();
     let corners = frustum::corners(camera, viewport, lens.near, lens.far);
-    let (west, east) = corners
-        .iter()
-        .fold((f32::INFINITY, f32::NEG_INFINITY), |(west, east), corner| {
-            (west.min(corner[0]), east.max(corner[0]))
-        });
+    let (west, east) = corners.iter().fold(
+        (f32::INFINITY, f32::NEG_INFINITY),
+        |(west, east), corner| (west.min(corner[0]), east.max(corner[0])),
+    );
     if !(west.is_finite() && east.is_finite()) {
         return;
     }

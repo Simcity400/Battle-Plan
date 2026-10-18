@@ -10,7 +10,7 @@ impl Renderer<'_, '_, '_> {
         self.context
             .content
             .key_names
-            .map(|names| installed_content::effect_keys::adds_child(item, names).unwrap_or(true))
+            .map(|names| installed_content_core::effect_keys::adds_child(item, names).unwrap_or(true))
             .unwrap_or_else(|| self.effect_class(item).is_some())
     }
 
@@ -213,7 +213,7 @@ impl Renderer<'_, '_, '_> {
                 "scripted-effect description depth exceeds the 64-level stack limit".into(),
             );
         }
-        let name = installed_content::parser::c_string(item.key.as_deref().unwrap_or_default())
+        let name = installed_content_core::parser::c_string(item.key.as_deref().unwrap_or_default())
             .to_ascii_lowercase();
         if self
             .scripted_stack
@@ -283,7 +283,7 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn random_list(&mut self, item: &Item, scopes: Scopes) -> Result<String, String> {
-        let members = installed_content::effect_keys::random_list_members(item)?;
+        let members = installed_content_core::effect_keys::random_list_members(item)?;
         let mut weights = Vec::new();
         let mut total = 0_i64;
         // Exists before Evaluate; modifiers apply in authored order.
@@ -355,7 +355,7 @@ impl Renderer<'_, '_, '_> {
                 graph.scopes[cursor].random_seed_refusal = seed.random_seed_refusal;
             }
             let body = self.group(
-                &installed_content::effect_keys::random_member_fields(member),
+                &installed_content_core::effect_keys::random_member_fields(member),
                 scopes,
                 0,
             );
@@ -464,7 +464,7 @@ impl Renderer<'_, '_, '_> {
                 .scalar()
                 .ok_or("meta_effect parameter is not scalar")?;
             let value = if parameter.quoted() {
-                let text = std::str::from_utf8(installed_content::parser::c_string(value))
+                let text = std::str::from_utf8(installed_content_core::parser::c_string(value))
                     .map_err(|_| "meta_effect parameter is not UTF-8")?;
                 if text.contains('[') {
                     self.expanded(text, scopes)?
@@ -478,7 +478,7 @@ impl Renderer<'_, '_, '_> {
             {
                 integer(value).to_string()
             } else {
-                installed_content::fixed5::fixed5_to_string(self.scoped_value(value, scopes)?, -1)
+                installed_content_core::fixed5::fixed5_to_string(self.scoped_value(value, scopes)?, -1)
             };
             parameters.entry(name.to_vec()).or_insert(value); // The first exact name match.
         }
@@ -503,7 +503,7 @@ impl Renderer<'_, '_, '_> {
             .content
             .key_names
             .ok_or_else(|| self.content_gap("effect key names"))?;
-        let body = installed_content::effect_keys::read_body(&generated, names)?;
+        let body = installed_content_core::effect_keys::read_body(&generated, names)?;
         Ok(self.group(&body, scopes, indent))
     }
 

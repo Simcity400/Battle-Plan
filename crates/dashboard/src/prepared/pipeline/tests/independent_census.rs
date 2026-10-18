@@ -13,7 +13,10 @@ use super::*;
 use crate::prepared::prepass;
 use dashboard_base::prepared::kept::counted;
 use independent::Own;
-use replay::rows::{CountryFactoriesRow, FactionMemberRow, FactionRow, NukeRow, TableRows};
+use replay_data::{
+    rows::CountryFactoriesRow, rows::FactionMemberRow, rows::FactionRow, rows::NukeRow,
+    rows::TableRows,
+};
 
 type Payloads = BTreeMap<(String, u64), Vec<u8>>;
 

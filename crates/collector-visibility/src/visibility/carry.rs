@@ -8,13 +8,12 @@ use crate::{
     country_input_changes::{self as changes, Changes, Counts, Mismatch, Table},
     sampled_verify::Check,
 };
-use engine::{
-    Memory, allocation,
-    ccountry::Country,
-    modifier_accumulator::{self, Value},
-    visibility_inputs as native,
-    walk::{Buffer, Outcome},
+use engine_allocation as allocation;
+use engine_native::{
+    Memory, ccountry::Country, modifier_accumulator, modifier_accumulator::Value, walk::Buffer,
+    walk::Outcome,
 };
+use engine_visibility::visibility_inputs as native;
 
 #[derive(Clone, Copy)]
 struct HeldCountry {

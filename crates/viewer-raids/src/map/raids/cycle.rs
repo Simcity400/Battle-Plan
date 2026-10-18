@@ -26,7 +26,7 @@ use std::{
     sync::Arc,
 };
 
-use replay::{BranchId, Hour, rows::RaidScope};
+use replay_data::{BranchId, Hour, rows::RaidScope};
 
 use super::{
     RaidAssets,

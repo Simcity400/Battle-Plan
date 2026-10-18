@@ -6,13 +6,12 @@
 //! [`super::task_force`].
 
 use super::fresh_search::{available, index};
-use installed_content::unit_path::Fact;
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        FreshTaskForceCounterEta, ShipRow, TableSchema, TaskForceMapMotionRow, TaskForceRow, tables,
-    },
+use installed_content_unit_path::unit_path::Fact;
+use replay_data::{
+    rows::FreshTaskForceCounterEta, rows::ShipRow, rows::TableSchema, rows::TaskForceMapMotionRow,
+    rows::TaskForceRow, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, sync::OnceLock};
 #[cfg(test)]
 use viewer_foundation::table_access::TokenError;
@@ -101,10 +100,8 @@ impl<'a> NavalInputs<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{Recorded, TableRows},
-    };
+    use replay_data::{rows::Recorded, rows::TableRows};
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     fn frame() -> DecodedFrame {
         DecodedFrame {
@@ -133,7 +130,7 @@ mod tests {
                 TableRows::TaskForceMapMotion(vec![TaskForceMapMotionRow {
                     task_force: 7,
                     fresh: Recorded::Value(Some(FreshTaskForceCounterEta {
-                        sample_hour: replay::rows::PacketHour::Stamped(hour),
+                        sample_hour: replay_data::rows::PacketHour::Stamped(hour),
                         base_speed: Some(100_000),
                         ..Default::default()
                     })),
@@ -183,7 +180,7 @@ mod tests {
 
     #[test]
     fn class_tokens_require_complete_strict_key_order() {
-        use replay::rows::LexicalTokenRow;
+        use replay_data::rows::LexicalTokenRow;
         let mut frame = frame();
         assert!(NavalInputs::new(&frame).tokens().is_err());
         put(

@@ -11,9 +11,9 @@ use super::family_lanes::{assert_payloads_equal, payloads};
 use super::*;
 use crate::prepared::prepass;
 use independent::{evaluated, ledger, shared, windowed};
-use replay::rows::{
-    LexicalTokenRow, PoliticsCaptureCoverageRow, ProjectProgramRow, ProjectRow, ProjectState,
-    StateGarrisonRow, StateResistanceRow,
+use replay_data::{
+    rows::LexicalTokenRow, rows::PoliticsCaptureCoverageRow, rows::ProjectProgramRow,
+    rows::ProjectRow, rows::ProjectState, rows::StateGarrisonRow, rows::StateResistanceRow,
 };
 
 type Payloads = BTreeMap<(String, u64), Vec<u8>>;

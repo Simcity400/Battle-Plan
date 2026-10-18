@@ -1,12 +1,12 @@
 use super::*;
 use dashboard_core::test_fixtures::{CAMPAIGN, records, replay, stockpile_frame};
-use replay::frame::{DecodedFrame, TableView};
-use replay::rows::TableRows;
+use replay_data::rows::TableRows;
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 #[test]
 fn one_frame_join_feeds_5000_holder_steps_with_legacy_values_and_independent_gaps() {
     use dashboard_core::test_fixtures::{scale_frame, scale_tag};
-    use replay::rows::{CountryLinkRow, ProductionLineRow, StockpileRow};
+    use replay_data::{rows::CountryLinkRow, rows::ProductionLineRow, rows::StockpileRow};
     let first = stockpile_slot(1000);
     let frames: Vec<_> = [first, first + 1, first + 24, first + 25]
         .into_iter()
@@ -46,7 +46,7 @@ fn one_frame_join_feeds_5000_holder_steps_with_legacy_values_and_independent_gap
                             country: 100_000 + index,
                             handle: u64::from(index) + 1,
                             variant: 10,
-                            kind: engine::cequipment_production_line::KIND_MILITARY,
+                            kind: engine_native::cequipment_production_line::KIND_MILITARY,
                             cost_raw: if index == 0 { 0 } else { 50_000 },
                             speed_raw: 100_000,
                             ..Default::default()
@@ -135,7 +135,7 @@ fn one_frame_join_feeds_5000_holder_steps_with_legacy_values_and_independent_gap
 
 /// Equipment from one authored file.
 fn types(text: &[u8]) -> Database {
-    installed_content::equipment::fixture::load(&[(
+    installed_content_core::equipment::fixture::load(&[(
         "common/units/equipment/fixture.txt",
         std::str::from_utf8(text).unwrap(),
     )])
@@ -167,7 +167,7 @@ fn stockpile_type_titles_preserve_empty_and_key_equal_localisations() {
 
 #[test]
 fn native_equipment_redefinitions_and_diagnostics_are_kept() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let units = types(
         b"equipments = { guns = { is_archetype = maybe } tanks = { is_archetype = yes type = armor } TANKS = { is_archetype = yes type = fighter } }",
@@ -193,7 +193,7 @@ fn native_equipment_redefinitions_and_diagnostics_are_kept() {
 
 #[test]
 fn a_variant_s_type_groups_by_its_archetype_in_database_order_with_its_domain() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let units = types(
         br#"
@@ -231,7 +231,7 @@ fn a_variant_s_type_groups_by_its_archetype_in_database_order_with_its_domain() 
 /// rules follow the recorded content stack, never vanilla names.
 #[test]
 fn a_mod_s_equipment_types_resolve_through_the_recorded_content_stack() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "hoi4_dashboard_mod_equipment_{}_{:?}",
@@ -276,7 +276,7 @@ fn a_mod_s_equipment_types_resolve_through_the_recorded_content_stack() {
         "common/units/equipment/x_mod_duplicates.txt",
         "duplicate_archetypes = { mod_sky_tank = { archetype = light_tank_chassis type = fighter } }",
     );
-    let layers = installed_content::ResolvedLayers::from_folders(&[
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[
         (&root.join("base"), &[][..]),
         (&root.join("mod"), &[][..]),
     ])
@@ -321,7 +321,7 @@ fn a_mod_s_equipment_types_resolve_through_the_recorded_content_stack() {
 
 #[test]
 fn need_is_derived_only_where_the_available_stock_is_the_recorded_stock() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let units = types(
         br#"
@@ -347,11 +347,12 @@ fn need_is_derived_only_where_the_available_stock_is_the_recorded_stock() {
 
 /// The stockpile slot's hour on day `day`.
 fn stockpile_slot(day: i32) -> i32 {
-    let replay::cadence::Cadence::Daily(slot) = replay::cadence::cadence(TableId::Stockpiles)
+    let replay_data::cadence::Cadence::Daily(slot) =
+        replay_data::cadence::cadence(TableId::Stockpiles)
     else {
         panic!("Stockpiles is read in a daily slot");
     };
-    day * replay::cadence::STAGGER_PERIOD + slot as i32
+    day * replay_data::cadence::STAGGER_PERIOD + slot as i32
 }
 
 /// A stockpile frame at the logistics slot's hour `hour` whose LogisticsEquipment
@@ -359,7 +360,7 @@ fn stockpile_slot(day: i32) -> i32 {
 /// times the table's walk; `None` records it as unavailable. Token 1 is
 /// `infantry_equipment_1`'s spelling in the fixture, used here as an archetype token.
 fn logistics_frame(hour: i32, read: bool, rows: Option<&[(u32, u32, i64, i64)]>) -> DecodedFrame {
-    use replay::rows::LogisticsEquipmentRow;
+    use replay_data::rows::LogisticsEquipmentRow;
     let mut frame = stockpile_frame(hour, false, &[], Some(&[]));
     *frame.tables[TableId::LogisticsEquipment.index()] = match rows {
         Some(rows) => TableView::Complete(TableRows::LogisticsEquipment(
@@ -372,7 +373,7 @@ fn logistics_frame(hour: i32, read: bool, rows: Option<&[(u32, u32, i64, i64)]>)
                         token,
                         balance_raw,
                         stock_raw,
-                        available_raw: replay::rows::Recorded::Value(None),
+                        available_raw: replay_data::rows::Recorded::Value(None),
                     },
                 )
                 .collect(),
@@ -413,7 +414,7 @@ fn production_reads_are_dated_apart_from_the_stockpile() {
 #[test]
 fn a_deferred_intel_walk_leaves_the_logistics_record_carried() {
     use crate::products::equipment_stockpile::scan;
-    let day = 1000 * replay::cadence::STAGGER_PERIOD;
+    let day = 1000 * replay_data::cadence::STAGGER_PERIOD;
     // The retry hour holds different rows (a later in-memory state), but only
     // CountryIntel was walked there: the slot read's values stay, carried.
     let mut retry = logistics_frame(day + 1, false, Some(&[(11, 1, 9 * 100_000, 9 * 100_000)]));
@@ -437,7 +438,7 @@ fn a_deferred_intel_walk_leaves_the_logistics_record_carried() {
 fn logistics_balances_are_known_for_player_reads_and_ai_reads_are_marked_apart() {
     use crate::products::equipment_stockpile::scan;
     use dashboard_base::products::country_groups::HourSpan;
-    let day = 1000 * replay::cadence::STAGGER_PERIOD;
+    let day = 1000 * replay_data::cadence::STAGGER_PERIOD;
     let frames = vec![
         // Germany (link 11) short 300 of token 1 with 50 in stock; Italy's row is not Germany's.
         logistics_frame(
@@ -494,7 +495,7 @@ fn the_stockpile_reply_carries_the_logistics_record_and_the_ai_hours() {
     use crate::products::equipment_stockpile::{EquipmentStockpile, NEED_BOUND_RAW};
     use dashboard_base::products::{CountryParams, Product, country_groups::HourSpan};
     use dashboard_core::config::LoadContext;
-    let day = 1000 * replay::cadence::STAGGER_PERIOD;
+    let day = 1000 * replay_data::cadence::STAGGER_PERIOD;
     let replay = Arc::new(
         Replay::from_records(
             CAMPAIGN.into(),
@@ -564,7 +565,9 @@ fn the_stockpile_reply_carries_the_logistics_record_and_the_ai_hours() {
 fn stockpile_values_start_at_reads_carry_until_the_next_and_never_cross_gaps() {
     use crate::products::equipment_stockpile::scan;
     use dashboard_base::products::country_groups::HourSpan;
-    use engine::cequipment_production_line::{KIND_MILITARY, KIND_NAVAL};
+    use engine_native::{
+        cequipment_production_line::KIND_MILITARY, cequipment_production_line::KIND_NAVAL,
+    };
     let slot = stockpile_slot(1000);
     let lines: &[(u64, i64, i64, u8)] = &[
         // 3.60045 IC a day at 22.5 IC a unit: 0.16002 a day.
@@ -751,18 +754,18 @@ fn the_stockpile_replies_without_content_by_variant_and_says_when_it_has_no_logi
 
 #[test]
 fn observed_available_is_carried_with_the_balance_and_never_backfilled() {
-    let day = 1000 * replay::cadence::STAGGER_PERIOD;
+    let day = 1000 * replay_data::cadence::STAGGER_PERIOD;
     let mut first = logistics_frame(day, true, Some(&[(11, 1, -19, 7)]));
     if let TableView::Complete(TableRows::LogisticsEquipment(rows)) =
         &mut *first.tables[TableId::LogisticsEquipment.index()]
     {
-        rows[0].available_raw = replay::rows::Recorded::Value(Some(0));
+        rows[0].available_raw = replay_data::rows::Recorded::Value(Some(0));
     }
     let mut next = logistics_frame(day + 2, true, Some(&[(11, 1, -19, 7)]));
     if let TableView::Complete(TableRows::LogisticsEquipment(rows)) =
         &mut *next.tables[TableId::LogisticsEquipment.index()]
     {
-        rows[0].available_raw = replay::rows::Recorded::Value(None);
+        rows[0].available_raw = replay_data::rows::Recorded::Value(None);
     }
     let replay = replay(vec![
         first,
@@ -789,8 +792,8 @@ fn observed_available_is_carried_with_the_balance_and_never_backfilled() {
 // Equipment's variant tracking as the stockpile scan reads it.
 mod variant_reads {
     use dashboard_core::test_fixtures::{named_frame, replay, slot_hour};
-    use replay::frame::TableView;
-    use replay::rows::{TableId, TableRows};
+    use replay_data::{rows::TableId, rows::TableRows};
+    use replay_frame::frame::TableView;
     use std::sync::atomic::AtomicBool;
 
     #[test]
@@ -837,7 +840,7 @@ mod variant_reads {
     #[test]
     fn variant_designs_include_recorded_upgrades_and_missing_is_not_zero() {
         use dashboard_base::products::equipment::VariantCatalogue;
-        use replay::rows::VariantUpgradeRow;
+        use replay_data::rows::VariantUpgradeRow;
         let hour = slot_hour(TableId::VariantUpgrades);
         let upgrade = |variant, source_ordinal, definition_token, level| VariantUpgradeRow {
             variant,
@@ -859,7 +862,10 @@ mod variant_reads {
         };
         let design = |rows| {
             let mut catalogue = VariantCatalogue::default();
-            catalogue.observe(replay::format::FormatVersion::CURRENT, &frame(hour, rows));
+            catalogue.observe(
+                replay_data::format::FormatVersion::CURRENT,
+                &frame(hour, rows),
+            );
             catalogue.current(20).unwrap().design.clone()
         };
         let level_one = design(Some(vec![upgrade(20, 0, 1, 1)])).unwrap();
@@ -883,7 +889,7 @@ mod variant_reads {
             let mut frame = frame(hour, Some(vec![]));
             *frame.tables[TableId::VariantModules.index()] =
                 TableView::Complete(TableRows::VariantModules(vec![
-                    replay::rows::VariantModuleRow {
+                    replay_data::rows::VariantModuleRow {
                         variant: 20,
                         source_ordinal: 0,
                         slot: 1,
@@ -892,7 +898,7 @@ mod variant_reads {
                     },
                 ]));
             let mut catalogue = VariantCatalogue::default();
-            catalogue.observe(replay::format::FormatVersion::CURRENT, &frame);
+            catalogue.observe(replay_data::format::FormatVersion::CURRENT, &frame);
             catalogue.current(20).unwrap().design.clone()
         };
         assert!(modules(1).is_some());
@@ -901,11 +907,11 @@ mod variant_reads {
         // Reads at later hours retain the new levels even with unchanged naming operands.
         let mut catalogue = VariantCatalogue::default();
         catalogue.observe(
-            replay::format::FormatVersion::CURRENT,
+            replay_data::format::FormatVersion::CURRENT,
             &frame(hour, Some(vec![upgrade(20, 0, 1, 1)])),
         );
         catalogue.observe(
-            replay::format::FormatVersion::CURRENT,
+            replay_data::format::FormatVersion::CURRENT,
             &frame(hour + 1, Some(vec![upgrade(20, 0, 1, 2)])),
         );
         assert_eq!(catalogue.versions[&20].len(), 2);

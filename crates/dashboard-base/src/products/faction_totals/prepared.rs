@@ -566,7 +566,7 @@ fn sampled_state_from_frames(
     cancelled: &AtomicBool,
 ) -> io::Result<Value> {
     use crate::prepared::query::progressive;
-    use replay::rows::TableId;
+    use replay_data::rows::TableId;
     let replay = source.replay_ref();
     let in_gap = |hour: i32| {
         replay
@@ -595,7 +595,7 @@ fn sampled_state_from_frames(
     let mut groups = country_groups::Scan::new(replay, branch);
     let mut identities = super::super::country_history::HistoryScan::new(false, &[]);
     let mut samples: BTreeMap<i32, progressive::Samples> = BTreeMap::new();
-    let mut observe = |frame: &replay::frame::DecodedFrame| -> io::Result<()> {
+    let mut observe = |frame: &replay_frame::frame::DecodedFrame| -> io::Result<()> {
         groups.observe(frame)?;
         identities.observe(frame);
         samples.insert(

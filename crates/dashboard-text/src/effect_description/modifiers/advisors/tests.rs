@@ -1,7 +1,8 @@
 use super::*;
 use crate::catalogue::tests::{Folder, folder_catalogue};
 use crate::effect_description::tests::{Fixture, fresh};
-use replay::{frame::TableView, rows::*};
+use replay_data::rows::*;
+use replay_frame::frame::TableView;
 
 fn fixture() -> (Fixture, Folder) {
     let mut fixture = super::super::tests::fixture();
@@ -88,7 +89,7 @@ fn roles(fixture: &mut Fixture) -> &mut Vec<AdvisorRoleRow> {
 
 #[test]
 fn available_order_precedes_retired_and_multi_names_do_not_need_the_cache() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::AvailableAdvisors.index()] =
@@ -123,7 +124,7 @@ fn available_order_precedes_retired_and_multi_names_do_not_need_the_cache() {
     *fixture.frame.tables[TableId::AdvisorRoles.index()] = TableView::Unavailable {
         reason: "synthetic unavailable".into(),
     };
-    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), Vec::new());
+    let ideas = installed_content_core::ideas::IdeaContent::from_parsed(Vec::new(), Vec::new());
     for (body, expected) in [
         ("add_ideas={SYN_ADVISOR SYN_ADVISOR}", "Add First, First"),
         (
@@ -148,15 +149,15 @@ fn available_order_precedes_retired_and_multi_names_do_not_need_the_cache() {
     }
     // The advisor registry wins an add/remove token collision; Show also
     // appends the idea name after the character's name.
-    let file = installed_content::ideas::parse_ideas(
+    let file = installed_content_core::ideas::parse_ideas(
         // An explicit idea name selects its native first naming branch;
         // an unnamed idea would need a declared category/name generator.
         b"ideas={country={SYN_ADVISOR={name=SYN_ADVISOR}}}",
         &[],
         &Default::default(),
     );
-    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = installed_content::names::NameLists::default();
+    let ideas = installed_content_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = installed_content_core::names::NameLists::default();
     for (body, expected) in [
         ("add_ideas={SYN_ADVISOR SYN_ADVISOR}", "Add First, First"),
         (
@@ -180,7 +181,7 @@ fn available_order_precedes_retired_and_multi_names_do_not_need_the_cache() {
 
 #[test]
 fn retired_fallback_folds_the_token_and_keeps_record_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     // A case-different primary name is not an exact match.
@@ -225,7 +226,7 @@ fn retired_fallback_folds_the_token_and_keeps_record_order() {
 
 #[test]
 fn cached_numbers_use_definition_ids_and_order_not_authored_modifiers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let later = AdvisorRoleRow {
@@ -273,7 +274,7 @@ fn cached_numbers_use_definition_ids_and_order_not_authored_modifiers() {
 
 #[test]
 fn known_empty_numeric_cache_still_refuses_the_unrecorded_tooltip_keys() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     roles(&mut fixture)[0].modifier_cache = Recorded::Value(Some(AdvisorModifierCache::default()));
@@ -299,7 +300,7 @@ fn known_empty_numeric_cache_still_refuses_the_unrecorded_tooltip_keys() {
 
 #[test]
 fn advisor_research_and_recorded_trait_targets_surround_the_stored_numbers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     roles(&mut fixture)[0].idea = b"SYN_BONUS_ADVISOR".to_vec();
@@ -371,7 +372,7 @@ fn advisor_research_and_recorded_trait_targets_surround_the_stored_numbers() {
 
 #[test]
 fn unavailable_or_absent_cache_and_rosters_are_named_not_empty_blocks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     for (cache, reason) in [
@@ -412,7 +413,7 @@ fn unavailable_or_absent_cache_and_rosters_are_named_not_empty_blocks() {
 
 #[test]
 fn format99_advisor_ideas_render_recorded_tooltips_in_slot_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     fixture.catalogue.localisation = std::sync::Arc::new(
@@ -487,7 +488,7 @@ fn a_pool_read_earlier_in_the_day_still_names_its_advisor() {
     *fixture.frame.tables[TableId::AdvisorRoles.index()] = TableView::Unavailable {
         reason: "synthetic unavailable".into(),
     };
-    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), Vec::new());
+    let ideas = installed_content_core::ideas::IdeaContent::from_parsed(Vec::new(), Vec::new());
     let result = fixture.render(
         "add_ideas={SYN_ADVISOR SYN_ADVISOR}",
         &mut fresh(),

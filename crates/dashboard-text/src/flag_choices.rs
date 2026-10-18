@@ -2,7 +2,8 @@
 //! shared by the country flag product and the map's combat and raid tooltips.
 
 use crate::metadata::recorded_rows;
-use replay::{frame::DecodedFrame, rows::tables};
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 
 pub struct FlagChoice {
@@ -104,13 +105,13 @@ pub fn choices(frame: &DecodedFrame) -> io::Result<Vec<FlagChoice>> {
                 });
             let original = appearance
                 .ok_or_else(|| format!("country {owner} flag needs its CountryAppearance row"))
-                .and_then(|row| installed_content::country_names::original_tag(country, row));
+                .and_then(|row| installed_content_country_names::country_names::original_tag(country, row));
             let group = groups
                 .get(&owner)
                 .cloned()
                 .unwrap_or_else(|| Err(format!("country {owner} flag needs its ruling group")));
             let candidates = match (&cosmetic, &group) {
-                (Ok(cosmetic), Ok(group)) => installed_content::country_names::flag_keys(
+                (Ok(cosmetic), Ok(group)) => installed_content_country_names::country_names::flag_keys(
                     original.as_ref().ok().copied(),
                     cosmetic,
                     group.as_deref(),

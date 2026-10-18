@@ -10,16 +10,16 @@ use dashboard_text::{
     cryptology,
     metadata::{self, recorded_rows},
 };
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{CountryRow, CryptologyRow, TableId, tables},
-};
+use replay_data::{rows::CountryRow, rows::CryptologyRow, rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io};
 use ts_rs::TS;
 
 #[cfg(any(test, feature = "test-support"))]
-use replay::{container::Replay, frame::FrameDecoder};
+use replay::container::Replay;
+#[cfg(any(test, feature = "test-support"))]
+use replay_frame::frame::FrameDecoder;
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::AtomicBool;
 
@@ -265,13 +265,15 @@ pub(super) fn defines(
     result
 }
 
-pub fn content_defines(layers: &installed_content::ResolvedLayers) -> Result<cryptology::Defines, String> {
+pub fn content_defines(
+    layers: &installed_content_core::ResolvedLayers,
+) -> Result<cryptology::Defines, String> {
     layers
         .derived::<dashboard_text::catalogue::CachedResult<cryptology::Defines>>()
         .get_or_init(|| {
             #[cfg(test)]
             super::intelligence_prepared::work(|work| work.content_loads += 1);
-            cryptology::Defines::read(&installed_content::defines::read(layers)?)
+            cryptology::Defines::read(&installed_content_core::defines::read(layers)?)
                 .map_err(dashboard_core::invalid)
         })
         .map(|defines| *defines)

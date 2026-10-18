@@ -12,8 +12,9 @@ use crate::products::{
         NavalBattles, NavalBattlesManifest, NavalBattlesManifestParams, NavalBattlesParams,
     },
 };
-use replay::rows::{
-    LandCombatRow, LandCombatSideRow, NavalCombatRow, NavalResultRow, NavalResultSourceRow,
+use replay_data::{
+    rows::LandCombatRow, rows::LandCombatSideRow, rows::NavalCombatRow, rows::NavalResultRow,
+    rows::NavalResultSourceRow,
 };
 use serde_json::{Value, json};
 use std::{

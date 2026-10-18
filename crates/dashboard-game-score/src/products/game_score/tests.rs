@@ -1,9 +1,10 @@
 use super::*;
 use dashboard_base::test_fixtures::{CAMPAIGN, records, scale_frame, source};
-use replay::{
-    frame::TableView,
-    rows::{AirBaseRegistrationRow, FactionRow, GameScoreAirSite, GameScoreFleetCount, TableRows},
+use replay_data::{
+    rows::AirBaseRegistrationRow, rows::FactionRow, rows::GameScoreAirSite,
+    rows::GameScoreFleetCount, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 
 fn input(country: u32) -> CountryGameScoreInputRow {
     CountryGameScoreInputRow {
@@ -180,7 +181,7 @@ fn game_score_navy_uses_the_wrapped_task_force_count_witness() {
     assert_ne!(navy.value(), Some(2 * Q));
     // A reply must not accept a count inconsistent with its ordered witnesses.
     row.navy_count = Some(2);
-    assert!(replay::rows::RowCodec::delta(&row, None).is_err());
+    assert!(replay_data::rows::RowCodec::delta(&row, None).is_err());
 }
 
 #[test]
@@ -451,7 +452,7 @@ fn game_score_identity_failure_keeps_multiplier_reads_and_breaks_country_runs() 
 
 #[test]
 fn game_score_content_multipliers_keep_native_rounding_and_missing_defines() {
-    let defines = installed_content::defines::Defines::new().unwrap();
+    let defines = installed_content_core::defines::Defines::new().unwrap();
     defines.load("synthetic.lua", b"NDefines = {NCountry = {COUNTRY_SCORE_MULTIPLIER = 0.000005, ARMY_SCORE_MULTIPLIER = -0.000005, NAVY_SCORE_MULTIPLIER = 1000.00001, AIR_SCORE_MULTIPLIER = 0, INDUSTRY_SCORE_MULTIPLIER = 1.25, PROVINCE_SCORE_MULTIPLIER = 0}}" ).unwrap();
     let multipliers = content_multipliers(Ok(&defines));
     assert_eq!(multipliers.total.value(), Some(1));
@@ -529,7 +530,7 @@ fn game_score_equal_rereads_are_dated_but_gaps_and_reused_identities_break_runs(
 
 #[test]
 fn game_score_content_fallback_requires_disabled_capture() {
-    let historical = replay::format::FormatVersion::read(
+    let historical = replay_data::format::FormatVersion::read(
         TableId::CountryGameScoreInputs.last_change().introduced - 1,
     )
     .unwrap();
@@ -550,7 +551,7 @@ fn game_score_content_fallback_requires_disabled_capture() {
         TableId::GameScoreMultipliers,
     ] {
         *refused.tables[table.index()] = TableView::Unavailable {
-            reason: replay::format::GAME_SCORE_DISABLED_REASON.into(),
+            reason: replay_data::format::GAME_SCORE_DISABLED_REASON.into(),
         };
     }
     let mut failed = frame(103);
@@ -565,7 +566,7 @@ fn game_score_content_fallback_requires_disabled_capture() {
     let mut content_reads = 0;
     let mut old_defines = || {
         content_reads += 1;
-        let defines = installed_content::defines::Defines::new().unwrap();
+        let defines = installed_content_core::defines::Defines::new().unwrap();
         defines.load("synthetic.lua", b"NDefines = {NCountry = {COUNTRY_SCORE_MULTIPLIER = 1, ARMY_SCORE_MULTIPLIER = 1, NAVY_SCORE_MULTIPLIER = 1, AIR_SCORE_MULTIPLIER = 1, INDUSTRY_SCORE_MULTIPLIER = 1.25, PROVINCE_SCORE_MULTIPLIER = 1}}").unwrap();
         content_multipliers(Ok(&defines))
     };
@@ -609,8 +610,8 @@ fn game_score_content_fallback_requires_disabled_capture() {
     assert!(amount_at(&reply, series, "industry", 103).raw.is_none());
 }
 
-fn appearance(country: u32, cosmetic: &[u8]) -> replay::rows::CountryAppearanceRow {
-    replay::rows::CountryAppearanceRow {
+fn appearance(country: u32, cosmetic: &[u8]) -> replay_data::rows::CountryAppearanceRow {
+    replay_data::rows::CountryAppearanceRow {
         country,
         cosmetic_tag: cosmetic.to_vec(),
         red: 0.25_f32.to_bits(),
@@ -627,7 +628,7 @@ fn identity_tables(frame: &mut DecodedFrame, country: u32, cosmetic: &[u8]) {
     );
     set(
         frame,
-        TableRows::Politics(vec![replay::rows::PoliticsRow {
+        TableRows::Politics(vec![replay_data::rows::PoliticsRow {
             country,
             ..Default::default()
         }]),
@@ -717,7 +718,7 @@ fn game_score_flag_only_changes_do_not_split_identity_runs() {
     second.hour = 101;
     set(
         &mut second,
-        TableRows::Politics(vec![replay::rows::PoliticsRow {
+        TableRows::Politics(vec![replay_data::rows::PoliticsRow {
             country: 9001,
             ruling_party: Some(77),
             ..Default::default()
@@ -725,7 +726,7 @@ fn game_score_flag_only_changes_do_not_split_identity_runs() {
     );
     set(
         &mut second,
-        TableRows::PoliticalParties(vec![replay::rows::PoliticalPartyRow {
+        TableRows::PoliticalParties(vec![replay_data::rows::PoliticalPartyRow {
             country: 9001,
             id: 77,
             token: b"synthetic_ideology".to_vec(),
@@ -825,7 +826,7 @@ fn faction_frame(hour: i32, literal: &[u8], template: Option<(u32, &[u8])>) -> D
         TableRows::LexicalTokens(
             template
                 .into_iter()
-                .map(|(token, literal)| replay::rows::LexicalTokenRow {
+                .map(|(token, literal)| replay_data::rows::LexicalTokenRow {
                     token,
                     literal: literal.to_vec(),
                 })
@@ -849,7 +850,7 @@ fn game_score_faction_names_share_literal_and_bound_template_rules_at_each_hour(
         if let TableView::Complete(TableRows::LexicalTokens(rows)) =
             &mut *frame.tables[TableId::LexicalTokens.index()]
         {
-            rows.push(replay::rows::LexicalTokenRow {
+            rows.push(replay_data::rows::LexicalTokenRow {
                 token,
                 literal: b"17".to_vec(),
             });
@@ -974,7 +975,7 @@ fn game_score_faction_name_failures_keep_stable_recording_and_content_reasons() 
     let mut missing_argument = faction_frame(103, b"", Some((19, b"token_argument")));
     set(
         &mut missing_argument,
-        TableRows::LexicalTokens(vec![replay::rows::LexicalTokenRow {
+        TableRows::LexicalTokens(vec![replay_data::rows::LexicalTokenRow {
             token: 19,
             literal: b"token_argument".to_vec(),
         }]),
@@ -1108,7 +1109,7 @@ fn game_score_static_subject_name_does_not_need_unused_overlord_naming_rows() {
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *first.tables[TableId::Countries.index()]
     {
-        rows.push(replay::rows::CountryRow {
+        rows.push(replay_data::rows::CountryRow {
             id: 9002,
             canonical_slot: 8,
             tag: b"OVR".to_vec(),
@@ -1118,7 +1119,7 @@ fn game_score_static_subject_name_does_not_need_unused_overlord_naming_rows() {
     if let TableView::Complete(TableRows::CountryLinks(rows)) =
         &mut *first.tables[TableId::CountryLinks.index()]
     {
-        rows.push(replay::rows::CountryLinkRow {
+        rows.push(replay_data::rows::CountryLinkRow {
             id: 9002,
             canonical_slot: 8,
         });
@@ -1207,7 +1208,7 @@ fn scale_score_frame(count: u32) -> DecodedFrame {
         ),
         TableRows::Politics(
             (0..count)
-                .map(|index| replay::rows::PoliticsRow {
+                .map(|index| replay_data::rows::PoliticsRow {
                     country: 100_000 + index,
                     ..Default::default()
                 })
@@ -1381,12 +1382,12 @@ fn game_score_table_missing_reasons_do_not_depend_on_hour_or_truncation_count() 
         );
         for frame in [&mut first, &mut later] {
             *frame.tables[table.index()] = TableView::Unavailable {
-                reason: replay::format::GAME_SCORE_DISABLED_REASON.into(),
+                reason: replay_data::format::GAME_SCORE_DISABLED_REASON.into(),
             };
         }
         assert_eq!(
             table_missing_reason(&first, table).as_deref(),
-            Some(replay::format::GAME_SCORE_DISABLED_REASON)
+            Some(replay_data::format::GAME_SCORE_DISABLED_REASON)
         );
         assert_eq!(
             table_missing_reason(&first, table),
@@ -1402,7 +1403,7 @@ fn game_score_table_missing_reasons_do_not_depend_on_hour_or_truncation_count() 
 )]
 fn game_score_disabled_across_block_boundaries_keeps_one_run_and_one_reason() {
     // One initial block and two appended block windows exercise both boundaries.
-    let hours = replay::KEYFRAME_INTERVAL as i32 + 2;
+    let hours = replay_frame::KEYFRAME_INTERVAL as i32 + 2;
     let countries = 2;
     let mut first = scale_score_frame(countries);
     first.hour = 0;
@@ -1413,7 +1414,7 @@ fn game_score_disabled_across_block_boundaries_keeps_one_run_and_one_reason() {
         TableId::CountryAppearance,
     ] {
         *first.tables[table.index()] = TableView::Unavailable {
-            reason: replay::format::GAME_SCORE_DISABLED_REASON.into(),
+            reason: replay_data::format::GAME_SCORE_DISABLED_REASON.into(),
         };
     }
     let initial = records(1, vec![first.clone()]);
@@ -1421,10 +1422,10 @@ fn game_score_disabled_across_block_boundaries_keeps_one_run_and_one_reason() {
     let mut replay = Replay::from_records(CAMPAIGN.into(), &[initial]).unwrap();
     // Append one native block window at a time instead of retaining every
     // synthetic hourly table-update array before the production scan.
-    for first_hour in (1..hours).step_by(replay::KEYFRAME_INTERVAL as usize) {
-        let mut encoder = replay::frame::FrameEncoder::new();
+    for first_hour in (1..hours).step_by(replay_frame::KEYFRAME_INTERVAL as usize) {
+        let mut encoder = replay_frame::frame::FrameEncoder::new();
         let mut segment = context.clone();
-        for hour in first_hour..(first_hour + replay::KEYFRAME_INTERVAL as i32).min(hours) {
+        for hour in first_hour..(first_hour + replay_frame::KEYFRAME_INTERVAL as i32).min(hours) {
             let mut frame = first.clone();
             frame.hour = hour;
             segment.push(replay::spool::Record::Frame(
@@ -1434,7 +1435,7 @@ fn game_score_disabled_across_block_boundaries_keeps_one_run_and_one_reason() {
         replay = replay.append(&[segment]).unwrap();
     }
     assert!(replay.index.len() >= 3);
-    let defines = installed_content::defines::Defines::new().unwrap();
+    let defines = installed_content_core::defines::Defines::new().unwrap();
     defines.load("synthetic.lua", b"NDefines = {NCountry = {COUNTRY_SCORE_MULTIPLIER = 1, ARMY_SCORE_MULTIPLIER = 1, NAVY_SCORE_MULTIPLIER = 1, AIR_SCORE_MULTIPLIER = 1, INDUSTRY_SCORE_MULTIPLIER = 1, PROVINCE_SCORE_MULTIPLIER = 1}}").unwrap();
     let fallback = content_multipliers(Ok(&defines));
     let reply = scan(
@@ -1454,7 +1455,7 @@ fn game_score_disabled_across_block_boundaries_keeps_one_run_and_one_reason() {
     assert_eq!(
         reply.reasons,
         [recording_missing(
-            replay::format::GAME_SCORE_DISABLED_REASON
+            replay_data::format::GAME_SCORE_DISABLED_REASON
         )]
     );
     for runs in [
@@ -1503,7 +1504,7 @@ fn game_score_disabled_across_block_boundaries_keeps_one_run_and_one_reason() {
             ] {
                 assert_eq!(
                     amount.missing.as_ref().unwrap().reason,
-                    replay::format::GAME_SCORE_DISABLED_REASON
+                    replay_data::format::GAME_SCORE_DISABLED_REASON
                 );
             }
         }
@@ -1511,7 +1512,7 @@ fn game_score_disabled_across_block_boundaries_keeps_one_run_and_one_reason() {
     let disabled_warnings: Vec<_> = reply
         .score_warnings
         .iter()
-        .filter(|warning| warning.reason == replay::format::GAME_SCORE_DISABLED_REASON)
+        .filter(|warning| warning.reason == replay_data::format::GAME_SCORE_DISABLED_REASON)
         .collect();
     assert_eq!(disabled_warnings.len(), 1);
     assert_eq!(
@@ -2246,14 +2247,14 @@ fn progressive_game_score_sampler_matches_observer_at_five_thousand_countries() 
 /// The recording codec: each input hour is encoded and decoded as the
 /// preparation pipeline reads it, with its recorded updates.
 struct Recorded {
-    encoder: replay::frame::FrameEncoder,
+    encoder: replay_frame::frame::FrameEncoder,
     decoder: FrameDecoder,
 }
 
 impl Recorded {
     fn new() -> Self {
         Self {
-            encoder: replay::frame::FrameEncoder::new(),
+            encoder: replay_frame::frame::FrameEncoder::new(),
             decoder: FrameDecoder::new(),
         }
     }
@@ -2261,7 +2262,7 @@ impl Recorded {
         &mut self,
         input: &DecodedFrame,
         keyframe: bool,
-    ) -> (DecodedFrame, std::sync::Arc<replay::frame::Frame>) {
+    ) -> (DecodedFrame, std::sync::Arc<replay_frame::frame::Frame>) {
         let wire = self.encoder.encode(input.clone(), keyframe).unwrap();
         let decoded = self.decoder.advance(&wire).unwrap().clone();
         (decoded, std::sync::Arc::new(wire))
@@ -2290,7 +2291,7 @@ impl<'a> Lane<'a> {
     /// preparation's country visits, observed countries and emitted keys.
     fn observe(
         &mut self,
-        (decoded, wire): &(DecodedFrame, std::sync::Arc<replay::frame::Frame>),
+        (decoded, wire): &(DecodedFrame, std::sync::Arc<replay_frame::frame::Frame>),
         replay: &Replay,
         naming: &Naming,
     ) -> (usize, usize, [usize; 3]) {
@@ -2318,7 +2319,7 @@ impl<'a> Lane<'a> {
     }
 }
 
-fn rows<T: replay::rows::TableSchema>(frame: &mut DecodedFrame) -> &mut Vec<T::Row> {
+fn rows<T: replay_data::rows::TableSchema>(frame: &mut DecodedFrame) -> &mut Vec<T::Row> {
     match &mut *frame.tables[T::ID.index()] {
         TableView::Complete(rows) => rows.rows_mut::<T>().expect("fixture rows"),
         _ => unreachable!("fixture tables are complete"),
@@ -2545,7 +2546,7 @@ fn parity_frame() -> DecodedFrame {
         &mut frame,
         TableRows::Politics(
             (1..=6)
-                .map(|slot| replay::rows::PoliticsRow {
+                .map(|slot| replay_data::rows::PoliticsRow {
                     country: 1000 + slot,
                     ..Default::default()
                 })
@@ -2555,7 +2556,7 @@ fn parity_frame() -> DecodedFrame {
     set(&mut frame, TableRows::PoliticalParties(Vec::new()));
     set(
         &mut frame,
-        TableRows::Autonomy(vec![replay::rows::AutonomyRow {
+        TableRows::Autonomy(vec![replay_data::rows::AutonomyRow {
             subject: 1003,
             state: b"autonomy_puppet".to_vec(),
             ..Default::default()
@@ -2660,7 +2661,7 @@ fn prepared_game_score_changed_rows_match_whole_tables_and_history_across_keyfra
                 rows::<tables::Politics>(frame)[1].ruling_party = Some(5);
                 set(
                     frame,
-                    TableRows::PoliticalParties(vec![replay::rows::PoliticalPartyRow {
+                    TableRows::PoliticalParties(vec![replay_data::rows::PoliticalPartyRow {
                         country: 1002,
                         id: 5,
                         token: b"neutrality".to_vec(),
@@ -2729,7 +2730,7 @@ fn prepared_game_score_changed_rows_match_whole_tables_and_history_across_keyfra
                 rows::<tables::CountryGameScoreInputs>(frame).push(input(1007));
                 rows::<tables::CountryFactories>(frame).push(factories(1007));
                 rows::<tables::CountryAppearance>(frame).push(appearance(1007, b""));
-                rows::<tables::Politics>(frame).push(replay::rows::PoliticsRow {
+                rows::<tables::Politics>(frame).push(replay_data::rows::PoliticsRow {
                     country: 1007,
                     ..Default::default()
                 });

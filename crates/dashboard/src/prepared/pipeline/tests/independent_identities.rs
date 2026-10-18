@@ -10,7 +10,9 @@ use crate::products::country_history::{
     self as history,
     prepared::{built_frames, observed_hours},
 };
-use replay::rows::{CountryCounterInputRow, CountryExperienceGainRow, CountryLinkRow};
+use replay_data::{
+    rows::CountryCounterInputRow, rows::CountryExperienceGainRow, rows::CountryLinkRow,
+};
 
 type Payloads = BTreeMap<(String, u64), Vec<u8>>;
 

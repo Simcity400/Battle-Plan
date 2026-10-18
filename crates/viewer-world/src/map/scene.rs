@@ -395,7 +395,7 @@ impl Scene {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         assets: &MapAssets,
-        icon_images: &[installed_content::image::dds::Texture],
+        icon_images: &[installed_content_image::dds::Texture],
         lazy: &Arc<LazyTextures>,
         graphics: dashboard_core::protocol::MapGraphics,
     ) -> io::Result<Self> {
@@ -1120,7 +1120,7 @@ impl Scene {
     #[allow(clippy::too_many_arguments)] // The hour, its events and where its text stands.
     pub fn present_hours<'a>(
         &mut self,
-        at: (replay::BranchId, i32),
+        at: (replay_data::BranchId, i32),
         seek: bool,
         hours: impl IntoIterator<
             Item = (
@@ -1159,7 +1159,7 @@ impl Scene {
     /// them, so retrying the same hour presents nothing twice.
     pub fn missing_map_text_events(
         &mut self,
-        at: (replay::BranchId, i32),
+        at: (replay_data::BranchId, i32),
         seek: bool,
         reason: String,
     ) {
@@ -1513,8 +1513,8 @@ impl Scene {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        map: &installed_content::map::MapData,
-        strategic_regions: &BTreeMap<u32, installed_content::regions::StrategicRegion>,
+        map: &installed_content_core::map::MapData,
+        strategic_regions: &BTreeMap<u32, installed_content_regions::regions::StrategicRegion>,
         field: &viewer_foundation::map::gradient_math::FieldDefines,
         cache: &crate::map::political_gpu::Cache,
     ) -> io::Result<()> {
@@ -3279,9 +3279,11 @@ pub fn world_size(size: [u32; 2], full_resolution: bool) -> [u32; 2] {
 }
 
 /// The display kind a recorded map event family's floating text is hidden with.
-fn map_text_kind(family: replay::rows::MapEventFamily) -> dashboard_core::protocol::MapTextKind {
+fn map_text_kind(
+    family: replay_data::rows::MapEventFamily,
+) -> dashboard_core::protocol::MapTextKind {
     use dashboard_core::protocol::MapTextKind;
-    use replay::rows::MapEventFamily;
+    use replay_data::rows::MapEventFamily;
     match family {
         MapEventFamily::FakeDivisionRevealed => MapTextKind::FakeDivisions,
         MapEventFamily::RailwayGunOverrun => MapTextKind::RailwayGuns,
@@ -3325,17 +3327,21 @@ mod tests {
 
     #[test]
     fn every_map_event_family_has_its_own_text_switch() {
-        let kinds: std::collections::BTreeSet<_> = replay::rows::MapEventFamily::ALL
+        let kinds: std::collections::BTreeSet<_> = replay_data::rows::MapEventFamily::ALL
             .into_iter()
             .map(map_text_kind)
             .collect();
-        assert_eq!(kinds.len(), replay::rows::MapEventFamily::COUNT);
+        assert_eq!(kinds.len(), replay_data::rows::MapEventFamily::COUNT);
         let graphics = dashboard_core::protocol::MapGraphics {
             text_generals: false,
             ..Default::default()
         };
-        assert!(!graphics.map_text(map_text_kind(replay::rows::MapEventFamily::GeneralCaptured)));
-        assert!(graphics.map_text(map_text_kind(replay::rows::MapEventFamily::BuildingDamage)));
+        assert!(!graphics.map_text(map_text_kind(
+            replay_data::rows::MapEventFamily::GeneralCaptured
+        )));
+        assert!(graphics.map_text(map_text_kind(
+            replay_data::rows::MapEventFamily::BuildingDamage
+        )));
     }
 
     #[test]

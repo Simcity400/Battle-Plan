@@ -22,10 +22,8 @@ use dashboard_core::invalid;
 #[cfg(test)]
 use dashboard_text::metadata::recorded_rows;
 use dashboard_text::metadata::{check_cancel, link_slots, tagged_countries_indexed};
-use replay::{
-    container::Replay,
-    rows::{TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::tables};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
@@ -44,7 +42,10 @@ use scan::{DayCache, Snapshot, span};
 use scan::{extend_days, extend_days_anchored, extend_days_shared, partial_day, scan_days};
 use std::sync::Arc;
 #[cfg(test)]
-use {dashboard_text::metadata::validate_campaign, replay::frame::FrameDecoder, std::sync::Mutex};
+use {
+    dashboard_text::metadata::validate_campaign, replay_frame::frame::FrameDecoder,
+    std::sync::Mutex,
+};
 
 pub struct AirSuperiority;
 const DAY_HOURS: i32 = 24;
@@ -622,7 +623,7 @@ fn timeline(cache: &DayCache, params: &AirParams) -> io::Result<AirTimelineReply
         segments: BTreeMap::new(),
         anchor_reads: BTreeMap::new(),
         rows,
-        scale: engine::fixed5::SCALE as i32,
+        scale: engine_native::fixed5::SCALE as i32,
         day_hours: DAY_HOURS,
         bad_below: 40_000,
         good_above: 60_000,
@@ -854,7 +855,7 @@ fn moment_reply(
         recorded,
         complete,
         wings_known,
-        scale: engine::fixed5::SCALE as i32,
+        scale: engine_native::fixed5::SCALE as i32,
         day_hours: DAY_HOURS,
         bad_below: 40_000,
         good_above: 60_000,
@@ -1182,7 +1183,7 @@ fn moment_windows(replay: &Replay, branch: u64) -> Vec<AirSpan> {
 type RegionNameEntry = (
     content::LocalisationKey,
     Arc<BTreeMap<u32, String>>,
-    Arc<installed_content::localisation::Localisation>,
+    Arc<installed_content_localisation::localisation::Localisation>,
     Vec<String>,
 );
 
@@ -1279,7 +1280,7 @@ fn resolve_names(
         }
         content::check_replay(source.replay_ref(), options.allow_unverified, &mut warnings)?;
         let layers = source.content(&options.options)?;
-        let regions = installed_content::regions::read(&layers.layers)?;
+        let regions = installed_content_regions::regions::read(&layers.layers)?;
         let loc = content::localisation(source, options)?;
         warnings.extend(regions.notes);
         let mut names = BTreeMap::new();
@@ -1315,7 +1316,7 @@ fn resolve_names(
         .as_ref()
         .and_then(|options| content::language(&options.options).ok())
         .unwrap_or_else(|| recorded_language.to_owned());
-    let mut stored_language = installed_content::localisation::Localisation::default();
+    let mut stored_language = installed_content_localisation::localisation::Localisation::default();
     stored_language.language = viewer_language;
     if let AirReply::Choices(reply) = reply {
         // The theatre retains localised text; no source key or literal marker survives.

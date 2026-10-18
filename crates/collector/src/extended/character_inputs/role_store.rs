@@ -8,8 +8,8 @@
 //! gathered by the roster job this callback); and no hooked writer touched the character since the
 //! read registered it (same watch epoch and sequence; a load, gap, recovery, table change, poison,
 //! an unnamed receiver or a running writer revokes it). Every writer of those maps, their roles'
-//! parent links and trait arrays is a hooked site ([`engine::character_role_mutations`],
-//! [`engine::advisor_mutations`]), and trait definitions (token and ordinal) are database objects
+//! parent links and trait arrays is a hooked site ([`engine_mutations::character_role_mutations`],
+//! [`engine_mutations::advisor_mutations`]), and trait definitions (token and ordinal) are database objects
 //! nothing rewrites, so the fresh read would return the held rows. Scientist rows and operative
 //! links are read every hour. Every hour also reads the carryable characters of its
 //! sampled-verification slice afresh ([`crate::sampled_verify`], keyed by character id;
@@ -47,13 +47,13 @@ use crate::{
     extended::characters::census::Admitted,
     sampled_verify::Check,
 };
-use engine::{
-    Memory, allocation,
-    character_inputs::{
-        CENSUS_PAGE, CensusWalk, GrowingBuffers, MAP_SENTINEL, Occupant, OperativeRow, Trait,
-        TraitRow,
-    },
+use engine_allocation as allocation;
+use engine_characters::{
+    character_inputs::CENSUS_PAGE, character_inputs::CensusWalk, character_inputs::GrowingBuffers,
+    character_inputs::MAP_SENTINEL, character_inputs::Occupant, character_inputs::OperativeRow,
+    character_inputs::Trait, character_inputs::TraitRow,
 };
+use engine_native::Memory;
 use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

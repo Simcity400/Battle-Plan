@@ -10,9 +10,9 @@ use super::family_lanes::{assert_payloads_equal, payloads};
 use super::*;
 use crate::prepared::prepass;
 use dashboard_base::prepared::kept::counted;
-use engine::cworld_threat;
+use engine_stability::cworld_threat;
 use independent::Own;
-use replay::rows::{ThreatCountryAggregateRow, ThreatSourceRow, WorldTensionRow};
+use replay_data::{rows::ThreatCountryAggregateRow, rows::ThreatSourceRow, rows::WorldTensionRow};
 
 type Payloads = BTreeMap<(String, u64), Vec<u8>>;
 

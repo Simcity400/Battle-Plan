@@ -1,6 +1,6 @@
 //! Allocation-free, first-failure terminal witness and fault injection.
 
-use replay::witness::{TerminalWitness, WITNESS_BYTES};
+use replay_data::{witness::TerminalWitness, witness::WITNESS_BYTES};
 use std::{
     cell::{Cell, UnsafeCell},
     fs::File,
@@ -10,7 +10,7 @@ use std::{
 };
 use windows_sys::Win32::Storage::FileSystem::{FlushFileBuffers, WriteFile};
 
-pub use replay::witness::{FailureCode as Code, FailurePhase as Phase};
+pub use replay_data::{witness::FailureCode as Code, witness::FailurePhase as Phase};
 
 #[derive(Clone, Copy, Default)]
 pub struct Context {
@@ -60,7 +60,7 @@ pub fn reserve_raw<T>(values: &mut Vec<T>, target: usize, family: &'static str) 
         family,
         target.saturating_mul(std::mem::size_of::<T>()),
     ))));
-    engine::allocation::reserve(values, target.saturating_sub(values.len()))
+    engine_allocation::reserve(values, target.saturating_sub(values.len()))
 }
 
 fn write_details(record: &TerminalWitness) {
@@ -332,7 +332,7 @@ pub fn failure() -> Option<TerminalWitness> {
 
 pub fn record_failure(phase: Phase, code: Code) -> bool {
     // Bootstrap through teardown shares the installed capture's terminal state.
-    if !engine::allocation::capture_active() {
+    if !engine_allocation::capture_active() {
         return false;
     }
     if TERMINAL
@@ -345,7 +345,7 @@ pub fn record_failure(phase: Phase, code: Code) -> bool {
     let mut context = context();
     if context
         .campaign_id
-        .is_some_and(|id| !replay::identity::is_campaign_uuid(&id))
+        .is_some_and(|id| !replay_data::identity::is_campaign_uuid(&id))
     {
         context.campaign_id = None;
     }
@@ -462,11 +462,11 @@ pub fn record_failure(phase: Phase, code: Code) -> bool {
 }
 
 pub fn oom() -> io::Error {
-    engine::allocation::oom()
+    engine_allocation::oom()
 }
 pub fn observe(error: &io::Error) {
-    if engine::allocation::is_allocation_error(error) {
-        let _ = engine::allocation::oom();
+    if engine_allocation::is_allocation_error(error) {
+        let _ = engine_allocation::oom();
     }
 }
 pub fn io(error: io::Error) -> io::Error {

@@ -9,9 +9,9 @@
 //! unreadable operand leave that cell uncertified until its next clean write.
 //! Only a store whose cell cannot be identified withdraws every cell.
 use crate::hook::Hook;
-use engine::{
-    Memory, allocation, cgame_state, clogistics_status as native, memory::LiveMemory, read,
-};
+use engine_allocation as allocation;
+use engine_land_inputs::clogistics_status as native;
+use engine_native::{Memory, cgame_state, memory::LiveMemory, read};
 use std::{
     io,
     ops::Range,
@@ -350,7 +350,7 @@ fn bound() -> [Option<&'static Storage>; 2] {
 /// A load starts fresh storage. Current supply/convoy values are never used
 /// to backfill cells which no native balance write has reached.
 pub fn prepare(memory: &impl Memory, base: usize) -> io::Result<usize> {
-    let Some(clock) = engine::allocation::advisory(|| cgame_state::read_clock(memory, base)) else {
+    let Some(clock) = engine_allocation::advisory(|| cgame_state::read_clock(memory, base)) else {
         refuse_census("logistics clock preparation unavailable");
         LOG.store(ptr::null_mut(), Ordering::SeqCst);
         return Ok(0);
@@ -386,12 +386,12 @@ pub fn prepare(memory: &impl Memory, base: usize) -> io::Result<usize> {
             ..Default::default()
         });
     let len = match native::walk_balance_owners(memory, base, state, identities) {
-        engine::walk::Outcome::Rows { len } => len,
-        engine::walk::Outcome::Unavailable { reason } => {
+        engine_native::walk::Outcome::Rows { len } => len,
+        engine_native::walk::Outcome::Unavailable { reason } => {
             refuse_census(reason);
             return Ok(0);
         }
-        engine::walk::Outcome::Truncated { .. } => {
+        engine_native::walk::Outcome::Truncated { .. } => {
             refuse_census("logistics owner census truncated");
             return Ok(0);
         }
@@ -1058,7 +1058,7 @@ mod tests {
     fn native_store_predicate_follows_the_signed_record_count() {
         let mut bytes = [0_u8; 0x20];
         bytes[0x1c..0x20].copy_from_slice(&3_i32.to_le_bytes());
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };

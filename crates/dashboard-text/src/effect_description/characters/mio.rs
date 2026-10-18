@@ -1,5 +1,5 @@
 use super::*;
-use installed_content::mio_traits::TraitName;
+use installed_content_core::mio_traits::TraitName;
 
 impl Renderer<'_, '_, '_> {
     // Trait tooltip and completion descriptions substitute TRAIT, then expand.
@@ -21,7 +21,7 @@ impl Renderer<'_, '_, '_> {
                     .and_then(|field| field.value.scalar())
             })
             .unwrap_or_default();
-        let token = std::str::from_utf8(installed_content::parser::c_string(operand))
+        let token = std::str::from_utf8(installed_content_core::parser::c_string(operand))
             .map_err(|_| "MIO trait token is not UTF-8")?;
         let world = self.context.world()?;
         let mut definition = None;
@@ -85,7 +85,7 @@ impl Renderer<'_, '_, '_> {
             true,
         )?;
         // show_modifiers defaults to yes.
-        let show = installed_content::parser::read_bool_field(children(item), "show_modifiers", true);
+        let show = installed_content_core::parser::read_bool_field(children(item), "show_modifiers", true);
         if show && let Some(trait_) = definition {
             let class = if complete {
                 "MIO trait completion"
@@ -150,16 +150,16 @@ impl Renderer<'_, '_, '_> {
 
     fn char_mio_bonus_list(
         &mut self,
-        bonuses: &[installed_content::mio_traits::Bonus],
+        bonuses: &[installed_content_core::mio_traits::Bonus],
         scopes: Scopes,
         class: &str,
     ) -> String {
         let mut parts = Vec::new();
         for bonus in bonuses.iter().filter(|bonus| bonus.value != 0) {
             let part = (|| {
-                if let Some(index) = installed_content::equipment::stat_index(bonus.name.as_bytes()) {
+                if let Some(index) = installed_content_core::equipment::stat_index(bonus.name.as_bytes()) {
                     self.char_equipment_stat_difference(index, bonus.value, scopes)
-                } else if installed_content::mio_traits::is_production_stat(&bonus.name) {
+                } else if installed_content_core::mio_traits::is_production_stat(&bonus.name) {
                     // Prefix BONUS_ and uppercase the token for its label.
                     // Append a colon and space after the label.
                     let key = format!("BONUS_{}", bonus.name.to_ascii_uppercase());
@@ -191,7 +191,7 @@ impl Renderer<'_, '_, '_> {
     // The short form trims and replaces literal LFs with commas and spaces.
     pub(in crate::effect_description) fn char_mio_policy_modifiers(
         &mut self,
-        policy: &installed_content::industrial_organisations::policies::Policy,
+        policy: &installed_content_core::industrial_organisations::policies::Policy,
         scopes: Scopes,
     ) -> String {
         let class = "MIO policy tooltip";
@@ -243,7 +243,7 @@ impl Renderer<'_, '_, '_> {
 // The magnitude's percent multiplication wraps, then formatting uses
 // the exact binary scale 2^-15 and two decimal places.
 fn mio_production_percent(value: i64, bad_positive: bool) -> String {
-    let value = replay::fixed_point::fixed5_to_q15(value);
+    let value = replay_data::fixed_point::fixed5_to_q15(value);
     let (sign, colour) = match value.signum() {
         1 => ('+', if bad_positive { 'R' } else { 'G' }),
         -1 => ('-', if bad_positive { 'G' } else { 'R' }),

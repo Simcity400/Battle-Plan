@@ -2,7 +2,7 @@
 use super::{FamilyTimings, Refused};
 use crate::prepared::frame_changes::FrameChanges;
 use dashboard_base::prepared::priority::{JobPriority, Level};
-use replay::frame::DecodedFrame;
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::BTreeMap,
     io,

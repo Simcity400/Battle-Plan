@@ -2,7 +2,7 @@
 //! replaced, flat manifest.
 #![cfg(windows)]
 
-use replay::publication::{posix_delete, posix_replace, sync_file};
+use replay::{publication::posix_delete, publication::posix_replace, publication::sync_file};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},

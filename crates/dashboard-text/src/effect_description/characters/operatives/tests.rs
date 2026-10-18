@@ -1,7 +1,8 @@
 use super::*;
 use crate::catalogue::tests::{Folder, folder_catalogue};
 use crate::effect_description::tests::Fixture;
-use replay::{frame::TableView, rows::*};
+use replay_data::rows::*;
+use replay_frame::frame::TableView;
 
 fn fixture(event_argument: &str) -> (Fixture, Folder) {
     let mut fixture = Fixture::new();
@@ -127,10 +128,10 @@ fn country_scopes() -> EventScopes {
     scopes
 }
 
-fn event(key: &str) -> Arc<installed_content::events::Event> {
-    Arc::new(installed_content::events::Event {
+fn event(key: &str) -> Arc<installed_content_events::events::Event> {
+    Arc::new(installed_content_events::events::Event {
         id: b"synthetic.1".to_vec(),
-        titles: installed_content::parser::parse(format!("title={key}").as_bytes())
+        titles: installed_content_core::parser::parse(format!("title={key}").as_bytes())
             .unwrap()
             .items,
         ..Default::default()
@@ -140,7 +141,7 @@ fn event(key: &str) -> Arc<installed_content::events::Event> {
 // Each action resolves its authored country operand and copies the selected name.
 #[test]
 fn operative_actions_resolve_country_operands() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture("EVENT");
     for (body, expected) in [
@@ -165,7 +166,7 @@ fn operative_actions_resolve_country_operands() {
 
 #[test]
 fn explicit_operative_uses_country_roster_and_exact_leader_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture("EVENT");
     let out = fixture.render(
@@ -180,7 +181,7 @@ fn explicit_operative_uses_country_roster_and_exact_leader_name() {
 // A captured-reference roster is required before selecting an operative.
 #[test]
 fn free_random_operative_refuses_the_missing_captured_reference_roster() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture("EVENT");
     *fixture.frame.tables[TableId::CapturedOperativeReferences.index()] = TableView::Unavailable {
@@ -198,7 +199,7 @@ fn free_random_operative_refuses_the_missing_captured_reference_roster() {
 // Positive hiding durations reach codename lookup.
 #[test]
 fn hide_operative_refuses_codename_only_after_gates() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture("EVENT");
     let out = fixture.render(
@@ -222,7 +223,7 @@ fn hide_operative_refuses_codename_only_after_gates() {
 // Positive harm durations reach codename lookup.
 #[test]
 fn harm_operative_refuses_codename_only_after_gates() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture("EVENT");
     let out = fixture.render(
@@ -242,7 +243,7 @@ fn harm_operative_refuses_codename_only_after_gates() {
 // only harm appends LF. Direct and registry-only roles carry operands.
 #[test]
 fn format98_codename_days_use_direct_and_referenced_roles() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture("EVENT");
     let codename = NameOperands {
@@ -320,7 +321,7 @@ fn format98_codename_days_use_direct_and_referenced_roles() {
 // All three actions copy the selected leader name.
 #[test]
 fn operative_actions_use_format98_registry_only_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture("EVENT");
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
@@ -387,7 +388,7 @@ fn operative_actions_use_format98_registry_only_name() {
 // The fresh title scope's FROM is caller ROOT.
 #[test]
 fn unit_leader_event() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture("EVENT");
     let lookup = |_: &[u8]| Ok(event("UNIT_TITLE"));
@@ -411,7 +412,7 @@ fn unit_leader_event() {
 
 #[test]
 fn unit_event_conditional_titles_use_empty_scope_and_first_fallback() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture("EVENT");
     for (titles, expected) in [
@@ -424,9 +425,11 @@ fn unit_event_conditional_titles_use_empty_scope_and_first_fallback() {
             "Event Unit AAA [Root.GetTag]",
         ),
     ] {
-        let event = Arc::new(installed_content::events::Event {
+        let event = Arc::new(installed_content_events::events::Event {
             id: b"synthetic.1".to_vec(),
-            titles: installed_content::parser::parse(titles.as_bytes()).unwrap().items,
+            titles: installed_content_core::parser::parse(titles.as_bytes())
+                .unwrap()
+                .items,
             ..Default::default()
         });
         let lookup = |_: &[u8]| Ok(event.clone());
@@ -445,12 +448,12 @@ fn unit_event_conditional_titles_use_empty_scope_and_first_fallback() {
 
 #[test]
 fn unit_event_different_eligible_titles_have_named_counted_clock_refusal() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture("EVENT");
-    let event = Arc::new(installed_content::events::Event {
+    let event = Arc::new(installed_content_events::events::Event {
         id: b"synthetic.1".to_vec(),
-        titles: installed_content::parser::parse(b"title=UNIT_TITLE title=OPERATIVE_TITLE")
+        titles: installed_content_core::parser::parse(b"title=UNIT_TITLE title=OPERATIVE_TITLE")
             .unwrap()
             .items,
         ..Default::default()
@@ -471,13 +474,13 @@ fn unit_event_different_eligible_titles_have_named_counted_clock_refusal() {
 // The operative event uses a fresh character scope.
 #[test]
 fn operative_leader_event() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture("EFFECT");
-    let events = installed_content::events::parse(
+    let events = installed_content_events::events::parse(
         b"add_namespace=synthetic operative_leader_event={major=yes option={army_experience=7 name=CHOICE} is_triggered_only=yes desc=EXPLANATION title=OPERATIVE_TITLE id=synthetic.23}",
         "events/synthetic.txt",
-        &installed_content::key_names::KeyNames::default(),
+        &installed_content_core::key_names::KeyNames::default(),
     );
     let lookup = |id: &[u8]| events.get(id).map(|event| Arc::new(event.clone()));
     let mut scopes = operative_scopes();
@@ -499,7 +502,7 @@ fn operative_leader_event() {
 
 #[test]
 fn operative_event_set_root_evaluates_set_from_operand() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture("EFFECT");
     let lookup = |_: &[u8]| Ok(event("OPERATIVE_TITLE"));
@@ -517,7 +520,7 @@ fn operative_event_set_root_evaluates_set_from_operand() {
 
 #[test]
 fn event_tooltips_expand_raw_text_without_localising_it_or_drawing() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture("EVENT");
     let lookup = |_: &[u8]| Ok(event("UNIT_TITLE"));
@@ -540,7 +543,7 @@ fn event_tooltips_expand_raw_text_without_localising_it_or_drawing() {
 
 #[test]
 fn format99_free_random_operative_requires_resolved_owner_in_captured_roster() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture("EVENT");
     *fixture.frame.tables[TableId::CapturedOperativeReferences.index()] =

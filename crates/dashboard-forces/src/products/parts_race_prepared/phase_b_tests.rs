@@ -4,7 +4,7 @@ use dashboard_base::prepared::{
     frame_changes::FrameChangeTracker,
     observer_tests::{self, Work},
 };
-use replay::rows::{TableRows, tables};
+use replay_data::{rows::TableRows, rows::tables};
 
 fn snapshot<F: Family>(state: &Prepared<F>, fixture: &Fixture) -> Work {
     let native = F::work(&state.scan);
@@ -19,7 +19,7 @@ fn snapshot<F: Family>(state: &Prepared<F>, fixture: &Fixture) -> Work {
         catalogue
             .content
             .layers
-            .derived::<dashboard_text::catalogue::CachedResult<installed_content::unit_leader::SubUnits>>()
+            .derived::<dashboard_text::catalogue::CachedResult<installed_content_core::unit_leader::SubUnits>>()
             .loads()
     };
     Work {
@@ -155,7 +155,7 @@ fn phase_b_navy_work_is_flat_over_hours_history_and_one_changed_row() {
 }
 
 fn deferred_parity<F: Family>() {
-    use replay::frame::FrameEncoder;
+    use replay_frame::frame::FrameEncoder;
     let mut lazy = F::Scan::default();
     let mut native = F::Scan::default();
     let mut tracker = FrameChangeTracker::new();
@@ -232,7 +232,7 @@ fn phase_b_navy_deferred_runs_match_native_across_checkpoints_resume_append_gaps
 }
 
 fn recorded_deltas<F: Family>() {
-    use replay::frame::FrameEncoder;
+    use replay_frame::frame::FrameEncoder;
     use std::sync::Arc;
     let mut scan = F::Scan::default();
     let mut oracle = F::Scan::default();

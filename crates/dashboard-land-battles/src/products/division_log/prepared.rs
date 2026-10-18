@@ -263,7 +263,7 @@ impl Scan {
         }
     }
 
-    pub fn new(format: replay::format::FormatVersion) -> Self {
+    pub fn new(format: replay_data::format::FormatVersion) -> Self {
         Self {
             format,
             ..Self::default()
@@ -284,7 +284,7 @@ impl Scan {
         self.observe_with_changes(frame, Some(changes));
         self.counts.observe(frame.hour, &self.events[first..])
     }
-    pub fn configure(&mut self, format: replay::format::FormatVersion) {
+    pub fn configure(&mut self, format: replay_data::format::FormatVersion) {
         self.format = format;
     }
     pub fn publish_block(

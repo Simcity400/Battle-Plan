@@ -16,11 +16,14 @@ slow-tests = []
 test-support = ["dashboard-base/test-support"]
 
 [dependencies]
+replay.workspace = true
+installed-content-core.workspace = true
+installed-content-country-names.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
 dashboard-base.workspace = true
 dashboard-core.workspace = true
 dashboard-text.workspace = true
-installed-content.workspace = true
-replay.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
 store = { path = "../store" }
@@ -28,8 +31,8 @@ ts-rs = "11.1"
 zstd = "0.13"
 
 [dev-dependencies]
+engine-executable.workspace = true
 dashboard-base = { workspace = true, features = ["test-support"] }
-engine.workspace = true
 # Prepared files publish without disk flushes, which no test can observe.
 store = { path = "../store", features = ["test-support"] }
 uuid = { workspace = true, features = ["v4"] }

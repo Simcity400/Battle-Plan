@@ -17,10 +17,8 @@
 
 use std::{collections::BTreeMap, io, sync::Arc};
 
-use replay::{
-    frame::DecodedFrame,
-    rows::{TableId, tables},
-};
+use replay_data::{rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::{
     memo::Settled,
@@ -80,7 +78,8 @@ impl CountryIndex {
                         std::str::from_utf8(&row.cosmetic_tag)
                             .map(str::to_owned)
                             .map_err(|_| "country cosmetic tag is not UTF-8".into()),
-                        installed_content::country_names::original_tag(country, row).map(str::to_owned),
+                        installed_content_country_names::country_names::original_tag(country, row)
+                            .map(str::to_owned),
                     ),
                 ))
             })
@@ -139,10 +138,11 @@ impl CountryIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, SharedView, TABLE_COUNT, TableView},
-        rows::{CountryAppearanceRow, CountryLinkRow, CountryRow, TableRows},
+    use replay_data::rows::TABLE_COUNT;
+    use replay_data::{
+        rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow, rows::TableRows,
     };
+    use replay_frame::{frame::Metrics, frame::SharedView, frame::TableView};
 
     /// `count` countries whose raw link ids differ from their slots, the last
     /// one without an appearance row, with `power` as every hourly value.
@@ -179,8 +179,8 @@ mod tests {
                             Vec::new()
                         },
                         name_tag: tag(slot),
-                        original_tag: replay::rows::Recorded::Value(Some(Vec::new())),
-                        original_tag_reference: replay::rows::Recorded::Value(Some(0)),
+                        original_tag: replay_data::rows::Recorded::Value(Some(Vec::new())),
+                        original_tag_reference: replay_data::rows::Recorded::Value(Some(0)),
                         ..Default::default()
                     })
                     .collect(),
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn the_flag_index_tracks_exact_original_tag_and_each_refusal() {
-        use replay::rows::Recorded;
+        use replay_data::rows::Recorded;
         let hour = |number, naming: &[u8], original| {
             let [links, countries, appearance] = tables(3, 0);
             let TableView::Complete(TableRows::CountryAppearance(rows)) = &*appearance else {
@@ -320,7 +320,7 @@ mod tests {
         let mut alias = appearance_rows[1].clone();
         alias.country = 9000;
         alias.cosmetic_tag = vec![0xff];
-        alias.original_tag_reference = replay::rows::Recorded::NotRecorded;
+        alias.original_tag_reference = replay_data::rows::Recorded::NotRecorded;
         appearance_rows.push(alias);
         let index = CountryIndex::read(&frame(
             1,
@@ -463,7 +463,8 @@ mod tests {
                         std::str::from_utf8(&row.cosmetic_tag)
                             .map(str::to_owned)
                             .map_err(|_| "country cosmetic tag is not UTF-8".into()),
-                        installed_content::country_names::original_tag(country, row).map(str::to_owned),
+                        installed_content_country_names::country_names::original_tag(country, row)
+                            .map(str::to_owned),
                     ),
                 ))
             })

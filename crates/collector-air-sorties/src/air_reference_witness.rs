@@ -2,15 +2,11 @@
 //! Acquisition keeps each probed handle's result; conversion drops misses and
 //! keeps a base's fields only where the AirBases roster lacks or disagrees.
 
-use engine::{
-    allocation, cair_base,
-    map_air_base_reference::{BaseReference, Host},
-    walk::Outcome,
-};
-use replay::{
-    frame::TableView,
-    rows::{AirReferenceWitnessRow, tables},
-};
+use engine_allocation as allocation;
+use engine_map_air::{map_air_base_reference::BaseReference, map_air_base_reference::Host};
+use engine_native::{cair_base, walk::Outcome};
+use replay_data::{rows::AirReferenceWitnessRow, rows::tables};
+use replay_frame::frame::TableView;
 
 use crate::table_conversion::table;
 
@@ -123,7 +119,7 @@ pub fn table_view(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
 
     fn rows(view: TableView) -> Vec<AirReferenceWitnessRow> {
         let TableView::Complete(TableRows::AirReferenceWitnesses(rows)) = view else {

@@ -7,19 +7,17 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-use installed_content::{
+use installed_content_core::{
     characters::LeaderTemplate, leader_traits::LeaderTraits, script_constants::Constants,
     tag_aliases::TagAliases, trigger_keys::TriggerNames, unit_leader::Traits,
 };
-use replay::{
-    Hour,
-    frame::{DecodedFrame, TableView, ViewIdentity},
-    rows::{
-        ArmyOrderPlanRow, ArmyOrderRow, CharacterRow, CountryAppearanceRow, CountryCounterInputRow,
-        CountryLinkRow, CountryRow, InvasionPreparationRow, ProvinceRow, Recorded,
-        ScriptVariablesRow, StateRow, TableSchema, UnitLeaderRow, tables,
-    },
+use replay_data::{
+    Hour, rows::ArmyOrderPlanRow, rows::ArmyOrderRow, rows::CharacterRow,
+    rows::CountryAppearanceRow, rows::CountryCounterInputRow, rows::CountryLinkRow,
+    rows::CountryRow, rows::InvasionPreparationRow, rows::ProvinceRow, rows::Recorded,
+    rows::ScriptVariablesRow, rows::StateRow, rows::TableSchema, rows::UnitLeaderRow, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView, frame::ViewIdentity};
 
 use super::{Eval, Scope, ongoing, refused, variables::Store};
 use crate::{
@@ -79,10 +77,10 @@ pub(crate) type AuthoredStates<'a> = (
 pub(crate) trait PreparedContent: Send + Sync {
     fn authored_states(&self) -> AuthoredStates<'_>;
     fn continents(&self) -> Result<&[String], &str>;
-    fn ideologies(&self) -> Result<&installed_content::ideologies::Ideologies, &str>;
+    fn ideologies(&self) -> Result<&installed_content_core::ideologies::Ideologies, &str>;
     fn triggers(&self) -> Result<&TriggerNames, &str>;
     fn character_traits(&self) -> Result<(&Traits, &LeaderTraits), &str>;
-    fn resources(&self) -> Result<(&installed_content::buildings::Buildings, [i64; 2]), &str>;
+    fn resources(&self) -> Result<(&installed_content_core::buildings::Buildings, [i64; 2]), &str>;
     fn leader_roles(&self) -> Result<&LeaderRoles, &str>;
     fn constants(&self) -> Result<&Constants, &str>;
     fn invasion_days(&self) -> Result<i32, &str>;
@@ -239,8 +237,8 @@ pub fn core_gap(frame: &DecodedFrame) -> Option<String> {
 
 /// The localisation, content stack and language division template names are read with.
 type TemplateNames<'a> = (
-    &'a OnceLock<Result<installed_content::localisation::Localisation, String>>,
-    &'a installed_content::ResolvedLayers,
+    &'a OnceLock<Result<installed_content_localisation::localisation::Localisation, String>>,
+    &'a installed_content_core::ResolvedLayers,
     &'a str,
 );
 
@@ -248,12 +246,12 @@ type TemplateNames<'a> = (
 #[derive(Clone, Copy)]
 pub struct GeographyInputs<'a> {
     pub neighbors: &'a OnceLock<Result<BTreeMap<u32, Vec<u32>>, String>>,
-    pub terrain: &'a OnceLock<Option<installed_content::movement::MovementMap>>,
-    pub layers: &'a installed_content::ResolvedLayers,
+    pub terrain: &'a OnceLock<Option<installed_content_core::movement::MovementMap>>,
+    pub layers: &'a installed_content_core::ResolvedLayers,
     pub state_provinces: &'a BTreeMap<u32, Vec<u32>>,
     pub state_error: Option<&'a str>,
-    pub defines: &'a installed_content::defines::Defines,
-    pub terrain_definitions: Option<&'a installed_content::terrain::TerrainDefinitions>,
+    pub defines: &'a installed_content_core::defines::Defines,
+    pub terrain_definitions: Option<&'a installed_content_core::terrain::TerrainDefinitions>,
 }
 
 impl<'a> GeographyInputs<'a> {
@@ -261,7 +259,7 @@ impl<'a> GeographyInputs<'a> {
         self.neighbors
             .get_or_init(|| match self.state_error {
                 Some(why) => Err(why.to_owned()),
-                None => installed_content::province_graph::ProvinceGraph::read(self.layers)
+                None => installed_content_core::province_graph::ProvinceGraph::read(self.layers)
                     .and_then(|(graph, _)| graph.neighbor_states(self.state_provinces))
                     .map_err(|error| error.to_string()),
             })
@@ -269,11 +267,11 @@ impl<'a> GeographyInputs<'a> {
             .map_err(String::as_str)
     }
 
-    pub(crate) fn terrain(self) -> Option<&'a installed_content::movement::MovementMap> {
+    pub(crate) fn terrain(self) -> Option<&'a installed_content_core::movement::MovementMap> {
         self.terrain
             .get_or_init(|| {
                 self.terrain_definitions.and_then(|terrain| {
-                    installed_content::movement::MovementMap::read_with_terrain(
+                    installed_content_core::movement::MovementMap::read_with_terrain(
                         self.layers,
                         self.defines,
                         terrain,
@@ -313,13 +311,13 @@ pub struct World<'a> {
     pub(super) continents: PreparedOperand<'a, Result<&'a [String], &'a str>>,
     /// The independently read subtype declarations, or why they are unread.
     pub(super) ideologies:
-        PreparedOperand<'a, Result<&'a installed_content::ideologies::Ideologies, &'a str>>,
+        PreparedOperand<'a, Result<&'a installed_content_core::ideologies::Ideologies, &'a str>>,
     pub(super) impassable: PreparedOperand<'a, &'a BTreeSet<u32>>,
     /// Content: each state's neighbour states, or why they are unknown.
     neighbor_states: Result<&'a BTreeMap<u32, Vec<u32>>, &'a str>,
     /// Content: each province's static terrain flags; `None` when the
     /// movement map could not be read.
-    terrain: Option<&'a installed_content::movement::MovementMap>,
+    terrain: Option<&'a installed_content_core::movement::MovementMap>,
     lazy_geography: Option<GeographyInputs<'a>>,
     pub(super) dlcs: &'a BTreeSet<String>,
     /// Content: the scripted triggers and the count trigger names.
@@ -412,14 +410,14 @@ pub struct ContentFacts<'a> {
     /// Independently read authored continent names.
     pub continents: Result<&'a [String], &'a str>,
     /// The independently read subtype declarations, or why they are unread.
-    pub ideologies: Result<&'a installed_content::ideologies::Ideologies, &'a str>,
+    pub ideologies: Result<&'a installed_content_core::ideologies::Ideologies, &'a str>,
     pub impassable: &'a BTreeSet<u32>,
     /// Each state's authored neighbour states, or
     /// why they cannot be derived.
     pub neighbor_states: Result<&'a BTreeMap<u32, Vec<u32>>, &'a str>,
     /// The content movement map's static province terrain, whose
     /// flags hold the coastal bit.
-    pub terrain: Option<&'a installed_content::movement::MovementMap>,
+    pub terrain: Option<&'a installed_content_core::movement::MovementMap>,
     pub dlcs: &'a BTreeSet<String>,
     /// The scripted triggers and the building, ideology and resource names
     /// trigger loading finds after the registry.
@@ -431,7 +429,7 @@ pub struct ContentFacts<'a> {
     /// country tags.
     pub tag_aliases: &'a Arc<TagAliases>,
     /// Building types, for their `local_resources_<resource>` grants.
-    pub buildings: Result<&'a installed_content::buildings::Buildings, &'a str>,
+    pub buildings: Result<&'a installed_content_core::buildings::Buildings, &'a str>,
     /// `NBuildings` `INFRASTRUCTURE_RESOURCE_BONUS` and
     /// `SUPPLY_ROUTE_RESOURCE_BONUS`, fixed5, or why they are unread.
     pub resource_bonuses: Result<[i64; 2], &'a str>,
@@ -454,7 +452,7 @@ impl<'a> ContentFacts<'a> {
     ) -> Self {
         static STATES: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
         static IMPASSABLE: BTreeSet<u32> = BTreeSet::new();
-        static BUILDINGS: OnceLock<installed_content::buildings::Buildings> = OnceLock::new();
+        static BUILDINGS: OnceLock<installed_content_core::buildings::Buildings> = OnceLock::new();
         Self {
             state_provinces: &STATES,
             state_content: Err("no recorded content geography is supplied"),
@@ -479,7 +477,7 @@ impl<'a> ContentFacts<'a> {
 }
 
 /// The character templates the game builds
-/// ([`installed_content::characters::leader_templates`]), by the file and line each
+/// ([`installed_content_core::characters::leader_templates`]), by the file and line each
 /// stores.
 #[derive(Debug)]
 pub struct LeaderRoles {
@@ -596,7 +594,7 @@ pub(super) fn table<T: TableSchema>(frame: &DecodedFrame) -> Result<&[T::Row], S
 /// A recorded query of the hour's world ([`super::inputs`]): its method and arguments.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Query {
-    TableStatus(replay::rows::TableId),
+    TableStatus(replay_data::rows::TableId),
     CountrySlots,
     StateIds,
     StateContinentToken(u32),
@@ -850,15 +848,15 @@ impl World<'_> {
 
 impl<'a> World<'a> {
     /// Whether `table` is complete this hour, as reading it would report.
-    pub(crate) fn table_status(&self, table: replay::rows::TableId) -> Result<(), String> {
+    pub(crate) fn table_status(&self, table: replay_data::rows::TableId) -> Result<(), String> {
         super::inputs::query(
             || super::inputs::Key::World(Query::TableStatus(table)),
             || self.table_status_unrecorded(table),
         )
     }
 
-    fn table_status_unrecorded(&self, id: replay::rows::TableId) -> Result<(), String> {
-        use replay::rows::TableId;
+    fn table_status_unrecorded(&self, id: replay_data::rows::TableId) -> Result<(), String> {
+        use replay_data::rows::TableId;
         match id {
             TableId::Countries => table::<tables::Countries>(self.frame).map(drop),
             TableId::CountryLinks => table::<tables::CountryLinks>(self.frame).map(drop),
@@ -954,7 +952,7 @@ impl<'a> World<'a> {
     /// Every recorded state by id, read whole: an evaluation depends on the
     /// whole States table ([`super::inputs::table`]).
     pub fn states(&self) -> &BTreeMap<u32, &'a StateRow> {
-        super::inputs::table(self.frame, replay::rows::TableId::States);
+        super::inputs::table(self.frame, replay_data::rows::TableId::States);
         self.state_map()
     }
 
@@ -975,13 +973,13 @@ impl<'a> World<'a> {
 
     /// Every raw country reference's canonical slot, read whole.
     pub fn links(&self) -> &BTreeMap<u32, u32> {
-        super::inputs::table(self.frame, replay::rows::TableId::CountryLinks);
+        super::inputs::table(self.frame, replay_data::rows::TableId::CountryLinks);
         &self.links
     }
 
     /// Every recorded province by id, read whole ([`Self::states`]).
     pub fn provinces(&self) -> &BTreeMap<u32, &'a ProvinceRow> {
-        super::inputs::table(self.frame, replay::rows::TableId::Provinces);
+        super::inputs::table(self.frame, replay_data::rows::TableId::Provinces);
         self.province_map()
     }
 
@@ -1059,7 +1057,7 @@ impl<'a> World<'a> {
             .map_or_else(|| self.neighbor_states, GeographyInputs::neighbors)
     }
 
-    fn terrain(&self) -> Option<&'a installed_content::movement::MovementMap> {
+    fn terrain(&self) -> Option<&'a installed_content_core::movement::MovementMap> {
         if let Some(content) = self.prepared_content {
             return content.geography().terrain();
         }
@@ -1247,7 +1245,7 @@ impl<'a> World<'a> {
     pub(crate) fn unit_status(
         &self,
         reference: u64,
-    ) -> Result<&'a replay::rows::DivisionStatusRow, String> {
+    ) -> Result<&'a replay_data::rows::DivisionStatusRow, String> {
         super::inputs::query_debug(
             || super::inputs::Key::World(Query::UnitStatus(reference)),
             || self.unit_status_unrecorded(reference),
@@ -1257,7 +1255,7 @@ impl<'a> World<'a> {
     fn unit_status_unrecorded(
         &self,
         reference: u64,
-    ) -> Result<&'a replay::rows::DivisionStatusRow, String> {
+    ) -> Result<&'a replay_data::rows::DivisionStatusRow, String> {
         self.unit(reference)?;
         table::<tables::DivisionStatus>(self.frame)?
             .iter()
@@ -1283,7 +1281,7 @@ impl<'a> World<'a> {
     pub(crate) fn industrial_organisation(
         &self,
         reference: u64,
-    ) -> Result<&'a replay::rows::IndustrialOrganisationRow, String> {
+    ) -> Result<&'a replay_data::rows::IndustrialOrganisationRow, String> {
         super::inputs::query_debug(
             || super::inputs::Key::World(Query::IndustrialOrganisation(reference)),
             || self.industrial_organisation_unrecorded(reference),
@@ -1293,7 +1291,7 @@ impl<'a> World<'a> {
     fn industrial_organisation_unrecorded(
         &self,
         reference: u64,
-    ) -> Result<&'a replay::rows::IndustrialOrganisationRow, String> {
+    ) -> Result<&'a replay_data::rows::IndustrialOrganisationRow, String> {
         table::<tables::IndustrialOrganisations>(self.frame)?
             .iter()
             .find(|row| row.organisation == reference)
@@ -1415,9 +1413,9 @@ impl<'a> World<'a> {
     }
 
     pub(super) fn names(&self) -> Result<&Folds, String> {
-        super::inputs::table(self.frame, replay::rows::TableId::LexicalTokens);
+        super::inputs::table(self.frame, replay_data::rows::TableId::LexicalTokens);
         get(&self.names, || {
-            let view = &self.frame.tables[replay::rows::TableId::LexicalTokens.index()];
+            let view = &self.frame.tables[replay_data::rows::TableId::LexicalTokens.index()];
             let cached = |cache: &[(ViewIdentity, Arc<Folds>)]| {
                 cache
                     .iter()
@@ -1592,7 +1590,7 @@ impl<'a> World<'a> {
     }
 
     fn original_reference_unrecorded(&self, slot: u32) -> Result<i32, String> {
-        installed_content::country_names::original_or_own_reference(self.frame, slot)
+        installed_content_country_names::country_names::original_or_own_reference(self.frame, slot)
     }
 
     /// Country-tag equality compares raw words first, then their canonical
@@ -1670,7 +1668,7 @@ impl<'a> World<'a> {
                 .map(|row| {
                     (
                         row.database_index,
-                        installed_content::parser::c_string(&row.id).to_ascii_lowercase(),
+                        installed_content_core::parser::c_string(&row.id).to_ascii_lowercase(),
                     )
                 })
                 .collect();
@@ -1679,12 +1677,12 @@ impl<'a> World<'a> {
             // that indexed instance's completed classifier, not researched membership.
             for row in definitions {
                 first
-                    .entry(installed_content::parser::c_string(&row.id).to_ascii_lowercase())
+                    .entry(installed_content_core::parser::c_string(&row.id).to_ascii_lowercase())
                     .or_insert(row.database_index);
             }
             let mut techs = Techs::default();
             for row in table::<tables::ResearchTechnologies>(self.frame)? {
-                if row.classifier != engine::ctechnology::CLASSIFIER_COMPLETED {
+                if row.classifier != engine_research::ctechnology::CLASSIFIER_COMPLETED {
                     continue;
                 }
                 match (self.slot(row.country), names.get(&row.database_index)) {
@@ -1701,10 +1699,10 @@ impl<'a> World<'a> {
             }
             Ok(techs)
         })?;
-        if techs
-            .researched
-            .contains(&(slot, installed_content::parser::c_string(name).to_ascii_lowercase()))
-        {
+        if techs.researched.contains(&(
+            slot,
+            installed_content_core::parser::c_string(name).to_ascii_lowercase(),
+        )) {
             return Ok(true);
         }
         // A completed technology this country holds (or a country that does
@@ -2304,9 +2302,9 @@ impl<'a> World<'a> {
             (&inputs.owned_states, "CountryCounterInputs.owned_states")
         };
         match recorded {
-            replay::rows::Recorded::NotRecorded => Ok(None),
-            replay::rows::Recorded::Value(Some(states)) => Ok(Some(states.as_slice())),
-            replay::rows::Recorded::Value(None) => {
+            replay_data::rows::Recorded::NotRecorded => Ok(None),
+            replay_data::rows::Recorded::Value(Some(states)) => Ok(Some(states.as_slice())),
+            replay_data::rows::Recorded::Value(None) => {
                 Err(refused(format!("{name} capture unavailable")))
             }
         }
@@ -2470,7 +2468,7 @@ impl<'a> World<'a> {
     /// the required hours are.
     pub(super) fn invasion_preparation(&self, key: (u64, u32)) -> Result<i64, String> {
         // The index below is built once per world; every evaluation reads the table.
-        super::inputs::table(self.frame, replay::rows::TableId::InvasionPreparations);
+        super::inputs::table(self.frame, replay_data::rows::TableId::InvasionPreparations);
         let rows = get(&self.invasion_preparations, || {
             Ok(table::<tables::InvasionPreparations>(self.frame)?
                 .iter()
@@ -2737,7 +2735,7 @@ impl<'a> World<'a> {
         row: &UnitLeaderRow,
         template: Option<RecordedTemplate>,
         literal: impl FnOnce(u32) -> Result<Option<&'a [u8]>, String>,
-    ) -> Result<Option<(usize, &'a installed_content::triggers::Triggers)>, String> {
+    ) -> Result<Option<(usize, &'a installed_content_core::triggers::Triggers)>, String> {
         let template = template.ok_or_else(|| {
             format!(
                 "unit leader {} has a visibility input, but its character has no template",
@@ -2790,7 +2788,7 @@ impl<'a> World<'a> {
 
     /// The `visible` conjunction of a [`LeaderVisibility::Conditioned`] read
     /// with this world's content.
-    pub(super) fn role_visible(&self, index: usize) -> &'a installed_content::triggers::Triggers {
+    pub(super) fn role_visible(&self, index: usize) -> &'a installed_content_core::triggers::Triggers {
         match self.leader_roles.map(|roles| &roles.templates[index].role) {
             Ok(Ok(Some(visible))) => visible,
             _ => unreachable!("leader role {index} is no content role"),
@@ -3009,7 +3007,7 @@ impl<'a> World<'a> {
                 .iter()
                 .filter(|row| {
                     row.character == character
-                        && row.kind == replay::rows::CharacterRoleTraitRow::COUNTRY_LEADER
+                        && row.kind == replay_data::rows::CharacterRoleTraitRow::COUNTRY_LEADER
                         && row.role == role as u32
                 }),
             traits,
@@ -3363,8 +3361,8 @@ impl<'a> World<'a> {
 
     pub(crate) fn with_template_names(
         mut self,
-        names: &'a OnceLock<Result<installed_content::localisation::Localisation, String>>,
-        layers: &'a installed_content::ResolvedLayers,
+        names: &'a OnceLock<Result<installed_content_localisation::localisation::Localisation, String>>,
+        layers: &'a installed_content_core::ResolvedLayers,
         language: &'a str,
     ) -> Self {
         self.template_names = Some((names, layers, language));
@@ -3407,7 +3405,8 @@ impl<'a> World<'a> {
                     .ok_or("template display-name localisation is unavailable")?;
                 let names = names
                     .get_or_init(|| {
-                        installed_content::localisation::read(layers, language).map_err(|e| e.to_string())
+                        installed_content_localisation::localisation::read(layers, language)
+                            .map_err(|e| e.to_string())
                     })
                     .as_ref()
                     .map_err(Clone::clone)?;

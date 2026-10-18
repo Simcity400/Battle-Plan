@@ -11,17 +11,17 @@ use std::{
     io,
 };
 
-use engine::cbuilding_template;
-use installed_content::map::ProvinceKind;
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        AIR_MISSION_BASE_EQUIPMENT_FLAGS, AIR_MISSION_FOREIGN_TARGET_FLAG, AIR_MISSION_LAY_MINES,
-        AirBaseRow, AirWingRow, BuildingRow, DivisionMovementRow, DivisionRow, LandCombatRow,
-        LandCombatSideRow, NavalBaseRow, NavalCombatDetailsRow, NavalCombatRow, NavalMineLevelRow,
-        ProvinceRow, ProvinceUnitOrderRow, StateRow, TableSchema, TaskForceRow, tables,
-    },
+use engine_native::cbuilding_template;
+use installed_content_core::map::ProvinceKind;
+use replay_data::{
+    rows::AIR_MISSION_BASE_EQUIPMENT_FLAGS, rows::AIR_MISSION_FOREIGN_TARGET_FLAG,
+    rows::AIR_MISSION_LAY_MINES, rows::AirBaseRow, rows::AirWingRow, rows::BuildingRow,
+    rows::DivisionMovementRow, rows::DivisionRow, rows::LandCombatRow, rows::LandCombatSideRow,
+    rows::NavalBaseRow, rows::NavalCombatDetailsRow, rows::NavalCombatRow, rows::NavalMineLevelRow,
+    rows::ProvinceRow, rows::ProvinceUnitOrderRow, rows::StateRow, rows::TableSchema,
+    rows::TaskForceRow, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 use {
     super::air_registry_sources::AirRegistrySources,

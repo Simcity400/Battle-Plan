@@ -13,7 +13,7 @@
 //! those parties since that read registered it (same watch epoch and
 //! sequence; a load, gap, recovery, table change, poison or a running writer
 //! revokes it). Every writer of those fields is a hooked site
-//! ([`engine::political_party_mutations`]); popularity and the ruling flag
+//! ([`engine_mutations::political_party_mutations`]); popularity and the ruling flag
 //! are read afresh, so they are held as zero.
 //!
 //! A country's ActiveIdeas rows are carried, without reading any idea, when
@@ -40,10 +40,10 @@ use crate::{
     party_changes::{Changes, Counts},
     sampled_verify::Check,
 };
-use engine::{
-    allocation,
-    cpolitical_party::Row,
-    cpolitical_status::{IdeaCarry, IdeaRow, Ideas, Parties, PartyCarry},
+use engine_allocation as allocation;
+use engine_native::{
+    cpolitical_party::Row, cpolitical_status::IdeaCarry, cpolitical_status::IdeaRow,
+    cpolitical_status::Ideas, cpolitical_status::Parties, cpolitical_status::PartyCarry,
     walk::Outcome,
 };
 use std::ops::Range;

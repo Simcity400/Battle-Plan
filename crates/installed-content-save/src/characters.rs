@@ -4,7 +4,7 @@ use super::{
     Decimal, GameDate, block, boolean, bytes, decimal, field, integer, invalid, object_id,
     required_block, required_bytes, scalar, typed_handle,
 };
-use installed_content::parser::Item;
+use installed_content_core::parser::Item;
 use std::{collections::BTreeMap, io};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -294,12 +294,12 @@ fn portraits(items: &[Item]) -> io::Result<Option<Vec<Portrait>>> {
 // than assuming every leader is owned by the character manager.
 fn leader_portraits(items: &[Item], out: &mut BTreeMap<u64, [Vec<u8>; 3]>) -> io::Result<()> {
     for item in items {
-        if let installed_content::parser::Value::Block(children) = &item.value {
+        if let installed_content_core::parser::Value::Block(children) = &item.value {
             if matches!(
                 item.key.as_deref(),
                 Some(b"field_marshal" | b"corps_commander" | b"navy_leader" | b"operative")
             ) && field(children, b"id")?
-                .is_some_and(|value| matches!(value, installed_content::parser::Value::Block(_)))
+                .is_some_and(|value| matches!(value, installed_content_core::parser::Value::Block(_)))
             {
                 let id = object_id(children)?;
                 let mut values: [Vec<u8>; 3] = Default::default();
@@ -656,7 +656,7 @@ mod country_view_tests {
 
     #[test]
     fn portrait_scan_keeps_unrelated_nested_countries_and_duplicate_checks() {
-        let doc = installed_content::parser::parse(
+        let doc = installed_content_core::parser::parse(
             br#"countries={X={}}
                 wrapper={countries={operative={id={id=7 type=73} portrait_path="nested.dds"}}}
                 navy_leader={id={id=8 type=73} portrait_path="root.dds"}"#,
@@ -667,7 +667,7 @@ mod country_view_tests {
         assert_eq!(pack.portraits[&((7 << 32) | 73)][0], b"nested.dds");
         assert_eq!(pack.portraits[&((8 << 32) | 73)][0], b"root.dds");
 
-        let doc = installed_content::parser::parse(
+        let doc = installed_content_core::parser::parse(
             br#"countries={X={}}
                 wrapper={countries={operative={id={id=7 type=73} portrait_path="nested.dds"}}}
                 operative={id={id=7 type=73} portrait_path="duplicate.dds"}"#,

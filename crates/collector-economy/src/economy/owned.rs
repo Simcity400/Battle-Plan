@@ -90,7 +90,7 @@ fn install_resource_rows<R: Copy + Default>(
         };
     };
     if growing
-        && engine::walk::Buffer::Growing(output)
+        && engine_native::walk::Buffer::Growing(output)
             .ensure(outcome.len())
             .is_err()
     {
@@ -148,9 +148,9 @@ fn acquire_resource_group(
         ctx.game_state,
         descriptors,
         if growing {
-            engine::walk::Buffer::Growing(&mut owned.resources)
+            engine_native::walk::Buffer::Growing(&mut owned.resources)
         } else {
-            engine::walk::Buffer::Fixed(&mut owned.resources[..ctx.resource_rows[1]])
+            engine_native::walk::Buffer::Fixed(&mut owned.resources[..ctx.resource_rows[1]])
         },
     ));
     ticks[7] = elapsed(started);
@@ -162,14 +162,14 @@ fn acquire_resource_group(
         ctx.game_state,
         descriptors,
         if growing {
-            engine::walk::Buffer::Growing(&mut owned.exchanges)
+            engine_native::walk::Buffer::Growing(&mut owned.exchanges)
         } else {
-            engine::walk::Buffer::Fixed(&mut owned.exchanges[..ctx.resource_rows[2]])
+            engine_native::walk::Buffer::Fixed(&mut owned.exchanges[..ctx.resource_rows[2]])
         },
         if growing {
-            engine::walk::Buffer::Growing(&mut owned.scratch)
+            engine_native::walk::Buffer::Growing(&mut owned.scratch)
         } else {
-            engine::walk::Buffer::Fixed(&mut owned.scratch[..ctx.resource_scratch])
+            engine_native::walk::Buffer::Fixed(&mut owned.scratch[..ctx.resource_scratch])
         },
     ));
     ticks[8] = elapsed(started);
@@ -210,7 +210,7 @@ impl Captured {
                     &recorded,
                     base,
                     job.game_state,
-                    engine::walk::Buffer::for_worker(
+                    engine_native::walk::Buffer::for_worker(
                         &mut self.experience.rows,
                         job.log.worker_growth_enabled(),
                     ),
@@ -241,7 +241,7 @@ impl Captured {
                     &recorded,
                     base,
                     job.game_state,
-                    engine::walk::Buffer::for_worker(
+                    engine_native::walk::Buffer::for_worker(
                         &mut self.hubs.rows,
                         job.log.worker_growth_enabled(),
                     ),
@@ -253,7 +253,7 @@ impl Captured {
                     &recorded,
                     base,
                     job.game_state,
-                    engine::walk::Buffer::for_worker(
+                    engine_native::walk::Buffer::for_worker(
                         &mut self.disrupted.rows,
                         job.log.worker_growth_enabled(),
                     ),
@@ -267,11 +267,11 @@ impl Captured {
                 &recorded,
                 base,
                 job.game_state,
-                engine::walk::Buffer::for_worker(
+                engine_native::walk::Buffer::for_worker(
                     &mut self.foreign.rows,
                     job.log.worker_growth_enabled(),
                 ),
-                engine::walk::Buffer::for_worker(
+                engine_native::walk::Buffer::for_worker(
                     &mut self.sources.first,
                     job.log.worker_growth_enabled(),
                 ),
@@ -336,11 +336,11 @@ impl Captured {
                     &recorded,
                     base,
                     job.game_state,
-                    engine::walk::Buffer::for_worker(
+                    engine_native::walk::Buffer::for_worker(
                         &mut self.purchases.rows,
                         job.log.worker_growth_enabled(),
                     ),
-                    engine::walk::Buffer::for_worker(
+                    engine_native::walk::Buffer::for_worker(
                         &mut self.purchase_scratch,
                         job.log.worker_growth_enabled(),
                     ),
@@ -557,7 +557,7 @@ impl Captured {
 
 pub(super) fn skipped() -> Outcome {
     Outcome::Unavailable {
-        reason: replay::cadence::SKIPPED_REASON,
+        reason: replay_data::cadence::SKIPPED_REASON,
     }
 }
 
@@ -928,7 +928,7 @@ fn copy_economy_province_supply(
         let province_data = espan(
             log,
             memory,
-            root.checked_add(engine::csupply_system::PROVINCE_DATA),
+            root.checked_add(engine_native::csupply_system::PROVINCE_DATA),
             16,
             M_E_SUPPLY,
         );
@@ -936,14 +936,14 @@ fn copy_economy_province_supply(
             let _ = espan(
                 log,
                 memory,
-                root.checked_add(engine::csupply_system::COUNTRY_SYSTEM_DATA),
+                root.checked_add(engine_native::csupply_system::COUNTRY_SYSTEM_DATA),
                 16,
                 M_E_SUPPLY_ROOT,
             );
             let _ = espan(
                 log,
                 memory,
-                root.checked_add(engine::csupply_system::COUNTRY_COMPANION_DATA),
+                root.checked_add(engine_native::csupply_system::COUNTRY_COMPANION_DATA),
                 16,
                 M_E_SUPPLY_ROOT,
             );
@@ -993,7 +993,8 @@ fn copy_economy_supply_details(
     if root == 0 {
         return;
     }
-    let systems_header = match root.checked_add(engine::csupply_system::COUNTRY_SYSTEM_DATA) {
+    let systems_header = match root.checked_add(engine_native::csupply_system::COUNTRY_SYSTEM_DATA)
+    {
         Some(p) => log.spans.iter().rev().find_map(|span| {
             if span.addr == p && span.len == 16 && span.ok {
                 let mut h = [0u8; 16];
@@ -1027,26 +1028,26 @@ fn copy_economy_supply_details(
             log,
             memory,
             Some(system),
-            engine::ccountry_supply_system::SIZE,
+            engine_native::ccountry_supply_system::SIZE,
             M_E_SUPPLY_OBJ,
         ) else {
             continue;
         };
         let mut obj = [0u8; 0x290];
         obj.copy_from_slice(
-            &log.bytes[obj_start..obj_start + engine::ccountry_supply_system::SIZE],
+            &log.bytes[obj_start..obj_start + engine_native::ccountry_supply_system::SIZE],
         );
         // Hub settings array.
         let hub_data = usize::try_from(u64::from_le_bytes(
-            obj[engine::ccountry_supply_system::HUB_SETTINGS_DATA
-                ..engine::ccountry_supply_system::HUB_SETTINGS_DATA + 8]
+            obj[engine_native::ccountry_supply_system::HUB_SETTINGS_DATA
+                ..engine_native::ccountry_supply_system::HUB_SETTINGS_DATA + 8]
                 .try_into()
                 .unwrap(),
         ))
         .ok();
         let hub_count = u32::from_le_bytes(
-            obj[engine::ccountry_supply_system::HUB_SETTINGS_COUNT
-                ..engine::ccountry_supply_system::HUB_SETTINGS_COUNT + 4]
+            obj[engine_native::ccountry_supply_system::HUB_SETTINGS_COUNT
+                ..engine_native::ccountry_supply_system::HUB_SETTINGS_COUNT + 4]
                 .try_into()
                 .unwrap(),
         );
@@ -1091,26 +1092,26 @@ fn copy_economy_supply_details(
         // bucket extent plus end sentinel.
         {
             let buckets = usize::try_from(u64::from_le_bytes(
-                obj[engine::ccountry_supply_system::DISRUPTED_BUCKETS
-                    ..engine::ccountry_supply_system::DISRUPTED_BUCKETS + 8]
+                obj[engine_native::ccountry_supply_system::DISRUPTED_BUCKETS
+                    ..engine_native::ccountry_supply_system::DISRUPTED_BUCKETS + 8]
                     .try_into()
                     .unwrap(),
             ))
             .ok()
             .filter(|&p| p != 0);
             let occupied = u32::from_le_bytes(
-                obj[engine::ccountry_supply_system::DISRUPTED_COUNT
-                    ..engine::ccountry_supply_system::DISRUPTED_COUNT + 4]
+                obj[engine_native::ccountry_supply_system::DISRUPTED_COUNT
+                    ..engine_native::ccountry_supply_system::DISRUPTED_COUNT + 4]
                     .try_into()
                     .unwrap(),
             );
             let mask = u32::from_le_bytes(
-                obj[engine::ccountry_supply_system::DISRUPTED_MASK
-                    ..engine::ccountry_supply_system::DISRUPTED_MASK + 4]
+                obj[engine_native::ccountry_supply_system::DISRUPTED_MASK
+                    ..engine_native::ccountry_supply_system::DISRUPTED_MASK + 4]
                     .try_into()
                     .unwrap(),
             );
-            let max_distance = obj[engine::ccountry_supply_system::DISRUPTED_MAX_DISTANCE];
+            let max_distance = obj[engine_native::ccountry_supply_system::DISRUPTED_MAX_DISTANCE];
             if let Some(buckets) = buckets
                 && occupied != 0
                 && mask.checked_add(1).is_some_and(|c| c.is_power_of_two())
@@ -1119,9 +1120,11 @@ fn copy_economy_supply_details(
                 let bucket_count = mask + 1;
                 if let Some(scan) = bucket_count.checked_add(u32::from(max_distance))
                     && let Some(bytes) = (scan as usize)
-                        .checked_mul(engine::disrupted_supply_bucket::STRIDE)
+                        .checked_mul(engine_railways::disrupted_supply_bucket::STRIDE)
                         .and_then(|b| {
-                            b.checked_add(engine::disrupted_supply_bucket::DISTANCE_PLUS_ONE + 1)
+                            b.checked_add(
+                                engine_railways::disrupted_supply_bucket::DISTANCE_PLUS_ONE + 1,
+                            )
                         })
                 {
                     let _ = esbulk(log, memory, Some(buckets), bytes, M_E_DISRUPTED);
@@ -1131,28 +1134,28 @@ fn copy_economy_supply_details(
         // Foreign homebases: array plus records with source strings.
         {
             let foreign_data = usize::try_from(u64::from_le_bytes(
-                obj[engine::ccountry_supply_system::FOREIGN_HOMEBASE_DATA
-                    ..engine::ccountry_supply_system::FOREIGN_HOMEBASE_DATA + 8]
+                obj[engine_native::ccountry_supply_system::FOREIGN_HOMEBASE_DATA
+                    ..engine_native::ccountry_supply_system::FOREIGN_HOMEBASE_DATA + 8]
                     .try_into()
                     .unwrap(),
             ))
             .ok();
             let foreign_count = u32::from_le_bytes(
-                obj[engine::ccountry_supply_system::FOREIGN_HOMEBASE_COUNT
-                    ..engine::ccountry_supply_system::FOREIGN_HOMEBASE_COUNT + 4]
+                obj[engine_native::ccountry_supply_system::FOREIGN_HOMEBASE_COUNT
+                    ..engine_native::ccountry_supply_system::FOREIGN_HOMEBASE_COUNT + 4]
                     .try_into()
                     .unwrap(),
             );
             if let Some(data) = foreign_data.filter(|&d| d != 0 && foreign_count != 0) {
                 for ordinal in 0..foreign_count {
                     let rec_addr = (ordinal as usize)
-                        .checked_mul(engine::foreign_homebase_node::STRIDE)
+                        .checked_mul(engine_map_air::foreign_homebase_node::STRIDE)
                         .and_then(|o| data.checked_add(o));
                     let Some(rec_start) = esbulk(
                         log,
                         memory,
                         rec_addr,
-                        engine::foreign_homebase_node::STRIDE,
+                        engine_map_air::foreign_homebase_node::STRIDE,
                         M_E_FOREIGN,
                     ) else {
                         continue;
@@ -1160,8 +1163,8 @@ fn copy_economy_supply_details(
                     // Source string lives inside the record; take the exact header span plus
                     // payload for exact service (the bulk above already covers the record itself).
                     let _ = rec_start;
-                    if let Some(raddr) =
-                        rec_addr.and_then(|r| r.checked_add(engine::foreign_homebase_node::SOURCE))
+                    if let Some(raddr) = rec_addr
+                        .and_then(|r| r.checked_add(engine_map_air::foreign_homebase_node::SOURCE))
                     {
                         copy_economy_string(log, memory, raddr, M_E_FOREIGN);
                     }

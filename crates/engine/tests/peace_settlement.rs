@@ -1,7 +1,7 @@
-use engine::{
-    memory::SliceMemory,
-    peace_action, peace_conference as c,
-    peace_settlement::{self as p, Action, Subject, Transfer},
+use engine_native::memory::SliceMemory;
+use engine_peace::{
+    peace_action, peace_conference as c, peace_settlement as p, peace_settlement::Action,
+    peace_settlement::Subject, peace_settlement::Transfer,
 };
 
 #[path = "support/peace_world.rs"]
@@ -41,7 +41,7 @@ fn peace_authentication_short_reads_and_cycles_never_become_empty_success() {
         f.copy(&mut [], &mut [Action::default()]).failure,
         Some("peace action vtable unsupported")
     );
-    f.u64(0x20000, engine::ctake_state_action::VTABLE_RVA as u64);
+    f.u64(0x20000, engine_peace::ctake_state_action::VTABLE_RVA as u64);
     // Keep the pointer list readable while shortening only the action.
     f.array(0x910, 0xa00, 1, 8);
     f.u64(0xa00, 0x20000);
@@ -60,15 +60,15 @@ fn peace_concrete_operands_respect_the_government_allocation() {
     let mut f = Fixture::new(0, 1);
     for (vtable, form) in [
         (
-            engine::cliberate_country_action::VTABLE_RVA,
+            engine_peace::cliberate_country_action::VTABLE_RVA,
             peace_action::Form::Liberate,
         ),
         (
-            engine::cpuppet_country_action::VTABLE_RVA,
+            engine_peace::cpuppet_country_action::VTABLE_RVA,
             peace_action::Form::Puppet,
         ),
         (
-            engine::cforce_government_action::VTABLE_RVA,
+            engine_peace::cforce_government_action::VTABLE_RVA,
             peace_action::Form::Government,
         ),
     ] {
@@ -133,7 +133,7 @@ fn peace_tree_cycle_budget_follows_the_live_header_size() {
         memory: SliceMemory<'a>,
         calls: Cell<usize>,
     }
-    impl engine::Memory for Count<'_> {
+    impl engine_native::Memory for Count<'_> {
         fn copy(&self, at: usize, bytes: &mut [u8]) -> bool {
             self.calls.set(self.calls.get() + 1);
             self.memory.copy(at, bytes)
@@ -177,7 +177,7 @@ fn peace_action_operands_use_one_scattered_span_after_authentication() {
         spans: Cell<usize>,
         scalars: Cell<usize>,
     }
-    impl engine::Memory for Span<'_> {
+    impl engine_native::Memory for Span<'_> {
         fn copy(&self, at: usize, bytes: &mut [u8]) -> bool {
             self.scalars.set(self.scalars.get() + 1);
             self.memory.copy(at, bytes)
@@ -193,7 +193,10 @@ fn peace_action_operands_use_one_scattered_span_after_authentication() {
         }
     }
     let mut f = Fixture::new(0, 1);
-    f.u64(0x20000, engine::cpuppet_country_action::VTABLE_RVA as u64);
+    f.u64(
+        0x20000,
+        engine_peace::cpuppet_country_action::VTABLE_RVA as u64,
+    );
     let memory = Span {
         memory: SliceMemory {
             base: 0,
@@ -215,7 +218,7 @@ fn peace_guarded_fixture_copies_populated_transfer_arrays() {
     let mut f = Fixture::new(2, 3);
     f.populate_transfers(3);
     let (base, pointer) = f.rebase_image(91);
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let mut transfers = [Transfer::default(); 3];
     let result = p::copy(
         &memory,
@@ -266,12 +269,15 @@ fn peace_resident_bids_keep_rejected_actions_and_navy_references_are_owned() {
         Some("peace settlement finalized byte differs")
     );
 
-    let literal = engine::ctake_navy_peace_action::LABEL_LITERAL_RVA;
+    let literal = engine_peace::ctake_navy_peace_action::LABEL_LITERAL_RVA;
     f.bytes.resize(literal + 32, 0);
     f.bytes[literal..literal + 12].copy_from_slice(b"modded_navy\0");
-    f.u64(0x20000, engine::ctake_navy_peace_action::VTABLE_RVA as u64);
+    f.u64(
+        0x20000,
+        engine_peace::ctake_navy_peace_action::VTABLE_RVA as u64,
+    );
     f.u64(0x20048, 0xe00);
-    f.u64(0xe00, engine::cship::VTABLE_RVA as u64);
+    f.u64(0xe00, engine_native::cship::VTABLE_RVA as u64);
     f.u64(0xe08, 0x9900000011);
     f.u64(0x20050, (-3_i64) as u64);
     let navy = peace_action::copy(
@@ -307,11 +313,11 @@ fn peace_automatic_transfers_are_separate_and_owned() {
     f.u64(0xa00, 0xb00);
     f.u64(
         0xb00,
-        engine::conference_winner_participant::VTABLE_RVA as u64,
+        engine_peace::conference_winner_participant::VTABLE_RVA as u64,
     );
     f.u32(0xb08, 0xe0000001);
     f.array(
-        0xb00 + engine::conference_winner_participant::AUTOMATIC_STATES,
+        0xb00 + engine_peace::conference_winner_participant::AUTOMATIC_STATES,
         0xd00,
         2,
         4,
@@ -412,7 +418,7 @@ fn peace_empty_history_and_turns_follow_native_sizes() {
                 (node + 0x38) as u64
             },
         );
-        f.u32(node + engine::peace_history_node::COUNTRY, i as u32);
+        f.u32(node + engine_peace::peace_history_node::COUNTRY, i as u32);
     }
     let copied = f.copy(&mut [], &mut []);
     assert_eq!(copied.failure, None);
@@ -439,7 +445,7 @@ fn peace_beneficiaries_and_automatic_transfers_have_no_chosen_limit() {
     f.array(0x100 + c::LIBERATED_PARTICIPANTS, participants, count, 8);
     f.u64(
         0xb00,
-        engine::conference_liberated_participant::VTABLE_RVA as u64,
+        engine_peace::conference_liberated_participant::VTABLE_RVA as u64,
     );
     for i in 0..count {
         f.u64(participants + i * 8, 0xb00);
@@ -452,13 +458,13 @@ fn peace_beneficiaries_and_automatic_transfers_have_no_chosen_limit() {
     f.u64(0xa00, 0xb00);
     f.u64(
         0xb00,
-        engine::conference_winner_participant::VTABLE_RVA as u64,
+        engine_peace::conference_winner_participant::VTABLE_RVA as u64,
     );
     let states = f.bytes.len();
     let count = 262_145;
     f.bytes.resize(states + count * 4, 0);
     f.array(
-        0xb00 + engine::conference_winner_participant::AUTOMATIC_STATES,
+        0xb00 + engine_peace::conference_winner_participant::AUTOMATIC_STATES,
         states,
         count,
         4,
@@ -489,13 +495,16 @@ fn peace_beneficiaries_and_automatic_transfers_have_no_chosen_limit() {
 #[test]
 fn peace_navy_name_reads_only_the_evidenced_literal_storage() {
     let mut f = Fixture::new(0, 1);
-    let literal = engine::ctake_navy_peace_action::LABEL_LITERAL_RVA;
+    let literal = engine_peace::ctake_navy_peace_action::LABEL_LITERAL_RVA;
     f.bytes.resize(
-        literal + engine::ctake_navy_peace_action::LABEL_LITERAL_BYTES,
+        literal + engine_peace::ctake_navy_peace_action::LABEL_LITERAL_BYTES,
         0,
     );
     f.bytes[literal..].copy_from_slice(b"synthetic_navy_name_2\0");
-    f.u64(0x20000, engine::ctake_navy_peace_action::VTABLE_RVA as u64);
+    f.u64(
+        0x20000,
+        engine_peace::ctake_navy_peace_action::VTABLE_RVA as u64,
+    );
     f.u64(0x20048, 0);
     let row = peace_action::copy(
         &SliceMemory {
@@ -517,12 +526,12 @@ fn peace_demand_refuses_unbacked_array_counts() {
     for offset in [
         0x100 + c::WINNERS,
         0x100 + c::LOSERS,
-        0x10000 + engine::cgame_state::COUNTRIES,
+        0x10000 + engine_native::cgame_state::COUNTRIES,
         0x628,
         0x910,
         0x100 + c::WINNER_PARTICIPANTS,
-        0xb00 + engine::conference_beneficiary_participant::STATES,
-        0xb00 + engine::conference_winner_participant::AUTOMATIC_STATES,
+        0xb00 + engine_peace::conference_beneficiary_participant::STATES,
+        0xb00 + engine_peace::conference_winner_participant::AUTOMATIC_STATES,
     ] {
         let mut f = Fixture::new(1, 1);
         f.populate_transfers(1);
@@ -553,7 +562,7 @@ fn peace_demand_stops_revisited_history_links_before_the_size_budget() {
         memory: M,
         calls: Cell<usize>,
     }
-    impl<M: engine::Memory> engine::Memory for Count<M> {
+    impl<M: engine_native::Memory> engine_native::Memory for Count<M> {
         fn copy(&self, at: usize, output: &mut [u8]) -> bool {
             self.calls.set(self.calls.get() + 1);
             self.memory.copy(at, output)
@@ -597,7 +606,7 @@ fn peace_demand_accepts_large_valid_history_and_turn_arrays() {
                 (node + 0x38) as u64
             },
         );
-        f.u32(node + engine::peace_history_node::COUNTRY, i as u32);
+        f.u32(node + engine_peace::peace_history_node::COUNTRY, i as u32);
     }
     let demand = p::demand(&f.memory(), 0, 0x100);
     assert_eq!(demand.failure, None);

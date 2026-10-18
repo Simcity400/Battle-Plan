@@ -1,5 +1,5 @@
 //! NavalModifierTrees and its diagnostic NavalModifierTreeSamples: the naval
-//! hovers' source trees ([`engine::naval_modifier_trees`]), read in the naval
+//! hovers' source trees ([`engine_naval_history::naval_modifier_trees`]), read in the naval
 //! combat part right after the combat census that names their sources.
 //!
 //! Each hour enumerates the sources this hour's live combats reach (each live
@@ -15,16 +15,15 @@ use crate::{
     sampled_verify::Check,
     table_conversion::unavailable,
 };
-use engine::{
-    Memory, cfex_air, cfex_member, cnaval_combat,
-    naval_modifier_trees::{self as trees, Definitions, KEYS, Kind, RawNode, Request},
-    naval_ship_modifier_inputs,
-    walk::Outcome,
+use engine_native::{
+    Memory, cfex_air, cfex_member, cnaval_combat, naval_ship_modifier_inputs, walk::Outcome,
 };
-use replay::{
-    frame::TableView,
-    rows::{self, TableRows},
+use engine_naval_history::{
+    naval_modifier_trees as trees, naval_modifier_trees::Definitions, naval_modifier_trees::KEYS,
+    naval_modifier_trees::Kind, naval_modifier_trees::RawNode, naval_modifier_trees::Request,
 };
+use replay_data::{rows, rows::TableRows};
+use replay_frame::frame::TableView;
 use std::collections::BTreeMap;
 
 /// One distinct accumulator's preorder in an arena.
@@ -73,7 +72,7 @@ impl Default for Trees {
 }
 
 fn grow<T: Clone>(vector: &mut Vec<T>, value: T) -> Result<(), &'static str> {
-    engine::allocation::reserve(vector, 1).map_err(|_| "collector allocation failed")?;
+    engine_allocation::reserve(vector, 1).map_err(|_| "collector allocation failed")?;
     vector.push(value);
     Ok(())
 }
@@ -323,10 +322,10 @@ impl Trees {
     /// Appends a held tree to the hour's arena, rebasing its display spans.
     fn copy_held(&mut self, held: &Held) -> Result<(), &'static str> {
         let offset = self.text.len();
-        engine::allocation::reserve(&mut self.text, held.text.len())
+        engine_allocation::reserve(&mut self.text, held.text.len())
             .map_err(|_| "collector allocation failed")?;
         self.text.extend_from_slice(&held.text);
-        engine::allocation::reserve(&mut self.nodes, held.nodes.len())
+        engine_allocation::reserve(&mut self.nodes, held.nodes.len())
             .map_err(|_| "collector allocation failed")?;
         for node in &held.nodes {
             let mut node = *node;
@@ -351,7 +350,7 @@ impl Trees {
         let mut held = Held {
             certificate,
             accumulator,
-            nodes: engine::allocation::vec(nodes.len())
+            nodes: engine_allocation::vec(nodes.len())
                 .map_err(|_| "collector allocation failed")?,
             text: Vec::new(),
         };
@@ -362,7 +361,7 @@ impl Trees {
                 .get(node.name[0]..node.name[0] + node.name[1])
                 .ok_or("naval tree display span invalid")?;
             copy.name[0] = held.text.len();
-            engine::allocation::reserve(&mut held.text, span.len())
+            engine_allocation::reserve(&mut held.text, span.len())
                 .map_err(|_| "collector allocation failed")?;
             held.text.extend_from_slice(span);
             held.nodes.push(copy);
@@ -402,7 +401,7 @@ impl Trees {
             }
         }
         let mut rows = Vec::new();
-        engine::allocation::reserve(&mut rows, owners.len())
+        engine_allocation::reserve(&mut rows, owners.len())
             .map_err(|_| "collector allocation failed")?;
         for ((kind, owner, sub), root) in owners {
             let root = self.roots[root];
@@ -423,7 +422,7 @@ impl Trees {
 
     fn project_samples(&self) -> Result<Vec<rows::NavalModifierTreeSampleRow>, &'static str> {
         let mut rows = Vec::new();
-        engine::allocation::reserve(&mut rows, self.requests.len())
+        engine_allocation::reserve(&mut rows, self.requests.len())
             .map_err(|_| "collector allocation failed")?;
         for (request, &root) in self.requests.iter().zip(&self.root_of) {
             let root = self
@@ -498,7 +497,7 @@ pub fn project(
         if projected[0].value == 0 && !prints {
             continue;
         }
-        engine::allocation::reserve(&mut trees, 1).map_err(|_| "collector allocation failed")?;
+        engine_allocation::reserve(&mut trees, 1).map_err(|_| "collector allocation failed")?;
         trees.push(rows::NavalModifierKeyTree {
             key,
             nodes: projected,
@@ -520,7 +519,7 @@ fn copy_visible(
         .ok_or("naval modifier preorder is incomplete")?;
     *cursor += 1;
     let start = output.len();
-    engine::allocation::reserve(output, 1).map_err(|_| "collector allocation failed")?;
+    engine_allocation::reserve(output, 1).map_err(|_| "collector allocation failed")?;
     output.push(rows::ModifierBreakdownNode::default());
     let mut kept = 0_u32;
     for _ in 0..node.children {
@@ -538,7 +537,7 @@ fn copy_visible(
         let span = text
             .get(node.name[0]..node.name[0] + node.name[1])
             .ok_or("naval modifier display span invalid")?;
-        engine::allocation::copy_vec(span).map_err(|_| "collector allocation failed")?
+        engine_allocation::copy_vec(span).map_err(|_| "collector allocation failed")?
     } else {
         Vec::new()
     };

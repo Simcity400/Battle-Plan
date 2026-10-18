@@ -17,14 +17,14 @@ pub(crate) const TABLES: &[TableId] = &[
 /// An empty field requests every recorded popularity field of that tag.
 #[cfg(test)]
 pub(crate) fn sample(
-    frame: &replay::frame::DecodedFrame,
+    frame: &replay_frame::frame::DecodedFrame,
     requested: Option<&[(String, String)]>,
 ) -> io::Result<progressive::Samples> {
     sample_with_duplicates(frame, requested, &mut BTreeMap::new())
 }
 
 fn sample_with_duplicates(
-    frame: &replay::frame::DecodedFrame,
+    frame: &replay_frame::frame::DecodedFrame,
     requested: Option<&[(String, String)]>,
     duplicates: &mut BTreeMap<(String, String), (i32, i128)>,
 ) -> io::Result<progressive::Samples> {
@@ -202,19 +202,19 @@ impl Prepared {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn observe(&mut self, frame: &replay::frame::DecodedFrame) -> io::Result<()> {
+    pub fn observe(&mut self, frame: &replay_frame::frame::DecodedFrame) -> io::Result<()> {
         let changes = self
             .test_changes
             .get_or_insert_with(dashboard_base::prepared::frame_changes::FrameChangeTracker::new)
-            .observe(frame, replay::format::FormatVersion::CURRENT);
+            .observe(frame, replay_data::format::FormatVersion::CURRENT);
         self.observe_changes(frame, &changes)
     }
     pub fn observe_changes(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("parties:observe");
+        let _cpu = ::replay_frame::cpu::scope_phase("parties:observe");
         self.metadata.first.get_or_insert(frame.hour);
         self.metadata.last = frame.hour;
         self.data.advance(frame.hour)?;
@@ -707,7 +707,8 @@ pub fn query(
     };
     let partial = !accepted.is_some_and(|coverage| coverage.complete);
     let duplicates = std::cell::RefCell::new(BTreeMap::new());
-    let native = |frame: &replay::frame::DecodedFrame, requested: Option<&[(String, String)]>| {
+    let native = |frame: &replay_frame::frame::DecodedFrame,
+                  requested: Option<&[(String, String)]>| {
         sample_with_duplicates(frame, requested, &mut duplicates.borrow_mut())
     };
     let requested = [(params.tag.clone(), String::new())];
@@ -1267,8 +1268,8 @@ mod tests {
         prepared::series::tests::Fixture,
         test_fixtures::{CAMPAIGN, records, source_with_content},
     };
-    use replay::frame::TableView;
-    use replay::rows::{CountryLinkRow, PoliticalPartyRow, TableRows};
+    use replay_data::{rows::CountryLinkRow, rows::PoliticalPartyRow, rows::TableRows};
+    use replay_frame::frame::TableView;
 
     // Existing direct adapter fixtures publish a catalogue rather than the
     // pipeline's coverage page. Name that committed prefix explicitly.
@@ -1462,7 +1463,7 @@ mod tests {
             .collect();
         let flag = AtomicBool::new(false);
         dashboard_base::prepared::observer_tests::assert_restore_continues(
-            replay::format::FormatVersion::CURRENT,
+            replay_data::format::FormatVersion::CURRENT,
             &[&frames[..4], &frames[4..]],
             Prepared::default,
             |state, frame, changes, _| state.observe_changes(frame, changes).unwrap(),
@@ -1491,7 +1492,7 @@ mod tests {
 
     #[test]
     fn prepared_party_replies_match_oracle_after_two_commits_resume_and_append() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let root =
             std::env::temp_dir().join(format!("prepared-party-content-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("common/ideologies")).unwrap();
@@ -1508,21 +1509,23 @@ mod tests {
             );
             *frame.tables[TableId::CountryAppearance.index()] =
                 TableView::Complete(TableRows::CountryAppearance(vec![
-                    replay::rows::CountryAppearanceRow {
+                    replay_data::rows::CountryAppearanceRow {
                         country: 9001,
                         leader_character: Some(leader),
                         leader_ideology: b"mod_dem".to_vec(),
-                        original_tag_reference: replay::rows::Recorded::Value(Some(55)),
-                        original_tag: replay::rows::Recorded::Value(Some(Vec::new())),
+                        original_tag_reference: replay_data::rows::Recorded::Value(Some(55)),
+                        original_tag: replay_data::rows::Recorded::Value(Some(Vec::new())),
                         ..Default::default()
                     },
                 ]));
             *frame.tables[TableId::Characters.index()] =
-                TableView::Complete(TableRows::Characters(vec![replay::rows::CharacterRow {
-                    id: leader,
-                    token: name.as_bytes().to_vec(),
-                    ..Default::default()
-                }]));
+                TableView::Complete(TableRows::Characters(vec![
+                    replay_data::rows::CharacterRow {
+                        id: leader,
+                        token: name.as_bytes().to_vec(),
+                        ..Default::default()
+                    },
+                ]));
             if let TableView::Complete(TableRows::PoliticalParties(rows)) =
                 &mut *frame.tables[TableId::PoliticalParties.index()]
             {
@@ -1564,11 +1567,11 @@ mod tests {
             if hour == 107 {
                 *frame.tables[TableId::CharacterPortraits.index()] =
                     TableView::Complete(TableRows::CharacterPortraits(vec![
-                        replay::rows::CharacterPortraitRow {
+                        replay_data::rows::CharacterPortraitRow {
                             character: leader,
-                            portraits: vec![replay::rows::CharacterPortrait {
-                                category: replay::rows::PORTRAIT_CIVILIAN,
-                                size: replay::rows::PORTRAIT_LARGE,
+                            portraits: vec![replay_data::rows::CharacterPortrait {
+                                category: replay_data::rows::PORTRAIT_CIVILIAN,
+                                size: replay_data::rows::PORTRAIT_LARGE,
                                 is_set: 1,
                                 kind: 0,
                                 identity: b"mod_portrait".to_vec(),
@@ -1736,8 +1739,8 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    fn party_census(count: u32) -> replay::frame::DecodedFrame {
-        use replay::rows::CountryRow;
+    fn party_census(count: u32) -> replay_frame::frame::DecodedFrame {
+        use replay_data::rows::CountryRow;
         let mut frame = dashboard_base::test_fixtures::ownership_frame(1, 0, 44);
         let countries: Vec<_> = (1..=count)
             .map(|id| CountryRow {
@@ -2222,7 +2225,7 @@ mod tests {
             frame_changes::FrameChangeTracker,
             observer_tests::{self, Work},
         };
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let work = observer_tests::scaled_work(2, |history| {
             let spans = observer_tests::scaled_work(10, |hours| {
                 let mut frame = party_census(5_000);
@@ -2279,7 +2282,7 @@ mod tests {
         observer_tests::assert_flat(work);
     }
 
-    fn progressive_source(blocks: i32) -> (Source, Vec<replay::frame::DecodedFrame>) {
+    fn progressive_source(blocks: i32) -> (Source, Vec<replay_frame::frame::DecodedFrame>) {
         let frames: Vec<_> = (0..blocks * 2)
             .map(|hour| {
                 let value = if hour % 2 == 0 {

@@ -1,11 +1,8 @@
 //! Bounded, allocation-free portrait mutation notifications. Only authenticated
 //! reader addresses are registered; notifications never infer an object owner.
 use crate::hook::Hook;
-use engine::{
-    Memory,
-    ccharacter_portraits::MUTATIONS,
-    portrait_cache::{Changes, Counts},
-};
+use engine_characters::ccharacter_portraits::MUTATIONS;
+use engine_native::{Memory, portrait_cache::Changes, portrait_cache::Counts};
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -255,7 +252,7 @@ impl Hooks {
                 insert as *const () as usize,
             ];
             for (index, site) in MUTATIONS.iter().enumerate() {
-                if engine::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+                if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
                     return Err("portrait hook sentinel differs");
                 }
                 let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }

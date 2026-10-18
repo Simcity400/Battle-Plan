@@ -14,12 +14,9 @@ use std::{
     io,
 };
 
-use installed_content::{
-    ResolvedLayers,
-    gfx::{SpriteSet, SpriteType},
-    gui::native::{resources, sprites::SpriteKind},
-    image::{Rgba8Image, dds, native::Decode},
-};
+use installed_content_core::{ResolvedLayers, gui::native::resources, gui::native::sprites::SpriteKind};
+use installed_content_gfx::{gfx::SpriteSet, gfx::SpriteType};
+use installed_content_image::{Rgba8Image, dds, native::Decode};
 
 /// Synthetic counter frame used by the naming and hover fixtures.
 #[cfg(any(test, feature = "test-support"))]
@@ -451,7 +448,7 @@ mod tests {
 
     #[test]
     fn vertical_counter_strip_preserves_frame_pixels_and_geometry() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!("hoi4_type_vertical_{}", std::process::id()));
         std::fs::create_dir_all(root.join("gfx")).unwrap();
@@ -469,7 +466,7 @@ mod tests {
         std::fs::write(root.join("gfx/type.tga"), bytes).unwrap();
         let layers = ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
         let sprites = SpriteSet::new(&[("interface/test.gfx".into(),
-            installed_content::gui::native::sprites::read_sprites(b"spriteTypes={spriteType={name=GFX_div_templ_7_small texturefile=gfx/type.tga noOfFrames=2 framedirectiony=yes}}"))]);
+            installed_content_core::gui::native::sprites::read_sprites(b"spriteTypes={spriteType={name=GFX_div_templ_7_small texturefile=gfx/type.tga noOfFrames=2 framedirectiony=yes}}"))]);
         let mut images = Vec::new();
         let (atlas, warnings) =
             TypeAtlas::load(&layers, &sprites, Decode::default(), &mut images).unwrap();
@@ -500,11 +497,11 @@ mod tests {
 
     #[test]
     fn counter_atlas_counts_kinds_with_geometry_it_cannot_draw() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let layers = ResolvedLayers::from_folders(&[]).unwrap();
         let sprites = SpriteSet::new(&[("interface/test.gfx".into(),
-            installed_content::gui::native::sprites::read_sprites(b"spriteTypes={corneredTileSpriteType={name=GFX_div_templ_7_small texturefile=gfx/type.tga size={x=12 y=30} borderSize={x=1 y=1}}}"))]);
+            installed_content_core::gui::native::sprites::read_sprites(b"spriteTypes={corneredTileSpriteType={name=GFX_div_templ_7_small texturefile=gfx/type.tga size={x=12 y=30} borderSize={x=1 y=1}}}"))]);
         let (atlas, warnings) =
             TypeAtlas::load(&layers, &sprites, Decode::default(), &mut Vec::new()).unwrap();
         assert!(atlas.declares("GFX_div_templ_7_small"));
@@ -541,7 +538,7 @@ mod tests {
 
     #[test]
     fn atlas_refusals_group_by_reason_with_bounded_examples() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root =
             std::env::temp_dir().join(format!("hoi4_counter_type_refusals_{}", std::process::id()));
@@ -554,7 +551,7 @@ mod tests {
             .join(" ");
         let sprites = SpriteSet::new(&[(
             "interface/test.gfx".into(),
-            installed_content::gui::native::sprites::read_sprites(
+            installed_content_core::gui::native::sprites::read_sprites(
                 format!("spriteTypes = {{ {declarations} }}").as_bytes(),
             ),
         )]);
@@ -569,7 +566,7 @@ mod tests {
 
     #[test]
     fn sixteen_bit_counter_icon_is_counted_without_copying_as_rgba8() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root =
             std::env::temp_dir().join(format!("hoi4_counter_type_565_{}", std::process::id()));
@@ -596,7 +593,7 @@ mod tests {
         let layers = ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
         let sprites = SpriteSet::new(&[(
             "interface/test.gfx".into(),
-            installed_content::gui::native::sprites::read_sprites(
+            installed_content_core::gui::native::sprites::read_sprites(
                 b"spriteTypes = { spriteType = { name = GFX_div_templ_1_small texturefile = gfx/type.dds } }",
             ),
         )]);
@@ -611,7 +608,7 @@ mod tests {
 
     #[test]
     fn counter_type_atlas_keeps_icons_under_force_pow2_textures() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "hoi4_counter_type_native_texture_{}",
@@ -623,7 +620,7 @@ mod tests {
         let layers = ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
         let sprites = SpriteSet::new(&[(
             "interface/test.gfx".into(),
-            installed_content::gui::native::sprites::read_sprites(
+            installed_content_core::gui::native::sprites::read_sprites(
                 b"spriteTypes = { spriteType = { name = GFX_div_templ_1_small texturefile = gfx/type.tga } }",
             ),
         )]);
@@ -647,7 +644,7 @@ mod tests {
 
     #[test]
     fn counter_type_atlas_uses_loaded_block_extent_for_frame_geometry() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "hoi4_counter_type_block_extent_{}",
@@ -673,7 +670,7 @@ mod tests {
         std::fs::write(root.join("gfx/type.dds"), bytes).unwrap();
         let sprites = SpriteSet::new(&[(
             "interface/test.gfx".into(),
-            installed_content::gui::native::sprites::read_sprites(
+            installed_content_core::gui::native::sprites::read_sprites(
                 b"spriteTypes={spriteType={name=GFX_div_templ_1_small texturefile=gfx/type.dds}}",
             ),
         )]);
@@ -706,7 +703,7 @@ mod tests {
 
     #[test]
     fn counter_type_atlas_accepts_authored_sizes_and_keeps_fractional_strips() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root =
             std::env::temp_dir().join(format!("hoi4_type_atlas_sizes_{}", std::process::id()));
@@ -733,7 +730,7 @@ mod tests {
         }).collect::<Vec<_>>().join("\n");
         let sprites = SpriteSet::new(&[(
             "interface/test.gfx".into(),
-            installed_content::gui::native::sprites::read_sprites(
+            installed_content_core::gui::native::sprites::read_sprites(
                 format!("spriteTypes={{{declarations}}}").as_bytes(),
             ),
         )]);
@@ -863,11 +860,11 @@ mod tests {
     /// falls back to the sub-unit sprite.
     #[test]
     fn a_refused_custom_icon_is_selected_and_withheld() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let sprites = SpriteSet::new(&[(
             "interface/counters.gfx".to_owned(),
-            installed_content::gui::native::sprites::read_sprites(
+            installed_content_core::gui::native::sprites::read_sprites(
                 b"spriteTypes = { \
                   spriteType = { name = \"GFX_div_templ_7_small\" noOfFrames = -2 } \
                   spriteType = { name = \"GFX_unit_infantry_icon_medium_white\" \

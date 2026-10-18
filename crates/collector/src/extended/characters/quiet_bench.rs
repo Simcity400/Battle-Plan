@@ -378,7 +378,7 @@ fn advisor_hour_costs_at_late_war_scale() {
 fn portrait_hour_costs_at_late_war_scale() {
     use crate::extended::character_portraits::{self as portraits, CaptureContext, PARTS};
     struct Quiet;
-    impl engine::portrait_cache::Changes for Quiet {
+    impl engine_native::portrait_cache::Changes for Quiet {
         fn revision(&self, _: usize) -> Option<(u64, u64)> {
             Some((1, 0))
         }
@@ -401,14 +401,15 @@ fn portrait_hour_costs_at_late_war_scale() {
         .unwrap()
         .to_vec();
     // Acquired again: a census with a fresh stamp and the same rows.
-    let acquire = |census: &mut engine::ccharacter_manager::PortraitCensus| {
+    let acquire = |census: &mut engine_native::ccharacter_manager::PortraitCensus| {
         census.begin(MODULE, state);
         for row in &rows {
             census.push(*row);
         }
         census.finish(rows.len());
     };
-    let mut census = engine::ccharacter_manager::PortraitCensus::try_new(rows.len()).unwrap();
+    let mut census =
+        engine_native::ccharacter_manager::PortraitCensus::try_new(rows.len()).unwrap();
     acquire(&mut census);
     let context = CaptureContext {
         base: MODULE,
@@ -417,7 +418,7 @@ fn portrait_hour_costs_at_late_war_scale() {
     let mut capacities = portraits::Capacities::default();
     capacities.presize(&memory, MODULE, state).unwrap();
     let mut capture = portraits::Captured::with_capacities(&capacities);
-    let mut hour = |census: &engine::ccharacter_manager::PortraitCensus| {
+    let mut hour = |census: &engine_native::ccharacter_manager::PortraitCensus| {
         let started = Instant::now();
         for part in 0..PARTS {
             let mut share = capture.take_part(part);

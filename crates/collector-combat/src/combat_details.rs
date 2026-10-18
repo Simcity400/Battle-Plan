@@ -19,25 +19,23 @@ use crate::{
     table_conversion::{table, table_iter, unavailable},
 };
 use collector_observers::naval_tree_changes;
-use engine::land_tactic_inputs;
-use engine::{
-    Memory, allocation, carmy_combat_inputs, cland_combat,
-    combat_sources::{Images, Sources},
-    land_reinforcement_inputs::speed as reserve_speed,
-    walk::Outcome,
+use engine_allocation as allocation;
+use engine_native::land_tactic_inputs;
+use engine_native::{
+    Memory, carmy_combat_inputs, cland_combat, combat_sources::Images, combat_sources::Sources,
+    land_reinforcement_inputs::speed as reserve_speed, walk::Outcome,
 };
-use replay::rows::{LandCombatTacticCountryWeight, LandCombatTacticInputs};
-use replay::{
-    frame::TableView,
-    rows::{
-        CombatModifierValue, LandCombatCommanderTimedTrait, LandCombatCommanderTrait,
-        LandCombatDetailsRow, LandCombatDivisionModifierRow, LandCombatDivisionRow,
-        LandCombatExileInputs, LandCombatLearningProgress, LandCombatModifierRow,
-        LandCombatSideDetails, LandCombatSideInputs, LandCombatSideRow, LandDivisionContext,
-        LandDivisionModifier, LandDivisionWidthTerm, Recorded, ReserveModifierTreeRow, Retired,
-        RetiredKept, RetiredNested, TableId, tables,
-    },
+use replay_data::{
+    rows::CombatModifierValue, rows::LandCombatCommanderTimedTrait, rows::LandCombatCommanderTrait,
+    rows::LandCombatDetailsRow, rows::LandCombatDivisionModifierRow, rows::LandCombatDivisionRow,
+    rows::LandCombatExileInputs, rows::LandCombatLearningProgress, rows::LandCombatModifierRow,
+    rows::LandCombatSideDetails, rows::LandCombatSideInputs, rows::LandCombatSideRow,
+    rows::LandDivisionContext, rows::LandDivisionModifier, rows::LandDivisionWidthTerm,
+    rows::Recorded, rows::ReserveModifierTreeRow, rows::Retired, rows::RetiredKept,
+    rows::RetiredNested, rows::TableId, rows::tables,
 };
+use replay_data::{rows::LandCombatTacticCountryWeight, rows::LandCombatTacticInputs};
+use replay_frame::frame::TableView;
 use std::mem::size_of;
 use std::sync::{
     OnceLock,
@@ -277,20 +275,20 @@ type DivisionRead = (
 /// Where one division's reads write their variable-length results: the
 /// naming memo and name arena, and the exile tags past the arena's length.
 struct DivisionOutputs<'r, 'n> {
-    name_groups: &'r mut engine::cname_group_member::GroupKeys,
-    names: &'r mut engine::cname_group_member::NameArena<'n>,
-    exile_tags: engine::walk::Buffer<'r, u32>,
+    name_groups: &'r mut engine_native::cname_group_member::GroupKeys,
+    names: &'r mut engine_native::cname_group_member::NameArena<'n>,
+    exile_tags: engine_native::walk::Buffer<'r, u32>,
 }
 
 /// One division's readers in the walk's order, through `memory` (the
-/// division's image, engine::combat_sources), into `scratch`. `countries` is
+/// division's image, engine_native::combat_sources), into `scratch`. `countries` is
 /// the combat's one country reader.
 #[allow(clippy::too_many_arguments)]
 fn read_division<M: Memory, C: Memory>(
     memory: &M,
     base: usize,
     state: usize,
-    countries: &Result<engine::ccountry::Reader<'_, C>, &'static str>,
+    countries: &Result<engine_native::ccountry::Reader<'_, C>, &'static str>,
     sources: &mut Sources,
     scratch: &mut Scratch,
     outputs: DivisionOutputs<'_, '_>,
@@ -325,7 +323,7 @@ fn read_division<M: Memory, C: Memory>(
         sources,
         pointer,
         handle,
-        engine::walk::Buffer::Growing(&mut scratch.widths),
+        engine_native::walk::Buffer::Growing(&mut scratch.widths),
     )?;
     // A reserve entry's hover shows its reinforcement chance, whose
     // speed arm is the clamped reinforcement share: base speed times the
@@ -360,8 +358,8 @@ struct Destination<'a> {
     /// This combat's division images.
     images: &'a mut Images,
     scratch: &'a mut Scratch,
-    name_groups: &'a mut engine::cname_group_member::GroupKeys,
-    names: engine::cname_group_member::NameArena<'a>,
+    name_groups: &'a mut engine_native::cname_group_member::GroupKeys,
+    names: engine_native::cname_group_member::NameArena<'a>,
     /// Tests only: read as main's readers read, sharing nothing between
     /// readers (no census members, selections, pass shares or division
     /// image) nor between divisions (no shared sources).
@@ -485,7 +483,7 @@ impl Destination<'_> {
         }
         // One country reader per combat serves every division's contextual
         // owner lookup and exile operands; no division rebuilds it.
-        let countries = engine::ccountry::Reader::new(memory, base, state);
+        let countries = engine_native::ccountry::Reader::new(memory, base, state);
         {
             let started = qpc();
             self.detail(memory, base, state, source, &members);
@@ -584,7 +582,7 @@ impl Destination<'_> {
                                 DivisionOutputs {
                                     name_groups: self.name_groups,
                                     names: &mut self.names,
-                                    exile_tags: engine::walk::Buffer::GrowingFrom(
+                                    exile_tags: engine_native::walk::Buffer::GrowingFrom(
                                         self.exile_tags,
                                         exile_start,
                                     ),
@@ -673,7 +671,7 @@ impl Destination<'_> {
             base,
             source,
             limit,
-            engine::walk::Buffer::GrowingFrom(self.country_tags, start),
+            engine_native::walk::Buffer::GrowingFrom(self.country_tags, start),
         ) {
             Ok((mut row, count)) => {
                 self.country_tags_progress.required += count;
@@ -708,12 +706,12 @@ impl Destination<'_> {
         let at = self.detail_used;
         let roster = self.arenas[0].len;
         let mut arenas = cland_combat::DetailArenas::with_buffers(
-            engine::walk::Buffer::GrowingFrom(self.rosters, roster),
-            engine::walk::Buffer::GrowingFrom(self.air_counts, at.air),
-            engine::walk::Buffer::GrowingFrom(self.detail_text, at.text),
-            engine::walk::Buffer::GrowingFrom(self.commander_traits, at.traits),
-            engine::walk::Buffer::GrowingFrom(self.timed_traits, at.timed),
-            engine::walk::Buffer::GrowingFrom(self.learning_traits, at.learning),
+            engine_native::walk::Buffer::GrowingFrom(self.rosters, roster),
+            engine_native::walk::Buffer::GrowingFrom(self.air_counts, at.air),
+            engine_native::walk::Buffer::GrowingFrom(self.detail_text, at.text),
+            engine_native::walk::Buffer::GrowingFrom(self.commander_traits, at.traits),
+            engine_native::walk::Buffer::GrowingFrom(self.timed_traits, at.timed),
+            engine_native::walk::Buffer::GrowingFrom(self.learning_traits, at.learning),
         );
         let result = cland_combat::read_details_sharing(
             memory,
@@ -818,7 +816,7 @@ impl Destination<'_> {
             base,
             pointer,
             handle,
-            engine::walk::Buffer::Growing(scratch),
+            engine_native::walk::Buffer::Growing(scratch),
         ) {
             Ok(count) => {
                 self.arenas[2].required += count;
@@ -878,7 +876,7 @@ pub struct Captured {
     width_terms: Arena<carmy_combat_inputs::WidthTerm>,
     exile_tags: Arena<u32>,
     division_names: Arena<u8>,
-    name_cache: engine::cname_group_member::GroupKeys,
+    name_cache: engine_native::cname_group_member::GroupKeys,
     leaders: cland_combat::Leaders,
     commander_traits: Arena<cland_combat::CommanderTrait>,
     detail_text: Arena<u8>,
@@ -917,10 +915,10 @@ pub struct Captured {
 
 /// Where a leader holds the accumulator its unit modifier (kind 1) and its
 /// separate-HQ modifier (kind 2) select, as the land combat context reads them.
-const COMMANDER_UNIT_ACCUMULATOR: usize =
-    engine::carmy_leader::MOVEMENT_MODIFIER + engine::carmy_leader::MODIFIER_ACCUMULATOR;
-const COMMANDER_HQ_ACCUMULATOR: usize = engine::carmy_leader::SEPARATE_HQ_MOVEMENT_MODIFIER
-    + engine::carmy_leader::MODIFIER_ACCUMULATOR;
+const COMMANDER_UNIT_ACCUMULATOR: usize = engine_native::carmy_leader::MOVEMENT_MODIFIER
+    + engine_native::carmy_leader::MODIFIER_ACCUMULATOR;
+const COMMANDER_HQ_ACCUMULATOR: usize = engine_native::carmy_leader::SEPARATE_HQ_MOVEMENT_MODIFIER
+    + engine_native::carmy_leader::MODIFIER_ACCUMULATOR;
 
 const RESERVE_TREES_UNCAPTURED: Outcome = Outcome::Unavailable {
     reason: "reserve modifier trees not captured",
@@ -945,7 +943,7 @@ struct HeldReserveTree {
     certificate: (u64, u64),
     receiver: usize,
     accumulator: usize,
-    nodes: Vec<replay::rows::ModifierBreakdownNode>,
+    nodes: Vec<replay_data::rows::ModifierBreakdownNode>,
 }
 
 /// The previous pass's held trees. A pass keeps them in its source order,
@@ -975,7 +973,7 @@ impl HeldReserveTrees {
         &mut self,
         source: &ReserveSource,
         certificate: (u64, u64),
-    ) -> Option<Vec<replay::rows::ModifierBreakdownNode>> {
+    ) -> Option<Vec<replay_data::rows::ModifierBreakdownNode>> {
         let key = (source.kind, source.owner);
         while let Some(entry) = self.entries.get_mut(self.next) {
             #[cfg(test)]
@@ -1002,10 +1000,10 @@ impl HeldReserveTrees {
 fn leader_name(memory: &impl Memory, leader: usize) -> Result<Vec<u8>, &'static str> {
     let mut name = Vec::new();
     let mut used = 0;
-    engine::msvc_string::append_growing(
+    engine_native::msvc_string::append_growing(
         memory,
         leader
-            .checked_add(engine::cunit_leader::NAME)
+            .checked_add(engine_native::cunit_leader::NAME)
             .ok_or("reserve modifier tree leader address overflow")?,
         &mut name,
         &mut used,
@@ -1073,7 +1071,7 @@ impl Captured {
             width_terms: Arena::new(c.width_terms),
             exile_tags: Arena::new(c.exile_tags),
             division_names: Arena::new(c.division_names),
-            name_cache: engine::cname_group_member::GroupKeys::try_with_capacity(
+            name_cache: engine_native::cname_group_member::GroupKeys::try_with_capacity(
                 c.name_templates,
                 c.name_groups,
             )
@@ -1196,7 +1194,7 @@ impl Captured {
             .zip(current)
             .any(|(wanted, current)| wanted.is_some_and(|wanted| wanted > current))
         {
-            let Ok(cache) = engine::cname_group_member::GroupKeys::try_with_capacity(
+            let Ok(cache) = engine_native::cname_group_member::GroupKeys::try_with_capacity(
                 c.name_templates,
                 c.name_groups,
             )
@@ -1247,8 +1245,8 @@ impl Captured {
             images: &mut self.images,
             scratch: &mut self.scratch,
             name_groups: &mut self.name_cache,
-            names: engine::cname_group_member::NameArena {
-                bytes: engine::walk::Buffer::Growing(&mut self.division_names.first),
+            names: engine_native::cname_group_member::NameArena {
+                bytes: engine_native::walk::Buffer::Growing(&mut self.division_names.first),
                 len: 0,
                 required: 0,
             },
@@ -1260,7 +1258,7 @@ impl Captured {
             combat_sides: &mut self.combat_sides.rows,
             country_tags: &mut self.country_tags.first,
             country_tags_progress: Progress::default(),
-            country_set_limit: engine::ccountry::Reader::new(memory, base, state)
+            country_set_limit: engine_native::ccountry::Reader::new(memory, base, state)
                 .map(|countries| countries.count() as usize + 1),
             rosters: &mut self.rosters.first,
             commander_traits: &mut self.commander_traits.first,
@@ -1413,7 +1411,7 @@ impl Captured {
                 receiver: row
                     .context
                     .country_accumulator
-                    .wrapping_sub(engine::ccountry::MODIFIER_ACCUMULATOR),
+                    .wrapping_sub(engine_native::ccountry::MODIFIER_ACCUMULATOR),
                 leader: None,
             });
             let kind = row.context.leader_modifier_kind;
@@ -1459,18 +1457,19 @@ impl Captured {
                 None
             };
             let carried = certificate.and_then(|certificate| held.take(&source, certificate));
-            let fresh = || -> Result<Vec<replay::rows::ModifierBreakdownNode>, &'static str> {
-                if source.accumulator == 0 {
-                    return Err("reserve modifier tree accumulator missing");
-                }
-                let tree = engine::modifier_breakdown::printed_nodes(
-                    memory,
-                    base,
-                    source.accumulator,
-                    engine::modifier_keys::LAND_REINFORCE_RATE,
-                )?;
-                replay::rows::printed_tree(&tree).map_err(|_| ALLOCATION)
-            };
+            let fresh =
+                || -> Result<Vec<replay_data::rows::ModifierBreakdownNode>, &'static str> {
+                    if source.accumulator == 0 {
+                        return Err("reserve modifier tree accumulator missing");
+                    }
+                    let tree = engine_native::modifier_breakdown::printed_nodes(
+                        memory,
+                        base,
+                        source.accumulator,
+                        engine_executable::modifier_keys::LAND_REINFORCE_RATE,
+                    )?;
+                    replay_data::rows::printed_tree(&tree).map_err(|_| ALLOCATION)
+                };
             let nodes = match carried {
                 Some(entry) if index == verify => {
                     counts[2] += 1;
@@ -1491,7 +1490,7 @@ impl Captured {
                 }
             };
             if let (Some(certificate), Ok(nodes)) = (certificate, &nodes) {
-                let nodes = engine::allocation::collect_vec(nodes.iter().cloned())
+                let nodes = engine_allocation::collect_vec(nodes.iter().cloned())
                     .map_err(|_| ALLOCATION)?;
                 kept.push(HeldReserveTree {
                     kind: source.kind,
@@ -1717,19 +1716,21 @@ impl Captured {
                 LandCombatDetailsRow {
                     tactic_inputs: Self::tactic_inputs(&captured.tactic_context),
                     border_war: Recorded::Value(r.border_war.map(|border| {
-                        replay::rows::LandBorderWarInputs {
+                        replay_data::rows::LandBorderWarInputs {
                             transfer_state: border.transfer_state,
                             combat_width: Recorded::Value(border.combat_width),
-                            sides: border.sides.map(|side| replay::rows::LandBorderWarSide {
-                                country: side.country,
-                                state: side.state,
-                                win_event: allocation::owned_vec(allocation::copy_vec(
-                                    &self.detail_text.first[side.win_event.range()],
-                                )),
-                                lose_event: allocation::owned_vec(allocation::copy_vec(
-                                    &self.detail_text.first[side.lose_event.range()],
-                                )),
-                            }),
+                            sides: border
+                                .sides
+                                .map(|side| replay_data::rows::LandBorderWarSide {
+                                    country: side.country,
+                                    state: side.state,
+                                    win_event: allocation::owned_vec(allocation::copy_vec(
+                                        &self.detail_text.first[side.win_event.range()],
+                                    )),
+                                    lose_event: allocation::owned_vec(allocation::copy_vec(
+                                        &self.detail_text.first[side.lose_event.range()],
+                                    )),
+                                }),
                         }
                     })),
                     combat: r.id,
@@ -1993,7 +1994,7 @@ pub(super) fn experience_ratio(experience: i64, required: i32) -> i64 {
 /// progress unknown.
 pub(super) fn skill_progress(
     experience: i64,
-    next: Option<engine::naval_commander_inputs::SkillDefinition>,
+    next: Option<engine_native::naval_commander_inputs::SkillDefinition>,
     refused: bool,
 ) -> i64 {
     match next {
@@ -2008,9 +2009,9 @@ pub(super) fn skill_progress(
 
 /// Spool-thread portrait projection shared by hourly land and naval contexts.
 pub fn commander_presentation(
-    p: &engine::naval_commander_inputs::Presentation,
-) -> replay::rows::CombatCommanderPresentation {
-    use replay::rows::{CombatCommanderPortraitEntry, CombatCommanderPresentation};
+    p: &engine_native::naval_commander_inputs::Presentation,
+) -> replay_data::rows::CombatCommanderPresentation {
+    use replay_data::{rows::CombatCommanderPortraitEntry, rows::CombatCommanderPresentation};
     CombatCommanderPresentation {
         character: p.character,
         character_state: p.character_state,

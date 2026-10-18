@@ -1,10 +1,12 @@
 use super::*;
 use crate::scope::tests::positive_frame as frame;
-use replay::rows::{FactionMemberRow, PoliticalPartyRow, TableId, TableRows};
+use replay_data::{
+    rows::FactionMemberRow, rows::PoliticalPartyRow, rows::TableId, rows::TableRows,
+};
 
 #[test]
 fn reserved_zero_naming_is_separate_from_positive_country_links() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = catalogue(SCRIPTED, "");
     let content = catalogue.scripted_content().unwrap();
@@ -19,7 +21,7 @@ fn reserved_zero_naming_is_separate_from_positive_country_links() {
     drop(text);
     *frame.tables[TableId::ReservedCountryNaming.index()] =
         TableView::Complete(TableRows::ReservedCountryNaming(vec![
-            replay::rows::ReservedCountryNamingRow {
+            replay_data::rows::ReservedCountryNamingRow {
                 tag: b"ZZ0".to_vec(),
                 ..Default::default()
             },
@@ -123,7 +125,7 @@ fn with_party(mut frame: DecodedFrame) -> DecodedFrame {
 /// `_long` entry is not used.
 #[test]
 fn a_long_party_name_falling_back_to_the_group_token_is_the_token() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let extra = concat!(
         " communism:0 \"Communism\"\n",
@@ -151,9 +153,9 @@ fn a_long_party_name_falling_back_to_the_group_token_is_the_token() {
 
 #[test]
 fn party_original_fallback_uses_the_party_tag_and_keeps_earlier_hits() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::Recorded;
+    use replay_data::rows::Recorded;
     let (catalogue, _folder) = catalogue(
         SCRIPTED,
         concat!(
@@ -290,7 +292,7 @@ fn party_original_fallback_uses_the_party_tag_and_keeps_earlier_hits() {
     );
     *frame.tables[TableId::ReservedCountryNaming.index()] =
         TableView::Complete(TableRows::ReservedCountryNaming(vec![
-            replay::rows::ReservedCountryNamingRow {
+            replay_data::rows::ReservedCountryNamingRow {
                 tag: b"ZZ0".to_vec(),
                 original_tag_reference: Recorded::Value(Some(400)),
                 original_tag: Recorded::Value(Some(b"MOD_original".to_vec())),
@@ -304,7 +306,7 @@ fn party_original_fallback_uses_the_party_tag_and_keeps_earlier_hits() {
 /// event scope, through the real localiser and catalogue path.
 #[test]
 fn brackets_evaluate_for_the_country_the_text_is_shown_for() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = catalogue(SCRIPTED, "");
     let localisation = &*catalogue.localisation;
@@ -314,7 +316,7 @@ fn brackets_evaluate_for_the_country_the_text_is_shown_for() {
         &mut *frame.tables[TableId::Politics.index()]
     {
         rows[0].ruling_party = Some(3);
-        rows.push(replay::rows::PoliticsRow {
+        rows.push(replay_data::rows::PoliticsRow {
             country: 200,
             ..Default::default()
         });
@@ -389,7 +391,7 @@ fn brackets_evaluate_for_the_country_the_text_is_shown_for() {
 
 #[test]
 fn numeric_brackets_use_the_country_the_text_is_shown_for() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = catalogue(SCRIPTED, "");
     let content = catalogue.scripted_content().unwrap();
@@ -408,15 +410,17 @@ fn numeric_brackets_use_the_country_the_text_is_shown_for() {
     *frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(
             [(100, 125_000), (200, 275_000)]
-                .map(|(scope_id, value_raw)| replay::rows::ScriptVariablesRow {
-                    scope_kind: 1,
-                    scope_id,
-                    seed: replay::rows::Recorded::Value(None),
-                    entries: vec![replay::rows::ScriptVariableEntry {
-                        name: b"my_var".to_vec(),
-                        value_raw,
-                    }],
-                })
+                .map(
+                    |(scope_id, value_raw)| replay_data::rows::ScriptVariablesRow {
+                        scope_kind: 1,
+                        scope_id,
+                        seed: replay_data::rows::Recorded::Value(None),
+                        entries: vec![replay_data::rows::ScriptVariableEntry {
+                            name: b"my_var".to_vec(),
+                            value_raw,
+                        }],
+                    },
+                )
                 .into(),
         ));
     for (country, expected) in [(1, "1.2"), (2, "2.7")] {
@@ -440,7 +444,7 @@ fn numeric_brackets_use_the_country_the_text_is_shown_for() {
 /// name unknown, refused by file and cause through the catalogue.
 #[test]
 fn a_property_no_read_file_defines_is_empty_only_when_every_file_is_known() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = frame();
     let (whole, _folder) = catalogue(SCRIPTED, "");
@@ -498,7 +502,7 @@ fn a_property_no_read_file_defines_is_empty_only_when_every_file_is_known() {
 /// by that name. A tag stays a tag.
 #[test]
 fn a_tag_alias_is_resolved_or_refused_by_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         ("localisation/mod_l_english.yml", LOCALISATION),
@@ -537,7 +541,7 @@ fn a_tag_alias_is_resolved_or_refused_by_name() {
     // The local player is GER (link 100); the view shows SOV (slot 2).
     *whole.tables[TableId::LocalPlayer.index()] =
         TableView::Complete(TableRows::from_rows::<tables::LocalPlayer>(vec![
-            replay::rows::LocalPlayerRow {
+            replay_data::rows::LocalPlayerRow {
                 country: 100,
                 observer_country: 0,
             },
@@ -556,7 +560,7 @@ fn a_tag_alias_is_resolved_or_refused_by_name() {
 
 #[test]
 fn promotions_tell_absence_from_a_recording_gap() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = catalogue(SCRIPTED, "");
     let localisation = &*catalogue.localisation;
@@ -677,7 +681,7 @@ fn promotions_tell_absence_from_a_recording_gap() {
 /// top-level key.
 #[test]
 fn no_faction_localises_its_key() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = frame();
     *frame.tables[TableId::FactionMembers.index()] =
@@ -713,9 +717,9 @@ fn no_faction_localises_its_key() {
 
 #[test]
 fn scripted_faction_names_use_the_recorded_template_and_copy_literals() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{FactionMemberRow, FactionRow, LexicalTokenRow};
+    use replay_data::{rows::FactionMemberRow, rows::FactionRow, rows::LexicalTokenRow};
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "localisation/demo_l_english.yml",
@@ -786,7 +790,7 @@ fn scripted_faction_names_use_the_recorded_template_and_copy_literals() {
 /// above 0x7F stays, first or not.
 #[test]
 fn a_case_change_leaves_a_byte_above_0x7f() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let extra = concat!(
         " GER_ADJ:0 \"érudit\"\n",
@@ -799,7 +803,7 @@ fn a_case_change_leaves_a_byte_above_0x7f() {
         &mut *frame.tables[TableId::Politics.index()]
     {
         rows[0].ruling_party = Some(3);
-        rows.push(replay::rows::PoliticsRow {
+        rows.push(replay_data::rows::PoliticsRow {
             country: 200,
             ..Default::default()
         });
@@ -823,10 +827,10 @@ fn a_case_change_leaves_a_byte_above_0x7f() {
 
 #[test]
 fn scripted_text_state_name_failures_keep_caller_text_without_duplicate_refusals() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (cat, _folder) = catalogue(SCRIPTED, "");
-    let state = replay::rows::StateRow {
+    let state = replay_data::rows::StateRow {
         id: 41,
         ..Default::default()
     };
@@ -852,10 +856,10 @@ fn scripted_text_state_name_failures_keep_caller_text_without_duplicate_refusals
 
 #[test]
 fn scripted_text_state_localisation_refusal_is_owned_once_by_the_product() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (cat, _folder) = catalogue(SCRIPTED, " REFUSED_STATE:0 \"control \u{14}\"\n");
-    let state = replay::rows::StateRow {
+    let state = replay_data::rows::StateRow {
         id: 41,
         ..Default::default()
     };
@@ -869,9 +873,9 @@ fn scripted_text_state_localisation_refusal_is_owned_once_by_the_product() {
 
 #[test]
 fn predicate_world_keeps_country_facts_when_map_content_or_provinces_are_missing() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{CompletedFocusRow, LexicalTokenRow, ScriptFlagRow};
+    use replay_data::{rows::CompletedFocusRow, rows::LexicalTokenRow, rows::ScriptFlagRow};
     let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[
         ("localisation/mod_l_english.yml", LOCALISATION),
         (
@@ -927,9 +931,9 @@ fn predicate_world_keeps_country_facts_when_map_content_or_provinces_are_missing
     let text = ScriptedText::new(&frame, &cat.localisation, content, 1);
     assert!(text.world().is_err()); // A strict caller cannot poison the shared world.
     let world = text.trigger_world().unwrap();
-    let parsed = installed_content::triggers::read(
+    let parsed = installed_content_core::triggers::read(
         b"has_government=mod_group has_country_flag=occupation_flag has_completed_focus=occupation_focus has_country_leader_ideology=FIRST_SUBTYPE",
-        &installed_content::key_names::KeyNames::default(),
+        &installed_content_core::key_names::KeyNames::default(),
     );
     assert_eq!(
         world.evaluate(

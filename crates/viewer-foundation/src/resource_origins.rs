@@ -27,17 +27,18 @@ use std::{
 use dashboard_text::state_resources::{
     Links, ONE, StateResources, base_amount, infrastructure_factor, resource_bonuses,
 };
-use installed_content::{ResolvedLayers, buildings::Buildings, defines::Defines};
-use replay::{
-    frame::DecodedFrame,
-    rows::{ResourceOriginRow, StateResourceInputRow, StateResourceRow, TableSchema, tables},
+use installed_content_core::{ResolvedLayers, buildings::Buildings, defines::Defines};
+use replay_data::{
+    rows::ResourceOriginRow, rows::StateResourceInputRow, rows::StateResourceRow,
+    rows::TableSchema, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 /// What the origins read of the recorded content stack.
 pub struct Content {
     /// Every resource declaration in load order, which is the resource database's order:
     /// declaration `i` is database index `i + 1`.
-    pub resources: Vec<installed_content::resources::Resource>,
+    pub resources: Vec<installed_content_core::resources::Resource>,
     /// Building types, for their `local_resources_<resource>` grants.
     pub buildings: Buildings,
     /// `NBuildings` `INFRASTRUCTURE_RESOURCE_BONUS` and `SUPPLY_ROUTE_RESOURCE_BONUS`, fixed5.
@@ -50,10 +51,10 @@ pub struct Content {
 
 impl Content {
     pub fn load(layers: &ResolvedLayers, defines: &Defines) -> io::Result<Self> {
-        let (resources, notes) = installed_content::resources::read(layers)?;
+        let (resources, notes) = installed_content_core::resources::read(layers)?;
         Ok(Self {
             resources,
-            buildings: installed_content::buildings::read(layers)?,
+            buildings: installed_content_core::buildings::read(layers)?,
             bonuses: resource_bonuses(defines)?,
             oil: defines.text("NGame", "OIL_RESOURCE")?,
             warnings: notes.into_iter().map(|(_, note)| note).collect(),
@@ -79,7 +80,7 @@ impl Definition {
     pub fn name_key(&self) -> String {
         format!(
             "PRODUCTION_MATERIALS_{}",
-            installed_content::localisation::crt_case_text(&self.name, true, false)
+            installed_content_localisation::localisation::crt_case_text(&self.name, true, false)
         )
     }
 }
@@ -291,7 +292,7 @@ impl<'a> Hour<'a> {
                 oil_factors.insert(slot, row.factor);
             }
         }
-        let infrastructure_token = engine::cbuilding_database::INFRASTRUCTURE_TOKEN;
+        let infrastructure_token = engine_native::cbuilding_database::INFRASTRUCTURE_TOKEN;
         let infrastructure = table::<tables::StateBuildings>(frame)?
             .iter()
             .filter(|row| row.building_type == infrastructure_token)

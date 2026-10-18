@@ -113,7 +113,7 @@ fn scan_reads(
                         continue;
                     };
                     // Each pack with its lists, which later formats record apart.
-                    let rows = replay::rows::with_demand_parts(
+                    let rows = replay_frame::rows::with_demand_parts(
                         rows,
                         &decoded.tables[TableId::FuelDemandParts.index()],
                         replay.format,
@@ -131,8 +131,10 @@ fn scan_reads(
                             && let Some((_, slot)) = lookup.found()
                             && let Some(row) = by_slot.get(&slot)
                         {
-                            tagged_rows
-                                .insert(tag.to_owned(), replay::rows::RowCodec::try_clone(*row)?);
+                            tagged_rows.insert(
+                                tag.to_owned(),
+                                replay_data::rows::RowCodec::try_clone(*row)?,
+                            );
                         }
                     }
                     reads.insert(frame.hour, tagged_rows);
@@ -184,7 +186,7 @@ pub(super) fn authenticated<'a>(
         .map_err(|_| dashboard_core::invalid("Fuel country reference invalid"))?;
     reads.get(&params.hour).and_then(|rows| rows.get(&params.tag))
         .filter(|row| row.country==reference
-            && matches!(row.country_instance,replay::rows::Recorded::Value(Some(instance)) if instance==params.country_instance))
+            && matches!(row.country_instance,replay_data::rows::Recorded::Value(Some(instance)) if instance==params.country_instance))
         .ok_or_else(|| dashboard_core::invalid("Fuel actor identity changed or supplying read is not recorded (carried display hours are not reads)"))
 }
 
@@ -300,7 +302,7 @@ fn history_runs(
             ))
         } else if let Some(row) = reads.get(&read.first_hour).and_then(|rows| {
             let mut matching = aliases.iter().filter_map(|tag| rows.get(*tag)).filter(|row| row.country.to_string() == params.country
-                && matches!(row.country_instance, replay::rows::Recorded::Value(Some(instance)) if instance == params.country_instance));
+                && matches!(row.country_instance, replay_data::rows::Recorded::Value(Some(instance)) if instance == params.country_instance));
             let first = matching.next()?;
             matching.next().is_none().then_some(first)
         }) {

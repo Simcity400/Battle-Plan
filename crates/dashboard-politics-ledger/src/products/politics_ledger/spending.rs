@@ -14,7 +14,7 @@ use dashboard_core::transport::json_len;
 use dashboard_text::catalogue::Catalogue;
 use dashboard_text::catalogue::{View, plain_text};
 use dashboard_text::identity::{Look, NamingCountry, character_script_token};
-use installed_content::country_names::CountryNames;
+use installed_content_country_names::country_names::CountryNames;
 use std::sync::Arc;
 mod facts;
 use facts::{EventFacts, event_facts};
@@ -121,7 +121,10 @@ pub(super) struct Scanned {
     naming: BTreeMap<(u32, i32), Arc<NamedCountry>>,
     shared: facts::Shared,
     modifier_definitions: Option<BTreeMap<String, ModifierDefinitionRow>>,
-    modifier_views: Option<(replay::frame::ViewIdentity, replay::frame::ViewIdentity)>,
+    modifier_views: Option<(
+        replay_frame::frame::ViewIdentity,
+        replay_frame::frame::ViewIdentity,
+    )>,
     /// The previous read: whole, or only its naming tables
     /// ([`naming_frame`]) when `replay` can decode it again.
     previous: Option<DecodedFrame>,
@@ -342,7 +345,7 @@ impl Scanned {
     /// Keep the read just observed for the next read: whole when no
     /// recording can decode it again, otherwise only its naming tables.
     fn retain_previous(&mut self, frame: &DecodedFrame) {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:retain_previous");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:retain_previous");
         let whole = self.replay.is_none();
         // The oracle holds whole only a read the next read dates a row at.
         #[cfg(any(test, feature = "test-support"))]
@@ -482,7 +485,7 @@ impl Scanned {
     }
 
     fn prune_publications(&mut self, frame: &DecodedFrame) {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:pruning");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:pruning");
         // Native change publications advance their sequence cursor within an
         // epoch. Daily costs replace the latest published day. A key removed
         // by a complete publication cannot return; failed reads prove no removal.
@@ -627,7 +630,7 @@ impl Scanned {
         requested: &BTreeSet<u32>,
         current: bool,
     ) {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:accounting_names");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:accounting_names");
         if requested
             .iter()
             .all(|raw| self.naming.contains_key(&(*raw, frame.hour)))
@@ -739,7 +742,8 @@ impl Scanned {
 /// tables share one unavailable view: holding them would copy each one the
 /// decoder changes for the next read.
 fn naming_frame(frame: &DecodedFrame) -> DecodedFrame {
-    use replay::frame::{SharedView, TABLE_COUNT, TableView};
+    use replay_data::rows::TABLE_COUNT;
+    use replay_frame::{frame::SharedView, frame::TableView};
     // The civil-war operands of a country's look, then government token spellings.
     let read = [
         TableId::CountryCivilWars,
@@ -752,7 +756,10 @@ fn naming_frame(frame: &DecodedFrame) -> DecodedFrame {
         reason: "not retained after its read".into(),
     });
     let mut tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| unread.clone());
-    for table in installed_content::country_names::TABLES.into_iter().chain(read) {
+    for table in installed_content_country_names::country_names::TABLES
+        .into_iter()
+        .chain(read)
+    {
         tables[table.index()] = frame.tables[table.index()].clone();
     }
     DecodedFrame {
@@ -920,7 +927,7 @@ fn valid_recorded_tag(country: &CountryRow) -> Result<&str, String> {
     Ok(std::str::from_utf8(&country.tag).expect("validated UTF-8"))
 }
 fn observe_presence(scan: &mut Scanned, frame: &DecodedFrame) -> io::Result<()> {
-    let _cpu = ::replay::cpu::scope_phase("politics_ledger:accounting_presence");
+    let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:accounting_presence");
     if frame.complete::<tables::Countries>().is_err() {
         return Ok(());
     }
@@ -1017,7 +1024,7 @@ fn observe_accounting(
     content: Option<&PoliticsContent>,
 ) -> io::Result<()> {
     let native = Arc::clone(&scan.inputs);
-    let _cpu = ::replay::cpu::scope_phase("politics_ledger:accounting_apply");
+    let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:accounting_apply");
     let hour = frame.hour;
     #[cfg(test)]
     {
@@ -1055,7 +1062,7 @@ fn observe_accounting(
         scan.name_frame(&previous, content, &event_countries, false);
         scan.previous = Some(previous);
     }
-    let coverage_cpu = ::replay::cpu::scope_phase("politics_ledger:accounting_coverage");
+    let coverage_cpu = ::replay_frame::cpu::scope_phase("politics_ledger:accounting_coverage");
     for country in native.refused.iter().take(
         if !scan.clock.recording
             || native.countries_changed
@@ -1285,7 +1292,7 @@ fn observe_accounting(
     ] {
         if !matches!(
             &*frame.tables[table.index()],
-            replay::frame::TableView::Complete(_)
+            replay_frame::frame::TableView::Complete(_)
         ) {
             for country in diagnostic_slots
                 .iter()
@@ -1310,7 +1317,7 @@ fn observe_accounting(
         })
     };
     drop(coverage_cpu);
-    let rows_cpu = ::replay::cpu::scope_phase("politics_ledger:accounting_events");
+    let rows_cpu = ::replay_frame::cpu::scope_phase("politics_ledger:accounting_events");
     let mut previous = scan.previous.take();
     // A row dated at a previous read held only by its naming tables is
     // described from that read decoded again.
@@ -1801,13 +1808,13 @@ fn localise_at<'a>(
             } else if let Some(state) = decision.item.target_state {
                 let present = state > 0
                     && match &*frame.tables[TableId::States.index()] {
-                        replay::frame::TableView::Complete(rows)
-                        | replay::frame::TableView::Truncated { rows, .. } => {
+                        replay_frame::frame::TableView::Complete(rows)
+                        | replay_frame::frame::TableView::Truncated { rows, .. } => {
                             rows.rows::<tables::States>().is_some_and(|states| {
                                 states.binary_search_by_key(&state, |row| row.id).is_ok()
                             })
                         }
-                        replay::frame::TableView::Unavailable { .. } => false,
+                        replay_frame::frame::TableView::Unavailable { .. } => false,
                     };
                 if present {
                     scopes.scopes[0].from = Link::Scope(1);
@@ -2390,9 +2397,9 @@ fn resolve_item(
             // The daily relation title uses the recorded relation TYPE_ID token,
             // not a diplomatic action.
             let key = if daily_component == Some("Relation") {
-                Some(installed_content::diplomacy::improve_relation_title_key().to_owned())
+                Some(installed_content_core::diplomacy::improve_relation_title_key().to_owned())
             } else if !row.item.key.is_empty() {
-                installed_content::diplomacy::scripted_action_name_key(
+                installed_content_core::diplomacy::scripted_action_name_key(
                     std::str::from_utf8(&row.item.key).unwrap_or_default(),
                 )
                 .ok()
@@ -2404,7 +2411,7 @@ fn resolve_item(
             {
                 row.item
                     .token
-                    .and_then(installed_content::diplomacy::charged_action_name_key)
+                    .and_then(installed_content_core::diplomacy::charged_action_name_key)
                     .map(str::to_owned)
             } else {
                 None
@@ -2472,8 +2479,10 @@ fn resolve_item(
                             if content.catalogue.localisation.get(key).is_some() =>
                         {
                             // Modifier names substitute the recorded argument as ARG (type 1).
-                            let arguments =
-                                [("ARG", installed_content::localisation::Argument::Text(argument))];
+                            let arguments = [(
+                                "ARG",
+                                installed_content_localisation::localisation::Argument::Text(argument),
+                            )];
                             let arguments: &[_] =
                                 if argument.is_empty() { &[] } else { &arguments };
                             match dashboard_text::catalogue::localised_with(

@@ -1,12 +1,10 @@
-use engine::{
-    carmy::{self, DivisionSeed},
-    carmy_manpower_values, division_land_inputs as land,
-    memory::SliceMemory,
-    walk::Outcome,
+use engine_land_inputs::division_land_inputs as land;
+use engine_native::{
+    carmy, carmy::DivisionSeed, carmy_manpower_values, memory::SliceMemory, walk::Outcome,
 };
 
 fn capture(
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     sources: &[DivisionSeed],
     source: Outcome,
@@ -15,7 +13,7 @@ fn capture(
 ) -> land::Walk {
     let mut pointers = vec![0; rows.len()];
     let mut ordinals = vec![0; rows.len()];
-    let mut first = vec![[0; 2 * engine::manpower_value_entry::STRIDE]; rows.len()];
+    let mut first = vec![[0; 2 * engine_deployment::manpower_value_entry::STRIDE]; rows.len()];
     land::capture(
         memory,
         base,
@@ -236,10 +234,7 @@ fn truncation_is_a_census_prefix_even_when_later_smaller_lists_fit() {
 
 #[test]
 fn division_land_gather_uses_the_whole_census_without_fixed_batches() {
-    use engine::{
-        Memory,
-        memory::{RecordLayout, RecordSources},
-    };
+    use engine_native::{Memory, memory::RecordLayout, memory::RecordSources};
     struct Counted<'a> {
         memory: SliceMemory<'a>,
         gathers: std::cell::Cell<usize>,
@@ -285,7 +280,7 @@ fn division_land_gather_uses_the_whole_census_without_fixed_batches() {
 fn division_land_long_contributor_tail_is_exact_and_a_short_read_refuses_it() {
     let (_, mut seeds) = world(1);
     let count = 257;
-    let mut payload = vec![0; count * engine::manpower_value_entry::STRIDE];
+    let mut payload = vec![0; count * engine_deployment::manpower_value_entry::STRIDE];
     for (n, bytes) in payload.chunks_exact_mut(8).enumerate() {
         bytes[..4].copy_from_slice(&(n as u32).to_le_bytes());
         bytes[4..].copy_from_slice(&(-(n as i32) - 1).to_le_bytes());

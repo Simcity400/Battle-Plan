@@ -1,6 +1,7 @@
 //! Test-only comparison: canonical recording keyframes and selected prefix reads.
 use super::*;
-use replay::{container::Parallel, frame::Frame};
+use replay::container::Parallel;
+use replay_frame::frame::Frame;
 use std::{collections::BTreeMap, io};
 
 pub(super) struct Recording<'a> {

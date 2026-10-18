@@ -327,7 +327,10 @@ mod tests {
         state.buttons = GamepadButton::North.bit();
         viewer.input.gamepad(GamepadMessage::State { owner, state });
         draw(&mut viewer);
-        assert_eq!(viewer.flight.as_ref().map(|flight| flight.view), Some(View::Nose));
+        assert_eq!(
+            viewer.flight.as_ref().map(|flight| flight.view),
+            Some(View::Nose)
+        );
         Ok(())
     }
 }

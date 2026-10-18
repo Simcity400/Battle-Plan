@@ -228,7 +228,11 @@ fn flying_rises_over_the_ground_and_stays_under_the_highest_camera() {
     };
     run(&mut walker, &boost, 30.0, &world);
     let reach = 20.0 * FIGURE * (1.0 + walker.distance);
-    assert!(close(walker.feet[1], ceiling - reach, 1e-2), "{}", walker.feet[1]);
+    assert!(
+        close(walker.feet[1], ceiling - reach, 1e-2),
+        "{}",
+        walker.feet[1]
+    );
     let camera = walker.camera(base(), FIGURE, &world);
     assert!(camera.height <= ceiling);
     camera.validate().unwrap();
@@ -448,7 +452,10 @@ fn the_view_orbits_the_figure_looking_at_it_above_the_ground() {
         let length = toward.iter().map(|v| v * v).sum::<f32>().sqrt();
         let looking = camera.look_direction();
         for axis in 0..3 {
-            assert!(close(looking[axis], toward[axis] / length, 1e-3), "{looking:?}");
+            assert!(
+                close(looking[axis], toward[axis] / length, 1e-3),
+                "{looking:?}"
+            );
         }
         let near = camera.lens().near;
         assert!(near > 0.0);
@@ -487,7 +494,9 @@ fn off_look(camera: &Camera, point: [f32; 3]) -> f32 {
     let toward: [f32; 3] = std::array::from_fn(|axis| point[axis] - eye[axis]);
     let length = toward.iter().map(|value| value * value).sum::<f32>().sqrt();
     let look = camera.look_direction();
-    let cosine = (0..3).map(|axis| look[axis] * toward[axis] / length).sum::<f32>();
+    let cosine = (0..3)
+        .map(|axis| look[axis] * toward[axis] / length)
+        .sum::<f32>();
     cosine.clamp(-1.0, 1.0).acos()
 }
 
@@ -496,14 +505,21 @@ fn at_the_map_s_edge_the_view_rises_and_still_looks_at_the_figure() {
     let ground = |_: f32, _: f32| 20.0;
     let world = world(&ground);
     // Facing north on the map's bottom row, the view behind the figure would stand off the map.
-    for (at, yaw) in [([100.0, 0.0], 0.0), ([100.0, MAP.y()], std::f32::consts::PI)] {
+    for (at, yaw) in [
+        ([100.0, 0.0], 0.0),
+        ([100.0, MAP.y()], std::f32::consts::PI),
+    ] {
         let walker = Walker::standing(at, yaw, 1.0, &world);
         let camera = walker.camera(base(), FIGURE, &world);
         camera.validate().unwrap();
         let eye = camera.eye();
         assert!((0.0..=MAP.y()).contains(&eye[2]), "{eye:?}");
         let target = [at[0], 20.0 + LOOK_AT * FIGURE, at[1]];
-        assert!(off_look(&camera, target) < 0.01, "{}", off_look(&camera, target));
+        assert!(
+            off_look(&camera, target) < 0.01,
+            "{}",
+            off_look(&camera, target)
+        );
         // At the view's distance, from above.
         let reach = (0..3)
             .map(|axis| (eye[axis] - target[axis]).powi(2))
@@ -515,9 +531,5 @@ fn at_the_map_s_edge_the_view_rises_and_still_looks_at_the_figure() {
     // Away from the edges the view is the one the pitch asks for.
     let walker = Walker::standing([100.0, 100.0], 0.0, 1.0, &world);
     let camera = walker.camera(base(), FIGURE, &world);
-    assert!(close(
-        camera.free().unwrap().pitch,
-        VIEW_PITCH_START,
-        1e-4
-    ));
+    assert!(close(camera.free().unwrap().pitch, VIEW_PITCH_START, 1e-4));
 }

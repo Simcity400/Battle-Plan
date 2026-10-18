@@ -30,7 +30,9 @@ fn cold_visibility_reserves_only_native_singletons() {
 
 #[test]
 fn appended_feature_failures_preserve_features_and_recover_through_the_codec() {
-    use replay::frame::{DecodedFrame, Frame, FrameDecoder, FrameEncoder, Metrics};
+    use replay_frame::{
+        frame::DecodedFrame, frame::Frame, frame::FrameDecoder, frame::FrameEncoder, frame::Metrics,
+    };
     struct Features(Option<[u8; 2]>, Option<u8>);
     impl Memory for Features {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -38,7 +40,7 @@ fn appended_feature_failures_preserve_features_and_recover_through_the_codec() {
             let human = [7];
             let manager = 0x2000_u64.to_le_bytes();
             let vtable = (cweather_manager::VTABLE_RVA as u64).to_le_bytes();
-            let bytes: &[u8] = if address == engine::dlc_feature_state::MASK_RVA {
+            let bytes: &[u8] = if address == engine_dlc::dlc_feature_state::MASK_RVA {
                 &mask
             } else if address == native::INSTANT_DECISIONS_RVA {
                 let Some(instant) = &self.1 else {
@@ -47,7 +49,7 @@ fn appended_feature_failures_preserve_features_and_recover_through_the_codec() {
                 std::slice::from_ref(instant)
             } else if address == native::HUMAN_AI_RVA {
                 &human
-            } else if address == 0x1000 + engine::cgame_state::WEATHER_MANAGER {
+            } else if address == 0x1000 + engine_native::cgame_state::WEATHER_MANAGER {
                 &manager
             } else if address == 0x2000 {
                 &vtable
@@ -103,24 +105,24 @@ fn appended_feature_failures_preserve_features_and_recover_through_the_codec() {
             .unwrap();
         let mut bytes = Vec::new();
         frame.encode(&mut bytes).unwrap();
-        let wire = Frame::decode(&mut replay::codec::Decoder::new(&bytes)).unwrap();
+        let wire = Frame::decode(&mut replay_data::codec::Decoder::new(&bytes)).unwrap();
         let decoded = decoder.apply(&wire).unwrap();
         assert_eq!(
             decoded.complete::<tables::SimulationFeatures>().unwrap(),
             &[SimulationFeatureRow {
                 dlc_mask: 0x1234_5678,
                 human_ai: 7,
-                weather_suspend: replay::rows::Recorded::Value(flags),
-                instant_decisions: replay::rows::Recorded::Value(instant),
-                runtime_scalars: replay::rows::Recorded::Value(
-                    replay::rows::PoliticalRuntimeScalars {
-                        sample_hour: replay::rows::PacketHour::Host,
+                weather_suspend: replay_data::rows::Recorded::Value(flags),
+                instant_decisions: replay_data::rows::Recorded::Value(instant),
+                runtime_scalars: replay_data::rows::Recorded::Value(
+                    replay_data::rows::PoliticalRuntimeScalars {
+                        sample_hour: replay_data::rows::PacketHour::Host,
                         ..Default::default()
                     },
                 ),
                 // The fixture serves no define global: each is refused, never zero.
-                movement_defines: replay::rows::Recorded::Value(
-                    replay::rows::MovementDefines::default()
+                movement_defines: replay_data::rows::Recorded::Value(
+                    replay_data::rows::MovementDefines::default()
                 ),
             }]
         );
@@ -129,7 +131,9 @@ fn appended_feature_failures_preserve_features_and_recover_through_the_codec() {
 
 #[test]
 fn local_player_switch_observer_failure_and_recovery_round_trip() {
-    use replay::frame::{DecodedFrame, Frame, FrameDecoder, FrameEncoder, Metrics};
+    use replay_frame::{
+        frame::DecodedFrame, frame::Frame, frame::FrameDecoder, frame::FrameEncoder, frame::Metrics,
+    };
     let mut captured = Captured::with_capacities(&fixture_capacities());
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::new();
@@ -150,8 +154,8 @@ fn local_player_switch_observer_failure_and_recovery_round_trip() {
             .flatten()
             .flat_map(u32::to_le_bytes)
             .collect();
-        let memory = engine::memory::SliceMemory {
-            base: 0x1000 + engine::cgame_state::LOCAL_PLAYER_COUNTRY,
+        let memory = engine_native::memory::SliceMemory {
+            base: 0x1000 + engine_native::cgame_state::LOCAL_PLAYER_COUNTRY,
             bytes: &bytes,
         };
         captured.capture(&memory, 0, 0x1000, hour as i32, hour == 0);
@@ -172,7 +176,7 @@ fn local_player_switch_observer_failure_and_recovery_round_trip() {
             .unwrap();
         let mut bytes = Vec::new();
         frame.encode(&mut bytes).unwrap();
-        let wire = Frame::decode(&mut replay::codec::Decoder::new(&bytes)).unwrap();
+        let wire = Frame::decode(&mut replay_data::codec::Decoder::new(&bytes)).unwrap();
         let decoded = decoder.apply(&wire).unwrap();
         match sample {
             Some([country, observer_country]) => assert_eq!(
@@ -251,7 +255,8 @@ fn war_rows_convert_their_arena_spans_and_refuse_one_outside_it() {
         ..Default::default()
     };
     captured.wars.outcome = Outcome::Rows { len: 1 };
-    let TableView::Complete(replay::rows::TableRows::CountryWars(rows)) = captured.wars_table()
+    let TableView::Complete(replay_data::rows::TableRows::CountryWars(rows)) =
+        captured.wars_table()
     else {
         panic!("war table stays complete");
     };
@@ -286,7 +291,8 @@ fn ordered_enemy_suffix_preserves_current_occurrences_and_refuses_independently(
     };
     captured.wars.outcome = Outcome::Rows { len: 1 };
     let read = |captured: &Captured| {
-        let TableView::Complete(replay::rows::TableRows::CountryWars(rows)) = captured.wars_table()
+        let TableView::Complete(replay_data::rows::TableRows::CountryWars(rows)) =
+            captured.wars_table()
         else {
             panic!("ordered refusal must preserve the independent legacy row");
         };
@@ -297,8 +303,8 @@ fn ordered_enemy_suffix_preserves_current_occurrences_and_refuses_independently(
     assert!(rows[0].enemies.is_empty());
     assert_eq!(
         rows[0].ordered,
-        replay::rows::Recorded::Value(Some(replay::rows::OrderedEnemyInputs {
-            sample_hour: replay::rows::PacketHour::Host,
+        replay_data::rows::Recorded::Value(Some(replay_data::rows::OrderedEnemyInputs {
+            sample_hour: replay_data::rows::PacketHour::Host,
             entries: vec![7, 0, 7, 9],
         }))
     );
@@ -307,21 +313,21 @@ fn ordered_enemy_suffix_preserves_current_occurrences_and_refuses_independently(
     captured.wars.rows[0].ordered = Some((4, 0));
     assert_eq!(
         read(&captured)[0].ordered,
-        replay::rows::Recorded::Value(Some(replay::rows::OrderedEnemyInputs {
-            sample_hour: replay::rows::PacketHour::Host,
+        replay_data::rows::Recorded::Value(Some(replay_data::rows::OrderedEnemyInputs {
+            sample_hour: replay_data::rows::PacketHour::Host,
             entries: Vec::new(),
         }))
     );
     captured.wars.rows[0].ordered = Some((1, 4));
     assert_eq!(
         read(&captured)[0].ordered,
-        replay::rows::Recorded::Value(None)
+        replay_data::rows::Recorded::Value(None)
     );
     captured.wars.rows[0].ordered = Some((0, 4));
     captured.wars.rows[0].ordered_hour = None;
     assert_eq!(
         read(&captured)[0].ordered,
-        replay::rows::Recorded::Value(None)
+        replay_data::rows::Recorded::Value(None)
     );
 }
 
@@ -352,7 +358,7 @@ fn quiet_region_access_hours_publish_the_held_read() {
         );
     }
     // No navy is readable: a fresh read fails, a carried hour does not.
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: 0,
         bytes: &[],
     };

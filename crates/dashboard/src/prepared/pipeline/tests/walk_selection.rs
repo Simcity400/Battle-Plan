@@ -369,7 +369,7 @@ fn selected_walk_and_all_table_walk_save_identical_5000_country_pages_and_state(
     ignore = "slow: full preparation with a 720-hour block"
 )]
 fn walk_reads_map_only_at_checkpoints_and_never_rereads_folded_army_rows() {
-    use replay::rows::RailCooldownRow;
+    use replay_data::rows::RailCooldownRow;
     let frames = (1000..=1720)
         .map(|hour| {
             let mut frame = frame(1, hour, 2);

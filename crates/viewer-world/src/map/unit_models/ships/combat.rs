@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::map::unit_history::naval_combat::{Battle, Health, Sources, impacts};
-use replay::rows::{NavalCombatShipRow, Recorded};
+use replay_data::{rows::NavalCombatShipRow, rows::Recorded};
 use std::sync::Arc;
 
 impl UnitModelAssets {
@@ -318,9 +318,10 @@ impl UnitModelAssets {
                                 "naval_combat_entity: fallback model country is unavailable"
                                     .to_owned()
                             })?;
-                        installed_content::parser::text(installed_content::parser::c_string(&country.tag)).map_err(
-                            |_| "naval_combat_entity: fallback model tag is not text".to_owned(),
-                        )
+                        installed_content_core::parser::text(installed_content_core::parser::c_string(&country.tag))
+                            .map_err(|_| {
+                                "naval_combat_entity: fallback model tag is not text".to_owned()
+                            })
                     };
                     let definition = ship_by_id.get(&row.ship).and_then(|ship| {
                         force_by_id

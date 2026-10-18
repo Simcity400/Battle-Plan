@@ -16,7 +16,7 @@ use crate::{
     metadata::branch_bounds,
 };
 #[cfg(test)]
-use replay::rows::TableId;
+use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::collections::VecDeque;
@@ -621,7 +621,7 @@ fn build(
     builder.unavailable("warDeclarationOrJoin", "War declaration or join", "WarRelations supplies the pair becoming at war. Declarations and joins require the native event history; refused intervals cannot distinguish those actions.", None);
     // Recordings since EVENT_CAUSE_FORMAT record each war's end, release
     // and state owner change with its cause in the native history.
-    if replay.format.version() < replay::rows::compatibility::EVENT_CAUSE_FORMAT {
+    if replay.format.version() < replay_data::rows::compatibility::EVENT_CAUSE_FORMAT {
         builder.unavailable("peaceOutcome", "Peace outcome", "A witnessed WarRelations removal records that the pair is no longer at war; the treaty, annexation or release cause is not recorded.", None);
         builder.unavailable("annexationCause", "Annexation or release", "CountryCounterInputs supplies owned-state existence. Its transitions have no cause; only a captured native annexation identifies that action and its roles.", None);
     }
@@ -1131,7 +1131,7 @@ fn idea_rows<'a>(
             &'a str,
             &'a idea_history::IdeaSpan,
             Option<&'a crate::products::identity::NamingCountry>,
-            Option<&'a Result<installed_content::characters::BuiltTemplate, String>>,
+            Option<&'a Result<installed_content_core::characters::BuiltTemplate, String>>,
         ),
     >,
     cancelled: &AtomicBool,
@@ -1256,7 +1256,7 @@ fn focus_completion_rows(
     context: &LoadContext,
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
-    use replay::frame::FrameDecoder;
+    use replay_frame::frame::FrameDecoder;
     let replay = source.replay_ref();
     let mut focus_art = None;
     if let Ok(content) = context.content()

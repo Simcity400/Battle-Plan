@@ -6,10 +6,11 @@ use super::keyed::Keyed;
 use super::naval_air_groups::{
     self, CarrierJoins, DenseBases, PositioningAir, PositioningAirSources,
 };
-use installed_content::naval_combat_defines::Defines;
-use replay::rows::{
-    AirBaseRow, NavalCombatDetailsRow, NavalCombatShipRow, NavalCombatSideDetails,
-    NavalCombatSummaryInputs, ShipModelRow, ShipRow,
+use installed_content_naval_combat_defines::naval_combat_defines::Defines;
+use replay_data::{
+    rows::AirBaseRow, rows::NavalCombatDetailsRow, rows::NavalCombatShipRow,
+    rows::NavalCombatSideDetails, rows::NavalCombatSummaryInputs, rows::ShipModelRow,
+    rows::ShipRow,
 };
 
 const ONE: i64 = 100_000;

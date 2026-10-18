@@ -1,11 +1,9 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{
-        CountryCounterInputRow, CountryRow, Recorded, ReverseZeroVisibilityInputs, TableId,
-        TableRows, ZeroSubjectInputs,
-    },
+use replay_data::{
+    rows::CountryCounterInputRow, rows::CountryRow, rows::Recorded,
+    rows::ReverseZeroVisibilityInputs, rows::TableId, rows::TableRows, rows::ZeroSubjectInputs,
 };
+use replay_frame::frame::TableView;
 
 fn fixture(
     value: Recorded<Option<ReverseZeroVisibilityInputs>>,

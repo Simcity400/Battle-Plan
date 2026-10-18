@@ -10,13 +10,14 @@ license.workspace = true
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-engine.workspace = true
 replay.workspace = true
+engine-executable.workspace = true
+installed-content-settings.workspace = true
+replay-data.workspace = true
 tauri = { version = "2", features = [] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 dashboard.workspace = true
-installed-content.workspace = true
 rfd.workspace = true
 tokio = { version = "1", features = ["sync"] }
 # Controllers through Windows.Gaming.Input: Xbox, PlayStation and other gamepads.

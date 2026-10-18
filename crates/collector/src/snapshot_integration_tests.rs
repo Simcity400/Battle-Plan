@@ -1,12 +1,12 @@
 //! Snapshot plans integrated with capture allocation and character fixtures.
 
 use crate::snapshot_plan::SnapshotPlan;
-use engine::Memory;
+use engine_native::Memory;
 use std::cell::RefCell;
 
 #[cfg(test)]
 pub(crate) fn allocation_failure_exercise() {
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: 0x1000,
         bytes: &[0x11; 32],
     };
@@ -52,7 +52,7 @@ pub(crate) fn allocation_failure_exercise() {
 #[test]
 fn portrait_dependencies_preserve_each_primary_fault_and_sorted_rows() {
     use crate::extended::characters::characters_test_kit as kit;
-    use engine::{ccharacter, character_portrait_entry, walk};
+    use engine_native::{ccharacter, character_portrait_entry, walk};
     struct Source<'a> {
         bytes: &'a [u8],
         calls: RefCell<Vec<(usize, usize)>>,
@@ -69,7 +69,7 @@ fn portrait_dependencies_preserve_each_primary_fault_and_sorted_rows() {
     fn walk(
         memory: &impl Memory,
     ) -> (
-        engine::cprovince::UnitOrderWalk,
+        engine_native::cprovince::UnitOrderWalk,
         [ccharacter::PortraitRow; 4],
         [character_portrait_entry::Row; 4],
     ) {

@@ -11,27 +11,21 @@
 //! sea-crossing and transfer legs move at. One batched query per owner
 //! shares the owner's and its enemies' reads across regions, and every owner
 //! shares each region's identity and weather and each navy's regional
-//! operands ([`engine::cnaval_unit_transfer::movement_speeds`]); a region's
+//! operands ([`engine_naval_history::cnaval_unit_transfer::movement_speeds`]); a region's
 //! refusal stays its own row's.
 use crate::{
     clock::qpc,
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
     table_conversion::{table, unavailable},
 };
-use engine::allocation::{collect_vec, copy_vec, default_vec, owned_vec};
-use engine::{
-    Memory,
-    cunit::FirstCombatMemo,
-    railway_gun_counter_inputs,
-    walk::{Buffer, Outcome},
+use engine_allocation::{collect_vec, copy_vec, default_vec, owned_vec};
+use engine_native::{Memory, cunit::FirstCombatMemo, walk::Buffer, walk::Outcome};
+use engine_railways::railway_gun_counter_inputs;
+use replay_data::{
+    rows::FreshRailwayCounterEta, rows::OwnerTransportSpeedRow, rows::RailwayGunCounterInputRow,
+    rows::RailwayGunEtaOperands, rows::Recorded, rows::TableId, rows::tables,
 };
-use replay::{
-    frame::TableView,
-    rows::{
-        FreshRailwayCounterEta, OwnerTransportSpeedRow, RailwayGunCounterInputRow,
-        RailwayGunEtaOperands, Recorded, TableId, tables,
-    },
-};
+use replay_frame::frame::TableView;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 
@@ -42,8 +36,8 @@ static RAILWAY_GUN_NAMED_BONUSES: AtomicUsize = AtomicUsize::new(0);
 static RAILWAY_GUN_SUPPLY_ORIGINS: AtomicUsize = AtomicUsize::new(0);
 static RAILWAY_GUN_COMBAT_REFERENCES: AtomicUsize = AtomicUsize::new(0);
 
-pub fn railway_gun_name_demand() -> engine::railway_gun_counter_inputs::NameDemand {
-    engine::railway_gun_counter_inputs::NameDemand {
+pub fn railway_gun_name_demand() -> engine_railways::railway_gun_counter_inputs::NameDemand {
+    engine_railways::railway_gun_counter_inputs::NameDemand {
         rows: RAILWAY_GUN_ROWS.load(Ordering::Relaxed),
         paths: RAILWAY_GUN_PATHS.load(Ordering::Relaxed),
         bytes: RAILWAY_GUN_NAME_BYTES.load(Ordering::Relaxed),
@@ -53,7 +47,7 @@ pub fn railway_gun_name_demand() -> engine::railway_gun_counter_inputs::NameDema
     }
 }
 
-pub fn note_railway_gun_names(demand: engine::railway_gun_counter_inputs::NameDemand) {
+pub fn note_railway_gun_names(demand: engine_railways::railway_gun_counter_inputs::NameDemand) {
     RAILWAY_GUN_ROWS.fetch_max(demand.rows, Ordering::Relaxed);
     RAILWAY_GUN_PATHS.fetch_max(demand.paths, Ordering::Relaxed);
     RAILWAY_GUN_NAME_BYTES.fetch_max(demand.bytes, Ordering::Relaxed);
@@ -188,15 +182,15 @@ impl Capacities {
 
 fn layout_buffer_len() -> usize {
     #[cfg(any(test, feature = "test-support"))]
-    if !engine::executable_tables::is_initialized() {
+    if !engine_executable::executable_tables::is_initialized() {
         return 0;
     }
-    engine::fixed_layout::longest_name()
+    engine_fixed_layout::fixed_layout::longest_name()
 }
 
 pub struct Captured {
     rows: CaptureRows<railway_gun_counter_inputs::Row>,
-    combat_references: Arena<engine::cunit::MapCombatReference>,
+    combat_references: Arena<engine_native::cunit::MapCombatReference>,
     sample_hour: Option<i32>,
     paths: Arena<u32>,
     names: Arena<u8>,
@@ -204,22 +198,22 @@ pub struct Captured {
     fresh_observations: Vec<railway_gun_counter_inputs::FreshEtaObservations>,
     named_bonuses: Vec<usize>,
     required_named_bonuses: usize,
-    fixed_layout: Option<engine::fixed_layout::Report>,
+    fixed_layout: Option<engine_fixed_layout::fixed_layout::Report>,
     fixed_layout_buffer: Vec<u8>,
-    supply_origins: Arena<engine::cunit_supply_inputs::Origin>,
+    supply_origins: Arena<engine_native::cunit_supply_inputs::Origin>,
     /// First-combat answers for this capture's guns. The gun job runs apart from the
     /// division movement packet, so it keeps its own memo, sized off-thread.
     combats: FirstCombatMemo,
     /// The strategic regions of this capture's gun provinces and routes, by id,
     /// their pointers cleared after use.
-    regions: Vec<engine::cnaval_unit_transfer::TransportRegion>,
+    regions: Vec<engine_naval_history::cnaval_unit_transfer::TransportRegion>,
     /// Each positive logical owner of a walked gun, once.
     owners: Vec<u32>,
     transport: Vec<OwnerTransportSpeedRow>,
     transport_outcome: Outcome,
     transport_refused: Vec<(&'static str, u64)>,
     /// What every owner's transport query of one capture shares.
-    speed_cache: engine::cnaval_unit_transfer::SpeedCache,
+    speed_cache: engine_naval_history::cnaval_unit_transfer::SpeedCache,
 }
 
 const TRANSPORT_UNCAPTURED: Outcome = Outcome::Unavailable {
@@ -305,7 +299,7 @@ impl Captured {
             + self.fixed_layout_buffer.capacity()
             + self.supply_origins.allocated_bytes()
             + self.regions.capacity()
-                * std::mem::size_of::<engine::cnaval_unit_transfer::TransportRegion>()
+                * std::mem::size_of::<engine_naval_history::cnaval_unit_transfer::TransportRegion>()
             + self.owners.capacity() * std::mem::size_of::<u32>()
             + self.transport.capacity() * std::mem::size_of::<OwnerTransportSpeedRow>()
             + self.speed_cache.allocated_bytes()
@@ -372,7 +366,7 @@ impl Captured {
             guns: Buffer::Growing(&mut self.tooltip_guns),
             fresh_observations: Buffer::Growing(&mut self.fresh_observations),
             sample_hour: hour,
-            named: engine::railway_gun_speed::NamedBonuses {
+            named: engine_railways::railway_gun_speed::NamedBonuses {
                 pointers: Buffer::Growing(&mut self.named_bonuses),
                 required: 0,
             },
@@ -536,8 +530,9 @@ impl Captured {
         // A province whose region cannot be read is skipped and counted; its
         // legs refuse by name in the viewer, and every other province stands.
         for &province in &provinces {
-            match engine::cnaval_unit_transfer::province_region(memory, base, game_state, province)
-            {
+            match engine_naval_history::cnaval_unit_transfer::province_region(
+                memory, base, game_state, province,
+            ) {
                 Ok(region) => {
                     self.regions.push(region);
                     located.push((province, region.id));
@@ -583,7 +578,7 @@ impl Captured {
                     .filter(|&&(known, _)| known == owner)
                     .map(|&(_, index)| index),
             );
-            engine::cnaval_unit_transfer::movement_speeds(
+            engine_naval_history::cnaval_unit_transfer::movement_speeds(
                 memory,
                 base,
                 game_state,
@@ -613,7 +608,7 @@ impl Captured {
     fn supply_origins(
         &self,
         row: &railway_gun_counter_inputs::Row,
-    ) -> Option<&[engine::cunit_supply_inputs::Origin]> {
+    ) -> Option<&[engine_native::cunit_supply_inputs::Origin]> {
         let len = row.supply?.origins_len.ok()?;
         let end = row.supply_origins_start.checked_add(len)?;
         self.supply_origins
@@ -668,7 +663,7 @@ impl Captured {
         table::<tables::RailwayGunCounterInputs, _>(self.rows.outcome, &self.rows.rows, |r| {
             RailwayGunCounterInputRow {
                 // The selected transport preview's operands retired.
-                transport: Recorded::Value(replay::rows::Retired),
+                transport: Recorded::Value(replay_data::rows::Retired),
                 // Packets store no hour; only this capture's reads are published.
                 combat_references: Recorded::Value(super::unit_combat_references::project(
                     self.sample_hour,
@@ -722,7 +717,7 @@ impl Captured {
                     r.fresh
                         .filter(|inputs| Some(inputs.sample_hour) == self.sample_hour)
                         .map(|inputs| FreshRailwayCounterEta {
-                            sample_hour: replay::rows::PacketHour::Host,
+                            sample_hour: replay_data::rows::PacketHour::Host,
                             maximum_speed: inputs.maximum_speed,
                             land_supply_factor: inputs.land_supply_factor,
                             orders_group: inputs.orders_group,
@@ -736,8 +731,8 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::SliceMemory;
-    use replay::rows::TableRows;
+    use engine_native::memory::SliceMemory;
+    use replay_data::rows::TableRows;
 
     fn gun(handle: u64) -> railway_gun_counter_inputs::Row {
         railway_gun_counter_inputs::Row {
@@ -979,7 +974,7 @@ mod tests {
             assert_eq!(
                 rows[0].fresh,
                 Recorded::Value(fresh.map(|input| FreshRailwayCounterEta {
-                    sample_hour: replay::rows::PacketHour::Host,
+                    sample_hour: replay_data::rows::PacketHour::Host,
                     maximum_speed: input.maximum_speed,
                     land_supply_factor: input.land_supply_factor,
                     orders_group: input.orders_group,
@@ -994,7 +989,9 @@ mod tests {
 
     #[test]
     fn supply_origin_refusals_preserve_exact_scalars_and_other_tooltip_suffixes() {
-        use engine::cunit_supply_inputs::{Failure, Inputs, Origin};
+        use engine_native::{
+            cunit_supply_inputs::Failure, cunit_supply_inputs::Inputs, cunit_supply_inputs::Origin,
+        };
         let mut capture = Captured::with_capacities(&Capacities {
             rows: 1,
             paths: 3,
@@ -1162,7 +1159,7 @@ mod tests {
 #[cfg(test)]
 mod combat_reference_projection_tests {
     use super::*;
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
 
     #[test]
     fn railway_owned_reference_projection_and_refusal_preserve_counter_prefix() {
@@ -1182,7 +1179,7 @@ mod combat_reference_projection_tests {
             combat_references: Some((0, 2)),
             ..Default::default()
         };
-        capture.combat_references.first[..2].fill(engine::cunit::MapCombatReference {
+        capture.combat_references.first[..2].fill(engine_native::cunit::MapCombatReference {
             combat: 0x8000_0001_0000_1b5a,
             kind: 2,
         });
@@ -1200,7 +1197,7 @@ mod combat_reference_projection_tests {
         };
         assert_eq!(
             (references.sample_hour, references.entries.len()),
-            (replay::rows::PacketHour::Host, 2)
+            (replay_data::rows::PacketHour::Host, 2)
         );
         assert_eq!(references.entries[0], references.entries[1]);
         capture.combat_references.len = 1;

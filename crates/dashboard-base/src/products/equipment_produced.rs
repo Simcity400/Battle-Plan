@@ -42,7 +42,7 @@
 //! exactly one day (24 hours) before: one production tick. **Per week**, minus the
 //! running total read exactly seven days (168 hours) before; **per month**, minus the one read at the
 //! same hour and day of the month before (the month's last day when it is
-//! shorter; engine calendar, 365-day years, `engine::cdate`). Production ticks
+//! shorter; engine calendar, 365-day years, `engine_native::cdate`). Production ticks
 //! once a day and the output is read once a day in the census's slot, so such a
 //! difference counts exactly the days between. Where no read of the same country
 //! identity and observation was taken at that hour (the first week or month, after
@@ -275,9 +275,9 @@ pub use super::equipment::production::{Named, ScannedProduced, TagHistory, Total
 
 /// The hour one calendar month before `hour`: the same day and hour of the month
 /// before, or that month's last day when it is shorter (engine calendar: 365-day
-/// years from `engine::cdate::HOUR_EPOCH`). None before the calendar begins.
+/// years from `engine_native::cdate::HOUR_EPOCH`). None before the calendar begins.
 pub fn month_before(hour: i32) -> Option<i32> {
-    use engine::cdate::{HOUR_EPOCH, MONTH_LENGTHS};
+    use engine_native::{cdate::HOUR_EPOCH, cdate::MONTH_LENGTHS};
     let elapsed = i64::from(hour) - i64::from(HOUR_EPOCH);
     if elapsed < 0 {
         return None;
@@ -1641,7 +1641,9 @@ impl Product for EquipmentProduced {
 }
 
 #[cfg(test)]
-use replay::{frame::TableView, rows::TableId};
+use replay_data::rows::TableId;
+#[cfg(test)]
+use replay_frame::frame::TableView;
 #[cfg(test)]
 use std::sync::Arc;
 #[cfg(test)]

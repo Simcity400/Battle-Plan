@@ -1,6 +1,6 @@
 //! Advisor-backed idea lookup and stored description.
 use super::*;
-use replay::rows::{AdvisorRoleRow, CharacterRoleTraitRow, CharacterRow};
+use replay_data::{rows::AdvisorRoleRow, rows::CharacterRoleTraitRow, rows::CharacterRow};
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     pub(in crate::effect_description) fn advisor_idea_character(

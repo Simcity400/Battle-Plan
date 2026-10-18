@@ -16,12 +16,10 @@ use crate::{
     Source,
     metadata::{IdentityTrack, slot_read, validate_campaign},
 };
-use engine::ccountry_experience_status::SCALE;
-use replay::{
-    container::Replay,
-    frame::FrameDecoder,
-    rows::{TableId, tables},
-};
+use engine_events::ccountry_experience_status::SCALE;
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::tables};
+use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -282,18 +280,18 @@ static COUNTRY_KEY_FIELDS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|
 struct Native {
     countries: Option<super::territory::CountryReads>,
     keys: Option<crate::metadata::CountryKeys>,
-    country_rows: Option<Vec<replay::rows::CountryRow>>,
+    country_rows: Option<Vec<replay_data::rows::CountryRow>>,
     links: std::sync::Arc<std::collections::HashMap<u32, u32>>,
     identities: BTreeMap<(u32, u32), String>,
     slots: BTreeMap<u32, Vec<(u32, u32)>>,
     removed: Vec<(String, (u32, u32))>,
     roster_changed: bool,
     /// The last complete gains read, held as the frame's own view.
-    gain_rows: Option<replay::frame::SharedView>,
+    gain_rows: Option<replay_frame::frame::SharedView>,
     /// The raw country ids `links` resolves to each slot.
     link_countries: BTreeMap<u32, Vec<u32>>,
-    banked: Option<BTreeMap<u32, Option<replay::rows::CountryExperienceRow>>>,
-    gains: Option<BTreeMap<u32, Option<replay::rows::CountryExperienceGainRow>>>,
+    banked: Option<BTreeMap<u32, Option<replay_data::rows::CountryExperienceRow>>>,
+    gains: Option<BTreeMap<u32, Option<replay_data::rows::CountryExperienceGainRow>>>,
     #[cfg(any(test, feature = "test-support"))]
     pub work: crate::prepared::observer_tests::Work,
     #[cfg(any(test, feature = "test-support"))]
@@ -304,7 +302,7 @@ struct Native {
 /// whole-table join. Returns the changed slots and rows visited.
 fn apply_experience_rows<R: Clone + PartialEq>(
     rows: &[R],
-    (changed, deleted): (&[replay::rows::DeltaRow], &[u128]),
+    (changed, deleted): (&[replay_data::rows::DeltaRow], &[u128]),
     links: &std::collections::HashMap<u32, u32>,
     link_countries: &BTreeMap<u32, Vec<u32>>,
     held: &mut BTreeMap<u32, Option<R>>,
@@ -351,7 +349,7 @@ fn apply_experience_rows<R: Clone + PartialEq>(
 impl Native {
     fn refresh(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         changes: Option<&crate::prepared::frame_changes::FrameChanges>,
     ) -> BTreeSet<u32> {
         self.removed.clear();
@@ -403,7 +401,7 @@ impl Native {
                 self.keys = countries.map(crate::metadata::CountryKeys::read);
                 self.country_rows = self.keys.as_ref().map(|keys| {
                     keys.iter()
-                        .map(|(id, canonical_slot, tag)| replay::rows::CountryRow {
+                        .map(|(id, canonical_slot, tag)| replay_data::rows::CountryRow {
                             id,
                             canonical_slot,
                             tag: tag.to_vec(),
@@ -550,7 +548,7 @@ impl Native {
         }
         if !gains_applied && (gains_changed || links_changed) {
             let gain_rows = self.gain_rows.as_deref().and_then(|view| match view {
-                replay::frame::TableView::Complete(rows) => {
+                replay_frame::frame::TableView::Complete(rows) => {
                     rows.rows::<tables::CountryExperienceGains>()
                 }
                 _ => None,
@@ -592,12 +590,12 @@ impl Scan {
 
     pub fn step(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
-        format: replay::format::FormatVersion,
+        decoded: &replay_frame::frame::DecodedFrame,
+        format: replay_data::format::FormatVersion,
         changes: Option<&crate::prepared::frame_changes::FrameChanges>,
         mut sink: impl FnMut(&str, (u32, u32), RawRead) -> io::Result<()>,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("experience:observe");
+        let _cpu = ::replay_frame::cpu::scope_phase("experience:observe");
         let previous = self.hour;
         let adjacent = previous.and_then(|hour| hour.checked_add(1)) == Some(decoded.hour);
         self.hour = Some(decoded.hour);
@@ -816,7 +814,7 @@ impl Scan {
     /// inputs or banked read. Open gain runs already hold through these hours;
     /// the next changed input or read visits their countries.
     pub fn advance_quiet(&mut self, first: i32, last: i32) -> bool {
-        let _cpu = ::replay::cpu::scope_phase("experience:quiet");
+        let _cpu = ::replay_frame::cpu::scope_phase("experience:quiet");
         if self.hour.and_then(|hour| hour.checked_add(1)) != Some(first) || last < first {
             return false;
         }
@@ -883,7 +881,7 @@ pub const SAMPLED_MEASURES: [&str; 3] = ["army-banked", "navy-banked", "air-bank
 ///
 /// [`READ_HOUR`]: crate::prepared_measure::query::READ_HOUR
 pub struct Sampler {
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
     scan: std::cell::RefCell<(Scan, Option<i32>)>,
 }
 
@@ -1018,7 +1016,7 @@ impl Sampler {
         }
         Ok(samples)
     }
-    pub fn new(format: replay::format::FormatVersion) -> Self {
+    pub fn new(format: replay_data::format::FormatVersion) -> Self {
         Self {
             format,
             scan: std::cell::RefCell::new((Scan::default(), None)),
@@ -1030,7 +1028,7 @@ impl Sampler {
     /// country's supplying read hour; every country's when none are requested.
     pub fn sample(
         &self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         requested: Option<&[(String, String)]>,
     ) -> io::Result<crate::prepared::query::progressive::Samples> {
         use crate::prepared_measure::query::READ_HOUR;

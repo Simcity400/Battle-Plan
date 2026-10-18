@@ -1,17 +1,15 @@
 //! Recorded raid unit operands shared by arrows and hover text.
 use super::{RaidAssets, script::World};
-use installed_content::raids::{RaidGraphicsDefines, RaidType};
-use replay::{
-    frame::DecodedFrame,
-    rows::{RaidRow, RaidTargetRow, TaskForceRow, tables},
-};
+use installed_content_raids::{raids::RaidGraphicsDefines, raids::RaidType};
+use replay_data::{rows::RaidRow, rows::RaidTargetRow, rows::TaskForceRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
 pub const NO_BUILDING_TYPE: u32 = 0x4c17;
 const SCALE: i64 = 100_000;
-const SOURCE_NAVAL_BASE: u32 = engine::craid_source::KIND_NAVAL_BASE;
-const SOURCE_CARRIER: u32 = engine::craid_source::KIND_CARRIER;
-const SOURCE_SUBMARINE: u32 = engine::craid_source::KIND_SUBMARINE;
-const SOURCE_BUILDING: u32 = engine::craid_source::KIND_BUILDING;
+const SOURCE_NAVAL_BASE: u32 = engine_native::craid_source::KIND_NAVAL_BASE;
+const SOURCE_CARRIER: u32 = engine_native::craid_source::KIND_CARRIER;
+const SOURCE_SUBMARINE: u32 = engine_native::craid_source::KIND_SUBMARINE;
+const SOURCE_BUILDING: u32 = engine_native::craid_source::KIND_BUILDING;
 use viewer_foundation::map::unit_pose::PLANE_UNRECORDED;
 /// Source province and country. Kinds 0 to 2 retain their province; building
 /// sources (kind 5) use the building's province. Their country is that province
@@ -115,7 +113,7 @@ pub fn building_province(
     }
     assets.anchor_province(
         world,
-        &replay::rows::RaidScope {
+        &replay_data::rows::RaidScope {
             building_type,
             building_location: location,
             building_flags: 2,
@@ -177,12 +175,12 @@ impl SpeedInputs {
     /// joined by the row's `ace_owner` and `wing_country` canonical slots
     /// (recorded only for a living ace).
     pub fn from_row(
-        row: &replay::rows::RaidSpeedInputRow,
+        row: &replay_data::rows::RaidSpeedInputRow,
         frame: &DecodedFrame,
     ) -> Result<Self, String> {
         let country = |slot: Option<u32>,
                        name: &str,
-                       value: fn(&replay::rows::CountryCommandPowerRow) -> Option<i64>|
+                       value: fn(&replay_data::rows::CountryCommandPowerRow) -> Option<i64>|
          -> Result<i64, String> {
             let Some(slot) = slot else {
                 return Ok(0);

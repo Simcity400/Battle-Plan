@@ -1,7 +1,7 @@
 //! Railway-gun tooltips; coarse member counts stay in the counter body.
 
 use super::*;
-use replay::rows::RailwayGunCounterInputRow;
+use replay_data::rows::RailwayGunCounterInputRow;
 #[cfg(test)]
 use viewer_foundation::tooltip_text::NoIcons;
 
@@ -272,7 +272,7 @@ pub(super) fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{CountryLinkRow, ProvinceRow, Recorded, TableRows};
+    use replay_data::{rows::CountryLinkRow, rows::ProvinceRow, rows::Recorded, rows::TableRows};
     use std::cell::Cell;
     use {
         viewer_foundation::map::counter_hovers::land::CounterControl,
@@ -345,7 +345,7 @@ mod tests {
                 canonical_slot: 1,
             }]),
         );
-        let names = installed_content::division_names::Database::default();
+        let names = installed_content_division_names::division_names::Database::default();
         let units = Err("unused division content".into());
         let vision = Vision::sharing(1, []);
         let context = Context {

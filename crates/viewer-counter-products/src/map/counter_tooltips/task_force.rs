@@ -2,7 +2,7 @@
 //! Port mission items use a separate callback without an arrival query.
 
 use super::*;
-use replay::rows::TaskForceMapMotionRow;
+use replay_data::rows::TaskForceMapMotionRow;
 #[cfg(test)]
 use viewer_foundation::map::counter_hovers::task_force::Control;
 use viewer_foundation::map::counter_hovers::task_force::Hover;
@@ -146,7 +146,9 @@ pub(super) fn build(
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use replay::rows::{CountryLinkRow, ProvinceRow, TableRows, TaskForceRow};
+    use replay_data::{
+        rows::CountryLinkRow, rows::ProvinceRow, rows::TableRows, rows::TaskForceRow,
+    };
     use viewer_foundation::map::test_support::{test_frame, test_put};
 
     pub(in crate::map::counter_tooltips) fn with_test_context<R>(
@@ -156,7 +158,7 @@ pub(super) mod tests {
         recorded_language: Option<&str>,
         run: impl FnOnce(Context<'_>) -> R,
     ) -> R {
-        let names = installed_content::division_names::Database::default();
+        let names = installed_content_division_names::division_names::Database::default();
         let units = Err(unavailable.into());
         let vision = Vision::sharing(1, []);
         run(Context {
@@ -302,7 +304,7 @@ pub(super) mod tests {
 
     #[test]
     fn task_force_handled_empty_suppresses_authored_text_and_dangling_first_falls_back() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let loc: Localisation = [
             ("TITLE".into(), "authored title".into()),
@@ -310,7 +312,7 @@ pub(super) mod tests {
         ]
         .into_iter()
         .collect();
-        let gui = installed_content::gui::native::read(
+        let gui = installed_content_core::gui::native::read(
             br#"guiTypes = { iconType = {
             name = control pdx_tooltip = TITLE pdx_tooltip_delayed = BODY
         } }"#,
@@ -358,10 +360,11 @@ pub(super) mod tests {
 
     #[test]
     fn task_force_detailed_fallback_follows_eta_handled_flag_not_summary_text() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use replay::rows::{
-            CountryAppearanceRow, CountryRow, PoliticsRow, TaskForceCounterInputRow,
+        use replay_data::{
+            rows::CountryAppearanceRow, rows::CountryRow, rows::PoliticsRow,
+            rows::TaskForceCounterInputRow,
         };
         let loc: Localisation = [
             ("TITLE".into(), "authored title".into()),
@@ -375,7 +378,7 @@ pub(super) mod tests {
         ]
         .into_iter()
         .collect();
-        let gui = installed_content::gui::native::read(
+        let gui = installed_content_core::gui::native::read(
             br#"guiTypes = { iconType = {
             name = control pdx_tooltip = TITLE pdx_tooltip_delayed = BODY
         } }"#,

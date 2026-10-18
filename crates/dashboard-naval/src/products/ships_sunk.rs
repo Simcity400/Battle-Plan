@@ -193,8 +193,8 @@ pub fn prepared_content(source: &Source, context: &LoadContext) -> PreparedConte
 }
 
 pub struct NameContent {
-    units: Result<installed_content::unit_leader::SubUnits, String>,
-    regions: Result<installed_content::regions::StrategicRegions, String>,
+    units: Result<installed_content_core::unit_leader::SubUnits, String>,
+    regions: Result<installed_content_regions::regions::StrategicRegions, String>,
     pub retention: sinkings::RetentionDefines,
     memberships: BTreeMap<u32, Vec<u32>>,
 }
@@ -207,8 +207,9 @@ impl NameContent {
             work.regions += 1;
         });
         let units =
-            installed_content::unit_leader::sub_units(&cat.content.layers).map_err(|e| e.to_string());
-        let regions = installed_content::regions::read(&cat.content.layers).map_err(|e| e.to_string());
+            installed_content_core::unit_leader::sub_units(&cat.content.layers).map_err(|e| e.to_string());
+        let regions =
+            installed_content_regions::regions::read(&cat.content.layers).map_err(|e| e.to_string());
         let mut memberships = BTreeMap::<u32, Vec<u32>>::new();
         if let Ok(regions) = &regions {
             for (&id, region) in &regions.regions {
@@ -268,7 +269,7 @@ pub fn named_with(
         if let (Some(cat), Some(units), Some(literal)) = (cat, units, &key) {
             // Resolve the runtime token against the unit database;
             // matching preserves its first registered spelling.
-            match units.token_name(&installed_content::tokens::Token::c_str(literal.as_bytes())) {
+            match units.token_name(&installed_content_core::tokens::Token::c_str(literal.as_bytes())) {
                 Ok(spelling) if !spelling.is_empty() => {
                     let spelling = spelling.to_owned();
                     // Distinguish a defined name from the localiser's key echo
@@ -347,7 +348,7 @@ pub fn named_with(
             || content.retention.evaluate(scan).warnings,
             |retention| retention.warnings.clone(),
         ));
-        let empty_regions = installed_content::regions::StrategicRegions::default();
+        let empty_regions = installed_content_regions::regions::StrategicRegions::default();
         let regions = match &content.regions {
             Ok(regions) => regions,
             Err(reason) => {
@@ -434,8 +435,8 @@ pub fn named_with(
 
 pub fn check_content(cat: &Catalogue) -> io::Result<()> {
     // Corpus readers own their notes; naval-losses owns retention findings.
-    installed_content::unit_leader::sub_units(&cat.content.layers)?;
-    installed_content::regions::read(&cat.content.layers)?;
+    installed_content_core::unit_leader::sub_units(&cat.content.layers)?;
+    installed_content_regions::regions::read(&cat.content.layers)?;
     Ok(())
 }
 

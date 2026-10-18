@@ -1,10 +1,8 @@
 use super::*;
 use viewer_foundation::map::province_map::WATER_HEIGHT;
 
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{TableId, TableRows, TaskForceMapMotionRow},
-};
+use replay_data::{rows::TableId, rows::TableRows, rows::TaskForceMapMotionRow};
+use replay_frame::{frame::Metrics, frame::TableView};
 
 use {
     viewer_foundation::map::counter_move::RouteWorld,
@@ -66,7 +64,7 @@ fn fixture() -> (DecodedFrame, AirRegistrySources, AirBaseRow) {
 }
 
 fn movement() -> MovementContent {
-    use installed_content::movement::{MovementMap, Neighbour, ProvinceTerrain};
+    use installed_content_core::{movement::MovementMap, movement::Neighbour, movement::ProvinceTerrain};
     let terrain = ProvinceTerrain { flags: 0, index: 1 };
     let neighbour = |to| {
         vec![Neighbour {
@@ -77,7 +75,7 @@ fn movement() -> MovementContent {
     };
     MovementContent {
         map: MovementMap::from_parts(&[(5, terrain, neighbour(6)), (6, terrain, neighbour(5))]),
-        defines: replay::eta_derive::Defines {
+        defines: replay_derive::eta_derive::Defines {
             embark_distance: 0,
             transport_scale: 0,
             invasion_speed: 0,
@@ -329,8 +327,9 @@ fn an_unplaced_carrier_route_never_becomes_a_static_origin() {
     );
 
     let mut missing_terrain = movement;
-    missing_terrain.map =
-        installed_content::movement::MovementMap::from_parts::<installed_content::movement::ProvinceTerrain>(&[]);
+    missing_terrain.map = installed_content_core::movement::MovementMap::from_parts::<
+        installed_content_core::movement::ProvinceTerrain,
+    >(&[]);
     let world = RouteWorld {
         map: &missing_terrain.map,
         heights: HeightField {

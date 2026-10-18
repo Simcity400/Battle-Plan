@@ -9,11 +9,9 @@ use crate::{
     party_changes::{Counts, Watches},
     sampled_verify::{Check, ROTATION},
 };
-use engine::{
-    ccountry, cidea, cideology_group, cpolitical_party,
-    cpolitical_status::{FreshIdeas, FreshParties, IdeaRow},
-    memory::SliceMemory,
-    msvc_string,
+use engine_native::{
+    ccountry, cidea, cideology_group, cpolitical_party, cpolitical_status::FreshIdeas,
+    cpolitical_status::FreshParties, cpolitical_status::IdeaRow, memory::SliceMemory, msvc_string,
 };
 use std::cell::RefCell;
 
@@ -181,9 +179,9 @@ fn walk(bytes: &[u8], store: &mut PartyStore, watches: &Watches, check: Check) -
         let (mut rows, mut text) = (Vec::new(), Vec::new());
         let walked = reader.parties_carried(
             country,
-            engine::walk::Buffer::Growing(&mut rows),
+            engine_native::walk::Buffer::Growing(&mut rows),
             0,
-            engine::walk::Buffer::Growing(&mut text),
+            engine_native::walk::Buffer::Growing(&mut text),
             0,
             &mut reuse,
         );
@@ -197,8 +195,8 @@ fn walk(bytes: &[u8], store: &mut PartyStore, watches: &Watches, check: Check) -
         let (mut rows, mut text) = (Vec::new(), Vec::new());
         let walked = reader.ideas_carried(
             country,
-            engine::walk::Buffer::Growing(&mut rows),
-            engine::walk::Buffer::Growing(&mut text),
+            engine_native::walk::Buffer::Growing(&mut rows),
+            engine_native::walk::Buffer::Growing(&mut text),
             &mut reuse,
         );
         complete_ideas &= matches!(walked.outcome, Outcome::Rows { .. });
@@ -238,9 +236,9 @@ fn fresh(bytes: &[u8]) -> Hour {
         let (mut rows, mut text) = (Vec::new(), Vec::new());
         let walked = reader.parties_carried(
             country,
-            engine::walk::Buffer::Growing(&mut rows),
+            engine_native::walk::Buffer::Growing(&mut rows),
             0,
-            engine::walk::Buffer::Growing(&mut text),
+            engine_native::walk::Buffer::Growing(&mut text),
             0,
             &mut FreshParties,
         );
@@ -253,8 +251,8 @@ fn fresh(bytes: &[u8]) -> Hour {
         let (mut rows, mut text) = (Vec::new(), Vec::new());
         let walked = reader.ideas_carried(
             country,
-            engine::walk::Buffer::Growing(&mut rows),
-            engine::walk::Buffer::Growing(&mut text),
+            engine_native::walk::Buffer::Growing(&mut rows),
+            engine_native::walk::Buffer::Growing(&mut text),
             &mut FreshIdeas,
         );
         for row in &rows[..walked.outcome.len()] {

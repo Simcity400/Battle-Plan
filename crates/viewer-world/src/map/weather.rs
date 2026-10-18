@@ -11,11 +11,9 @@
 
 use std::{io, time::Duration, time::Instant};
 
-use installed_content::map::MapData;
-use replay::{
-    frame::DecodedFrame,
-    rows::{Recorded, TableId, WeatherProvinceRow, tables},
-};
+use installed_content_core::map::MapData;
+use replay_data::{rows::Recorded, rows::TableId, rows::WeatherProvinceRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use viewer_foundation::map::{province_map::ProvinceMap, tables::rows, textures::SNOW_MUD_BLOCK};
 
@@ -354,10 +352,8 @@ fn rasterise(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{TableId, TableRows},
-    };
+    use replay_data::{rows::TableId, rows::TableRows};
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     /// A 12 x 12 province image of four-pixel bands: province 30 north, 20
     /// and 21 (the right third) in the middle, 10 south.
@@ -408,7 +404,7 @@ mod tests {
 
     fn display_row(width: u32, height: u32, edges: Vec<u8>, identity: u64) -> WeatherProvinceRow {
         WeatherProvinceRow {
-            display: Recorded::Value(Some(replay::rows::WeatherDisplay {
+            display: Recorded::Value(Some(replay_data::rows::WeatherDisplay {
                 width,
                 height,
                 refresh_interval: 25_000,

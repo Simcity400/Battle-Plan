@@ -15,8 +15,8 @@ pub struct Program {
     selection: shader_pipeline::library::Selection,
     layouts: Vec<gpu::VertexLayout>,
     state: gpu::State,
-    raster: installed_content::pdxshader::RasterizerState,
-    depth: installed_content::pdxshader::DepthStencilState,
+    raster: installed_content_core::pdxshader::RasterizerState,
+    depth: installed_content_core::pdxshader::DepthStencilState,
 }
 
 impl Program {
@@ -42,8 +42,8 @@ impl Program {
         selection: &shader_pipeline::library::Selection,
         layouts: &[gpu::VertexLayout],
         state: &gpu::State,
-        raster: &installed_content::pdxshader::RasterizerState,
-        depth: &installed_content::pdxshader::DepthStencilState,
+        raster: &installed_content_core::pdxshader::RasterizerState,
+        depth: &installed_content_core::pdxshader::DepthStencilState,
     ) -> Self {
         Self {
             selection: selection.clone(),
@@ -60,7 +60,7 @@ impl Program {
         buffers: &BTreeMap<u32, impl AsRef<[u8]>>,
         textures: &BTreeMap<u32, wgpu::TextureView>,
     ) {
-        use installed_content::pdxshader::program::Stage;
+        use installed_content_core::pdxshader::program::Stage;
         self.select(retained);
         let stream = &mut retained.stream;
         for (slot, layout) in self.layouts.iter().enumerate() {
@@ -82,7 +82,7 @@ impl Program {
     }
 
     /// The sampler this program binds with a texture at `key`.
-    pub fn sampler(&self, key: u32) -> Option<&installed_content::pdxshader::program::Sampler> {
+    pub fn sampler(&self, key: u32) -> Option<&installed_content_core::pdxshader::program::Sampler> {
         self.state.samplers.get(&key)
     }
 
@@ -95,7 +95,7 @@ impl Program {
     }
 
     pub fn bind_textures(&self, retained: &mut State, textures: &BTreeMap<u32, wgpu::TextureView>) {
-        use installed_content::pdxshader::program::Stage;
+        use installed_content_core::pdxshader::program::Stage;
         let stream = &mut retained.stream;
         for (&key, texture) in textures {
             let stage = if key % 2 == 0 {

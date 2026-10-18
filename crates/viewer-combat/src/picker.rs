@@ -378,7 +378,7 @@ fn layout_name(four_buttons: bool) -> &'static str {
 }
 
 /// A control's first authored shortcut.
-fn authored_shortcut(root: &installed_content::gui::native::Element, path: &str) -> Option<String> {
+fn authored_shortcut(root: &installed_content_core::gui::native::Element, path: &str) -> Option<String> {
     let shortcut = root.path_named(path)?.button()?.shortcuts.first()?;
     std::str::from_utf8(shortcut).ok().map(str::to_owned)
 }
@@ -415,7 +415,7 @@ pub fn shortcuts(
 }
 
 /// Binds every slot button pair, the layout choice and the toggles.
-fn picker_values(state: &State<'_>, root: &installed_content::gui::native::Element) -> Values {
+fn picker_values(state: &State<'_>, root: &installed_content_core::gui::native::Element) -> Values {
     let mut values = Values::new();
     let layout = layout_name(state.four_buttons);
     let other = layout_name(!state.four_buttons);
@@ -767,10 +767,10 @@ fn draw_slots(
 /// downward past its authored height, so the window gains `rows` slot heights and moves up by
 /// the same, its bottom edge staying where it was.
 fn grown(
-    root: &installed_content::gui::native::Element,
+    root: &installed_content_core::gui::native::Element,
     rows: usize,
-) -> Result<installed_content::gui::native::Element, String> {
-    use installed_content::gui::native::Fields;
+) -> Result<installed_content_core::gui::native::Element, String> {
+    use installed_content_core::gui::native::Fields;
     if rows == 0 {
         return Ok(root.clone());
     }
@@ -808,7 +808,7 @@ fn grown(
 #[allow(clippy::too_many_arguments)]
 fn draw_window(
     retained: &mut Retained,
-    root: &installed_content::gui::native::Element,
+    root: &installed_content_core::gui::native::Element,
     values: &Values,
     groups: Vec<Group<'_>>,
     windows: &viewer_foundation::map::native_windows::NativeWindows,
@@ -917,7 +917,7 @@ mod tests {
 
     #[test]
     fn a_mode_list_grows_upward_a_slot_per_scripted_mode() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let windows = viewer_foundation::map::test_support::gui::windows(
             br#"guiTypes = { containerWindowType = {
@@ -945,7 +945,7 @@ mod tests {
 
     #[test]
     fn buttons_show_their_modes_frame_whatever_the_slot() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let windows = viewer_foundation::map::native_windows::NativeWindows::read(
             b"guiTypes = { containerWindowType = { name = unit_counter_navy } \

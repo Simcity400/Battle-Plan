@@ -5,7 +5,7 @@ use crate::{
     startup,
     worker::{Recorder, save_folder},
 };
-use replay::recorder_settings::{NextLoad, RecorderSettings};
+use replay::{recorder_settings::NextLoad, recorder_settings::RecorderSettings};
 use serde::{Deserialize, Serialize};
 use std::{
     os::windows::process::CommandExt,
@@ -159,7 +159,7 @@ pub async fn set_campaign_choice(
     record: Option<bool>,
     next: Option<NextLoad>,
 ) -> Result<SettingsView, String> {
-    if !replay::identity::is_campaign_uuid(campaign.as_bytes()) {
+    if !replay_data::identity::is_campaign_uuid(campaign.as_bytes()) {
         return Err("Unknown campaign".into());
     }
     let view = blocking(move || {

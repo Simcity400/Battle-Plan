@@ -1,11 +1,9 @@
 use super::*;
 use crate::products::country_history::{CountryIdentityRun, RecordedCountry, RecordedHistories};
 use crate::test_fixtures::{CAMPAIGN, ownership_frame, records};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{FactionMemberRow, FactionRow, TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::FactionMemberRow, rows::FactionRow, rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::sync::atomic::Ordering;
 
 pub(super) fn opened(
@@ -106,7 +104,7 @@ fn counted_member_runs(
 
 #[test]
 fn native_end_and_ever_members_follow_earlier_aliases_without_admitting_reused_tags() {
-    use replay::rows::CountryFactoriesRow;
+    use replay_data::rows::CountryFactoriesRow;
     let frames = (100..=101)
         .map(|hour| {
             let mut frame = recorded(
@@ -1178,7 +1176,7 @@ fn reply_members_keep_every_recorded_roster_change_and_escape_exactly() {
 
 #[test]
 fn factories_and_territory_wire_the_same_faction_product() {
-    use replay::rows::CountryFactoriesRow;
+    use replay_data::rows::CountryFactoriesRow;
     let mut frames = Vec::new();
     for hour in 100..=101 {
         let mut frame = recorded(
@@ -1698,7 +1696,7 @@ fn faction_reply_refuses_only_the_shared_serialized_transport_budget() {
 }
 
 fn dissolved_end_reply(incomplete_last: bool, unread_end: bool) -> FactionTotalsReply {
-    use replay::rows::CountryFactoriesRow;
+    use replay_data::rows::CountryFactoriesRow;
     let mut frames = vec![
         recorded(100, &[(401, "First name", &[9001])]),
         recorded(101, &[(401, "Second name", &[9001, 44])]),
@@ -2019,7 +2017,7 @@ fn faction_top_accepts_the_full_ui_safe_integer_count() {
 
 #[test]
 fn faction_totals_use_main_template_names_and_dated_refusal_reasons() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::ContentOptions;
     let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
@@ -2048,7 +2046,7 @@ fn faction_totals_use_main_template_names_and_dated_refusal_reasons() {
         }
         *frame.tables[TableId::LexicalTokens.index()] =
             TableView::Complete(TableRows::LexicalTokens(vec![
-                replay::rows::LexicalTokenRow {
+                replay_data::rows::LexicalTokenRow {
                     token: 17,
                     literal: template.as_bytes().to_vec(),
                 },
@@ -2070,17 +2068,17 @@ fn faction_totals_use_main_template_names_and_dated_refusal_reasons() {
         &cancelled,
     );
     let options = ContentOptions {
-        options: installed_content::ResolveOptions {
+        options: installed_content_core::ResolveOptions {
             game_dir: folder.0.clone(),
             user_dir: folder.0.clone(),
             cache_dir: folder.0.join("cache"),
         },
         allow_unverified: true,
     };
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
     source.set_test_content(
         options.options.clone(),
-        Arc::new(installed_content::content::ResolvedContent {
+        Arc::new(installed_content_core::content::ResolvedContent {
             layers,
             stats: Default::default(),
         }),

@@ -212,7 +212,7 @@ fn modded(root: &Root) -> PathBuf {
 }
 
 fn catalogue(layers: &ResolvedLayers, designs: &[(String, String)]) -> Catalogue {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
     let roster = layers.descriptor_roster().unwrap();
     let equipment = equipment::Database::load_complete(layers).unwrap();
@@ -247,8 +247,14 @@ fn the_catalogue_lists_every_referenced_plane_of_the_whole_stack() {
     let (vanilla, dlc, modded) = (vanilla(&root), dlc(&root), modded(&root));
     let stack = layers(&[(&vanilla, &[]), (&dlc, &[]), (&modded, &[])]);
     let designs = [
-        ("fighter_equipment_1".to_owned(), "designer_plane_entity".to_owned()),
-        ("infantry_equipment_0".to_owned(), "custom_unreferenced_entity".to_owned()),
+        (
+            "fighter_equipment_1".to_owned(),
+            "designer_plane_entity".to_owned(),
+        ),
+        (
+            "infantry_equipment_0".to_owned(),
+            "custom_unreferenced_entity".to_owned(),
+        ),
         ("fighter_equipment_0".to_owned(), String::new()),
         ("removed_equipment".to_owned(), "lost_entity".to_owned()),
     ];
@@ -328,7 +334,8 @@ fn the_catalogue_lists_every_referenced_plane_of_the_whole_stack() {
         catalogue
             .diagnostics
             .iter()
-            .any(|line| line.contains("1 recorded design types") && line.contains("removed_equipment"))
+            .any(|line| line.contains("1 recorded design types")
+                && line.contains("removed_equipment"))
     );
     // Clones of a referenced plane, at any depth, and what a referenced plane clones.
     assert_eq!(
@@ -373,7 +380,12 @@ fn every_registered_entity_and_bare_mesh_is_listed_with_its_layer_precedence() {
     );
     // Without the DLC, its planes and pool are absent.
     let without = catalogue_without_dlc(&vanilla, &modded);
-    assert!(without.entries.iter().all(|entry| entry.name != "ghost_plane_entity"));
+    assert!(
+        without
+            .entries
+            .iter()
+            .all(|entry| entry.name != "ghost_plane_entity")
+    );
     assert!(
         !without
             .entries
@@ -488,7 +500,12 @@ fn a_mod_replace_path_hides_the_planes_below_it() {
             .all(|entry| entry.name != "GER_fighter_equipment_1_entity")
     );
     // The mod's clone of a hidden plane is dropped as the engine drops it.
-    assert!(catalogue.entries.iter().all(|entry| entry.name != "skin_plane_entity"));
+    assert!(
+        catalogue
+            .entries
+            .iter()
+            .all(|entry| entry.name != "skin_plane_entity")
+    );
     assert!(
         catalogue
             .diagnostics
@@ -496,7 +513,10 @@ fn a_mod_replace_path_hides_the_planes_below_it() {
             .any(|line| line.contains("finding no entity light_plane_entity to clone yet"))
     );
     // The pool still names the hidden plane: it is listed, unregistered.
-    assert_eq!(entry(&catalogue, "light_plane_entity").kind, Kind::Unregistered);
+    assert_eq!(
+        entry(&catalogue, "light_plane_entity").kind,
+        Kind::Unregistered
+    );
 }
 
 #[test]

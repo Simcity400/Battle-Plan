@@ -7,7 +7,7 @@ use super::{
     native_windows::NativeWindows,
     sprites::SpriteSheet,
 };
-use installed_content::gui::native;
+use installed_content_core::gui::native;
 use std::collections::BTreeMap;
 
 /// What the windows draw from: their resources as the native registry loads them
@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 pub struct GuiAssets<'a> {
     pub gui: &'a crate::map::native_resources::GuiResources,
     pub windows: &'a NativeWindows,
-    pub localisation: &'a installed_content::localisation::Localisation,
+    pub localisation: &'a installed_content_localisation::localisation::Localisation,
     pub flags: Option<GuiFlags<'a>>,
     pub physical_viewport: Option<[i32; 2]>,
     pub portrait_textures: Option<&'a dyn Fn(&[u8]) -> Option<Texture>>,
@@ -53,7 +53,7 @@ impl native_gui::Resources for GuiAssets<'_> {
         self.gui.font(name)
     }
 
-    fn localisation(&self) -> &installed_content::localisation::Localisation {
+    fn localisation(&self) -> &installed_content_localisation::localisation::Localisation {
         self.localisation
     }
 

@@ -61,18 +61,13 @@ use std::{
     io,
 };
 
-use installed_content::{
-    ResolvedLayers,
-    buildings::{BuildingType, Buildings},
-    gui::native,
-    map::{MapData, ProvinceKind},
-    province_geometry::ProvinceGeometry,
-    raids::{Catalog, RaidType},
+use installed_content_core::{
+    ResolvedLayers, buildings::BuildingType, buildings::Buildings, gui::native, map::MapData,
+    map::ProvinceKind, province_geometry::ProvinceGeometry,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{RaidRow, RaidScope, tables},
-};
+use installed_content_raids::{raids::Catalog, raids::RaidType};
+use replay_data::{rows::RaidRow, rows::RaidScope, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use script::{Eval, LeaderRoles, REFUSED, Scope, Scopes, World, refused};
 use viewer_foundation::map::mode_visibility::RaidReach;
@@ -109,7 +104,7 @@ pub struct RaidAssets {
     pub paths: Result<paths::PathSearch, String>,
     /// The army path search's content tables, with the graph's adjacency
     /// rules, unless the graph could not be built.
-    pub moves: Result<installed_content::unit_path::MoveGraph, String>,
+    pub moves: Result<installed_content_unit_path::unit_path::MoveGraph, String>,
     /// The recorded path memo's indexes, shared by every hour whose memo and
     /// path sources are the same ([`launch::RecordedIndexes`]).
     pub(crate) recorded_indexes: launch::RecordedIndexes,
@@ -137,10 +132,10 @@ pub struct RaidAssets {
     pub region_provinces: BTreeMap<u32, Vec<u32>>,
     /// The `NGraphics` defines of the province day/night clocks, or why they
     /// are unread (reported once in [`Self::warnings`]).
-    day_night: Result<replay::day_night::Defines, String>,
+    day_night: Result<replay_data::day_night::Defines, String>,
     /// The combat assets' already loaded sub-unit database. Transport labels
     /// join authenticated pool indices to this recorded content stack.
-    pub transport_sub_units: Result<installed_content::unit_leader::SubUnits, String>,
+    pub transport_sub_units: Result<installed_content_core::unit_leader::SubUnits, String>,
     /// `NDefines.NMilitary.COMBAT_MINIMUM_TIME`, hours.
     pub combat_minimum_time: i32,
     /// Naval combat uses this signed threshold separately from the land minimum.
@@ -155,15 +150,15 @@ pub struct RaidAssets {
     refused_sites: Option<String>,
     /// The equipment database, whose archetypes and categories the launch
     /// gate reads.
-    pub equipment: installed_content::equipment::Database,
+    pub equipment: installed_content_core::equipment::Database,
     /// The named equipment groups raid requirements expand.
-    pub equipment_groups: installed_content::equipment::Groups,
+    pub equipment_groups: installed_content_core::equipment::Groups,
     /// Why equipment facts are unknown: an unreadable database or group prevents
     /// finalization, and later files may add to any type or group. Only queries
     /// that read equipment ([`Self::equipment`]) are refused.
     pub equipment_lost: Option<String>,
     pub defines: RaidDefines,
-    pub warnings: Vec<installed_content::Diagnostic>,
+    pub warnings: Vec<installed_content_core::Diagnostic>,
 }
 impl std::fmt::Debug for RaidAssets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -233,7 +228,7 @@ pub struct RaidDefines {
 }
 
 impl RaidDefines {
-    pub fn read(defines: &installed_content::defines::Defines) -> io::Result<Self> {
+    pub fn read(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
         Ok(Self {
             base_max_command_power: defines.fixed5("NCountry", "BASE_MAX_COMMAND_POWER")?,
             naval_invasion_priority: defines.int32("NNavy", "NAVAL_INVASION_PRIORITY")?,
@@ -306,8 +301,8 @@ impl RaidAssets {
         &self,
     ) -> Result<
         (
-            &installed_content::equipment::Database,
-            &installed_content::equipment::Groups,
+            &installed_content_core::equipment::Database,
+            &installed_content_core::equipment::Groups,
         ),
         String,
     > {
@@ -328,20 +323,20 @@ impl RaidAssets {
 
     pub fn load(
         layers: &ResolvedLayers,
-        defines: &installed_content::defines::Defines,
+        defines: &installed_content_core::defines::Defines,
         map: &MapData,
         registry: &native::resources::Registry,
     ) -> io::Result<Self> {
         let mut warnings = Vec::new();
-        let catalog = installed_content::raids::read(layers)?;
+        let catalog = installed_content_raids::raids::read(layers)?;
         if !catalog.refused.is_empty() {
-            warnings.push((installed_content::DiagnosticKind::Refused, format!(
+            warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
                 "Raid types declared more than once cannot be used; targets they may be offered against are withheld: {}.",
                 catalog.refused.join(", ")
             )));
         }
         for (name, reason) in &catalog.unsupported {
-            warnings.push((installed_content::DiagnosticKind::Unsupported, format!(
+            warnings.push((installed_content_core::DiagnosticKind::Unsupported, format!(
                 "Raid type {name} cannot be read ({reason}); targets it may be offered against are withheld."
             )));
         }
@@ -351,16 +346,16 @@ impl RaidAssets {
                 format!("Raid content read as the game reads it: {misread}"),
             )
         }));
-        let buildings = installed_content::buildings::read(layers)?;
-        let tag_aliases = installed_content::tag_aliases::read(layers)?;
+        let buildings = installed_content_core::buildings::read(layers)?;
+        let tag_aliases = installed_content_core::tag_aliases::read(layers)?;
         warnings.extend(tag_aliases.unknown.iter().map(|reason| {
             (
-                installed_content::DiagnosticKind::Unsettled,
+                installed_content_core::DiagnosticKind::Unsettled,
                 format!("Raids: tag aliases: {reason}."),
             )
         }));
-        let equipment = installed_content::equipment::Database::load(layers)?;
-        let equipment_groups = installed_content::equipment::Groups::load(layers)?;
+        let equipment = installed_content_core::equipment::Database::load(layers)?;
+        let equipment_groups = installed_content_core::equipment::Groups::load(layers)?;
         let equipment_lost = match (&equipment.lost, &equipment_groups.lost) {
             (Some(lost), _) => Some(format!(
                 "the equipment database cannot be followed past {lost}"
@@ -372,7 +367,7 @@ impl RaidAssets {
         };
         if let Some(lost) = &equipment_lost {
             warnings.push((
-                installed_content::DiagnosticKind::Unsettled,
+                installed_content_core::DiagnosticKind::Unsettled,
                 format!("Raids: {lost}, so every raid fact that reads equipment stays unknown."),
             ));
         }
@@ -382,14 +377,14 @@ impl RaidAssets {
                 .iter()
                 .chain(&equipment_groups.misreads)
                 .map(|misread| {
-                    (installed_content::DiagnosticKind::Misread, format!(
+                    (installed_content_core::DiagnosticKind::Misread, format!(
                         "Equipment content: {misread}; raid requirements follow the game's reading."
                     ))
                 }),
         );
         for (name, building) in &buildings.types {
             if let Some(reason) = &building.raid_refused {
-                warnings.push((installed_content::DiagnosticKind::Refused, format!(
+                warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
                     "Building {name}'s raid facts are refused, so raids that read them stay unknown: {reason}."
                 )));
             }
@@ -408,21 +403,21 @@ impl RaidAssets {
             .into_iter()
             .filter(|name| registry.sprite(name.as_bytes()).is_some())
             .collect();
-        let leader_roles = installed_content::characters::leader_templates(layers)
+        let leader_roles = installed_content_core::characters::leader_templates(layers)
             .map(LeaderRoles::new)
             .map(Arc::new);
         if let Err(error) = &leader_roles {
-            warnings.push((installed_content::DiagnosticKind::Refused, format!(
+            warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
                 "Character templates cannot be read ({error}); unit leaders whose visibility has a condition are undecided."
             )));
         }
         // The document reports the state conflicts and misreads once.
-        let (states, _) = installed_content::states::read(layers, defines, &map.definitions)?;
+        let (states, _) = installed_content_states::states::read(layers, defines, &map.definitions)?;
         let states = states.definitions();
-        let (paths, geometry) = match installed_content::province_graph::ProvinceGraph::read(layers) {
+        let (paths, geometry) = match installed_content_core::province_graph::ProvinceGraph::read(layers) {
             Ok((graph, geometry)) => (Ok(paths::PathSearch::new(graph)), geometry),
             Err(error) => {
-                warnings.push((installed_content::DiagnosticKind::Refused, format!(
+                warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
                     "The province graph cannot be built ({error}); naval and building raid sources cannot be ranged."
                 )));
                 (Err(error.to_string()), ProvinceGeometry::read(layers)?)
@@ -430,12 +425,12 @@ impl RaidAssets {
         };
         let moves = paths
             .as_ref()
-            .map(|paths| installed_content::unit_path::MoveGraph::new(paths.graph(), &geometry))
+            .map(|paths| installed_content_unit_path::unit_path::MoveGraph::new(paths.graph(), &geometry))
             .map_err(Clone::clone);
         if let Ok(moves) = &moves {
             for rule in moves.rules() {
                 if let Some(reason) = &rule.unsupported {
-                    warnings.push((installed_content::DiagnosticKind::Unsupported, format!(
+                    warnings.push((installed_content_core::DiagnosticKind::Unsupported, format!(
                         "Adjacency rule {} is refused ({reason}); army paths across it are unknown.",
                         rule.name
                     )));
@@ -454,23 +449,23 @@ impl RaidAssets {
             Err(error) => Err(format!("the province graph cannot be built ({error})")),
         };
         if let Err(error) = &neighbor_states {
-            warnings.push((installed_content::DiagnosticKind::Refused, format!(
+            warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
                 "State neighbours cannot be derived ({error}); any_neighbor_state and all_neighbor_state are unknown."
             )));
         }
         let mut regions = BTreeMap::new();
-        let database = installed_content::regions::read(layers)?.regions;
+        let database = installed_content_regions::regions::read(layers)?.regions;
         let region_provinces: BTreeMap<_, _> = database
             .into_iter()
             .map(|(id, region)| (id, region.provinces))
             .collect();
-        let day_night = replay::day_night::Defines::read(
+        let day_night = replay_data::day_night::Defines::read(
             |group, name| defines.int32(group, name),
             |group, name| defines.fixed5(group, name),
         )
         .map_err(|error| error.to_string());
         if let Err(error) = &day_night {
-            warnings.push((installed_content::DiagnosticKind::Refused, format!(
+            warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
                 "The day/night defines cannot be read ({error}); province clocks the game updated hourly are unknown."
             )));
         }
@@ -521,9 +516,11 @@ impl RaidAssets {
             });
         let triggers = Default::default();
         let ideologies = None;
-        let continents = installed_content::terrain::read_default_map(layers)
+        let continents = installed_content_core::terrain::read_default_map(layers)
             .and_then(|map| layers.read(&map.file("continent")?))
-            .and_then(|bytes| installed_content::equipment_graphics::context::continent_names(&bytes))
+            .and_then(|bytes| {
+                installed_content_equipment_graphics::equipment_graphics::context::continent_names(&bytes)
+            })
             .map_err(|why| why.to_string());
         let character_traits = None;
         let tag_aliases = Arc::new(tag_aliases);
@@ -532,7 +529,7 @@ impl RaidAssets {
             .int32("NNavy", "NAVAL_INVASION_PREPARE_DAYS")
             .map_err(|error| error.to_string());
         let script_constants =
-            installed_content::script_constants::read(layers).map_err(|error| error.to_string());
+            installed_content_core::script_constants::read(layers).map_err(|error| error.to_string());
         let defines = RaidDefines::read(defines)?;
         let trigger_content = TriggerContent {
             dlcs,
@@ -588,7 +585,13 @@ impl RaidAssets {
     /// Content topology shared with the game's naval mission admission.
     pub fn mission_topology(
         &self,
-    ) -> Result<(&installed_content::province_graph::ProvinceGraph, &ProvinceGeometry), String> {
+    ) -> Result<
+        (
+            &installed_content_core::province_graph::ProvinceGraph,
+            &ProvinceGeometry,
+        ),
+        String,
+    > {
         Ok((
             self.paths.as_ref().map_err(Clone::clone)?.graph(),
             &self.geometry,
@@ -755,7 +758,7 @@ fn map_icon_priority(define: f64) -> Result<i8, String> {
 /// `NRaids.MAX_TARGETS_TO_UPDATE_PER_FRAME`: a missing or non-number value
 /// loads as zero, then values below one become one. An unreachable define
 /// (no `NRaids` section) remains a refusal.
-fn target_batch(defines: &installed_content::defines::Defines) -> Result<usize, String> {
+fn target_batch(defines: &installed_content_core::defines::Defines) -> Result<usize, String> {
     defines
         .int32("NRaids", "MAX_TARGETS_TO_UPDATE_PER_FRAME")
         .map(|rows| rows.max(1) as usize)
@@ -771,11 +774,11 @@ fn invalid(message: impl Into<String>) -> io::Error {
 fn sites(
     layers: &ResolvedLayers,
     map: &MapData,
-    states: &BTreeMap<u32, installed_content::states::StateDefinition>,
+    states: &BTreeMap<u32, installed_content_states::states::StateDefinition>,
     buildings: &Buildings,
 ) -> io::Result<BTreeMap<(u32, Site), Vec<u32>>> {
     let mut out: BTreeMap<(u32, Site), Vec<u32>> = BTreeMap::new();
-    for slot in installed_content::positions::read_buildings(layers)? {
+    for slot in installed_content_core::positions::read_buildings(layers)? {
         let Some(province) = province_at(map, slot.x, slot.z) else {
             continue;
         };
@@ -1000,7 +1003,7 @@ pub struct RaidIcons {
     pub icons: Vec<RaidIcon>,
     pub report: RaidReport,
     /// The branch, hour and canonical country they were built for.
-    pub built_for: Option<(replay::BranchId, replay::Hour, u32)>,
+    pub built_for: Option<(replay_data::BranchId, replay_data::Hour, u32)>,
 }
 
 impl RaidIcons {
@@ -1009,8 +1012,8 @@ impl RaidIcons {
     /// else none (owner decision: never another hour's icons).
     pub fn carried(
         icons: Arc<Self>,
-        branch: replay::BranchId,
-        hour: replay::Hour,
+        branch: replay_data::BranchId,
+        hour: replay_data::Hour,
         ours: u32,
     ) -> Arc<Self> {
         match icons.built_for {
@@ -1028,7 +1031,12 @@ impl RaidIcons {
     /// Whether these icons may draw at `branch`, `hour` for canonical
     /// country `ours`: they were built for it, or they are the raid lane's
     /// failure, which draws no icon.
-    pub fn drawable_at(&self, branch: replay::BranchId, hour: replay::Hour, ours: u32) -> bool {
+    pub fn drawable_at(
+        &self,
+        branch: replay_data::BranchId,
+        hour: replay_data::Hour,
+        ours: u32,
+    ) -> bool {
         match self.built_for {
             Some(built) => built == (branch, hour, ours),
             None => self.report.worker_failed && self.icons.is_empty(),
@@ -1095,7 +1103,7 @@ pub fn icons(
 /// provinces a batch changed are laid out again.
 #[derive(Default)]
 pub struct IconCache {
-    tokens: Option<replay::frame::ViewIdentity>,
+    tokens: Option<replay_frame::frame::ViewIdentity>,
     icons: HashMap<u32, CachedIcon>,
 }
 
@@ -1111,10 +1119,9 @@ impl IconCache {
     /// Forgets every icon unless `frame`'s lexer tokens are the complete
     /// table the icons were laid out from.
     fn hour(&mut self, frame: &DecodedFrame) {
-        let table = replay::rows::TableId::LexicalTokens;
+        let table = replay_data::rows::TableId::LexicalTokens;
         let view = &frame.tables[table.index()];
-        let complete =
-            matches!(&**view, replay::frame::TableView::Complete(rows) if rows.table() == table);
+        let complete = matches!(&**view, replay_frame::frame::TableView::Complete(rows) if rows.table() == table);
         if !(complete && self.tokens.as_ref().is_some_and(|tokens| tokens.is(view))) {
             self.icons.clear();
             self.tokens = complete.then(|| view.identity());
@@ -1279,7 +1286,7 @@ fn finish(
 /// no linked slot or an unrecorded location is `Err`: the target may belong
 /// to any country, including ours.
 pub fn target_country(world: &World<'_>, scope: &RaidScope) -> Result<Option<u32>, String> {
-    installed_content::raids::target::country(world.frame(), scope)?
+    installed_content_raids::raids::target::country(world.frame(), scope)?
         .map(|raw| {
             world
                 .slot(raw)
@@ -1300,7 +1307,7 @@ fn membership<'a>(
         .complete::<tables::RaidCountries>()
         .map_err(complete)?;
     let raids = frame.complete::<tables::Raids>().map_err(complete)?;
-    let targets: BTreeMap<(u32, u32), &replay::rows::RaidTargetRow> = frame
+    let targets: BTreeMap<(u32, u32), &replay_data::rows::RaidTargetRow> = frame
         .complete::<tables::RaidTargets>()
         .map_err(complete)?
         .iter()

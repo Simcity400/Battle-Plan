@@ -1,9 +1,7 @@
 use super::localise;
-use installed_content::{
-    localisation::{Argument as Arg, Localisation},
-    weather::TemperatureRange,
-};
-use replay::rows::{WeatherProvinceRow, WeatherRegionRow};
+use installed_content_localisation::{localisation::Argument as Arg, localisation::Localisation};
+use installed_content_weather::weather::TemperatureRange;
+use replay_data::{rows::WeatherProvinceRow, rows::WeatherRegionRow};
 
 /// Independent weather flags, first matching thermal range, with the
 /// temperature the province's record holds at the frame's hour.

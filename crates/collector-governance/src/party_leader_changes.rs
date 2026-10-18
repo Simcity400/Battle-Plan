@@ -1,5 +1,5 @@
 //! Allocation-free notifications from the native writers of every political
-//! party's country-leader vector ([`engine::party_leader_mutations`]). A
+//! party's country-leader vector ([`engine_mutations::party_leader_mutations`]). A
 //! detour only notifies the shared watch registry ([`WatchRegistry`]) for each
 //! party its arguments name, counts its site and calls the original; it never
 //! changes game behaviour. A carried PartyLeaders row also needs its leader's
@@ -11,10 +11,8 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{
-    Memory,
-    party_leader_mutations::{MUTATIONS, VECTOR},
-};
+use engine_mutations::{party_leader_mutations::MUTATIONS, party_leader_mutations::VECTOR};
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -248,7 +246,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "party_leader_changes")
             && MUTATIONS.iter().all(|(site, _)| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [

@@ -5,10 +5,10 @@ use crate::{
     SourceKey,
     transport::{ProductRequest, SourceReply, bounded_json},
 };
-use replay::{
-    container::Replay,
-    identity::{Identity, Roster, SampleBoundary, SessionStart, Verification},
-    spool::Record,
+use replay::{container::Replay, spool::Record};
+use replay_data::{
+    identity::Identity, identity::Roster, identity::SampleBoundary, identity::SessionStart,
+    identity::Verification,
 };
 use std::{sync::mpsc, time::Duration};
 
@@ -1707,7 +1707,7 @@ fn lanes_are_sized_from_the_machine_with_at_least_three_loaders() {
 #[test]
 fn prepared_answers_do_not_wait_behind_sampled_reads() {
     use crate::test_fixtures::{CAMPAIGN, records, source as frame};
-    use replay::rows::TableId;
+    use replay_data::rows::TableId;
     let service = Service::new(Arc::new(|_| true)).unwrap();
     let recording = Arc::new(
         Source::from_replay(

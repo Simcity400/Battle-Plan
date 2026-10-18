@@ -53,8 +53,7 @@ pub fn regional_convoys(
         let root = navy
             .checked_add(REGIONAL_CONVOYS)
             .ok_or("navy regional convoys root overflow")?;
-        Array::read(memory, root, REGIONAL_CONVOYS_STRIDE)
-            .ok_or("navy regional convoys invalid")
+        Array::read(memory, root, REGIONAL_CONVOYS_STRIDE).ok_or("navy regional convoys invalid")
     })
 }
 

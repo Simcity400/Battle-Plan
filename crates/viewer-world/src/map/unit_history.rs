@@ -458,7 +458,7 @@ impl History {
     /// Arrow admission is map geometry; a refused 3D entity library must not suppress it.
     pub fn prepare_arrow_bounds(
         &mut self,
-        map: &installed_content::map::MapData,
+        map: &installed_content_core::map::MapData,
         known: &Arc<BTreeMap<u32, [f32; 4]>>,
     ) {
         if !self.bounds.is_empty() {
@@ -1225,7 +1225,7 @@ pub mod tests {
 
     #[test]
     fn popup_rates_come_from_evaluated_content_defines() {
-        let defines = installed_content::defines::Defines::new().unwrap();
+        let defines = installed_content_core::defines::Defines::new().unwrap();
         defines.load("synthetic.lua", br#"NDefines = { NGraphics = {
             UNITS_DISTANCE_CUTOFF=11, SHIPS_DISTANCE_CUTOFF=22, UNIT_ARROW_DISTANCE_CUTOFF=33, SHIP_IN_PORT_SCALE=.125,
             MESH_POPUP_SCALE_UP_SPEED=7, MESH_POPUP_SCALE_DOWN_SPEED=9, SHIP_POPUP_SCALE_DOWN_SPEED=13,

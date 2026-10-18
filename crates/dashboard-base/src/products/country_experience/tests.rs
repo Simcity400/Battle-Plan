@@ -1,9 +1,7 @@
 use crate::test_fixtures::{CAMPAIGN, records};
-use replay::{
-    container::Replay,
-    frame::TableView,
-    rows::{CountryLinkRow, CountryRow, TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::TableRows};
+use replay_frame::frame::TableView;
 use std::sync::atomic::AtomicBool;
 
 use super::test_fixtures::{experience_frame, renamed_frame, slot_base};
@@ -59,7 +57,7 @@ fn banked_reasks_share_first_read_observations_across_measures_and_exact_block_f
                     1,
                     coverage.as_ref(),
                     SAMPLE_TABLES,
-                    replay::cadence::STAGGER_PERIOD,
+                    replay_data::cadence::STAGGER_PERIOD,
                     &requested,
                     &Sampler::cache_keys(&requested),
                     (slot_base(), slot_base() + 31),
@@ -115,7 +113,7 @@ fn banked_reasks_share_first_read_observations_across_measures_and_exact_block_f
                 1,
                 None,
                 SAMPLE_TABLES,
-                replay::cadence::STAGGER_PERIOD,
+                replay_data::cadence::STAGGER_PERIOD,
                 &requested,
                 &Sampler::cache_keys(&requested),
                 &[reached],
@@ -149,7 +147,7 @@ fn banked_reasks_share_first_read_observations_across_measures_and_exact_block_f
 #[test]
 fn first_read_observations_scale_to_five_thousand_native_holders() {
     use super::{SAMPLED_MEASURES, Sampler};
-    use replay::rows::CountryExperienceRow;
+    use replay_data::rows::CountryExperienceRow;
     let mut frame = experience_frame(0, true, 9001);
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
         (0..5000)
@@ -416,7 +414,7 @@ fn experience_comparisons_and_cache_keep_every_requested_country() {
         LoadContext, Product,
         country_experience::{CountryExperience, ExperienceParams},
     };
-    use replay::rows::CountryExperienceRow;
+    use replay_data::rows::CountryExperienceRow;
     use std::sync::Arc;
 
     let tags: Vec<_> = (0..5000)
@@ -493,7 +491,7 @@ fn experience_comparisons_and_cache_keep_every_requested_country() {
 #[test]
 fn daily_gain_is_positive_awards_even_when_banked_change_is_negative_or_capped() {
     use crate::products::country_experience::scan;
-    use replay::rows::CountryExperienceGainRow;
+    use replay_data::rows::CountryExperienceGainRow;
     let frames = (0..=48)
         .map(|hour| {
             let mut frame = experience_frame(hour, false, 9001);
@@ -536,7 +534,7 @@ fn daily_gain_is_positive_awards_even_when_banked_change_is_negative_or_capped()
 #[test]
 fn gross_gain_needs_all_hourly_intervals_and_one_native_instance() {
     use crate::products::country_experience::scan;
-    use replay::rows::CountryExperienceGainRow;
+    use replay_data::rows::CountryExperienceGainRow;
     for failure in 0..4 {
         let frames = (0..=72)
             .map(|hour| {
@@ -581,7 +579,7 @@ fn gross_gain_needs_all_hourly_intervals_and_one_native_instance() {
 #[test]
 fn a_births_partial_interval_cannot_complete_a_native_day_of_gain() {
     use crate::products::country_experience::scan;
-    use replay::rows::CountryExperienceGainRow;
+    use replay_data::rows::CountryExperienceGainRow;
     let frames = (0..=25)
         .map(|hour| {
             let mut frame = experience_frame(hour, hour >= 24, 9001);
@@ -792,7 +790,7 @@ fn exact_banked_reads_find_a_supplier_several_short_blocks_back_and_reuse_it() {
             1,
             None,
             SAMPLE_TABLES,
-            replay::cadence::STAGGER_PERIOD,
+            replay_data::cadence::STAGGER_PERIOD,
             &requested,
             &Sampler::cache_keys(&requested),
             &[hour],
@@ -821,7 +819,7 @@ fn exact_banked_reads_find_a_supplier_several_short_blocks_back_and_reuse_it() {
 fn gain_runs_visit_only_changed_countries_and_banked_reads() {
     use super::Scan;
     use crate::{prepared::frame_changes::FrameChangeTracker, test_fixtures::scale_frame};
-    use replay::rows::{CountryExperienceGainRow, CountryExperienceRow};
+    use replay_data::{rows::CountryExperienceGainRow, rows::CountryExperienceRow};
     use std::{collections::VecDeque, sync::Arc};
     const COUNT: u32 = 32;
     const HOURS: i32 = 73;
@@ -871,7 +869,7 @@ fn gain_runs_visit_only_changed_countries_and_banked_reads() {
                 // Independent hourly queues authenticate every interval, including the
                 // partial interval and the change of native instance.
                 for (index, row) in frame
-                    .complete::<replay::rows::tables::CountryExperienceGains>()
+                    .complete::<replay_data::rows::tables::CountryExperienceGains>()
                     .unwrap()
                     .iter()
                     .enumerate()
@@ -941,7 +939,7 @@ fn gain_runs_visit_only_changed_countries_and_banked_reads() {
 fn quiet_gain_runs_advance_without_visiting_countries_and_resume_at_a_daily_read() {
     use super::Scan;
     use crate::prepared::frame_changes::FrameChangeTracker;
-    use replay::rows::CountryExperienceGainRow;
+    use replay_data::rows::CountryExperienceGainRow;
     let mut first = experience_frame(0, false, 9001);
     *first.tables[TableId::CountryExperienceGains.index()] =
         TableView::Complete(TableRows::CountryExperienceGains(vec![
@@ -953,7 +951,7 @@ fn quiet_gain_runs_advance_without_visiting_countries_and_resume_at_a_daily_read
                 ..Default::default()
             },
         ]));
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let mut hourly = Scan::default();
     let mut tracker = FrameChangeTracker::new();
     let changes = tracker.observe(&first, format);
@@ -1013,7 +1011,7 @@ fn quiet_gain_runs_advance_without_visiting_countries_and_resume_at_a_daily_read
 fn assert_banked_row_joins(count: u32) {
     use super::Scan;
     use crate::prepared::frame_changes::{FrameChangeTracker, FrameChanges};
-    use replay::rows::CountryExperienceRow;
+    use replay_data::rows::CountryExperienceRow;
     use std::sync::Arc;
     let frames = (0..12)
         .map(|offset| {

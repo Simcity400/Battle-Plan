@@ -1,8 +1,6 @@
 use super::*;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::*,
-};
+use replay_data::rows::*;
+use replay_frame::{frame::Metrics, frame::TableView};
 
 fn frame(hour: i32) -> DecodedFrame {
     let mut frame = DecodedFrame {
@@ -63,7 +61,7 @@ fn row(hour: i32) -> PeaceSettlementRow {
 
 #[test]
 fn resident_bid_cached_name_compares_saved_override_without_waiving_a_difference() {
-    let parsed = installed_content::parser::parse(br#"countries={} peace_conference={active_peace={id={id=3 type=7} history={MOD_B={bidding={country=MOD_B actions={custom_demand={name="Saved type" taker=MOD_B giver=MOD_A negotiator=MOD_C cost=-2 status=3 state=17 demilitarized_zone=yes}}}}}}}"#).unwrap();
+    let parsed = installed_content_core::parser::parse(br#"countries={} peace_conference={active_peace={id={id=3 type=7} history={MOD_B={bidding={country=MOD_B actions={custom_demand={name="Saved type" taker=MOD_B giver=MOD_A negotiator=MOD_C cost=-2 status=3 state=17 demilitarized_zone=yes}}}}}}}"#).unwrap();
     let saved = projects::parse(&parsed.items).unwrap();
     let mut frame = frame(100);
     let mut bid = row(100);
@@ -266,7 +264,7 @@ fn previously_published_events_keep_their_busy_span_and_failure_checks() {
     }
     for prior in &mut hours[1..3] {
         *prior.tables[TableId::PeaceSettlements.index()] = TableView::Unavailable {
-            reason: replay::rows::PEACE_DRAIN_BUSY.into(),
+            reason: replay_data::rows::PEACE_DRAIN_BUSY.into(),
         };
     }
     *hours[3].tables[TableId::PeaceSettlements.index()] =
@@ -328,12 +326,12 @@ fn busy_drain_allows_one_extra_hour_and_keeps_completeness_pending() {
         TableView::Complete(TableRows::PeaceBids(vec![row(100)]));
     let mut previous = frame(101);
     *previous.tables[TableId::PeaceSettlements.index()] = TableView::Unavailable {
-        reason: replay::rows::PEACE_DRAIN_BUSY.into(),
+        reason: replay_data::rows::PEACE_DRAIN_BUSY.into(),
     };
     let mut report = Report::default();
     report.recorded_tables.insert(
         TableId::PeaceSettlements,
-        Err(replay::rows::PEACE_DRAIN_BUSY.into()),
+        Err(replay_data::rows::PEACE_DRAIN_BUSY.into()),
     );
     compare_settlements_after(&previous, recorded_hours(&[&older]), &saved, &mut report).unwrap();
     assert!(report.differences.is_empty());
@@ -408,7 +406,7 @@ fn busy_drain_span_matches_long_delays_and_keeps_every_conference_in_the_census(
         TableView::Complete(TableRows::PeaceBids(vec![row(100)]));
     for prior in &mut hours[1..] {
         *prior.tables[TableId::PeaceSettlements.index()] = TableView::Unavailable {
-            reason: replay::rows::PEACE_DRAIN_BUSY.into(),
+            reason: replay_data::rows::PEACE_DRAIN_BUSY.into(),
         };
     }
     // A second conference appears only inside the span, not at either end.
@@ -420,12 +418,12 @@ fn busy_drain_span_matches_long_delays_and_keeps_every_conference_in_the_census(
     let priors: Vec<_> = hours.iter().collect();
     let mut current = frame(104);
     *current.tables[TableId::PeaceSettlements.index()] = TableView::Unavailable {
-        reason: replay::rows::PEACE_DRAIN_BUSY.into(),
+        reason: replay_data::rows::PEACE_DRAIN_BUSY.into(),
     };
     let mut report = Report::default();
     report.recorded_tables.insert(
         TableId::PeaceSettlements,
-        Err(replay::rows::PEACE_DRAIN_BUSY.into()),
+        Err(replay_data::rows::PEACE_DRAIN_BUSY.into()),
     );
     compare_settlements_after(&current, recorded_hours(&priors), &saved, &mut report).unwrap();
     assert!(report.differences.is_empty());
@@ -469,14 +467,14 @@ fn busy_drain_span_stops_at_the_first_normal_hour() {
     let saved = empty_settlement_save();
     let mut older = frame(100);
     *older.tables[TableId::PeaceSettlements.index()] = TableView::Unavailable {
-        reason: replay::rows::PEACE_DRAIN_BUSY.into(),
+        reason: replay_data::rows::PEACE_DRAIN_BUSY.into(),
     };
     *older.tables[TableId::PeaceBids.index()] =
         TableView::Complete(TableRows::PeaceBids(vec![row(100)]));
     let normal = frame(101);
     let mut busy = frame(102);
     *busy.tables[TableId::PeaceSettlements.index()] = TableView::Unavailable {
-        reason: replay::rows::PEACE_DRAIN_BUSY.into(),
+        reason: replay_data::rows::PEACE_DRAIN_BUSY.into(),
     };
     let priors = [&older, &normal, &busy];
     let mut visited = Vec::new();
@@ -524,7 +522,7 @@ fn busy_drain_span_never_bridges_an_unrecorded_hour_or_another_branch() {
     let saved = empty_settlement_save();
     let mut busy = frame(102);
     *busy.tables[TableId::PeaceSettlements.index()] = TableView::Unavailable {
-        reason: replay::rows::PEACE_DRAIN_BUSY.into(),
+        reason: replay_data::rows::PEACE_DRAIN_BUSY.into(),
     };
     let mut current = frame(103);
     *current.tables[TableId::PeaceSettlements.index()] =
@@ -552,11 +550,13 @@ fn busy_drain_span_never_bridges_an_unrecorded_hour_or_another_branch() {
 
 /// One branch of `frames` as a real replay, so `compare_recorded_settlements` seeks it.
 fn settlement_replay(frames: Vec<DecodedFrame>) -> Replay {
-    use replay::{
-        branches::{BranchReason, BranchStart, Parentage},
-        frame::FrameEncoder,
-        identity::{Identity, Roster, SampleBoundary, SessionStart, Verification},
-        spool::Record,
+    use replay::spool::Record;
+    use replay_data::{
+        identity::Identity, identity::Roster, identity::SampleBoundary, identity::SessionStart,
+        identity::Verification,
+    };
+    use replay_frame::{
+        branches::BranchReason, branches::BranchStart, branches::Parentage, frame::FrameEncoder,
     };
     let mut records = vec![
         Record::SessionStart(SessionStart {
@@ -687,7 +687,7 @@ fn recorded_event_loss_stops_finalizer_completeness_crossing_it() {
 
 #[test]
 fn bids_compare_native_operands_and_never_waive_a_changed_field() {
-    let saved = projects::parse(&installed_content::parser::parse(br"countries={} peace_conference={active_peace={id={id=3 type=7} history={MOD_B={bidding={country=MOD_B actions={custom_demand={taker=MOD_B giver=MOD_A negotiator=MOD_C cost=-2 status=3 state=17 demilitarized_zone=yes}}}}}}}").unwrap().items).unwrap();
+    let saved = projects::parse(&installed_content_core::parser::parse(br"countries={} peace_conference={active_peace={id={id=3 type=7} history={MOD_B={bidding={country=MOD_B actions={custom_demand={taker=MOD_B giver=MOD_A negotiator=MOD_C cost=-2 status=3 state=17 demilitarized_zone=yes}}}}}}}").unwrap().items).unwrap();
     let mut frame = frame(100);
     *frame.tables[TableId::PeaceBids.index()] =
         TableView::Complete(TableRows::PeaceBids(vec![row(100)]));
@@ -711,7 +711,7 @@ fn bids_compare_native_operands_and_never_waive_a_changed_field() {
 
 #[test]
 fn missing_flag_payload_is_not_four_saved_false_flags() {
-    let saved = projects::parse(&installed_content::parser::parse(br"countries={} peace_conference={active_peace={id={id=3 type=7} history={MOD_B={bidding={country=MOD_B actions={custom_demand={taker=MOD_B giver=MOD_A negotiator=MOD_C cost=-2 status=3 state=17}}}}}}}").unwrap().items).unwrap();
+    let saved = projects::parse(&installed_content_core::parser::parse(br"countries={} peace_conference={active_peace={id={id=3 type=7} history={MOD_B={bidding={country=MOD_B actions={custom_demand={taker=MOD_B giver=MOD_A negotiator=MOD_C cost=-2 status=3 state=17}}}}}}}").unwrap().items).unwrap();
     let mut frame = frame(100);
     let mut bid = row(100);
     bid.actions[0].flags = None;
@@ -725,7 +725,7 @@ fn missing_flag_payload_is_not_four_saved_false_flags() {
 
 #[test]
 fn swapped_country_groups_are_a_difference_even_when_each_bid_matches() {
-    let saved = projects::parse(&installed_content::parser::parse(br"countries={} peace_conference={active_peace={id={id=3 type=7} history={
+    let saved = projects::parse(&installed_content_core::parser::parse(br"countries={} peace_conference={active_peace={id={id=3 type=7} history={
         MOD_B={bidding={country=MOD_B actions={custom_demand={taker=MOD_B giver=MOD_A negotiator=MOD_C cost=-2 status=3 state=17 demilitarized_zone=yes}}}}
         MOD_A={bidding={country=MOD_A actions={custom_demand={taker=MOD_B giver=MOD_A negotiator=MOD_C cost=-2 status=3 state=17 demilitarized_zone=yes}}}}}}}").unwrap().items).unwrap();
     let mut bid = row(100);
@@ -749,7 +749,7 @@ fn swapped_country_groups_are_a_difference_even_when_each_bid_matches() {
 
 #[test]
 fn repeated_mod_actions_keep_turn_order_country_operands_and_navy_values() {
-    let saved = projects::parse(&installed_content::parser::parse(br"countries={} peace_conference={active_peace={id={id=3 type=7} history={MOD_B={
+    let saved = projects::parse(&installed_content_core::parser::parse(br"countries={} peace_conference={active_peace={id={id=3 type=7} history={MOD_B={
         bidding={country=MOD_B actions={
             custom_demand={taker=MOD_B giver=MOD_A negotiator=MOD_C cost=-2 status=3 state=17 liberate=MOD_C demilitarized_zone=yes}
             custom_demand={taker=MOD_B giver=MOD_A negotiator=MOD_C cost=-2 status=3 ship={id=9 type=11} ratio=-0.00003}}}
@@ -788,7 +788,7 @@ fn repeated_mod_actions_keep_turn_order_country_operands_and_navy_values() {
 #[test]
 fn bid_census_and_publication_failures_cannot_pass_as_empty_history() {
     let saved = projects::parse(
-        &installed_content::parser::parse(
+        &installed_content_core::parser::parse(
             br"countries={} peace_conference={active_peace={id={id=3 type=7}}}",
         )
         .unwrap()

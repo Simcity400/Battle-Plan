@@ -4,10 +4,8 @@ use std::{
 };
 
 use installed_content_save::{Division, naval_history as saved};
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryRow, Recorded, tables},
-};
+use replay_data::{rows::CountryRow, rows::Recorded, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::{Report, complete, equal, invalid, tag};
 
@@ -208,7 +206,7 @@ fn name(report: &mut Report, label: String, actual: &[u8], expected: Option<&[u8
 
 fn check_member_units<'a>(
     frame: &DecodedFrame,
-    members: impl Iterator<Item = &'a replay::rows::OrdersGroupMemberRow>,
+    members: impl Iterator<Item = &'a replay_data::rows::OrdersGroupMemberRow>,
 ) -> io::Result<()> {
     let divisions: BTreeSet<_> = complete::<tables::Divisions>(frame)?
         .iter()
@@ -225,7 +223,7 @@ fn check_member_units<'a>(
 }
 
 fn check_theatre_group_ordinals(
-    groups: &[replay::rows::OrdersGroupRow],
+    groups: &[replay_data::rows::OrdersGroupRow],
     theatres: &BTreeSet<u64>,
 ) -> io::Result<()> {
     let mut ordinals: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();

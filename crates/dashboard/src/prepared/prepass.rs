@@ -24,14 +24,12 @@ use super::frame_changes::{FrameChangeTracker, FrameChanges};
 pub(crate) use dashboard_base::prepared::prepass::{Bound, Extract, Family, Folded};
 use dashboard_base::prepared::priority::{JobPriority, Level};
 use replay::{
-    container::{
-        BlockChange, BlockIndex, BlockWatch, Keep, QuietHours, Replay, TableFields, Watched,
-        Watching,
-    },
-    format::FormatVersion,
-    frame::{DecodedFrame, SharedView, TableView},
-    rows::TableId,
+    container::BlockChange, container::BlockIndex, container::BlockWatch, container::Keep,
+    container::QuietHours, container::Replay, container::TableFields, container::Watched,
+    container::Watching,
 };
+use replay_data::{format::FormatVersion, rows::TableId};
+use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView};
 use std::{
     any::Any,
     collections::BTreeMap,
@@ -137,7 +135,7 @@ pub(crate) trait Depot: Send + Sync {
     /// being read for them until [`Self::deposit`] or [`Self::withdraw`].
     fn offer(&self, block: usize) -> Option<Vec<TableId>>;
     /// The offered block's frames, with every offered table's updates.
-    fn deposit(&self, block: usize, frames: Vec<Arc<replay::frame::RecordedFrame>>);
+    fn deposit(&self, block: usize, frames: Vec<Arc<replay_frame::frame::RecordedFrame>>);
     /// The offered block was not read for the readers.
     fn withdraw(&self, block: usize);
 }
@@ -388,7 +386,7 @@ fn work(replay: &Replay, alive: Alive, families: &[&'static Family], knobs: &Kno
     let shared = &alive.0;
     while let Some(position) = shared.claim() {
         let index = &replay.index[position];
-        let _cpu = ::replay::cpu::scope("extract", Some("walk pre-pass"));
+        let _cpu = ::replay_frame::cpu::scope("extract", Some("walk pre-pass"));
         let outcomes = catch_unwind(AssertUnwindSafe(|| {
             extract_block_measured(replay, index, families, &shared.stop, knobs).outcomes
         }))
@@ -1017,8 +1015,8 @@ fn work_pool(replay: &Replay, alive: PoolAlive, knobs: &Knobs) {
                 bound: bound.as_deref(),
             })
             .collect();
-        let cpu = ::replay::cpu::scope("extract", Some("pre-pass block"));
-        let cpu_started = ::replay::cpu::thread_cycles();
+        let cpu = ::replay_frame::cpu::scope("extract", Some("pre-pass block"));
+        let cpu_started = ::replay_frame::cpu::thread_cycles();
         // The shared reader's tables too, when its families will take the
         // block: withdrawn unless the block's frames are deposited.
         let mut offer = shared.depot.as_deref().and_then(|depot| {
@@ -1033,7 +1031,7 @@ fn work_pool(replay: &Replay, alive: PoolAlive, knobs: &Knobs) {
             let kept = offer
                 .as_mut()
                 .map(|offer| std::mem::take(&mut offer.tables));
-            let mut deposit = |frames: &[Arc<replay::frame::RecordedFrame>]| {
+            let mut deposit = |frames: &[Arc<replay_frame::frame::RecordedFrame>]| {
                 if let Some(offer) = &mut offer {
                     offer.depot.deposit(offer.block, frames.to_vec());
                     offer.deposited = true;
@@ -1048,17 +1046,17 @@ fn work_pool(replay: &Replay, alive: PoolAlive, knobs: &Knobs) {
         .unwrap_or_else(|_| Measured::sequential(readings.len()));
         for (reading, (outcome, _, _)) in readings.iter().zip(&measured.outcomes) {
             // Each family's outcome counted; the block task's cycles below.
-            ::replay::cpu::note(
+            ::replay_frame::cpu::note(
                 if matches!(outcome, Outcome::Sequential) {
                     "extract-unused"
                 } else {
                     "extract-facts"
                 },
                 reading.family.name,
-                ::replay::cpu::thread_cycles(),
+                ::replay_frame::cpu::thread_cycles(),
             );
         }
-        ::replay::cpu::note("extract-block", "pre-pass block", cpu_started);
+        ::replay_frame::cpu::note("extract-block", "pre-pass block", cpu_started);
         drop(cpu);
         drop(offer);
         shared.finish(task, measured);
@@ -1365,7 +1363,7 @@ fn visit(
         return Err(io::Error::other("The block extract stopped"));
     };
     let started = Instant::now();
-    let cpu = ::replay::cpu::scope("extract", Some(family.name));
+    let cpu = ::replay_frame::cpu::scope("extract", Some(family.name));
     let observed = catch_unwind(AssertUnwindSafe(|| {
         #[cfg(test)]
         if let (Some(hook), At::Hour(frame)) = (&knobs.hook, &at) {
@@ -1480,9 +1478,9 @@ fn extract_bound(
         .iter()
         .zip(&fields)
         .map(|(family, fields)| {
-            let started = ::replay::cpu::thread_cycles();
+            let started = ::replay_frame::cpu::thread_cycles();
             let mut extract = family.start(format);
-            ::replay::cpu::note("extract-start", family.family.name, started);
+            ::replay_frame::cpu::note("extract-start", family.family.name, started);
             let follow = match fields {
                 Some(fields) => {
                     extract.read_by_changes();
@@ -1537,7 +1535,7 @@ fn extract_bound(
                                 let continues = previous.and_then(|hour| hour.checked_add(1))
                                     == Some(frame.hour);
                                 previous = Some(frame.hour);
-                                let mut rows_rebuilt = [false; replay::frame::TABLE_COUNT];
+                                let mut rows_rebuilt = [false; replay_data::rows::TABLE_COUNT];
                                 for table in rebuilt {
                                     rows_rebuilt[table.index()] = true;
                                 }
@@ -1646,14 +1644,14 @@ fn extract_bound(
                     // A family whose own read refused the block observes it
                     // hour by hour, as it would have.
                     let extract = running.extract.filter(|_| own);
-                    let started = ::replay::cpu::thread_cycles();
+                    let started = ::replay_frame::cpu::thread_cycles();
                     let bytes = extract.as_ref().map_or(0, |extract| extract.bytes());
-                    ::replay::cpu::note("extract-size", family.family.name, started);
-                    let started = ::replay::cpu::thread_cycles();
+                    ::replay_frame::cpu::note("extract-size", family.family.name, started);
+                    let started = ::replay_frame::cpu::thread_cycles();
                     let outcome = extract
                         .and_then(|extract| extract.finish().ok())
                         .map_or(Outcome::Sequential, Outcome::Facts);
-                    ::replay::cpu::note("extract-finish", family.family.name, started);
+                    ::replay_frame::cpu::note("extract-finish", family.family.name, started);
                     let bytes = if matches!(outcome, Outcome::Facts(_)) {
                         bytes
                     } else {

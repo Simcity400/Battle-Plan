@@ -1,12 +1,10 @@
 use super::*;
 use dashboard_core::test_fixtures::{equipment_types, stockpile_frame};
-use replay::{
-    frame::TableView,
-    rows::{
-        AvailableEquipmentVariantRow, CountryLinkRow, LexicalTokenRow, TableId, TableRows,
-        VariantDefinitionRow, VariantUpgradeRow,
-    },
+use replay_data::{
+    rows::AvailableEquipmentVariantRow, rows::CountryLinkRow, rows::LexicalTokenRow, rows::TableId,
+    rows::TableRows, rows::VariantDefinitionRow, rows::VariantUpgradeRow,
 };
+use replay_frame::frame::TableView;
 
 const A: u64 = (1 << 32) | 1;
 const B: u64 = (2 << 32) | 1;
@@ -79,7 +77,7 @@ fn frame() -> DecodedFrame {
 
 #[test]
 fn best_uses_depth_upgrade_owner_and_native_id_instead_of_stock_or_obsolete() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = database();
     let mut frame = frame();
@@ -115,7 +113,7 @@ fn best_uses_depth_upgrade_owner_and_native_id_instead_of_stock_or_obsolete() {
 
 #[test]
 fn incomplete_candidates_refuse_a_guess_and_count_named_failures() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = frame();
     *frame.tables[TableId::AvailableEquipmentVariants.index()] =
@@ -145,7 +143,7 @@ fn incomplete_candidates_refuse_a_guess_and_count_named_failures() {
 
 #[test]
 fn five_thousand_foreign_country_candidates_do_not_hide_the_selected_country() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = frame();
     if let TableView::Complete(TableRows::CountryLinks(rows)) =

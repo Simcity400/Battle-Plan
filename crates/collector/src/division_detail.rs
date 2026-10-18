@@ -8,13 +8,13 @@ use crate::{
     sampling::qpc,
     table_capture::{CaptureRows, grow_capacity, grow_vec},
 };
-use engine::{
-    Memory, army_upgrade_request_row, carmy_upgrades_requests, carmy_upgrades_status,
-    cequipment_variant_pool::{self, DivisionSource},
-    cupgrade_delivery,
-    walk::Outcome,
+use engine_deployment::{
+    army_upgrade_request_row, carmy_upgrades_requests, carmy_upgrades_status, cupgrade_delivery,
 };
-use replay::rows::TableId;
+use engine_native::{
+    Memory, cequipment_variant_pool, cequipment_variant_pool::DivisionSource, walk::Outcome,
+};
+use replay_data::rows::TableId;
 use std::cell::Cell;
 
 /// Counts successfully copied source bytes, including repeated reads. This is
@@ -52,7 +52,7 @@ impl<M: Memory> Memory for CountedMemory<'_, M> {
     }
 
     #[inline]
-    fn read_scalar<T: engine::memory::Raw>(&self, address: usize) -> Option<T> {
+    fn read_scalar<T: engine_native::memory::Raw>(&self, address: usize) -> Option<T> {
         let value = self.memory.read_scalar::<T>(address)?;
         self.add(std::mem::size_of::<T>() as u64);
         Some(value)
@@ -86,8 +86,8 @@ impl<M: Memory> Memory for CountedMemory<'_, M> {
     #[inline]
     fn copy_records(
         &self,
-        sources: engine::memory::RecordSources<'_>,
-        layout: &engine::memory::RecordLayout<'_>,
+        sources: engine_native::memory::RecordSources<'_>,
+        layout: &engine_native::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         let copied = self.memory.copy_records(sources, layout, destination);
@@ -99,7 +99,7 @@ impl<M: Memory> Memory for CountedMemory<'_, M> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<engine::ccountry::AuthenticatedRoster<'_>> {
+    ) -> Option<engine_native::ccountry::AuthenticatedRoster<'_>> {
         self.memory.authenticated_countries(base, game_state)
     }
 
@@ -107,7 +107,7 @@ impl<M: Memory> Memory for CountedMemory<'_, M> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<Result<engine::ccountry::Country, &'static str>> {
+    ) -> Option<Result<engine_native::ccountry::Country, &'static str>> {
         self.memory.authenticated_reserved_country(base, game_state)
     }
 
@@ -115,7 +115,7 @@ impl<M: Memory> Memory for CountedMemory<'_, M> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<engine::ccountry::ReservedCountryObservation> {
+    ) -> Option<engine_native::ccountry::ReservedCountryObservation> {
         self.memory
             .authenticated_reserved_country_observation(base, game_state)
     }
@@ -167,19 +167,19 @@ impl OwnedDetails {
             capacities[10],
         ];
         Self {
-            equipment: engine::allocation::owned_vec(engine::allocation::default_vec::<
+            equipment: engine_allocation::owned_vec(engine_allocation::default_vec::<
                 cequipment_variant_pool::DivisionRow,
             >(required[0])),
-            groups: engine::allocation::owned_vec(engine::allocation::default_vec::<
+            groups: engine_allocation::owned_vec(engine_allocation::default_vec::<
                 carmy_upgrades_requests::Row,
             >(required[1])),
-            requests: engine::allocation::owned_vec(engine::allocation::default_vec::<
+            requests: engine_allocation::owned_vec(engine_allocation::default_vec::<
                 army_upgrade_request_row::Row,
             >(required[2])),
-            deliveries: engine::allocation::owned_vec(engine::allocation::default_vec::<
+            deliveries: engine_allocation::owned_vec(engine_allocation::default_vec::<
                 cupgrade_delivery::Row,
             >(required[3])),
-            produced: engine::allocation::owned_vec(engine::allocation::default_vec::<
+            produced: engine_allocation::owned_vec(engine_allocation::default_vec::<
                 cupgrade_delivery::ProducedRow,
             >(required[4])),
             outcomes: [EMPTY; 5],
@@ -195,7 +195,7 @@ impl OwnedDetails {
 
     pub(crate) fn mark_skipped(&mut self) {
         self.outcomes = [Outcome::Unavailable {
-            reason: replay::cadence::SKIPPED_REASON,
+            reason: replay_data::cadence::SKIPPED_REASON,
         }; 5];
         self.acquired_bytes = [0; 5];
     }
@@ -337,7 +337,7 @@ fn install<R>(rows: &mut Vec<R>, outcome: Outcome, captured: &mut CaptureRows<R>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{carmy, memory::SliceMemory};
+    use engine_native::{carmy, memory::SliceMemory};
 
     #[test]
     fn counted_memory_forwards_hints_without_reading_or_charging_bytes() {
@@ -468,7 +468,7 @@ mod tests {
             scalars: Cell<usize>,
         }
         impl Memory for Trace<'_> {
-            fn read_scalar<T: engine::memory::Raw>(&self, address: usize) -> Option<T> {
+            fn read_scalar<T: engine_native::memory::Raw>(&self, address: usize) -> Option<T> {
                 self.scalars.set(self.scalars.get() + 1);
                 self.reads
                     .borrow_mut()
@@ -600,7 +600,9 @@ mod tests {
 
     #[test]
     fn live_pool_and_delivery_headers_grow_before_first_capture_and_installation() {
-        use engine::{ccountry, cequipment_variant, cgame_state, cpdx_array, equipment_entry};
+        use engine_native::{
+            ccountry, cequipment_variant, cgame_state, cpdx_array, equipment_entry,
+        };
         let (mut bytes, sources) = fixture();
         let equipment_rows = 40_000_usize;
         let delivery_rows = 5_000_usize;
@@ -678,16 +680,16 @@ mod tests {
         word(
             &mut bytes,
             status,
-            engine::cproduction_status::VTABLE_RVA as u64,
+            engine_native::cproduction_status::VTABLE_RVA as u64,
         );
         word(
             &mut bytes,
-            status + engine::cproduction_status::COUNTRY,
+            status + engine_native::cproduction_status::COUNTRY,
             country as u64,
         );
         word(
             &mut bytes,
-            status + engine::cproduction_status::STOCKPILE_POOL,
+            status + engine_native::cproduction_status::STOCKPILE_POOL,
             cequipment_variant_pool::VTABLE_RVA as u64,
         );
         array(&mut bytes, country + ccountry::DIVISIONS, army_slots, 1);
@@ -700,7 +702,7 @@ mod tests {
         );
         word(
             &mut bytes,
-            sources[0].pointer + engine::cunit::HANDLE,
+            sources[0].pointer + engine_native::cunit::HANDLE,
             sources[0].division,
         );
         let memory = SliceMemory {
@@ -754,11 +756,11 @@ mod tests {
         );
         assert!(matches!(
             captured.tables()[2],
-            replay::frame::TableView::Complete(_)
+            replay_frame::frame::TableView::Complete(_)
         ));
         assert!(matches!(
             captured.tables()[9],
-            replay::frame::TableView::Complete(_)
+            replay_frame::frame::TableView::Complete(_)
         ));
         // The actual native pool header, not its allocation capacity, supplied
         // the exact initial demand above.

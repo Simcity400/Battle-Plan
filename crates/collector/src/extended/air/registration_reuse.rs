@@ -5,15 +5,18 @@
 //! a held segment ([`super::RegistrationStore`], [`super::HeldSegment`]): its
 //! spliced bytes, or the fresh read the segment was taken from. The walk's
 //! output for such a base depends only on those bytes and on the country
-//! tables, which the walk checks again ([`engine::cair_base::RegistrationReuse`]),
+//! tables, which the walk checks again ([`engine_native::cair_base::RegistrationReuse`]),
 //! so the output a walk of the segment produced is appended in later hours
 //! that report the same segment, without walking its containers, pools or
 //! wings. A base whose segment changed, or that reports none, is walked.
 //!
 //! The cache keeps only bases its latest pass visited. Allocation is advisory:
 //! an output that cannot be kept is walked again.
-use engine::allocation;
-use engine::cair_base::{DenseEntry, HeldBase, RegistrationReuse, RegistrationRow, WalkedBase};
+use engine_allocation as allocation;
+use engine_native::{
+    cair_base::DenseEntry, cair_base::HeldBase, cair_base::RegistrationReuse,
+    cair_base::RegistrationRow, cair_base::WalkedBase,
+};
 use std::collections::HashMap;
 
 use super::HeldSegment;

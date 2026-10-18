@@ -1,6 +1,6 @@
 use super::*;
 use dashboard_text::catalogue::tests::{folder_catalogue, layers_catalogue};
-use replay::rows::SunkShipEntry;
+use replay_data::rows::SunkShipEntry;
 
 fn event(hour: i32, read: i32) -> sinkings::ShipEvent {
     sinkings::ShipEvent {
@@ -156,7 +156,7 @@ fn complete_empty_and_absent_history_are_different_and_coverage_is_preserved() {
 
 #[test]
 fn modded_sub_unit_and_renamed_sea_zone_use_the_effective_content_stack() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_, base) = folder_catalogue(&[
         (
@@ -201,7 +201,7 @@ fn modded_sub_unit_and_renamed_sea_zone_use_the_effective_content_stack() {
     std::fs::create_dir_all(modded.0.join("gfx")).unwrap();
     std::fs::write(modded.0.join("gfx/mod.tga"), tga).unwrap();
     let cat = layers_catalogue(
-        installed_content::ResolvedLayers::from_folders(&[(&base.0, &[][..]), (&modded.0, &[][..])])
+        installed_content_core::ResolvedLayers::from_folders(&[(&base.0, &[][..]), (&modded.0, &[][..])])
             .unwrap(),
     );
     let mut ship = event(150, 167);
@@ -275,7 +275,7 @@ fn repeated_provinces_in_one_region_keep_the_sinking_place() {
 
 #[test]
 fn absent_class_art_and_ambiguous_places_are_not_invented() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (cat, _folder) = folder_catalogue(&[
         (

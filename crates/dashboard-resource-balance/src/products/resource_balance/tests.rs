@@ -1,9 +1,7 @@
 use dashboard_core::test_fixtures::{CAMPAIGN, records, resource_frame};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::sync::{Arc, atomic::AtomicBool};
 
 #[test]
@@ -280,7 +278,7 @@ fn a_repeated_resource_token_is_its_own_resource_and_never_blanks_the_others() {
     use crate::products::resource_balance::{ResourceBalance, ordinals};
     use dashboard_base::products::{CountryParams, Product};
     use dashboard_core::config::LoadContext;
-    use replay::rows::{CountryResourceRow, ResourceDefinitionRow};
+    use replay_data::{rows::CountryResourceRow, rows::ResourceDefinitionRow};
     // Resource 3 repeats resource 1's token, as a second declaration in content would.
     let repeated = |hour| {
         let mut frame = resource_frame(hour, 30_100_000, 9001, &[]);

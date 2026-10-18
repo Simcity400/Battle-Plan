@@ -1,10 +1,7 @@
 //! Province local clock/night for the tooltip: the record's clock
-//! ([`replay::rows::DayNightClock`], [`replay::day_night`]) and its icon frame.
+//! ([`replay_data::rows::DayNightClock`], [`replay_data::day_night`]) and its icon frame.
 
-use replay::{
-    day_night::Clock,
-    rows::{ClockState, WeatherProvinceRow},
-};
+use replay_data::{day_night::Clock, rows::ClockState, rows::WeatherProvinceRow};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LocalClock {

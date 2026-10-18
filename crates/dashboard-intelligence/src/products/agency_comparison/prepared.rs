@@ -6,7 +6,7 @@ use dashboard_base::prepared::{
     series::{self, Accumulator, Reader},
 };
 use dashboard_text::metadata::check_cancel;
-use replay::frame::DecodedFrame;
+use replay_frame::frame::DecodedFrame;
 
 const OBSERVED: u64 = 0;
 const OPERATIVE_READ: u64 = 1;
@@ -94,7 +94,7 @@ impl Prepared {
         changes: &FrameChanges,
         countries: &super::super::operative_rows::CountryInputs,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("intelligence:agencies");
+        let _cpu = ::replay_frame::cpu::scope_phase("intelligence:agencies");
         let previous = self.last;
         let changed = countries.changed
             || previous.is_none_or(|last| last.checked_add(1) != Some(frame.hour))

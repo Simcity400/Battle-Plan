@@ -5,25 +5,20 @@
 //! overwrites that string with the commander's description. Those temporary
 //! modifier descriptions are not displayed here. The recorded leader keeps
 //! both a localized description cache and its raw description token.
-use installed_content::{
-    ResolvedLayers,
-    defines::Defines,
-    leader_traits::LeaderTraits,
-    localisation::{Argument, Localisation},
-    tokens::Token,
-    unit_leader::{
-        Adjuster, Component, Leaders, Skills, SubUnit, SubUnits, TraitEffects, TraitReference,
-        Traits,
-    },
+use installed_content_core::{
+    ResolvedLayers, defines::Defines, leader_traits::LeaderTraits, tokens::Token,
+    unit_leader::Adjuster, unit_leader::Component, unit_leader::Leaders, unit_leader::Skills,
+    unit_leader::SubUnit, unit_leader::SubUnits, unit_leader::TraitEffects,
+    unit_leader::TraitReference, unit_leader::Traits,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        CharacterRoleTraitRow, CharacterRow, CountryRow, LandCombatCommanderLearningTrait,
-        LandCombatCommanderTimedTrait, LandCombatCommanderTrait, LandCombatLearningProgress,
-        LandCombatSideInputs, NavalCommanderInputs, UnitLeaderRow, tables,
-    },
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use replay_data::{
+    rows::CharacterRoleTraitRow, rows::CharacterRow, rows::CountryRow,
+    rows::LandCombatCommanderLearningTrait, rows::LandCombatCommanderTimedTrait,
+    rows::LandCombatCommanderTrait, rows::LandCombatLearningProgress, rows::LandCombatSideInputs,
+    rows::NavalCommanderInputs, rows::UnitLeaderRow, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeSet;
 use std::{
     collections::BTreeMap,
@@ -92,7 +87,7 @@ fn int_defines(defines: &Defines, category: &str, names: [&str; 3]) -> Result<[i
 }
 
 impl Content {
-    pub(super) fn sub_units(&self) -> Result<&installed_content::unit_leader::SubUnits, &str> {
+    pub(super) fn sub_units(&self) -> Result<&installed_content_core::unit_leader::SubUnits, &str> {
         self.sub_units.as_deref().map_err(String::as_str)
     }
     /// The commander content, and the `leader_skills` the same files'
@@ -102,8 +97,8 @@ impl Content {
     }
 
     /// `sub_units` is the one sub-unit database read
-    /// (installed_content::unit_leader::sub_units) and `leader_traits` the one
-    /// country-leader trait read (installed_content::leader_traits), or why each
+    /// (installed_content_core::unit_leader::sub_units) and `leader_traits` the one
+    /// country-leader trait read (installed_content_core::leader_traits), or why each
     /// could not be read.
     pub(super) fn load(
         layers: &ResolvedLayers,
@@ -112,7 +107,7 @@ impl Content {
         leader_traits: Result<Arc<LeaderTraits>, String>,
     ) -> io::Result<(Self, Skills)> {
         // Build an adjuster for each terrain type resolved from the content stack.
-        let (terrain, _) = installed_content::terrain::read(layers)?;
+        let (terrain, _) = installed_content_core::terrain::read(layers)?;
         let terrain: Vec<String> = terrain
             .categories
             .iter()
@@ -1277,7 +1272,7 @@ fn unit_leader(leaders: &[UnitLeaderRow], reference: u64) -> Option<&UnitLeaderR
 
 /// character lookup, then the nonempty advisor vectors of its
 /// role map. The recorder stores each role's map position, including
-/// positions skipped for empty vectors (engine::character_inputs). A partial
+/// positions skipped for empty vectors (engine_characters::character_inputs). A partial
 /// table cannot prove that no earlier role selects another definition.
 fn advisor_roles<'a>(
     leader: Option<&UnitLeaderRow>,
@@ -1360,41 +1355,42 @@ pub(super) fn bind(
     };
     // Naval windows install the same trait hover handler
     // as land. presentation.rs has already bound each of these trait grids.
-    let naval = |out: &mut Bindings, key: &str, commander: &replay::rows::NavalCommanderInputs| {
-        if commander.commander == 0 {
-            return;
-        }
-        let leader = unit_leader(leaders.rows(), commander.commander);
-        assigned(
-            out,
-            content.commanders,
-            content.windows,
-            key,
-            AssignedCommander {
-                traits: &commander.traits,
-                context: 2, // Naval trait context.
-                timed_traits: commander
-                    .timed_traits
-                    .require("NavalCommanderInputs.timed_traits")
-                    .map(Vec::as_slice),
-                country_tag: country_tag(countries, commander.country),
-                advisor_feature,
-                skill: leader
-                    .filter(|row| row.skill_status != 0)
-                    .map(|row| row.skill_level),
-                advisor_roles: advisor_roles(
-                    leader,
-                    frame
-                        .complete::<tables::Characters>()
-                        .map_err(|error| error.to_string()),
-                    frame
-                        .complete::<tables::CharacterRoleTraits>()
-                        .map_err(|error| error.to_string()),
-                ),
-            },
-            &effect_context,
-        );
-    };
+    let naval =
+        |out: &mut Bindings, key: &str, commander: &replay_data::rows::NavalCommanderInputs| {
+            if commander.commander == 0 {
+                return;
+            }
+            let leader = unit_leader(leaders.rows(), commander.commander);
+            assigned(
+                out,
+                content.commanders,
+                content.windows,
+                key,
+                AssignedCommander {
+                    traits: &commander.traits,
+                    context: 2, // Naval trait context.
+                    timed_traits: commander
+                        .timed_traits
+                        .require("NavalCommanderInputs.timed_traits")
+                        .map(Vec::as_slice),
+                    country_tag: country_tag(countries, commander.country),
+                    advisor_feature,
+                    skill: leader
+                        .filter(|row| row.skill_status != 0)
+                        .map(|row| row.skill_level),
+                    advisor_roles: advisor_roles(
+                        leader,
+                        frame
+                            .complete::<tables::Characters>()
+                            .map_err(|error| error.to_string()),
+                        frame
+                            .complete::<tables::CharacterRoleTraits>()
+                            .map_err(|error| error.to_string()),
+                    ),
+                },
+                &effect_context,
+            );
+        };
     let id = match selection {
         Selection::Naval(id) => {
             let details = rows::<tables::NavalCombatDetails>(frame)?;

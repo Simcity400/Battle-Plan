@@ -4,12 +4,11 @@ use crate::{
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
     table_conversion::table,
 };
-use engine::allocation::{copy_vec, owned_vec};
-use engine::{Memory, saved_event_targets as native, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{GlobalSavedEventTargetRow, TableId, tables},
-};
+use engine_allocation::{copy_vec, owned_vec};
+use engine_native::{Memory, walk::Outcome};
+use engine_scripts::saved_event_targets as native;
+use replay_data::{rows::GlobalSavedEventTargetRow, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::GlobalSavedEventTargets];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];

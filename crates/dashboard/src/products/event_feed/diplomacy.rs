@@ -8,11 +8,11 @@ use crate::{
     products::country_groups,
 };
 #[cfg(test)]
-use replay::{container::Replay, frame::FrameDecoder};
-use replay::{
-    frame::DecodedFrame,
-    rows::{RelationTupleRow, SliceReadRow, TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{rows::RelationTupleRow, rows::SliceReadRow, rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
+#[cfg(test)]
+use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,7 +27,7 @@ use crate::products::country_groups::changes::{Change as GroupMoment, Scan};
 
 /// Whether the observer reads a relation row: an uncancelled guarantee.
 pub(super) fn reads_relation(row: &RelationTupleRow) -> bool {
-    row.type_id == engine::cguarantee_relation::TYPE && row.cancel == 0
+    row.type_id == engine_native::cguarantee_relation::TYPE && row.cancel == 0
 }
 
 /// Whether the observer reads a slice read at `hour`: the relation table's
@@ -52,7 +52,7 @@ impl Observer {
     pub(super) fn observe(
         &mut self,
         decoded: &DecodedFrame,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         out: &mut Scan,
     ) -> io::Result<()> {
         let hour = decoded.hour;

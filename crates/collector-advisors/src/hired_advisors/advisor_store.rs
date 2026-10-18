@@ -36,10 +36,10 @@ use crate::{
     advisor_pool_changes::{Changes, Counts, Table},
     sampled_verify::Check,
 };
-use engine::{
-    advisor_tokens::{self, TokenCarry},
-    allocation,
-    ccountry_characters::{AvailableCarry, Pool, Row},
+use engine_allocation as allocation;
+use engine_characters::{advisor_tokens, advisor_tokens::TokenCarry};
+use engine_native::{
+    ccountry_characters::AvailableCarry, ccountry_characters::Pool, ccountry_characters::Row,
 };
 use std::ops::Range;
 
@@ -158,7 +158,7 @@ struct Tokens {
 }
 
 /// Hours in a day: AvailableAdvisors reads each pool at one of them.
-const SLICES: usize = replay::cadence::STAGGER_PERIOD as usize;
+const SLICES: usize = replay_data::cadence::STAGGER_PERIOD as usize;
 
 /// The latest complete walks and the walk being made.
 #[derive(Default)]

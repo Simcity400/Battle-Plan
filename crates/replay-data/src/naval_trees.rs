@@ -17,7 +17,9 @@
 //! A country's and a commander's trees are carried while no hooked writer
 //! touches them (`naval_tree_changes`); every other kind is read each hour a
 //! live combat reaches it.
-pub use engine::naval_modifier_trees::{KEYS, Kind, SideSource};
+pub use engine_naval_history::{
+    naval_modifier_trees::KEYS, naval_modifier_trees::Kind, naval_modifier_trees::SideSource,
+};
 
 use crate::rows::{
     ModifierBreakdownNode, NavalCombatSideDetails, NavalModifierTreeRow, NavalShipModifierSource,
@@ -46,13 +48,13 @@ impl Owner {
 /// The identity of one recorded modifier source of a ship, or `None` for a scope that
 /// carries no tree (the adjusters, pool, defines and relation scopes 16-32, which the
 /// ship formatter omits for these keys). The join is the collector's own
-/// ([`engine::naval_modifier_trees::ship_owner`]).
+/// ([`engine_naval_history::naval_modifier_trees::ship_owner`]).
 pub fn ship_source(
     ship: u64,
     context: &NavalShipWeaponContext,
     source: &NavalShipModifierSource,
 ) -> Option<Owner> {
-    engine::naval_modifier_trees::ship_owner(
+    engine_naval_history::naval_modifier_trees::ship_owner(
         source.scope,
         source.index,
         source.selector,
@@ -77,7 +79,7 @@ pub fn side_source(
     opposing: &NavalCombatSideDetails,
     source: SideSource,
 ) -> Option<Owner> {
-    engine::naval_modifier_trees::side_owner(
+    engine_naval_history::naval_modifier_trees::side_owner(
         source,
         combat,
         side.summary.countries.first().copied(),

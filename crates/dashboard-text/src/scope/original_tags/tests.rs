@@ -1,11 +1,10 @@
 use crate::scope::{OriginalTagLists, tests::dynamic_frame};
 use crate::test_fixtures::{CAMPAIGN, session};
-use replay::{
-    branches::{BranchReason, BranchStart, Parentage},
-    container::Replay,
-    frame::{FrameEncoder, TableView},
-    rows::{Recorded, TableId, TableRows},
-    spool::Record,
+use replay::{container::Replay, spool::Record};
+use replay_data::{rows::Recorded, rows::TableId, rows::TableRows};
+use replay_frame::{
+    branches::BranchReason, branches::BranchStart, branches::Parentage, frame::FrameEncoder,
+    frame::TableView,
 };
 use std::sync::atomic::AtomicBool;
 

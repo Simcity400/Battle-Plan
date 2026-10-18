@@ -23,9 +23,9 @@ use dashboard_text::{
     catalogue::plain_text,
     metadata::{IdentityTrack, link_slot},
 };
-use replay::{
-    container::Replay,
-    rows::{IntelligenceAgencyRow, OperativeMembershipRow, TableId, tables},
+use replay::container::Replay;
+use replay_data::{
+    rows::IntelligenceAgencyRow, rows::OperativeMembershipRow, rows::TableId, rows::tables,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -41,7 +41,7 @@ use ts_rs::TS;
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::validate_campaign;
 #[cfg(any(test, feature = "test-support"))]
-use replay::frame::FrameDecoder;
+use replay_frame::frame::FrameDecoder;
 #[cfg(any(test, feature = "test-support"))]
 use std::collections::VecDeque;
 
@@ -149,8 +149,8 @@ fn upgrades_at_read(row: &AgencyProjection) -> AgencyUpgrades {
 }
 
 fn acquired_read(
-    frame: &replay::frame::DecodedFrame,
-    rows: &[&replay::rows::AgencyUpgradeLevelRow],
+    frame: &replay_frame::frame::DecodedFrame,
+    rows: &[&replay_data::rows::AgencyUpgradeLevelRow],
     unavailable: Option<String>,
 ) -> AgencyUpgrades {
     let mut read = AgencyUpgrades {
@@ -522,12 +522,12 @@ impl ScannedAgencies {
 /// Scalar active_count is the active-list count. Recruitment pools are
 /// separate memberships: roster_kind 0 is that active list, not all entries an
 /// operative can have. The recruitment vectors are projected as kinds 1..3
-/// by engine::coperative_leader::walk. Capture retains active membership, so a
+/// by engine_native::coperative_leader::walk. Capture retains active membership, so a
 /// captured operative still counts in the active/maximum display;
 /// free-operatives is different.
 fn roster_counts(
     rows: &[OperativeMembershipRow],
-    links: &[replay::rows::CountryLinkRow],
+    links: &[replay_data::rows::CountryLinkRow],
 ) -> (HashMap<u32, u32>, usize, BTreeMap<u8, usize>) {
     let mut counts = HashMap::new();
     let mut unresolved = 0;
@@ -556,7 +556,7 @@ impl ScannedAgencies {
     #[allow(clippy::type_complexity)]
     fn observe_frame_countries(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         replay: &Replay,
         inputs: &super::operative_rows::CountryInputs,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
@@ -642,7 +642,7 @@ impl ScannedAgencies {
                     .any(|table| changes.rows_changed[table.index()])
             })
         {
-            let mut acquired: HashMap<u32, Vec<&replay::rows::AgencyUpgradeLevelRow>> =
+            let mut acquired: HashMap<u32, Vec<&replay_data::rows::AgencyUpgradeLevelRow>> =
                 HashMap::new();
             let mut acquired_unavailable = frame
                 .complete::<tables::AgencyUpgradeLevels>()
@@ -663,7 +663,7 @@ impl ScannedAgencies {
                     });
                 }
             }
-            let project = |rows: &[&replay::rows::AgencyUpgradeLevelRow]| {
+            let project = |rows: &[&replay_data::rows::AgencyUpgradeLevelRow]| {
                 let read = acquired_read(frame, rows, acquired_unavailable.clone());
                 ScannedUpgrades {
                     read_hour: read.read_hour,
@@ -1202,10 +1202,8 @@ mod tests {
     #[test]
     fn agency_comparison_manual_picks_follow_all_holders_and_exclude_unrelated_aliases() {
         use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-        use replay::{
-            frame::TableView,
-            rows::{CountryLinkRow, CountryRow, TableRows},
-        };
+        use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableRows};
+        use replay_frame::frame::TableView;
         let frames = [
             (0, ["PRE", "OTHER", "C"]),
             (1, ["X", "OTHER", "C"]),
@@ -1334,10 +1332,8 @@ mod tests {
     ) {
         use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
         use dashboard_core::config::ContentOptions;
-        use replay::{
-            frame::TableView,
-            rows::{LexicalTokenRow, OperationRow, TableRows},
-        };
+        use replay_data::{rows::LexicalTokenRow, rows::OperationRow, rows::TableRows};
+        use replay_frame::frame::TableView;
         let (_, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[]);
         let localisation = "\u{feff}l_english:\n MOD_OPERATION:0 \"Custom operation\"\n AGENCY_NAME:0 \"Custom agency\"\n AGENCY_DEFENSE_LEVEL:0 \"Protection: $LEVEL$ / $LEVEL$\"\n";
         for (path, bytes) in operation_files
@@ -1349,10 +1345,10 @@ mod tests {
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(file, bytes).unwrap();
         }
-        let layers = installed_content::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+        let layers = installed_content_core::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
         let catalogue = dashboard_text::catalogue::tests::layers_catalogue(layers);
         let options = ContentOptions {
-            options: installed_content::ResolveOptions {
+            options: installed_content_core::ResolveOptions {
                 game_dir: folder.0.clone(),
                 user_dir: folder.0.clone(),
                 cache_dir: folder.0.join("cache"),
@@ -1418,7 +1414,7 @@ mod tests {
 
     #[test]
     fn acquired_levels_preserve_duplicates_and_signed_operands_then_split_changed_reads() {
-        use replay::rows::AgencyUpgradeLevelRow;
+        use replay_data::rows::AgencyUpgradeLevelRow;
         let observed = dashboard_base::test_fixtures::source(1, 10, Some(1));
         let mut rows: Vec<_> = [-3, 2, 3]
             .into_iter()
@@ -1431,7 +1427,7 @@ mod tests {
                 upgrade_token: Some(71),
                 branch_token: Some(72),
                 level,
-                identity_status: engine::agency_upgrade_levels::AUTHENTICATED,
+                identity_status: engine_native::agency_upgrade_levels::AUTHENTICATED,
             })
             .collect();
         let mut read = acquired_read(&observed, &rows.iter().collect::<Vec<_>>(), None);
@@ -1550,21 +1546,21 @@ mod tests {
                 .catalogue
                 .content
                 .layers
-                .derived::<dashboard_text::catalogue::CachedResult<installed_content::intelligence::Intelligence>>()
+                .derived::<dashboard_text::catalogue::CachedResult<installed_content_core::intelligence::Intelligence>>()
                 .loads(),
             0,
             "agency comparison must not read operation definitions"
         );
         // The explicit operation read below classifies on_start effects through
         // the installation's effect registry; agency comparison above needs none.
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let content = intelligence_content(&bad, bad_context.content().unwrap()).unwrap();
         for kind in [
-            installed_content::DiagnosticKind::Misread,
-            installed_content::DiagnosticKind::Unsupported,
-            installed_content::DiagnosticKind::Unsettled,
-            installed_content::DiagnosticKind::Refused,
+            installed_content_core::DiagnosticKind::Misread,
+            installed_content_core::DiagnosticKind::Unsupported,
+            installed_content_core::DiagnosticKind::Unsettled,
+            installed_content_core::DiagnosticKind::Refused,
         ] {
             assert!(
                 content.definitions.notes.iter().any(|note| note.0 == kind),
@@ -1573,7 +1569,7 @@ mod tests {
             );
         }
         assert!(content.definitions.notes.iter().any(|(kind, note)| {
-            *kind == installed_content::DiagnosticKind::Refused && note.contains("unparsable.txt")
+            *kind == installed_content_core::DiagnosticKind::Refused && note.contains("unparsable.txt")
         }));
         let espionage = EspionageLog::load(
             &bad,
@@ -1592,7 +1588,8 @@ mod tests {
         // catalogue so a cached full intelligence read cannot mask an I/O error.
         // A cloned resolved stack shares its immutable derived databases. Bind a
         // fresh inventory before removing the file so the new read reaches I/O.
-        let layers = installed_content::ResolvedLayers::from_folders(&[(&bad_folder.0, &[][..])]).unwrap();
+        let layers =
+            installed_content_core::ResolvedLayers::from_folders(&[(&bad_folder.0, &[][..])]).unwrap();
         std::fs::remove_file(bad_folder.0.join("common/operations/unreadable.txt")).unwrap();
         let catalogue = dashboard_text::catalogue::tests::layers_catalogue(layers);
         dashboard_base::catalogue::set_test_catalogue(
@@ -2016,10 +2013,8 @@ mod tests {
     #[test]
     fn agency_comparison_off_read_aliases_keep_native_census_dates_and_refuse_broken_coverage() {
         use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-        use replay::{
-            frame::TableView,
-            rows::{CountryLinkRow, CountryRow, TableRows},
-        };
+        use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableRows};
+        use replay_frame::frame::TableView;
         // The wire codec refuses duplicate canonical slots. Exercise their
         // identity guard directly, then scan the supported unavailable census.
         let duplicate_slots: Vec<_> = [7, 9]
@@ -2187,7 +2182,8 @@ mod tests {
     #[test]
     fn agency_comparison_held_scheduled_and_peer_frames_do_not_redate_roster_reads() {
         use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-        use replay::{frame::TableView, rows::TableRows};
+        use replay_data::rows::TableRows;
+        use replay_frame::frame::TableView;
         let member = OperativeMembershipRow {
             id: 77,
             roster_country: 11,
@@ -2203,7 +2199,7 @@ mod tests {
         let mut scheduled = first.clone();
         scheduled.hour = 16;
         scheduled.metrics.table_ns[TableId::OperativeMemberships.index()] = 0;
-        assert!(replay::cadence::is_refresh(
+        assert!(replay_data::cadence::is_refresh(
             TableId::OperativeMemberships,
             scheduled.hour
         ));
@@ -2211,8 +2207,8 @@ mod tests {
         peer.hour = 17;
         peer.metrics.table_ns[TableId::WingCumulative.index()] = 1;
         assert_eq!(
-            replay::cadence::cadence(TableId::WingCumulative),
-            replay::cadence::cadence(TableId::OperativeMemberships)
+            replay_data::cadence::cadence(TableId::WingCumulative),
+            replay_data::cadence::cadence(TableId::OperativeMemberships)
         );
         let mut refreshed = first.clone();
         refreshed.hour = 18;
@@ -2277,10 +2273,8 @@ mod tests {
     #[test]
     fn agency_comparison_replay_reads_5000_countries_and_refuses_gaps_without_zeroes() {
         use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-        use replay::{
-            frame::TableView,
-            rows::{CountryLinkRow, CountryRow, TableRows},
-        };
+        use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableRows};
+        use replay_frame::frame::TableView;
         let mut first = source(1, 16, Some(1));
         *first.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
             (1..=5000)
@@ -2382,10 +2376,8 @@ mod tests {
     #[test]
     fn agency_comparison_partial_rosters_stay_unknown_and_refuse_by_kind() {
         use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-        use replay::{
-            frame::TableView,
-            rows::{CountryLinkRow, CountryRow, TableRows},
-        };
+        use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableRows};
+        use replay_frame::frame::TableView;
         let mut first = source(1, 16, Some(1));
         *first.tables[TableId::Countries.index()] =
             TableView::Complete(TableRows::Countries(vec![CountryRow {

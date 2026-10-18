@@ -1,8 +1,9 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{TableId, TableRows, WarNameRuleRow, WarOverviewCountryRow, WarOwnedRelationRow},
+use replay_data::{
+    rows::TableId, rows::TableRows, rows::WarNameRuleRow, rows::WarOverviewCountryRow,
+    rows::WarOwnedRelationRow,
 };
+use replay_frame::frame::TableView;
 
 fn two_country_fixture() -> (DecodedFrame, Save) {
     let (mut frame, mut save, _, _) = super::super::fixtures::fixture();
@@ -15,7 +16,7 @@ fn two_country_fixture() -> (DecodedFrame, Save) {
     frame.tables[TableId::Countries.index()] =
         TableView::Complete(TableRows::Countries(countries)).into();
     let mut links = frame.complete::<tables::CountryLinks>().unwrap().to_vec();
-    links.push(replay::rows::CountryLinkRow {
+    links.push(replay_data::rows::CountryLinkRow {
         id: 103,
         canonical_slot: 8,
     });

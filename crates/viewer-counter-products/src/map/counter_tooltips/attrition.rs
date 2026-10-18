@@ -46,7 +46,7 @@
 //! where those lines appear, and its moving-state block.
 
 use super::*;
-use replay::modifier_registry::Registry;
+use replay_derive::modifier_registry::Registry;
 use std::collections::BTreeMap;
 use viewer_foundation::map::counter_attrition::{Content, Terrain};
 use viewer_foundation::movement_timing::HourTerms;
@@ -54,16 +54,15 @@ use viewer_foundation::tooltip_text::ensure_newlines;
 
 use viewer_foundation::map::counter_inputs::SCALE as ONE;
 
-const EQUIPMENT_UNRECORDED: &str = "the per-terrain attrition of the division's held variants is not recorded";
+const EQUIPMENT_UNRECORDED: &str =
+    "the per-terrain attrition of the division's held variants is not recorded";
 const STATE_UNRECORDED: &str = "the state's attrition modifiers for the roster owner (keys 0x4F, 0x1EE and 0x1EF) are not recorded";
-const UPKEEP_SOURCES_UNRECORDED: &str =
-    "the country's unit_upkeep_attrition_factor sources (the country's modifier accumulator, key 0x54) are not recorded";
+const UPKEEP_SOURCES_UNRECORDED: &str = "the country's unit_upkeep_attrition_factor sources (the country's modifier accumulator, key 0x54) are not recorded";
 const WEATHER_UNRECORDED: &str =
     "a moving unit's province weather, heat and winter modifier source trees are not recorded";
 const MOVING_STATE_UNRECORDED: &str =
     "a moving unit's state attrition modifier for its logical owner (key 0x4F) is not recorded";
-const COUNTRY_SOURCES_UNRECORDED: &str =
-    "the country's attrition sources (the country's modifier accumulator, key 0x4F, depth 2) are not recorded";
+const COUNTRY_SOURCES_UNRECORDED: &str = "the country's attrition sources (the country's modifier accumulator, key 0x4F, depth 2) are not recorded";
 
 /// What the lines read beyond the frame.
 struct Lookups<'b> {
@@ -142,7 +141,7 @@ fn coloured_percent(value: i64, precision: i32) -> String {
         _ => 'Y',
     };
     let sign = if scaled >= 0 { "+" } else { "" };
-    let number = installed_content::fixed5::fixed5_to_string(scaled, precision);
+    let number = installed_content_core::fixed5::fixed5_to_string(scaled, precision);
     format!("\u{11}{colour}{sign}{number}%\u{11}!")
 }
 
@@ -205,7 +204,9 @@ fn weather_lines(context: &Context<'_>, id: u64, province: u32) -> Result<bool, 
             Some(raw) => registry.effective(registry.named(name)?, raw),
         }
     };
-    use engine::modifier_keys::{ATTRITION, HEAT_ATTRITION, WINTER_ATTRITION};
+    use engine_executable::{
+        modifier_keys::ATTRITION, modifier_keys::HEAT_ATTRITION, modifier_keys::WINTER_ATTRITION,
+    };
     if effective("attrition", modifiers.get(ATTRITION))? != 0 {
         return Ok(true);
     }

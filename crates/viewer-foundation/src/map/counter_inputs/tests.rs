@@ -277,10 +277,10 @@ fn a_reserve_fleet_is_one_whose_first_rostered_task_force_is_in_reserve() {
 }
 
 fn order_membership_frame() -> DecodedFrame {
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{ArmyOrderRow, OrdersGroupPlanRow, TableId, TableRows},
+    use replay_data::{
+        rows::ArmyOrderRow, rows::OrdersGroupPlanRow, rows::TableId, rows::TableRows,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
     let mut frame = DecodedFrame {
         branch: 1,
         hour: 0,
@@ -425,10 +425,8 @@ fn ability_root_type_keeps_unknown_membership_and_missing_order_class() {
 
 #[test]
 fn truncated_order_memberships_use_only_proven_prefix_matches() {
-    use replay::{
-        frame::TableView,
-        rows::{TableId, TableRows},
-    };
+    use replay_data::{rows::TableId, rows::TableRows};
+    use replay_frame::frame::TableView;
     let mut frame = order_membership_frame();
     for table in [
         TableId::ArmyOrderPlans,
@@ -477,10 +475,8 @@ fn truncated_order_memberships_use_only_proven_prefix_matches() {
 
 #[test]
 fn empty_order_lists_are_known_but_missing_parent_operands_are_not() {
-    use replay::{
-        frame::TableView,
-        rows::{OrdersGroupPlanRow, TableId, TableRows},
-    };
+    use replay_data::{rows::OrdersGroupPlanRow, rows::TableId, rows::TableRows};
+    use replay_frame::frame::TableView;
     let mut frame = order_membership_frame();
     *frame.tables[TableId::OrdersGroupPlans.index()] = TableView::Truncated {
         rows: TableRows::OrdersGroupPlans(vec![

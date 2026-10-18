@@ -1,6 +1,6 @@
 use super::*;
 use crate::template_changes::Watches;
-use engine::memory::SliceMemory;
+use engine_native::memory::SliceMemory;
 
 /// Two templates whose literal names and keys are inline MSVC strings.
 const FIRST: usize = 0x1000;
@@ -159,7 +159,7 @@ fn sampled_key_writer_during_fresh_names_withdraws_without_poison() {
         fired: Cell<bool>,
         fail: bool,
     }
-    impl engine::Memory for Writer<'_> {
+    impl engine_native::Memory for Writer<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             if address == FIRST + native::NAME_KEY && !self.fired.replace(true) {
                 drop(self.watches.notify(FIRST, 0));

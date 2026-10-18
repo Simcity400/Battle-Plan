@@ -2,11 +2,9 @@ use crate::{
     products::Product,
     test_fixtures::{CAMPAIGN, continuation_records, ownership_frame, records},
 };
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::{
     path::PathBuf,
     sync::{Arc, atomic::AtomicBool},
@@ -41,7 +39,7 @@ fn country_groups_keep_every_event_and_run_then_refuse_oversized_replies() {
         let mut frame = scale_frame(1, 100, countries);
         let wars = (0..countries)
             .flat_map(|first| {
-                (first + 1..countries).map(move |second| replay::rows::WarRelationRow {
+                (first + 1..countries).map(move |second| replay_data::rows::WarRelationRow {
                     first_country: 100_000 + first,
                     second_country: 100_000 + second,
                     start_hour: 100,
@@ -279,7 +277,7 @@ fn group_frame(
     let mut frame = ownership_frame(1, hour, 44);
     let mut humans: Vec<_> = humans
         .iter()
-        .map(|&country| replay::rows::HumanControllerRow { country, count: 1 })
+        .map(|&country| replay_data::rows::HumanControllerRow { country, count: 1 })
         .collect();
     humans.sort_by_key(|row| row.country);
     *frame.tables[TableId::HumanControllers.index()] =
@@ -287,7 +285,7 @@ fn group_frame(
     *frame.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(
         factions
             .iter()
-            .map(|&(id, name, _)| replay::rows::FactionRow {
+            .map(|&(id, name, _)| replay_data::rows::FactionRow {
                 id,
                 name: name.as_bytes().to_vec(),
                 ..Default::default()
@@ -298,7 +296,7 @@ fn group_frame(
         .iter()
         .flat_map(|&(faction, _, members)| {
             members.iter().enumerate().map(move |(ordinal, &country)| {
-                replay::rows::FactionMemberRow {
+                replay_data::rows::FactionMemberRow {
                     country,
                     faction,
                     ordinal: ordinal as u32,
@@ -312,7 +310,7 @@ fn group_frame(
     let mut relations: Vec<_> = wars
         .iter()
         .map(
-            |&(first_country, second_country)| replay::rows::WarRelationRow {
+            |&(first_country, second_country)| replay_data::rows::WarRelationRow {
                 first_country,
                 second_country,
                 ..Default::default()
@@ -428,7 +426,7 @@ fn country_groups_drop_ended_wars_and_keep_each_history_s_gaps_its_own() {
     ];
     let mut replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
     // The branch ends in a recorded gap: those hours are unobserved, not leaves.
-    replay.gaps.push(replay::branches::Gap {
+    replay.gaps.push(replay_frame::branches::Gap {
         branch: 1,
         first_hour: 103,
         last_hour: 105,
@@ -509,7 +507,7 @@ fn template_frame(hour: i32, literal: &str, template: Option<(u32, &str)>) -> De
     }
     *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(
         template
-            .map(|(token, literal)| replay::rows::LexicalTokenRow {
+            .map(|(token, literal)| replay_data::rows::LexicalTokenRow {
                 token,
                 literal: literal.as_bytes().to_vec(),
             })
@@ -521,8 +519,8 @@ fn template_frame(hour: i32, literal: &str, template: Option<(u32, &str)>) -> De
 
 fn named_factions(
     frames: Vec<DecodedFrame>,
-    templates: &installed_content::faction_templates::Catalog,
-    localisation: &installed_content::localisation::Localisation,
+    templates: &installed_content_core::faction_templates::Catalog,
+    localisation: &installed_content_localisation::localisation::Localisation,
 ) -> Vec<super::FactionGroup> {
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
     let scan = super::scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
@@ -701,9 +699,11 @@ fn country_groups_faction_names_use_mod_localisation_override() {
         "localisation/demo_l_english.yml",
         "\u{feff}l_english:\n DEMO_NAME:0 \"Modded Pact\"\n",
     )]);
-    let layers =
-        installed_content::ResolvedLayers::from_folders(&[(&vanilla.0, &[][..]), (&modded.0, &[][..])])
-            .unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[
+        (&vanilla.0, &[][..]),
+        (&modded.0, &[][..]),
+    ])
+    .unwrap();
     let catalogue = crate::catalogue::tests::layers_catalogue(layers);
     let factions = named_factions(
         vec![template_frame(100, "", Some((17, "demo")))],
@@ -756,7 +756,7 @@ fn country_groups_faction_names_keep_content_unavailable_reason_without_hiding_l
     )
     .unwrap();
     let scan = super::scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
-    let mut localisation = installed_content::localisation::Localisation::default();
+    let mut localisation = installed_content_localisation::localisation::Localisation::default();
     localisation.language = "english".into();
     let factions = scan.faction_groups(
         Err("Faction naming content is unavailable".into()),
@@ -781,7 +781,7 @@ fn country_groups_date_war_starts_and_capitulations_as_the_engine_does() {
         // GER's side (9001) started a war with FRA (44) at hour 100; GER is listed second.
         *frame.tables[TableId::WarRelations.index()] =
             TableView::Complete(TableRows::WarRelations(vec![
-                replay::rows::WarRelationRow {
+                replay_data::rows::WarRelationRow {
                     first_country: 44,
                     second_country: 9001,
                     start_hour: 100,
@@ -791,7 +791,7 @@ fn country_groups_date_war_starts_and_capitulations_as_the_engine_does() {
             ]));
         *frame.tables[TableId::Capitulation.index()] =
             TableView::Complete(TableRows::Capitulation(vec![
-                replay::rows::CapitulationRow {
+                replay_data::rows::CapitulationRow {
                     country: 44,
                     capitulated: u8::from(capitulated),
                     capitulated_hour: 101,
@@ -1087,7 +1087,7 @@ fn inherited_group_cache_recomputes_trailing_coverage_when_only_bounds_change() 
     )
     .unwrap();
     let mut next = first.append(&[]).unwrap();
-    next.gaps.push(replay::branches::Gap {
+    next.gaps.push(replay_frame::branches::Gap {
         branch: 1,
         first_hour: 101,
         last_hour: 105,
@@ -1239,7 +1239,7 @@ fn cached_group_scan_honours_cancellation_and_stops_members_of_unlisted_factions
     // Daily member rows can remain held after their faction disappears.
     *dissolved.tables[TableId::FactionMembers.index()] =
         TableView::Complete(TableRows::FactionMembers(vec![
-            replay::rows::FactionMemberRow {
+            replay_data::rows::FactionMemberRow {
                 country: 9001,
                 faction: 7,
                 ordinal: 0,
@@ -1296,7 +1296,7 @@ fn country_groups_non_utf8_name_operands_preserve_bytes_and_refuse_display() {
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
     let scan = scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
     assert_eq!(scan.faction_name_operands(7, 100).unwrap().literal, [0xff]);
-    let mut localisation = installed_content::localisation::Localisation::default();
+    let mut localisation = installed_content_localisation::localisation::Localisation::default();
     localisation.language = "english".into();
     assert!(
         scan.resolved_faction_name_at(
@@ -1407,8 +1407,8 @@ fn country_groups_faction_names_keep_all_changes_or_refuse_the_complete_reply() 
 
 #[test]
 fn country_groups_faction_literals_refuse_a_different_viewer_language() {
-    let templates = installed_content::faction_templates::Catalog::default();
-    let mut localisation = installed_content::localisation::Localisation::default();
+    let templates = installed_content_core::faction_templates::Catalog::default();
+    let mut localisation = installed_content_localisation::localisation::Localisation::default();
     localisation.language = "french".into();
     let factions = named_factions(
         vec![template_frame(100, "My Pact", None)],
@@ -1500,8 +1500,8 @@ fn country_groups_faction_names_do_not_start_lifetime_on_an_unread_roster() {
     *first.tables[TableId::FactionMembers.index()] = TableView::Unavailable {
         reason: "missing".into(),
     };
-    let templates = installed_content::faction_templates::Catalog::default();
-    let mut localisation = installed_content::localisation::Localisation::default();
+    let templates = installed_content_core::faction_templates::Catalog::default();
+    let mut localisation = installed_content_localisation::localisation::Localisation::default();
     localisation.language = "english".into();
     let factions = named_factions(
         vec![first, template_frame(101, "Later name", None)],
@@ -1529,14 +1529,14 @@ fn faction_source(frame: DecodedFrame) -> crate::Source {
 
 #[test]
 fn country_groups_literal_names_do_not_resolve_content_but_check_viewer_language() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{ContentOptions, LoadContext, Product};
     let (_, folder) = crate::catalogue::tests::folder_catalogue(&[]);
     std::fs::write(folder.0.join("settings.txt"), "language=\"l_french\"").unwrap();
     let context = LoadContext {
         content: Some(ContentOptions {
-            options: installed_content::ResolveOptions {
+            options: installed_content_core::ResolveOptions {
                 game_dir: folder.0.join("unavailable-game"),
                 user_dir: folder.0.clone(),
                 cache_dir: folder.0.join("cache"),
@@ -1577,7 +1577,7 @@ fn country_groups_literal_names_do_not_resolve_content_but_check_viewer_language
 
 #[test]
 fn country_groups_template_names_ignore_gfx_failures_and_unrelated_warnings() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{ContentOptions, LoadContext, Product};
     use std::sync::Arc;
@@ -1597,24 +1597,24 @@ fn country_groups_template_names_ignore_gfx_failures_and_unrelated_warnings() {
         ("interface/test.gfx", "spriteTypes={}"),
         ("settings.txt", "language=\"l_english\""),
     ]);
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
-    let content = Arc::new(installed_content::content::ResolvedContent {
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+    let content = Arc::new(installed_content_core::content::ResolvedContent {
         layers,
         stats: Default::default(),
     });
     let template_warnings = content.layers.faction_templates().unwrap().warnings.clone();
     assert!(!template_warnings.is_empty());
     assert!(
-        !installed_content::localisation::read(&content.layers, "english")
+        !installed_content_localisation::localisation::read(&content.layers, "english")
             .unwrap()
             .logged
             .is_empty()
     );
     // A verified interface file changed: the full catalogue must fail to read it.
     std::fs::write(folder.0.join("interface/test.gfx"), "changed").unwrap();
-    assert!(installed_content::gfx::read(&content.layers).is_err());
+    assert!(installed_content_gfx::gfx::read(&content.layers).is_err());
     let options = ContentOptions {
-        options: installed_content::ResolveOptions {
+        options: installed_content_core::ResolveOptions {
             game_dir: folder.0.clone(),
             user_dir: folder.0.clone(),
             cache_dir: folder.0.join("cache"),
@@ -1808,7 +1808,7 @@ fn country_groups_faction_names_bound_tokens_follow_each_dictionary_read() {
                 &mut *frame.tables[TableId::LexicalTokens.index()]
                 && let Some(token) = token
             {
-                rows.push(replay::rows::LexicalTokenRow {
+                rows.push(replay_data::rows::LexicalTokenRow {
                     token,
                     literal: b"17".to_vec(),
                 });
@@ -1934,7 +1934,7 @@ fn the_cached_group_scan_supplies_dated_names_rosters_and_country_read_spans_tog
 }
 
 fn five_thousand_country_frame(members: bool) -> DecodedFrame {
-    use replay::rows::{CountryLinkRow, CountryRow};
+    use replay_data::{rows::CountryLinkRow, rows::CountryRow};
     let ids: Vec<_> = (1..=5000).collect();
     let factions = [(77, "Recorded pact", ids.as_slice())];
     let mut frame = group_frame(100, &[], if members { &factions } else { &[] }, &[]);
@@ -1971,7 +1971,7 @@ fn faction_roster_history_keeps_more_than_two_million_recorded_members() {
             let mut frame = template.clone();
             frame.hour = 100 + index;
             *frame.tables[TableId::Factions.index()] =
-                TableView::Complete(TableRows::Factions(vec![replay::rows::FactionRow {
+                TableView::Complete(TableRows::Factions(vec![replay_data::rows::FactionRow {
                     id: 77,
                     name: format!("Recorded name {index}").into_bytes(),
                     ..Default::default()
@@ -2054,7 +2054,7 @@ fn country_groups_unread_countries_do_not_attribute_events_changes_or_unmapped_i
         }
         *frame.tables[TableId::Capitulation.index()] =
             TableView::Complete(TableRows::Capitulation(vec![
-                replay::rows::CapitulationRow {
+                replay_data::rows::CapitulationRow {
                     country: 9001,
                     capitulated: 1,
                     capitulated_hour: 101,
@@ -2149,10 +2149,10 @@ fn faction_names_and_rosters_share_catalogue_reads_without_inventing_lifetimes()
     .unwrap();
     let scan = super::scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
     let history = scan.faction_history(&AtomicBool::new(false)).unwrap();
-    let mut localisation = installed_content::localisation::Localisation::default();
+    let mut localisation = installed_content_localisation::localisation::Localisation::default();
     localisation.language = "english".into();
     let factions = scan.faction_groups(
-        Ok(&installed_content::faction_templates::Catalog::default()),
+        Ok(&installed_content_core::faction_templates::Catalog::default()),
         &localisation,
         "english",
         &mut crate::catalogue::Refusals::default(),
@@ -2199,7 +2199,7 @@ fn faction_names_and_rosters_share_catalogue_reads_without_inventing_lifetimes()
     let history_names = super::name_runs(
         77,
         &history.names[&77],
-        Ok(&installed_content::faction_templates::Catalog::default()),
+        Ok(&installed_content_core::faction_templates::Catalog::default()),
         &localisation,
         "english",
         &mut crate::catalogue::Refusals::default(),
@@ -2593,26 +2593,27 @@ fn prepared_groups_snapshot_grows_with_dictionary_changes_not_repeated_reads() {
         "demo={name={localization_key=NAME ID=token:17}}",
     );
     let localisation = crate::catalogue::tests::loaded("l_english:\n NAME:0 \"Pact $ID$\"\n");
-    let frame =
-        |hour, additions: &[(u32, &[u8])]| {
-            let mut frame = template_frame(hour, "", Some((17, "demo")));
-            if let TableView::Complete(TableRows::LexicalTokens(rows)) =
-                &mut *frame.tables[TableId::LexicalTokens.index()]
-            {
-                rows.extend((1_000..1_512).map(|token| replay::rows::LexicalTokenRow {
+    let frame = |hour, additions: &[(u32, &[u8])]| {
+        let mut frame = template_frame(hour, "", Some((17, "demo")));
+        if let TableView::Complete(TableRows::LexicalTokens(rows)) =
+            &mut *frame.tables[TableId::LexicalTokens.index()]
+        {
+            rows.extend(
+                (1_000..1_512).map(|token| replay_data::rows::LexicalTokenRow {
                     token,
                     literal: format!("synthetic_dictionary_entry_{token}").into_bytes(),
-                }));
-                rows.extend(additions.iter().map(|(token, literal)| {
-                    replay::rows::LexicalTokenRow {
-                        token: *token,
-                        literal: literal.to_vec(),
-                    }
-                }));
-                rows.sort_by_key(|row| row.token);
-            }
-            frame
-        };
+                }),
+            );
+            rows.extend(additions.iter().map(|(token, literal)| {
+                replay_data::rows::LexicalTokenRow {
+                    token: *token,
+                    literal: literal.to_vec(),
+                }
+            }));
+            rows.sort_by_key(|row| row.token);
+        }
+        frame
+    };
     let mut frames: Vec<_> = (100..228).map(|hour| frame(hour, &[(31, b"17")])).collect();
     frames.push(frame(228, &[(31, b"other"), (47, b"17")]));
     frames.push(frame(229, &[(47, b"17"), (55, b"17")]));
@@ -2927,7 +2928,7 @@ fn group_changes_keep_quiet_hours_and_closed_history_flat_and_capitulations_skip
     changed.hour += 1;
     *changed.tables[TableId::Capitulation.index()] =
         TableView::Complete(TableRows::Capitulation(vec![
-            replay::rows::CapitulationRow {
+            replay_data::rows::CapitulationRow {
                 country: 44,
                 capitulated: 1,
                 capitulated_hour: 101,
@@ -3094,7 +3095,7 @@ fn group_faction_literal_change_reuses_five_thousand_members_and_preserves_roste
             *first.tables[TableId::Capitulation.index()] =
                 TableView::Complete(TableRows::Capitulation(vec![]));
             *first.tables[TableId::Factions.index()] =
-                TableView::Complete(TableRows::Factions(vec![replay::rows::FactionRow {
+                TableView::Complete(TableRows::Factions(vec![replay_data::rows::FactionRow {
                     id: 77,
                     name: b"Before".to_vec(),
                     ..Default::default()
@@ -3102,7 +3103,7 @@ fn group_faction_literal_change_reuses_five_thousand_members_and_preserves_roste
             *first.tables[TableId::FactionMembers.index()] =
                 TableView::Complete(TableRows::FactionMembers(
                     (0..countries)
-                        .map(|index| replay::rows::FactionMemberRow {
+                        .map(|index| replay_data::rows::FactionMemberRow {
                             country: 100_000 + index as u32,
                             faction: 77,
                             ordinal: index as u32,
@@ -3263,7 +3264,7 @@ fn group_dictionary_change_revisits_only_current_templates_and_skips_five_thousa
             let mut first = crate::test_fixtures::scale_frame(1, 100, countries as u32);
             *first.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(
                 (0..countries)
-                    .map(|index| replay::rows::FactionRow {
+                    .map(|index| replay_data::rows::FactionRow {
                         id: index as u64 + 1,
                         name: if index == countries - 1 {
                             vec![]
@@ -3278,7 +3279,7 @@ fn group_dictionary_change_revisits_only_current_templates_and_skips_five_thousa
             *first.tables[TableId::FactionMembers.index()] =
                 TableView::Complete(TableRows::FactionMembers(
                     (0..countries)
-                        .map(|index| replay::rows::FactionMemberRow {
+                        .map(|index| replay_data::rows::FactionMemberRow {
                             country: 100_000 + index as u32,
                             faction: index as u64 + 1,
                             ordinal: 0,
@@ -3287,7 +3288,7 @@ fn group_dictionary_change_revisits_only_current_templates_and_skips_five_thousa
                 ));
             *first.tables[TableId::LexicalTokens.index()] =
                 TableView::Complete(TableRows::LexicalTokens(vec![
-                    replay::rows::LexicalTokenRow {
+                    replay_data::rows::LexicalTokenRow {
                         token: 9,
                         literal: b"mod_template".to_vec(),
                     },
@@ -3408,7 +3409,7 @@ fn group_projected_holder_change_reads_only_changed_country_operands() {
     assert_eq!(
         scan.continuation.work.row_visits - before.row_visits,
         renamed
-            .complete::<replay::rows::tables::Countries>()
+            .complete::<replay_data::rows::tables::Countries>()
             .unwrap()
             .len(),
         "unchanged native links and membership tables stay unread"
@@ -3573,7 +3574,7 @@ fn restored_group_scan_saves_what_continuous_observation_saves() {
             let mut frame = template_frame(hour, "", Some((17, "demo")));
             *frame.tables[TableId::LexicalTokens.index()] =
                 TableView::Complete(TableRows::LexicalTokens(vec![
-                    replay::rows::LexicalTokenRow {
+                    replay_data::rows::LexicalTokenRow {
                         token: 3,
                         literal: b"other".to_vec(),
                     },

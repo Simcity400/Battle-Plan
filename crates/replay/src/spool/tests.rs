@@ -716,10 +716,10 @@ fn terminal_capture_during_spool_write_never_promotes_the_inflight_record() {
         fn drop(&mut self) {
             CAPTURE_STOPPED.set(false);
             STOP_AT_START.set(false);
-            engine::allocation::set_stop_hook(None);
+            engine_allocation::set_stop_hook(None);
         }
     }
-    engine::allocation::set_stop_hook(Some(|| CAPTURE_STOPPED.get()));
+    engine_allocation::set_stop_hook(Some(|| CAPTURE_STOPPED.get()));
     let _stop_hook = StopHook;
     for (fault, stop_at_start) in [
         (None, false),
@@ -943,8 +943,7 @@ fn encoded_frames_keep_their_buffer_and_match_the_existing_record_bytes() {
         let source = frame(10, keyframe);
         let expected = encode_record(&Record::Frame(source.clone())).unwrap();
         let prepared = source.encoded().unwrap();
-        let pointer = prepared.bytes.as_ptr();
-        let capacity = prepared.bytes.capacity();
+        let (pointer, capacity) = prepared.record_storage();
         let actual = encode_frame_record(prepared).unwrap();
         assert_eq!(actual, expected);
         assert_eq!(actual.as_ptr(), pointer);
@@ -1304,3 +1303,4 @@ fn periodic_syncs_reuse_one_persistent_durability_thread() {
     ));
     fs::remove_dir_all(directory).unwrap();
 }
+use replay_data::FORMAT_VERSION;

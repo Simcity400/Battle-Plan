@@ -5,8 +5,9 @@
 //! An empty description adds nothing.
 use std::collections::{BTreeMap, BTreeSet};
 
-use installed_content::localisation::Localisation;
-use replay::{frame::DecodedFrame, rows::tables};
+use installed_content_localisation::localisation::Localisation;
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 use viewer_foundation::tooltip_text::{TextIcons, builtin, tooltip_keys};
 
 use super::super::{content::Content, modifier_text::Block};
@@ -50,7 +51,7 @@ pub(super) fn describe(
     definitions: &Definitions<'_>,
     icons: &dyn TextIcons,
     loc: &Localisation,
-    modifiers: &replay::rows::ProvinceWeatherModifiers,
+    modifiers: &replay_data::rows::ProvinceWeatherModifiers,
 ) -> Result<String, String> {
     let block = Block {
         values: modifiers

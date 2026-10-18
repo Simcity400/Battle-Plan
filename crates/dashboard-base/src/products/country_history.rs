@@ -3,17 +3,17 @@
 use super::country_groups::HourSpan;
 use super::country_measure::Measure;
 use crate::metadata::{CountryKeys, IdentityTrack, link_slot};
-use replay::rows::{CountryLinkRow, CountryRow};
+use replay_data::{rows::CountryLinkRow, rows::CountryRow};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::{
     Source,
     metadata::{TaggedCountry, tagged_countries, tagged_countries_indexed, validate_campaign},
 };
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder, SharedView, ViewIdentity},
-    rows::{TableId, tables},
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::tables};
+use replay_frame::{
+    frame::DecodedFrame, frame::FrameDecoder, frame::SharedView, frame::ViewIdentity,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -673,7 +673,7 @@ impl HistoryScan {
     pub fn native_tag(
         &self,
         hour: i32,
-        country: replay::event_feed_rows::EventFeedCountry,
+        country: replay_data::event_feed_rows::EventFeedCountry,
     ) -> Option<String> {
         self.witnesses.tag(hour, country)
     }
@@ -724,7 +724,7 @@ impl HistoryScan {
         changes: Option<&crate::prepared::frame_changes::FrameChanges>,
         mut observed: impl FnMut(&str, Option<i64>, bool),
     ) {
-        let _cpu = replay::cpu::scope("identities-read", None);
+        let _cpu = replay_frame::cpu::scope("identities-read", None);
         self.witnesses.observe(frame, changes);
         let contiguous = self.hour.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
         let previous_hour = self.hour;
@@ -1416,8 +1416,8 @@ mod tests {
         drop(scope);
     }
     use crate::test_fixtures::{CAMPAIGN, records, source};
-    use replay::frame::{DecodedFrame, TableView};
-    use replay::rows::{CountryCounterInputRow, TableRows};
+    use replay_data::{rows::CountryCounterInputRow, rows::TableRows};
+    use replay_frame::{frame::DecodedFrame, frame::TableView};
 
     fn opened(branches: &[(u64, Vec<DecodedFrame>)]) -> Source {
         let records: Vec<_> = branches
@@ -1463,7 +1463,7 @@ mod tests {
     #[test]
     fn country_history_shared_changes_keep_skipped_spans_resume_append_and_counter_proofs_exact() {
         use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let mut prepared = HistoryScan::new(true, &[]);
         let mut oracle = HistoryScan::new(true, &[]);
         let mut tracker = FrameChangeTracker::new();
@@ -1508,7 +1508,7 @@ mod tests {
             frame_changes::FrameChangeTracker,
             observer_tests::{self, Work},
         };
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         for history in [1, 100] {
             let work = observer_tests::scaled_work(10, |hours| {
                 let mut prepared = HistoryScan::new(true, &[]);
@@ -1544,7 +1544,7 @@ mod tests {
     #[test]
     fn country_history_one_changed_counter_emits_one_key_without_visiting_closed_aliases() {
         use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let work = observer_tests::scaled_work(10, |history| {
             let mut prepared = HistoryScan::new(true, &[]);
             let mut oracle = HistoryScan::new(true, &[]);
@@ -1598,7 +1598,7 @@ mod tests {
     #[test]
     fn country_history_country_operand_refresh_reuses_link_map_and_rebuilds_after_resume() {
         use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let mut prepared = HistoryScan::new(true, &[]);
         let mut oracle = HistoryScan::new(true, &[]);
         let mut tracker = FrameChangeTracker::new();
@@ -1662,7 +1662,7 @@ mod tests {
     #[test]
     fn country_history_sparse_counter_refresh_visits_only_its_current_holders() {
         use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let mut frame = crate::test_fixtures::scale_frame(1, 100, 64);
         frame.metrics = Default::default();
         *frame.tables[TableId::CountryCounterInputs.index()] =
@@ -1735,7 +1735,7 @@ mod tests {
             frame_changes::FrameChangeTracker,
             observer_tests::{self, Work},
         };
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let mut frame = crate::test_fixtures::scale_frame(1, 100, 5_000);
         let counts = frame
             .complete::<tables::Countries>()
@@ -1992,7 +1992,7 @@ mod tests {
     /// `count` countries at hour 100 with their counter rows (and one whose
     /// country no link resolves) and gains, every witness table read.
     fn quiet_base(count: u32) -> DecodedFrame {
-        use replay::rows::CountryExperienceGainRow;
+        use replay_data::rows::CountryExperienceGainRow;
         let mut frame = crate::test_fixtures::scale_frame(1, 100, count);
         *frame.tables[TableId::CountryCounterInputs.index()] =
             TableView::Complete(TableRows::CountryCounterInputs(
@@ -2052,7 +2052,7 @@ mod tests {
     /// does, although counter counts move every hour and a gain read is
     /// missing in between.
     fn quiet_steps_equal_hourly_observation(count: u32) {
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let mut tracker = crate::prepared::frame_changes::FrameChangeTracker::new();
         let mut frame = quiet_base(count);
         let changes = tracker.observe(&frame, format);
@@ -2078,7 +2078,7 @@ mod tests {
             serde_json::to_vec(&hourly).unwrap()
         );
         assert!(hourly.out.unreadable_territory > 0);
-        let actor = replay::event_feed_rows::EventFeedCountry {
+        let actor = replay_data::event_feed_rows::EventFeedCountry {
             reference: 100_000,
             id: 100_000,
             instance: 7,
@@ -2103,7 +2103,7 @@ mod tests {
     /// and is not stepped, while unread hours still are.
     #[test]
     fn country_history_stale_witnesses_refuse_a_quiet_read_hour() {
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let mut tracker = crate::prepared::frame_changes::FrameChangeTracker::new();
         let base = quiet_base(3);
         let mut scan = HistoryScan::new(false, &[]);

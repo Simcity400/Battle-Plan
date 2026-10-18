@@ -75,12 +75,12 @@ use crate::{
     sampled_verify::Check,
     table_capture::grow_vec,
 };
-use engine::{
-    Memory, allocation, ccountry,
-    cpolitical_party::{self, LeaderRow, Row as PartyRow},
-    cpolitical_status::{self, Fresh, FreshIdeas, FreshParties, IdeaRow},
-    memory::{RecordField, RecordLayout, RecordSources},
-    walk::{Buffer, Outcome},
+use engine_allocation as allocation;
+use engine_native::{
+    Memory, ccountry, cpolitical_party, cpolitical_party::LeaderRow,
+    cpolitical_party::Row as PartyRow, cpolitical_status, cpolitical_status::Fresh,
+    cpolitical_status::FreshIdeas, cpolitical_status::FreshParties, cpolitical_status::IdeaRow,
+    memory::RecordField, memory::RecordLayout, memory::RecordSources, walk::Buffer, walk::Outcome,
 };
 use std::ops::Range;
 

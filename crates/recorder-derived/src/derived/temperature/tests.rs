@@ -1,9 +1,10 @@
 use super::*;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{ProvinceTemperature, TableId, TableRows, TemperaturePass},
-    temperature::{self, PERIOD_DEFAULT_DATE, Period, Province, Settings, State},
+use replay_data::{
+    rows::ProvinceTemperature, rows::TableId, rows::TableRows, rows::TemperaturePass, temperature,
+    temperature::PERIOD_DEFAULT_DATE, temperature::Period, temperature::Province,
+    temperature::Settings, temperature::State,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 
 const HOUR: i32 = 43_800_000 + 1936 * 8_760 + 100 * 24;
 

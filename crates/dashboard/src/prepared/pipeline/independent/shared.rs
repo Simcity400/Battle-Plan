@@ -75,11 +75,10 @@
 
 use crate::prepared::prepass;
 use dashboard_base::prepared::priority::{JobPriority, Level};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, RecordedFrame as Frame, TABLE_COUNT},
-    rows::TableId,
-};
+use replay::container::Replay;
+use replay_data::rows::TABLE_COUNT;
+use replay_data::rows::TableId;
+use replay_frame::{frame::DecodedFrame, frame::RecordedFrame as Frame};
 use std::{
     collections::BTreeMap,
     io,
@@ -351,7 +350,7 @@ impl Inner {
     /// when no family wants the block any more, and what it decoded is
     /// released unkept.
     fn read(&self, block: usize) -> Ended {
-        let _cpu = ::replay::cpu::scope("decode", Some("shared read"));
+        let _cpu = ::replay_frame::cpu::scope("decode", Some("shared read"));
         let started = Instant::now();
         let index = &self.replay.index[block];
         let (tables, chosen) = self.selection(&self.lock(), block);
@@ -1045,7 +1044,7 @@ mod tests {
         let replay = recording(1);
         let index = &replay.index[0];
         let table = TableId::Countries;
-        let before = replay::cpu::delta_copies()[table.index()];
+        let before = replay_frame::cpu::delta_copies()[table.index()];
         let mut expected = None;
         replay
             .read_block_alone(
@@ -1058,10 +1057,10 @@ mod tests {
                 || Ok(()),
             )
             .unwrap();
-        let retained = replay::cpu::delta_copies()[table.index()];
+        let retained = replay_frame::cpu::delta_copies()[table.index()];
         assert_eq!([retained[0] - before[0], retained[1] - before[1]], [3, 3]);
         let final_frame = read_last(&replay, index, &[table]).unwrap();
-        assert_eq!(replay::cpu::delta_copies()[table.index()], retained);
+        assert_eq!(replay_frame::cpu::delta_copies()[table.index()], retained);
         assert_eq!(final_frame, expected);
         let sampled = |frame: &Option<DecodedFrame>| {
             frame

@@ -1,5 +1,5 @@
 use super::*;
-use installed_content::province_graph::{Crossing, ProvinceGraph};
+use installed_content_core::{province_graph::Crossing, province_graph::ProvinceGraph};
 use viewer_foundation::map::ribbon_content::ArrowType;
 
 /// Raw links: 10 and 11 are the viewed country (slot 1), 20 another (slot 2), 30 a third.
@@ -600,7 +600,7 @@ fn trade_search_visits_provinces_and_inserts_crossings_instead_of_region_waypoin
         ],
         &[],
     );
-    let geography = installed_content::province_geometry::ProvinceGeometry {
+    let geography = installed_content_core::province_geometry::ProvinceGeometry {
         width: 100,
         height: 100,
         centroids: (1..=6).map(|p| (p, [p as i32 * 10, 0])).collect(),
@@ -669,7 +669,7 @@ fn trade_search_visits_provinces_and_inserts_crossings_instead_of_region_waypoin
     restricted.crossings.insert(
         (3, 5),
         Crossing {
-            kind: installed_content::adjacencies::SEA_CROSSING,
+            kind: installed_content_core::adjacencies::SEA_CROSSING,
             through: 9,
             rule: None,
         },

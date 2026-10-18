@@ -12,7 +12,7 @@ use crate::{
     codec::{Decoder, invalid_static as invalid},
     value::{Value, value_struct},
 };
-use engine::allocation;
+use engine_allocation as allocation;
 use std::io;
 
 /// The event families, in the order of [`MapEventsRow::health`] and their payload tags.

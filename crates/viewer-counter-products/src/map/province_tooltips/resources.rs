@@ -25,7 +25,7 @@
 //! recorded factor, and the sixth wherever the state holds temporary resources.
 
 use super::{Context, line};
-use installed_content::localisation::{Argument as Arg, Localisation};
+use installed_content_localisation::{localisation::Argument as Arg, localisation::Localisation};
 use viewer_foundation::{
     resource_origins::{self, Hour, whole},
     tooltip_text::Tooltip,

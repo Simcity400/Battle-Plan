@@ -6,7 +6,8 @@
 use std::path::PathBuf;
 use std::{cell::RefCell, collections::BTreeMap, collections::BTreeSet, io, sync::Arc};
 
-use installed_content::{ResolvedLayers, image::native::Decode, pdxshader};
+use installed_content_core::{ResolvedLayers, pdxshader};
+use installed_content_image::native::Decode;
 
 /// Renderer globals use the client force_pow2_textures setting. File textures can pad; generated
 /// textures retain their own dimensions.
@@ -200,8 +201,8 @@ fn passes_with(read: &dyn Fn(&str) -> io::Result<Vec<u8>>) -> io::Result<Vec<(St
         .collect();
     // Resolve arrow and arrowText effects from this descriptor through the content stack.
     let path = "gfx/maparrows/maparrows.txt";
-    let document = installed_content::parser::parse(&read(path)?)?;
-    let effect = |items: &[installed_content::parser::Item], kind: &str| -> io::Result<String> {
+    let document = installed_content_core::parser::parse(&read(path)?)?;
+    let effect = |items: &[installed_content_core::parser::Item], kind: &str| -> io::Result<String> {
         let value = items.iter().rev().find(|item| item.key.as_deref().is_some_and(|key| key.eq_ignore_ascii_case(b"effect")))
             .and_then(|item| item.value.scalar())
             .ok_or_else(|| invalid(format!("{path}: {kind} has no scalar effect; shader source audit cannot establish its source")))?;
@@ -277,7 +278,9 @@ mod tests {
     #[test]
     #[ignore = "reads the installed game's shaders; set BATTLE_PLAN_GAME_DIR"]
     fn installed_map_passes_point_sample_the_light_table() {
-        use installed_content::pdxshader::program::{self, Filter, Stage};
+        use installed_content_core::{
+            pdxshader::program, pdxshader::program::Filter, pdxshader::program::Stage,
+        };
         let root = PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).unwrap());
         let layers = ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
         let point = |sampler: &program::Sampler| {
@@ -332,7 +335,7 @@ mod tests {
 
     #[test]
     fn compatibility_policy3_shader_sources_keep_the_uncovered_read_note() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let layers = ResolvedLayers::from_folders_with_coverage_policy(&[], 3).unwrap();
         let files = [
@@ -367,7 +370,7 @@ mod tests {
 
     #[test]
     fn recursive_shared_include_counts_all_passes_once_and_names_files() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let base = [
             ("root", "Includes = { \"a.fxh\" }"),
@@ -394,7 +397,7 @@ mod tests {
 
     #[test]
     fn all_compiled_passes_report_changes_without_a_vanilla_only_gate() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let base = [
             ("root", "Includes = { \"shared.fxh\" }"),
@@ -425,7 +428,7 @@ mod tests {
 
     #[test]
     fn removed_and_added_dependencies_and_hard_errors_are_not_silent() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let base = [
             ("root", "Includes = { \"old.fxh\" }"),

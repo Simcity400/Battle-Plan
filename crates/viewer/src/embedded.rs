@@ -52,7 +52,7 @@ const SUBCLASS_ID: usize = 0x484f4934;
 pub struct Seek {
     pub path: PathBuf,
     pub revision: String,
-    pub branch: replay::BranchId,
+    pub branch: replay_data::BranchId,
     pub hour: i32,
     pub playback: Option<dashboard::protocol::MapPlayback>,
 }
@@ -562,42 +562,44 @@ impl Parent {
                         .map_order
                         .pop_front()
                         .and_then(|id| outgoing.maps.remove(&id));
-                    let events = [
-                        outgoing
-                            .details
-                            .take()
-                            .map(|details| NativeEvent::MapDetails { details }),
-                        outgoing
-                            .ready
-                            .take()
-                            .map(|hwnd| NativeEvent::Ready { hwnd }),
-                        outgoing.state.take().map(ReportedState::into_event),
-                        outgoing
-                            .error
-                            .take()
-                            .map(|message| NativeEvent::Error { message }),
-                        map.map(|state| NativeEvent::MapStates {
-                            states: vec![state],
-                        }),
-                        outgoing
-                            .data
-                            .pop_front()
-                            .map(|response| NativeEvent::Data { response }),
-                        outgoing.take_toggle_diagnostics(),
-                        outgoing.take_camera_mode(),
-                        outgoing.fly_aircraft.take().map(|status| {
-                            NativeEvent::FlyAircraft {
-                                aircraft: status.aircraft,
-                                state: status.state,
-                            }
-                        }),
-                        outgoing.view_options.pop_first().map(|(view_id, options)| {
-                            NativeEvent::MapOptions { view_id, options }
-                        }),
-                        outgoing.view_toggles.pop_front().map(|(view_id, toggle)| {
-                            NativeEvent::MapToggle { view_id, toggle }
-                        }),
-                    ];
+                    let events =
+                        [
+                            outgoing
+                                .details
+                                .take()
+                                .map(|details| NativeEvent::MapDetails { details }),
+                            outgoing
+                                .ready
+                                .take()
+                                .map(|hwnd| NativeEvent::Ready { hwnd }),
+                            outgoing.state.take().map(ReportedState::into_event),
+                            outgoing
+                                .error
+                                .take()
+                                .map(|message| NativeEvent::Error { message }),
+                            map.map(|state| NativeEvent::MapStates {
+                                states: vec![state],
+                            }),
+                            outgoing
+                                .data
+                                .pop_front()
+                                .map(|response| NativeEvent::Data { response }),
+                            outgoing.take_toggle_diagnostics(),
+                            outgoing.take_camera_mode(),
+                            outgoing
+                                .fly_aircraft
+                                .take()
+                                .map(|status| NativeEvent::FlyAircraft {
+                                    aircraft: status.aircraft,
+                                    state: status.state,
+                                }),
+                            outgoing.view_options.pop_first().map(|(view_id, options)| {
+                                NativeEvent::MapOptions { view_id, options }
+                            }),
+                            outgoing.view_toggles.pop_front().map(|(view_id, toggle)| {
+                                NativeEvent::MapToggle { view_id, toggle }
+                            }),
+                        ];
                     drop(outgoing);
                     output.output_space.notify_all();
                     for event in events.into_iter().flatten() {
@@ -1358,7 +1360,9 @@ mod tests {
     /// action.
     #[test]
     fn controller_messages_wait_merged_and_camera_modes_reach_the_map() {
-        use dashboard::protocol::{CameraMode, GamepadButton, GamepadOwner, GamepadState, MapAction};
+        use dashboard::protocol::{
+            CameraMode, GamepadButton, GamepadOwner, GamepadState, MapAction,
+        };
         let owner = GamepadOwner {
             viewer: 1,
             handoff: 4,

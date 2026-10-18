@@ -19,7 +19,8 @@
 
 use super::engaged::{self, Engaged, Side};
 use crate::map::tables::rows;
-use replay::{BranchId, Hour, frame::DecodedFrame, rows::tables};
+use replay_data::{BranchId, Hour, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 
 /// How many mismatches the published summary keeps and a line names.
@@ -237,10 +238,11 @@ impl ByteCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{CountryLinkRow, NavalCombatDetailsRow, PlayerRow, TableId, TableRows},
+    use replay_data::{
+        rows::CountryLinkRow, rows::NavalCombatDetailsRow, rows::PlayerRow, rows::TableId,
+        rows::TableRows,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     fn frame(players: &[u32], bytes: [u8; 2]) -> DecodedFrame {
         let mut frame = DecodedFrame {
@@ -275,10 +277,12 @@ mod tests {
                 .collect(),
         ));
         *frame.tables[TableId::LocalPlayer.index()] =
-            TableView::Complete(TableRows::LocalPlayer(vec![replay::rows::LocalPlayerRow {
-                country: players.first().copied().unwrap_or(0),
-                observer_country: 0,
-            }]));
+            TableView::Complete(TableRows::LocalPlayer(vec![
+                replay_data::rows::LocalPlayerRow {
+                    country: players.first().copied().unwrap_or(0),
+                    observer_country: 0,
+                },
+            ]));
         let mut detail = NavalCombatDetailsRow {
             combat: 62,
             ..Default::default()
@@ -302,10 +306,12 @@ mod tests {
             (109, 105, None),
         ] {
             *frame.tables[TableId::LocalPlayer.index()] =
-                TableView::Complete(TableRows::LocalPlayer(vec![replay::rows::LocalPlayerRow {
-                    country,
-                    observer_country,
-                }]));
+                TableView::Complete(TableRows::LocalPlayer(vec![
+                    replay_data::rows::LocalPlayerRow {
+                        country,
+                        observer_country,
+                    },
+                ]));
             assert_eq!(recording_player(&frame, &links).unwrap(), expected);
             frame.hour += 1;
         }

@@ -1,13 +1,11 @@
 //! The army's synthetic frame, shared by its tests and the pipeline's.
 use super::*;
 use dashboard_base::test_fixtures::source;
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{
-        CountryLinkRow, CountryRow, DivisionCensusRow, DivisionTemplateIconRow, LexicalTokenRow,
-        TableRows, TemplateSubunit,
-    },
+use replay_data::{
+    rows::CountryLinkRow, rows::CountryRow, rows::DivisionCensusRow, rows::DivisionTemplateIconRow,
+    rows::LexicalTokenRow, rows::TableRows, rows::TemplateSubunit,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 pub fn frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1));
@@ -80,7 +78,7 @@ pub fn frame(hour: i32) -> DecodedFrame {
             logical_owner: 20,
             expeditionary_owner: 11,
             template: 5,
-            // Whole display steps (replay::display), as recorded.
+            // Whole display steps (replay_data::display), as recorded.
             hit_points: 1_230_000,
             ..Default::default()
         },

@@ -14,12 +14,12 @@ pub use super::output_continuity::holds_publication;
 use super::output_continuity::{self, Progress, Reasons, State};
 use crate::line_output::{Drained, Entry, OutputKind};
 use crate::table_conversion::unavailable;
-use engine::allocation::{owned_vec, reserve, reserve_exact, reserve_map};
-use replay::{
-    BranchId,
-    frame::{TableInput, TableView},
-    rows::{ProductionLineOutputRow, ProductionLineRow, Recorded, TableId, TableRows},
+use engine_allocation::{owned_vec, reserve, reserve_exact, reserve_map};
+use replay_data::{
+    BranchId, rows::ProductionLineOutputRow, rows::ProductionLineRow, rows::Recorded,
+    rows::TableId, rows::TableRows,
 };
+use replay_frame::{frame::TableInput, frame::TableView};
 use std::io;
 
 pub const N: usize = 2;
@@ -106,7 +106,7 @@ impl Totals {
     pub fn rocket_publication(
         &self,
         production_lines: &TableInput,
-    ) -> io::Result<Result<Vec<replay::rows::RocketProductionOutputRow>, &'static str>> {
+    ) -> io::Result<Result<Vec<replay_data::rows::RocketProductionOutputRow>, &'static str>> {
         self.rocket.publication(production_lines)
     }
     /// After a frame of this campaign was written, with whether it held the
@@ -185,9 +185,9 @@ impl Totals {
                 _ => return unavailable("ProductionLines holds another table"),
             },
             TableInput::Sampled(TableView::Unavailable { reason })
-                if reason == replay::cadence::SKIPPED_REASON =>
+                if reason == replay_data::cadence::SKIPPED_REASON =>
             {
-                return unavailable(replay::cadence::SKIPPED_REASON);
+                return unavailable(replay_data::cadence::SKIPPED_REASON);
             }
             _ => return unavailable("ProductionLines is incomplete at this hour"),
         };
@@ -235,7 +235,7 @@ impl Totals {
             }
         }
         let count = self.shared.lines.values().try_fold(0usize, |count, line| {
-            engine::allocation::add(count, line.outputs.len())
+            engine_allocation::add(count, line.outputs.len())
         })?;
         let mut rows = Vec::new();
         reserve_exact(&mut rows, count)?;
@@ -253,13 +253,13 @@ impl Totals {
                     variant: output.variant,
                     mio: output.mio,
                     units: output.units,
-                    mio_credit: replay::rows::RetiredI64::default(),
+                    mio_credit: replay_data::rows::RetiredI64::default(),
                     since_hour,
                     observed_since_creation,
                     ended: line.ended,
                     exact: output.exact && delivery_exact,
                     spent_raw: Recorded::Value(output.spent),
-                    instant_raw: Recorded::Value(replay::rows::RetiredOptionalI64::default()),
+                    instant_raw: Recorded::Value(replay_data::rows::RetiredOptionalI64::default()),
                 }
             }));
         }
@@ -316,8 +316,8 @@ fn add(lines: &mut OutputMap<Line>, entry: &Entry, hour: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::frame::TABLE_COUNT;
-    use replay::rows::{RetiredI64, RetiredOptionalI64};
+    use replay_data::rows::TABLE_COUNT;
+    use replay_data::{rows::RetiredI64, rows::RetiredOptionalI64};
 
     /// The retired instant spending every row publishes.
     fn no_instant() -> Recorded<RetiredOptionalI64> {
@@ -349,7 +349,7 @@ mod tests {
 
     fn skipped() -> TableInput {
         TableInput::Sampled(TableView::Unavailable {
-            reason: replay::cadence::SKIPPED_REASON.into(),
+            reason: replay_data::cadence::SKIPPED_REASON.into(),
         })
     }
 
@@ -585,7 +585,7 @@ mod tests {
         );
         assert_eq!(
             reason(assemble(&mut totals, 7, 120, &day, skipped())),
-            replay::cadence::SKIPPED_REASON
+            replay_data::cadence::SKIPPED_REASON
         );
         // The line switches variant; line B completes and is deleted.
         let next = frame(
@@ -877,7 +877,7 @@ mod tests {
 
     #[test]
     fn mixed_common_indices_and_unknown_delivery_preserve_spending_and_refuse_units() {
-        use engine::line_output_sites::RocketFailure;
+        use engine_production::line_output_sites::RocketFailure;
         let mut totals = Totals::default();
         let lines = [(LINE_A, TANK, ORG)];
         assemble(&mut totals, 7, 100, &frame(1, 0, &[]), census(&lines));
@@ -979,7 +979,7 @@ mod tests {
 
     #[test]
     fn short_mixed_drain_keeps_original_common_indices_and_finishes_once() {
-        use engine::line_output_sites::RocketFailure;
+        use engine_production::line_output_sites::RocketFailure;
         let mut totals = Totals::default();
         let lines = [(LINE_A, TANK, ORG)];
         assemble(&mut totals, 7, 100, &frame(1, 0, &[]), census(&lines));

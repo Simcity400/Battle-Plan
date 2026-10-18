@@ -1,11 +1,8 @@
 //! Native ship shape/projection supplied to the shared prepared parts-race flow.
 use super::*;
 use crate::products::parts_race_prepared as shared;
-use replay::{
-    format::FormatVersion,
-    frame::{DecodedFrame, FrameSource},
-    rows::TableId,
-};
+use replay_data::{format::FormatVersion, rows::TableId};
+use replay_frame::{frame::DecodedFrame, frame::FrameSource};
 use serde_json::Value;
 
 pub struct Navy;
@@ -21,7 +18,7 @@ impl shared::Family for Navy {
     type Reply = NavyReply;
     type PointContent = (
         Option<Arc<Catalogue>>,
-        Option<Arc<installed_content::unit_leader::SubUnits>>,
+        Option<Arc<installed_content_core::unit_leader::SubUnits>>,
         Vec<String>,
         Option<Arc<PartResults>>,
     );

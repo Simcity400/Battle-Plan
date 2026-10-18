@@ -38,10 +38,10 @@ typed_codec!(AirLossEventRow, 64,
   3 => (native_cause): U32, 4 => (family_base): U32,
   5 => (credited_enemy): Bool, 6 => (amount_raw): I64, 7 => (opponent): OptionalU32,
   8 => (daily_slot): U32 }, |row| {
-    if !engine::air_loss_sites::FAMILY_BASES.contains(&row.family_base)
-        || row.family_base.checked_add(row.native_cause).is_none_or(|index| index as usize >= engine::air_loss_sites::FIELD_COUNT)
+    if !engine_air_history::air_loss_sites::FAMILY_BASES.contains(&row.family_base)
+        || row.family_base.checked_add(row.native_cause).is_none_or(|index| index as usize >= engine_air_history::air_loss_sites::FIELD_COUNT)
         || row.amount_raw == 0
-        || row.daily_slot >= engine::cloop_history::DAILY_WINDOW_CAPACITY
+        || row.daily_slot >= engine_air_history::cloop_history::DAILY_WINDOW_CAPACITY
     {
         return Err(invalid("invalid air loss family, cause, amount or daily slot"));
     }
@@ -108,9 +108,9 @@ impl TryFrom<u8> for BuildingBombingDamageCause {
     }
 }
 
-impl From<engine::building_damage_sites::Cause> for BuildingBombingDamageCause {
-    fn from(cause: engine::building_damage_sites::Cause) -> Self {
-        use engine::building_damage_sites::Cause;
+impl From<engine_events::building_damage_sites::Cause> for BuildingBombingDamageCause {
+    fn from(cause: engine_events::building_damage_sites::Cause) -> Self {
+        use engine_events::building_damage_sites::Cause;
         match cause {
             Cause::Unknown => Self::Unknown,
             Cause::AirMission => Self::AirMission,
@@ -242,7 +242,7 @@ mod tests {
                 ..row.clone()
             },
             AirLossEventRow {
-                daily_slot: engine::cloop_history::DAILY_WINDOW_CAPACITY,
+                daily_slot: engine_air_history::cloop_history::DAILY_WINDOW_CAPACITY,
                 ..row.clone()
             },
         ] {

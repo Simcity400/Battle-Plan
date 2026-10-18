@@ -23,10 +23,8 @@ use std::{
     fmt, io,
 };
 
-use replay::{
-    frame::DecodedFrame,
-    rows::{RelationLinkRow, TableId, tables},
-};
+use replay_data::{rows::RelationLinkRow, rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::{
     allegiance,
@@ -35,7 +33,7 @@ use super::{
 };
 
 /// Branch, hour and viewing choice, in addition to the memo's table identities.
-pub type VisionKey = (replay::BranchId, replay::Hour, Choice);
+pub type VisionKey = (replay_data::BranchId, replay_data::Hour, Choice);
 
 /// Derive visibility only on a miss in the shared table-identity memo.
 pub fn cached_vision(

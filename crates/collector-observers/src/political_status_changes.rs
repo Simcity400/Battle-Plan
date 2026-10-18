@@ -1,6 +1,6 @@
 //! Allocation-free notifications from the native writers of the per-country
 //! politics fields the Politics walk reads every hour
-//! ([`engine::political_status_mutations`]), in two token domains: the
+//! ([`engine_mutations::political_status_mutations`]), in two token domains: the
 //! structure (capitals, last elections, election frequency and byte, ruling
 //! parties, party and idea arrays) and party popularity, which the daily update rewrites every day.
 //! A detour only moves its domains' quiet tokens, counts its site and calls
@@ -25,10 +25,11 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{
-    Memory, ccountry, cpolitical_status,
-    political_status_mutations::{Domain, MUTATIONS, Patch, SET_POPULARITY_RVA},
+use engine_mutations::{
+    political_status_mutations::Domain, political_status_mutations::MUTATIONS,
+    political_status_mutations::Patch, political_status_mutations::SET_POPULARITY_RVA,
 };
+use engine_native::{Memory, ccountry, cpolitical_status};
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -203,19 +204,19 @@ impl Drop for Guard<'_> {
 
 /// The status's last election (`cpolitical_status::LAST_ELECTION`), through a guarded read.
 fn last_election(status: usize) -> Option<i32> {
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     status
         .checked_add(cpolitical_status::LAST_ELECTION)
-        .and_then(|address| engine::read::<i32>(&memory, address))
+        .and_then(|address| engine_native::read::<i32>(&memory, address))
 }
 
 /// The country's capital (`ccountry::CAPITAL`) and original capital (`ccountry::ORIGINAL_CAPITAL`),
 /// through one guarded read.
 fn capitals(country: usize) -> Option<u64> {
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     country
         .checked_add(ccountry::CAPITAL)
-        .and_then(|address| engine::read::<u64>(&memory, address))
+        .and_then(|address| engine_native::read::<u64>(&memory, address))
 }
 
 /// One walk hour's use of the domains.
@@ -432,7 +433,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "political_status_changes")
             && MUTATIONS.iter().all(|(site, _, _)| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             SET_POPULARITY.store(base + SET_POPULARITY_RVA, Ordering::Release);

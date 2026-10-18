@@ -1,10 +1,8 @@
 //! Native per-frame flows; cumulative accounting remains in the prepared observer.
 use super::{Identity, Inputs, Terms, flow_rows, flow_token};
 use dashboard_base::prepared::query::progressive::Samples;
-use replay::{
-    frame::DecodedFrame,
-    rows::{TableId, tables},
-};
+use replay_data::{rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -66,14 +64,14 @@ impl Query {
         &self,
         frame: &DecodedFrame,
         requested: Option<&[(String, String)]>,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
     ) -> io::Result<Samples> {
-        let cpu = replay::cpu::scope_phase("trade:query_inputs");
+        let cpu = replay_frame::cpu::scope_phase("trade:query_inputs");
         let changes = self.changes.borrow_mut().observe(frame, format);
         let mut inputs = self.inputs.borrow_mut();
         inputs.refresh(frame, &changes);
         drop(cpu);
-        let _cpu = replay::cpu::scope_phase("trade:query_flows");
+        let _cpu = replay_frame::cpu::scope_phase("trade:query_flows");
         sample_inputs(frame, requested, &inputs)
     }
     #[cfg(all(test, feature = "slow-tests"))]
@@ -94,9 +92,9 @@ pub(crate) fn sample(
     inputs.refresh(
         frame,
         &dashboard_base::prepared::frame_changes::FrameChanges {
-            rows_changed: [true; replay::frame::TABLE_COUNT],
-            table_read: [true; replay::frame::TABLE_COUNT],
-            slot_read: [true; replay::frame::TABLE_COUNT],
+            rows_changed: [true; replay_data::rows::TABLE_COUNT],
+            table_read: [true; replay_data::rows::TABLE_COUNT],
+            slot_read: [true; replay_data::rows::TABLE_COUNT],
             updates: None,
         },
     );

@@ -1,6 +1,6 @@
 use super::*;
-use engine::{cgame_state, memory::SliceMemory, msvc_string};
-use replay::rows::TableSchema;
+use engine_native::{cgame_state, memory::SliceMemory, msvc_string};
+use replay_data::rows::TableSchema;
 
 const BASE: usize = 0x1000;
 const MANAGER: usize = 0x2000;
@@ -394,7 +394,7 @@ fn assert_matches_direct(split: &Captured, direct: &Captured) {
 
 #[test]
 fn session_split_copy_matches_direct_walk() {
-    use engine::memory::{CountedMemory, ReadCounts};
+    use engine_native::{memory::CountedMemory, memory::ReadCounts};
     let capacities = split_capacities();
     let bytes = fixture();
     let memory = SliceMemory {
@@ -546,7 +546,7 @@ fn session_copy_sizes_cover_documented_read_set() {
     // sub-ranges serve from the enclosing bulk span at replay (proved
     // by session_bulk_header_serves_enclosed_length_word). Alignment
     // follows the engine layout (structs 8-aligned, headers 8-aligned).
-    use engine::Memory;
+    use engine_native::Memory;
     use std::collections::BTreeSet;
     struct Recorder<'a> {
         inner: SliceMemory<'a>,

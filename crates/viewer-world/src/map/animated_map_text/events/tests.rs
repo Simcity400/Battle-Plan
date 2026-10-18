@@ -1,12 +1,11 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{
-        CountryLinkRow, CountryRow, CountryVisibilityRow, LexicalTokenRow, MapEventBuildingDamage,
-        MapEventCriticalBombardment, MapEventFamilyHealth, MapEventGeneralCapture,
-        MapEventIntelEntry, MapEventParadrop, MapEventResistance, TableId, TableRows,
-    },
+use replay_data::{
+    rows::CountryLinkRow, rows::CountryRow, rows::CountryVisibilityRow, rows::LexicalTokenRow,
+    rows::MapEventBuildingDamage, rows::MapEventCriticalBombardment, rows::MapEventFamilyHealth,
+    rows::MapEventGeneralCapture, rows::MapEventIntelEntry, rows::MapEventParadrop,
+    rows::MapEventResistance, rows::TableId, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 
 /// The hour's interval prepared for `context`'s viewer, then presented.
 fn present(

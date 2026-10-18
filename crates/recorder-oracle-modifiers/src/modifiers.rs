@@ -2,12 +2,10 @@
 //! HiredAdvisors against each country's saved `appointed_advisors`.
 
 use super::{Report, TokenNames, complete, invalid, required_country_tag};
-use installed_content::parser::c_string;
+use installed_content_core::parser::c_string;
 use installed_content_save::characters as saved;
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryRow, HiredAdvisorRow, TableId, tables},
-};
+use replay_data::{rows::CountryRow, rows::HiredAdvisorRow, rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 
 pub fn compare(
@@ -90,10 +88,10 @@ fn hired_advisors(
 ) -> io::Result<()> {
     if !report.refresh_is_current(TableId::HiredAdvisors, frame.hour) {
         report.limitation(
-            &format!("HiredAdvisors {}", replay::cadence::STAGGER_LIMITATION),
+            &format!("HiredAdvisors {}", replay_data::cadence::STAGGER_LIMITATION),
             format!(
                 "HiredAdvisors refreshes on {} (oracle hour {})",
-                replay::cadence::refresh_text(TableId::HiredAdvisors),
+                replay_data::cadence::refresh_text(TableId::HiredAdvisors),
                 frame.hour
             ),
         );
@@ -227,14 +225,12 @@ fn hired_advisors(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{ModifierDefinitionRow, TableRows},
-    };
+    use replay_data::{rows::ModifierDefinitionRow, rows::TableRows};
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     fn pack() -> saved::Pack {
         saved::parse(
-            &installed_content::parser::parse(
+            &installed_content_core::parser::parse(
                 br#"character_manager={ historical={
                     character={ id={ id=1482 type=73 } token="a" country="GER"
                         advisors={ advisor={ slot="political_advisor" idea_token="GER_a" }
@@ -377,8 +373,8 @@ mod tests {
     #[test]
     fn appointments_are_compared_at_every_hour() {
         assert_eq!(
-            replay::cadence::cadence(TableId::HiredAdvisors),
-            replay::cadence::Cadence::Hourly
+            replay_data::cadence::cadence(TableId::HiredAdvisors),
+            replay_data::cadence::Cadence::Hourly
         );
         let mut rows = frame(Vec::new());
         rows.hour += 1;

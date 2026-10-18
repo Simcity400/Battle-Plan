@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn counter_action_land_child_loads_its_authored_sprite() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let windows = NativeWindows::read(
             br#"guiTypes={containerWindowType={name=unit_counter_navy}
@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn counter_action_centred_child_keeps_the_land_layout() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let gui = native::read(
             br#"guiTypes={containerWindowType={name=unit_counter
@@ -364,7 +364,7 @@ mod tests {
 
     #[test]
     fn counter_layout_refusals_are_independent_and_do_not_abort_loading() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let source = br#"guiTypes={
             containerWindowType={name=unit_counter size={width=76 height=24}}
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn counter_templates_use_the_native_registry_and_accept_eof() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let guis = native::Guis {
             files: vec![
@@ -444,7 +444,7 @@ mod tests {
 
     #[test]
     fn counter_lookup_keeps_native_kind_and_window_local_depth() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let guis = native::Guis {
             files: vec![(
@@ -483,7 +483,7 @@ mod tests {
 
     #[test]
     fn counter_text_grid_and_ability_lookups_are_window_local() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let guis = native::Guis {
             files: vec![(
@@ -539,7 +539,7 @@ mod tests {
 
     #[test]
     fn counter_button_lookup_rejects_icon_and_checkbox_arrays() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         for kind in ["iconType", "checkboxType"] {
             let guis = native::read(format!(
@@ -561,7 +561,7 @@ mod tests {
 
     #[test]
     fn unported_counter_button_draw_forms_are_refused_by_name() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         for (field, name) in [
             ("centerPosition=yes", "centerPosition"),

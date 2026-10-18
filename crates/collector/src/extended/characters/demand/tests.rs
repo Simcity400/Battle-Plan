@@ -2,7 +2,7 @@ use super::super::{
     Captured, CharactersCopyContext, CharactersJob, Roles, census, copy_characters_growing,
 };
 use super::*;
-use engine::{cgame_state, cunit_leader_trait, memory::SliceMemory, walk::Outcome};
+use engine_native::{cgame_state, cunit_leader_trait, memory::SliceMemory, walk::Outcome};
 use std::cell::Cell;
 use std::mem::size_of;
 
@@ -241,7 +241,7 @@ fn worker_capture_grows_original_trait_observations_and_projection_at_5000_count
 
 #[test]
 fn worker_grows_5000_country_leader_maps_and_retains_prepared_demand() {
-    use engine::{ccountry_leader, character_leader_node, msvc_tree_node as node};
+    use engine_native::{ccountry_leader, character_leader_node, msvc_tree_node as node};
     let mut world = World::new();
     let mut job = CharactersJob::with_storage(1, 0, 0, false);
     let context = CharactersCopyContext {
@@ -329,7 +329,7 @@ fn worker_grows_character_unit_text_and_census_before_first_publication() {
     }
     let mut job = CharactersJob::with_storage(0, 0, 0, false);
     job.portrait_census = Some(std::sync::Arc::new(
-        engine::ccharacter_manager::PortraitCensus::try_new(0).unwrap(),
+        engine_native::ccharacter_manager::PortraitCensus::try_new(0).unwrap(),
     ));
     job.role_census = Some(std::sync::Arc::new(super::super::census::RoleCensus::new(
         0,

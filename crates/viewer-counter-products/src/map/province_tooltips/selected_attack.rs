@@ -5,7 +5,7 @@
 //! lookup); with a route each lists attack modifiers against the route's last move (from its
 //! second-to-last province, or the shared province for a one-province route), under
 //! `LAND_COMBAT_ATTACK_PROVINCE_MODIFIERS` when the list is not empty. The list is derived from the
-//! recorded inputs and the recorded content ([`replay::attack_derive`]); an entry whose operand is
+//! recorded inputs and the recorded content ([`replay_derive::attack_derive`]); an entry whose operand is
 //! missing is refused by name and the others stay. Selection, hovered target and the single
 //! retained route are viewer-local.
 use viewer_foundation::modifier_names::modifier_name_key;
@@ -17,12 +17,13 @@ use super::{
     Arg, Context, Tooltip, clock, localise,
     selection::{line, refuse},
 };
-use installed_content::unit_path::{Fact, SelectedNeighbour, StraitFleet};
-use replay::{
-    attack_derive::{self, FrameInputs, Preview, Row, Terrain},
-    frame::DecodedFrame,
-    rows::{self, TableSchema, tables},
+use installed_content_unit_path::{unit_path::Fact, unit_path::SelectedNeighbour, unit_path::StraitFleet};
+use replay_data::{rows, rows::TableSchema, rows::tables};
+use replay_derive::{
+    attack_derive, attack_derive::FrameInputs, attack_derive::Preview, attack_derive::Row,
+    attack_derive::Terrain,
 };
+use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeSet;
 use {
     crate::map::division_eta::CounterQueries,
@@ -226,14 +227,14 @@ impl attack_derive::Context for Content<'_> {
 }
 
 fn fallback_key(bytes: &[u8]) -> Fact<&str> {
-    std::str::from_utf8(installed_content::parser::c_string(bytes))
+    std::str::from_utf8(installed_content_core::parser::c_string(bytes))
         .map_err(|_| "template fallback localisation key is not UTF-8".to_owned())
 }
 
 /// Dashboard preserves the original-byte empty gate before this callback.
 /// The display-name formatter qualifies even an originally nonempty key whose C string is empty.
 fn localise_template_fallback(
-    localisation: &installed_content::localisation::Localisation,
+    localisation: &installed_content_localisation::localisation::Localisation,
     tag: &[u8],
     bytes: &[u8],
 ) -> Fact<String> {
@@ -246,7 +247,7 @@ fn localise_template_fallback(
         .and_then(|len| len.checked_add(bytes.len()))
         .ok_or("template qualified localisation key length overflow")?;
     let mut qualified = Vec::new();
-    engine::allocation::reserve_exact(&mut qualified, length).map_err(|e| e.to_string())?;
+    engine_allocation::reserve_exact(&mut qualified, length).map_err(|e| e.to_string())?;
     qualified.extend_from_slice(tag);
     qualified.push(b'_');
     qualified.extend_from_slice(bytes);
@@ -327,7 +328,7 @@ fn heading(context: &Context<'_>, template: u64) -> Fact<String> {
 /// The attack-modifier line: the kind's name, ": " and the first value as a
 /// percentage with two decimals, green when positive and red otherwise.
 fn modifier_text(name: &str, value: i64) -> String {
-    let percent = installed_content::fixed5::fixed5_percent(value, 2, true);
+    let percent = installed_content_core::fixed5::fixed5_percent(value, 2, true);
     if value > 0 {
         format!("{name}: \u{11}G+{percent}\u{11}!")
     } else {

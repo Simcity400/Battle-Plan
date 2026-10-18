@@ -2,9 +2,13 @@
 //! task forces, at the footer's display step ([`UnitSupplyInputs::STEP`]). No
 //! memory reads or names.
 
-use engine::cunit_supply_inputs::{Demand, Failure, Inputs, Origin};
-use replay::rows::{
-    DivisionSupplyFooter, Recorded, UnitSupplyDemand, UnitSupplyInputs, UnitSupplyOrigin,
+use engine_native::{
+    cunit_supply_inputs::Demand, cunit_supply_inputs::Failure, cunit_supply_inputs::Inputs,
+    cunit_supply_inputs::Origin,
+};
+use replay_data::{
+    rows::DivisionSupplyFooter, rows::Recorded, rows::UnitSupplyDemand, rows::UnitSupplyInputs,
+    rows::UnitSupplyOrigin,
 };
 
 #[derive(Default)]
@@ -80,7 +84,7 @@ pub fn project(current: Option<Inputs>, origins: Option<&[Origin]>) -> Option<Un
         airplane_demand: demand(current.airplane_demand),
         ship_demand: demand(current.ship_demand),
         origins: origins.map(|origins| {
-            engine::allocation::owned_vec(engine::allocation::collect_vec(origins.iter().map(
+            engine_allocation::owned_vec(engine_allocation::collect_vec(origins.iter().map(
                 |origin| UnitSupplyOrigin {
                     province: origin.province,
                     requested: displayed(origin.requested),

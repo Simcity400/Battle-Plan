@@ -149,15 +149,17 @@ use dashboard_text::{
     catalogue::Catalogue,
     metadata::{link_slot, mapped_slot},
 };
-use engine::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
-use installed_content::{ResolvedLayers, gfx::SpriteSet, gui::native};
+use engine_native::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
+use installed_content_core::{ResolvedLayers, gui::native};
+use installed_content_gfx::gfx::SpriteSet;
 pub use output::{ConstructionOutputRead, SpendingGap};
 use output::{OutputScan, OutputUnknown};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, SharedView, TableView},
-    rows::{BuildingConstructionRow, BuildingRow, RailwayConstructionRow, TableId, tables},
+use replay::container::Replay;
+use replay_data::{
+    rows::BuildingConstructionRow, rows::BuildingRow, rows::RailwayConstructionRow, rows::TableId,
+    rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -172,7 +174,7 @@ use ts_rs::TS;
 #[cfg(test)]
 use dashboard_text::metadata::{branch_bounds, validate_campaign};
 #[cfg(test)]
-use replay::frame::FrameDecoder;
+use replay_frame::frame::FrameDecoder;
 
 pub struct ConstructionLog;
 pub struct ConstructionLogManifest;
@@ -1114,7 +1116,7 @@ fn ended(
 /// The building a building line is watched through.
 fn building_key(row: &BuildingConstructionRow) -> Key {
     (
-        row.target_flags & engine::cbuilding_status::PROVINCE_FLAG != 0,
+        row.target_flags & engine_native::cbuilding_status::PROVINCE_FLAG != 0,
         row.target_location,
         row.building_type,
     )
@@ -1602,7 +1604,7 @@ impl Scan {
     pub(crate) fn observe_changed(
         &mut self,
         decoded: &DecodedFrame,
-        _format: replay::format::FormatVersion,
+        _format: replay_data::format::FormatVersion,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
     ) {
         let contiguous = self.last.and_then(|last| last.checked_add(1)) == Some(decoded.hour);
@@ -1863,10 +1865,10 @@ pub struct Named {
     pub types: BTreeMap<u32, (Option<String>, Option<String>)>,
     pub repair_icon: Option<String>,
     pub states: BTreeMap<u32, Option<String>>,
-    pub warnings: Vec<installed_content::Diagnostic>,
+    pub warnings: Vec<installed_content_core::Diagnostic>,
     /// A refused state read, warned live; the states corpus owns it offline.
     state_read_error: Option<String>,
-    pub(crate) state_diagnostics: Vec<installed_content::states::Diagnostic>,
+    pub(crate) state_diagnostics: Vec<installed_content_states::states::Diagnostic>,
     pub declared_types: Vec<String>,
 }
 
@@ -1889,12 +1891,12 @@ pub struct ContentView<'a> {
     pub layers: &'a ResolvedLayers,
     pub sprites: &'a SpriteSet,
     pub guis: Result<&'a native::Guis, String>,
-    pub gui_decode: &'a Result<installed_content::image::native::Decode, String>,
+    pub gui_decode: &'a Result<installed_content_image::native::Decode, String>,
     pub localise: &'a dyn Fn(&str) -> Option<String>,
 }
 
 struct LineSprite {
-    sprite: installed_content::gfx::SpriteType,
+    sprite: installed_content_gfx::gfx::SpriteType,
     /// One-based GUI frame; the game overwrites the building picture's frame.
     frame: i32,
 }
@@ -1937,8 +1939,8 @@ const LISTED: usize = 12;
 
 /// "N <what>: a, b, c and N more", or nothing for none.
 fn counted(
-    warnings: &mut Vec<installed_content::Diagnostic>,
-    kind: installed_content::DiagnosticKind,
+    warnings: &mut Vec<installed_content_core::Diagnostic>,
+    kind: installed_content_core::DiagnosticKind,
     what: &str,
     names: &[String],
 ) {
@@ -1985,10 +1987,12 @@ fn named_inventory(
     inventory: Option<Inventory<'_>>,
     cancelled: &AtomicBool,
 ) -> io::Result<Named> {
-    use installed_content::DiagnosticKind::{Ambiguous, Fallback, Refused};
+    use installed_content_core::{
+        DiagnosticKind::Ambiguous, DiagnosticKind::Fallback, DiagnosticKind::Refused,
+    };
     let mut warnings = Vec::new();
     let layers = content.layers;
-    let buildings = match installed_content::buildings::read(layers) {
+    let buildings = match installed_content_core::buildings::read(layers) {
         Ok(buildings) => Some(buildings),
         Err(error) => {
             warnings.push((

@@ -1,7 +1,8 @@
 use super::*;
-use engine::{
+use engine_land_inputs::cstats_observer as stats;
+use engine_native::{
     cequipment_variant as variant, cequipment_variant_pool as pool, cgame_state,
-    cland_combatant as side, cpdx_array::Array, cstats_observer as stats,
+    cland_combatant as side, cpdx_array::Array,
 };
 
 // Independent synthetic native objects. LiveMemory exercises the same SEH
@@ -115,13 +116,13 @@ impl Memory for Registry {
             output.copy_from_slice(&(self.state.as_ptr() as u64).to_le_bytes());
             true
         } else {
-            unsafe { engine::memory::LiveMemory::new() }.copy(address, output)
+            unsafe { engine_native::memory::LiveMemory::new() }.copy(address, output)
         }
     }
 }
 
 fn read(c: &mut Captured, worlds: &[World]) {
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     c.begin();
     for (n, world) in worlds.iter().enumerate() {
         c.visit(&memory, 0, world.source((n as u64 + 1) << 32 | 62));
@@ -129,7 +130,7 @@ fn read(c: &mut Captured, worlds: &[World]) {
     c.finish(Outcome::Rows { len: worlds.len() });
 }
 fn rows(c: &Captured) -> Vec<LandCombatProgressRow> {
-    let [TableView::Complete(replay::rows::TableRows::LandCombatProgress(rows))] = c.tables()
+    let [TableView::Complete(replay_data::rows::TableRows::LandCombatProgress(rows))] = c.tables()
     else {
         panic!("expected complete losses")
     };
@@ -317,7 +318,7 @@ fn hourly_losses_worker_growth_captures_five_thousand_combats_without_coverage_l
     let [
         _,
         _,
-        TableView::Complete(replay::rows::TableRows::LandEventCoverage(coverage)),
+        TableView::Complete(replay_data::rows::TableRows::LandEventCoverage(coverage)),
     ] = events.tables()
     else {
         panic!("coverage missing")
@@ -330,7 +331,7 @@ fn hourly_losses_worker_growth_captures_five_thousand_combats_without_coverage_l
 fn hourly_losses_off_thread_census_presizes_all_sides() {
     let mut worlds = [World::new(3), World::new(9)];
     worlds[1].set(1, 12, 0);
-    let naval = [engine::cnaval_combat::VTABLE_RVA as u64];
+    let naval = [engine_native::cnaval_combat::VTABLE_RVA as u64];
     let registry = Registry::new(&worlds, &naval);
     let mut capacity = Capacities::default();
     capacity.presize(&registry, 0).unwrap();
@@ -394,7 +395,7 @@ fn land_casualty_hourly_timing() {
         .unwrap_or(12);
     let count = provinces.checked_mul(fraction).unwrap() / 100;
     let worlds = (0..count).map(|_| World::new(variants)).collect::<Vec<_>>();
-    let naval = [engine::cnaval_combat::VTABLE_RVA as u64];
+    let naval = [engine_native::cnaval_combat::VTABLE_RVA as u64];
     let registry = Registry::new(&worlds, &naval);
     let mut capacity = Capacities::default();
     capacity.presize(&registry, 0).unwrap();

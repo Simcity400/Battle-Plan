@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn tie_permutations_match_msvc_insertion_partition_and_heap_paths() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         // MSVC14.44 std::_Sort_unchecked fixture. Its threshold, median selection,
         // partition rotations and heap tie rule match //.

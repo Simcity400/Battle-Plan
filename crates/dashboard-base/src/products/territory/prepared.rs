@@ -73,7 +73,7 @@ impl Prepared {
     pub fn observe(
         &mut self,
         frame: &DecodedFrame,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         cancelled: &AtomicBool,
         changes: &crate::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
@@ -91,11 +91,11 @@ impl Prepared {
     fn observe_with(
         &mut self,
         frame: &DecodedFrame,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         cancelled: &AtomicBool,
         changes: Option<&crate::prepared::frame_changes::FrameChanges>,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("territory:observe");
+        let _cpu = ::replay_frame::cpu::scope_phase("territory:observe");
         check_cancel(cancelled)?;
         for values in self.values.iter_mut().take(NATIVE_OWNED_STATES) {
             values.advance(frame.hour)?;
@@ -638,7 +638,7 @@ pub fn query(
     } else {
         Default::default()
     };
-    let cpu = replay::cpu::scope_phase("territory:query_identities");
+    let cpu = replay_frame::cpu::scope_phase("territory:query_identities");
     let history = crate::prepared::query::progressive::histories(
         &store,
         &key,
@@ -1203,7 +1203,7 @@ pub fn query(
             )
         }
         "series-state" => {
-            let _cpu = replay::cpu::scope_phase("territory:query_state");
+            let _cpu = replay_frame::cpu::scope_phase("territory:query_state");
             let [read] = params.reads.as_slice() else {
                 return Err(crate::invalid("Territory state needs one reached hour"));
             };
@@ -1303,7 +1303,7 @@ pub fn query(
                 cancelled,
             )?;
             for tag in wanted {
-                let _cpu = replay::cpu::scope_phase("territory:query_country");
+                let _cpu = replay_frame::cpu::scope_phase("territory:query_country");
                 let Some(&actor) = tags.get(&tag) else {
                     continue;
                 };
@@ -1566,7 +1566,7 @@ mod tests {
 
     #[test]
     fn equal_territory_fact_markers_carry_without_materializing_each_key() {
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let flag = AtomicBool::new(false);
         let mut frame = super::super::tests::frame(100, 64, 64);
         let mut prepared = Prepared::default();
@@ -1623,7 +1623,7 @@ mod tests {
         );
         assert!(matches!(
             source.replay_ref().identity.verification,
-            replay::identity::Verification::Unchecked
+            replay_data::identity::Verification::Unchecked
         ));
         let mut context = LoadContext {
             content: Some(options),
@@ -1782,10 +1782,8 @@ mod tests {
     }
 
     fn counter_frame(hour: i32) -> DecodedFrame {
-        use replay::{
-            frame::TableView,
-            rows::{CountryCounterInputRow, CountryLinkRow, TableRows},
-        };
+        use replay_data::{rows::CountryCounterInputRow, rows::CountryLinkRow, rows::TableRows};
+        use replay_frame::frame::TableView;
         let mut frame = super::super::tests::frame(hour, 3, 8);
         if let TableView::Complete(TableRows::Countries(rows)) =
             &mut *frame.tables[TableId::Countries.index()]
@@ -1980,9 +1978,10 @@ mod tests {
         for hour in 100..=104 {
             let mut frame = super::super::tests::frame(hour, 3, 8);
             if hour == 103 {
-                *frame.tables[TableId::States.index()] = replay::frame::TableView::Unavailable {
-                    reason: "synthetic missing state read".into(),
-                };
+                *frame.tables[TableId::States.index()] =
+                    replay_frame::frame::TableView::Unavailable {
+                        reason: "synthetic missing state read".into(),
+                    };
             }
             prepared
                 .observe_with(&frame, Default::default(), &cancelled, None)
@@ -2076,9 +2075,9 @@ mod tests {
             for hour in hours {
                 let mut frame = super::super::tests::frame(hour, 3, 8);
                 if hour >= 104
-                    && let replay::frame::TableView::Complete(replay::rows::TableRows::Countries(
-                        rows,
-                    )) = &mut *frame.tables[TableId::Countries.index()]
+                    && let replay_frame::frame::TableView::Complete(
+                        replay_data::rows::TableRows::Countries(rows),
+                    ) = &mut *frame.tables[TableId::Countries.index()]
                 {
                     rows[0].id += 10;
                     rows[0].tag = b"renamed realm".to_vec();
@@ -2301,15 +2300,17 @@ mod tests {
         for hour in 100..104 {
             let mut frame = super::super::tests::frame(hour, 5_000, 5_000);
             *frame.tables[TableId::CountryCounterInputs.index()] =
-                replay::frame::TableView::Complete(replay::rows::TableRows::CountryCounterInputs(
-                    (0..5_000)
-                        .map(|slot| replay::rows::CountryCounterInputRow {
-                            country: 100_000 + slot,
-                            owned_state_count: slot as i32,
-                            ..Default::default()
-                        })
-                        .collect(),
-                ));
+                replay_frame::frame::TableView::Complete(
+                    replay_data::rows::TableRows::CountryCounterInputs(
+                        (0..5_000)
+                            .map(|slot| replay_data::rows::CountryCounterInputRow {
+                                country: 100_000 + slot,
+                                owned_state_count: slot as i32,
+                                ..Default::default()
+                            })
+                            .collect(),
+                    ),
+                );
             prepared
                 .observe_owned_states(&frame, &mut identities, None)
                 .unwrap();
@@ -2365,11 +2366,9 @@ mod phase_b_tests {
 
     #[test]
     fn territory_country_operand_refresh_retains_link_map_until_links_change_or_resume() {
-        use replay::{
-            frame::TableView,
-            rows::{CountryLinkRow, TableRows},
-        };
-        let format = replay::format::FormatVersion::CURRENT;
+        use replay_data::{rows::CountryLinkRow, rows::TableRows};
+        use replay_frame::frame::TableView;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let flag = AtomicBool::new(false);
         let mut frame = super::super::tests::frame(100, 3, 3);
         frame.metrics = Default::default();
@@ -2465,7 +2464,7 @@ mod phase_b_tests {
     #[test]
     fn territory_shared_driver_carries_unchanged_values_without_native_or_history_work() {
         let flag = AtomicBool::new(false);
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let work = observer_tests::scaled_work(10, |hours| {
             let mut frame = super::super::tests::frame(100, 64, 64);
             frame.metrics = Default::default();
@@ -2504,8 +2503,8 @@ mod phase_b_tests {
 
     #[test]
     fn territory_shared_changes_reopen_equal_values_and_roster_proofs_after_unknown_hours() {
-        use replay::frame::TableView;
-        let format = replay::format::FormatVersion::CURRENT;
+        use replay_frame::frame::TableView;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let flag = AtomicBool::new(false);
         let mut fixture = crate::prepared::series::tests::Fixture::new();
         let mut prepared = Prepared::default();
@@ -2591,9 +2590,10 @@ mod phase_b_tests {
 
     #[test]
     fn territory_one_changed_province_is_bounded_by_current_rows_and_changed_keys() {
-        use replay::{frame::TableView, rows::TableRows};
+        use replay_data::rows::TableRows;
+        use replay_frame::frame::TableView;
         let flag = AtomicBool::new(false);
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let work = observer_tests::scaled_work(10, |history| {
             let mut prepared = Prepared::default();
             let mut tracker = FrameChangeTracker::new();
@@ -2644,7 +2644,7 @@ mod phase_b_tests {
     #[test]
     #[cfg(feature = "slow-tests")]
     fn territory_shared_driver_carries_all_5000_countries_then_publishes_exactly() {
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let flag = AtomicBool::new(false);
         let mut frame = super::super::tests::frame(100, 5_000, 5_000);
         frame.metrics = Default::default();
@@ -2714,11 +2714,9 @@ mod phase_b_tests {
 
     #[test]
     fn restored_territory_adds_no_value_key_for_a_holder_unresolved_across_a_commit() {
-        use replay::{
-            frame::TableView,
-            rows::{CountryRow, TableRows},
-        };
-        let format = replay::format::FormatVersion::CURRENT;
+        use replay_data::{rows::CountryRow, rows::TableRows};
+        use replay_frame::frame::TableView;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let flag = AtomicBool::new(false);
         // No link names this row's id: its tag is held, by an unknown country,
         // at every hour, so it never has a value.
@@ -2752,8 +2750,8 @@ mod phase_b_tests {
 
     #[test]
     fn restored_territory_closes_holders_at_an_unreadable_first_hour_after_a_commit() {
-        use replay::frame::TableView;
-        let format = replay::format::FormatVersion::CURRENT;
+        use replay_frame::frame::TableView;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let flag = AtomicBool::new(false);
         // Countries are unreadable at hour 102, the first hour after a commit.
         let frames: Vec<_> = (100..104)
@@ -2782,11 +2780,9 @@ mod phase_b_tests {
     #[test]
     fn restored_owned_states_close_at_an_unreadable_first_hour_after_a_commit() {
         use crate::products::country_history::HistoryScan;
-        use replay::{
-            frame::TableView,
-            rows::{CountryCounterInputRow, TableRows},
-        };
-        let format = replay::format::FormatVersion::CURRENT;
+        use replay_data::{rows::CountryCounterInputRow, rows::TableRows};
+        use replay_frame::frame::TableView;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let flag = AtomicBool::new(false);
         // Every country holds a native owned-state count; Countries are
         // unreadable at hour 102, the first hour after a commit.

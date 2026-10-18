@@ -47,9 +47,9 @@ pub(super) fn presize(
     // keeps its own leader; duplicate pointers are demand, not deduplication.
     let roster = FAILURES[0].observe(ccharacter_manager::Roster::read(memory, base, state))?;
     super::census::remember_roster(roster.count() as usize);
-    if let Ok(demand) =
-        FAILURES[5].observe(engine::cadvisor::definitions_demand(memory, base, state))
-    {
+    if let Ok(demand) = FAILURES[5].observe(engine_native::cadvisor::definitions_demand(
+        memory, base, state,
+    )) {
         let total_rows = demand[0].rows.saturating_add(demand[1].rows);
         let total_bytes = demand[0].bytes.saturating_add(demand[1].bytes);
         raise(&mut capacity.rows[2], rows(total_rows, 1));
@@ -57,13 +57,13 @@ pub(super) fn presize(
         LIVE_ROLES[2].fetch_max(total_rows, std::sync::atomic::Ordering::Relaxed);
         super::advisors::remember_definition_demand(demand);
     }
-    let leaders = engine::ccountry_leader::walk(memory, base, state, &mut []);
+    let leaders = engine_native::ccountry_leader::walk(memory, base, state, &mut []);
     let leaders = match leaders {
-        engine::walk::Outcome::Rows { len } => Ok(len),
-        engine::walk::Outcome::Truncated { len, unread_rows } => len
+        engine_native::walk::Outcome::Rows { len } => Ok(len),
+        engine_native::walk::Outcome::Truncated { len, unread_rows } => len
             .checked_add(unread_rows as usize)
             .ok_or("country leader demand overflow"),
-        engine::walk::Outcome::Unavailable { reason } => Err(reason),
+        engine_native::walk::Outcome::Unavailable { reason } => Err(reason),
     };
     if let Ok(leaders) = FAILURES[3].observe(leaders) {
         raise(&mut capacity.rows[1], rows(leaders, 1));
@@ -100,7 +100,7 @@ pub(super) fn presize(
             .ok_or("unit leader sizing count overflow")?;
         let text = (|| {
             let demand = cunit_leader::read_text(memory, pointer, &mut []);
-            if let engine::walk::Outcome::Unavailable { reason } = demand.outcome {
+            if let engine_native::walk::Outcome::Unavailable { reason } = demand.outcome {
                 return Err(reason);
             }
             unit_bytes = unit_bytes

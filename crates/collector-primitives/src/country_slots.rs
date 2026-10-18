@@ -19,14 +19,14 @@ pub fn census_rows(minimum: usize) -> usize {
 /// Off the game thread: reserve a census vector for the observed registry.
 /// Returns whether the allocation grew.
 pub fn reserve_census<T>(census: &mut Vec<T>) -> bool {
-    engine::allocation::advisory(|| reserve_rows(census, census_rows(0)))
+    engine_allocation::advisory(|| reserve_rows(census, census_rows(0)))
 }
 
 fn reserve_rows<T>(census: &mut Vec<T>, target: usize) -> bool {
     if census.capacity() >= target {
         return false;
     }
-    engine::allocation::reserve_exact(census, target - census.len()).is_ok()
+    engine_allocation::reserve_exact(census, target - census.len()).is_ok()
 }
 
 /// Rows for `per_country` rows per slot, with a third of headroom so the

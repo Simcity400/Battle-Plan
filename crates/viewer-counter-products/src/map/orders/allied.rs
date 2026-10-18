@@ -11,10 +11,10 @@ use std::{
 };
 
 use dashboard_text::scope::OriginalTagLists;
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{CountryCounterInputRow, TableId, TableRows, TableSchema, tables},
+use replay_data::{
+    rows::CountryCounterInputRow, rows::TableId, rows::TableRows, rows::TableSchema, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 /// Inputs read only when the viewer enables allied plans. LandTheatres and
 /// CountryLinks are already dependencies of the ordinary plan walk.
@@ -329,8 +329,8 @@ fn zero_subject(row: &CountryCounterInputRow) -> Result<bool, String> {
         .ok_or("CountryCounterInputs.zero_subject capture refused")?;
     match (subject.relation_type, subject.parties) {
         (None, None) => Ok(false),
-        (Some(kind), None) if kind != engine::csubject_relation::TYPE_VALUE => Ok(false),
-        (Some(kind), Some(parties)) if kind == engine::csubject_relation::TYPE_VALUE => {
+        (Some(kind), None) if kind != engine_native::csubject_relation::TYPE_VALUE => Ok(false),
+        (Some(kind), Some(parties)) if kind == engine_native::csubject_relation::TYPE_VALUE => {
             // Status0 target is raw zero: both native match predicates skip
             // canonical comparison and test exact zero on their own party.
             if parties.contains(&Some(0)) {

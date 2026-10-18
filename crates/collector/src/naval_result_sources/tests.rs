@@ -1,5 +1,6 @@
 use super::*;
-use engine::{cgame_state, cnaval_combat, cnaval_combat_results, creference_registry};
+use engine_native::{cgame_state, cnaval_combat, creference_registry};
+use engine_naval_history::cnaval_combat_results;
 
 pub(crate) static SERIAL: Mutex<()> = Mutex::new(());
 static FORWARDED: AtomicUsize = AtomicUsize::new(0);
@@ -85,7 +86,7 @@ unsafe extern "system-unwind" fn original_constructor(pointer: usize) -> usize {
 unsafe extern "system-unwind" fn original_result(result: usize, _combat: usize) -> usize {
     assert!(active() > 0);
     assert!(crate::runtime::observers_active());
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let hour = native::creation_hour(&memory, BASE.load(Ordering::Relaxed)).unwrap();
     unsafe {
         *((result + cnaval_combat_results::RESULT_HOUR) as *mut i32) = hour;
@@ -640,7 +641,7 @@ fn null_population_is_skipped_and_failed_reads_preserve_capacity() {
     let mut world = World::new();
     setup(3, world.base());
     world.globals[0] = 0;
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let prepare_failures = PREPARE_FAILURES.load(Ordering::Relaxed);
     let population_failures = POPULATION_READ_FAILURES.load(Ordering::Relaxed);
     prepare(&memory, world.base());

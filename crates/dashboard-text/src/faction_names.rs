@@ -1,14 +1,12 @@
 //! The faction display-name rule, shared by products and scripted text.
 
-use installed_content::{
-    faction_templates::Catalog,
-    gui::native::{BoundLocalization, BoundNode, BoundValue, FormattedLocalization},
-    localisation::{Argument, Localisation},
+use installed_content_core::{
+    faction_templates::Catalog, gui::native::BoundLocalization, gui::native::BoundNode,
+    gui::native::BoundValue, gui::native::FormattedLocalization,
 };
-use replay::{
-    frame::{DecodedFrame, SharedView, TableView},
-    rows::{TableRows, tables},
-};
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use replay_data::{rows::TableRows, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, OnceLock, Weak},
@@ -166,7 +164,7 @@ impl LexicalNames {
 /// Persist historical dictionaries as changed/deleted token rows, not full copies.
 pub mod dictionary_history {
     use super::*;
-    use replay::rows::LexicalTokenRow;
+    use replay_data::rows::LexicalTokenRow;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     type Changes<T> = Result<Vec<(u32, Option<T>)>, String>;
@@ -286,7 +284,7 @@ pub mod dictionary_history {
                         }
                         TableView::Complete(TableRows::LexicalTokens(
                             rows.iter()
-                                .map(|(token, literal)| replay::rows::LexicalTokenRow {
+                                .map(|(token, literal)| replay_data::rows::LexicalTokenRow {
                                     token: *token,
                                     literal: literal.clone(),
                                 })
@@ -516,7 +514,7 @@ mod tests {
             #[serde(with = "dictionary_history")]
             history: Vec<Arc<LexicalNames>>,
         }
-        let row = |token, literal: &[u8]| replay::rows::LexicalTokenRow {
+        let row = |token, literal: &[u8]| replay_data::rows::LexicalTokenRow {
             token,
             literal: literal.to_vec(),
         };
@@ -562,7 +560,7 @@ mod tests {
 
     #[test]
     fn saved_histories_rebuilt_from_the_shared_empty_dictionary_keep_every_change() {
-        let row = |token, literal: &[u8]| replay::rows::LexicalTokenRow {
+        let row = |token, literal: &[u8]| replay_data::rows::LexicalTokenRow {
             token,
             literal: literal.to_vec(),
         };
@@ -603,18 +601,18 @@ mod tests {
     fn faction_names_dictionary_folds_ascii_and_refuses_ambiguity_and_gaps() {
         let dictionary =
             |rows| LexicalNames::new(TableView::Complete(TableRows::LexicalTokens(rows)).into());
-        let tokens = dictionary(vec![replay::rows::LexicalTokenRow {
+        let tokens = dictionary(vec![replay_data::rows::LexicalTokenRow {
             token: 31,
             literal: b"MiXeD".to_vec(),
         }]);
         assert_eq!(tokens.token_of(b"mixed").unwrap(), Some(31));
         assert_eq!(tokens.token_of(b"absent").unwrap(), None);
         let ambiguous = dictionary(vec![
-            replay::rows::LexicalTokenRow {
+            replay_data::rows::LexicalTokenRow {
                 token: 31,
                 literal: b"Mixed".to_vec(),
             },
-            replay::rows::LexicalTokenRow {
+            replay_data::rows::LexicalTokenRow {
                 token: 47,
                 literal: b"MIXED".to_vec(),
             },
@@ -647,7 +645,7 @@ mod tests {
             nodes: (0..count)
                 .map(|index| BoundNode {
                     key: FormattedLocalization::Key(b"PASS".to_vec()),
-                    arguments: vec![installed_content::gui::native::BoundArgument {
+                    arguments: vec![installed_content_core::gui::native::BoundArgument {
                         name: b"ARG".to_vec(),
                         value: if index + 1 == count {
                             BoundValue::Localization(FormattedLocalization::Key(
@@ -670,13 +668,13 @@ mod tests {
             nodes: vec![BoundNode {
                 key: FormattedLocalization::Key(b"ROOT".to_vec()),
                 arguments: vec![
-                    installed_content::gui::native::BoundArgument {
+                    installed_content_core::gui::native::BoundArgument {
                         name: vec![0xff],
                         value: BoundValue::Localization(FormattedLocalization::Key(
                             b"first".to_vec(),
                         )),
                     },
-                    installed_content::gui::native::BoundArgument {
+                    installed_content_core::gui::native::BoundArgument {
                         name: b"ARG".to_vec(),
                         value: BoundValue::Localization(FormattedLocalization::Token(
                             b"later".to_vec(),

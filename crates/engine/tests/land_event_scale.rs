@@ -1,8 +1,8 @@
 //! Owned allocation only: guarded event reads without an executable or process.
-use engine::{
+use engine_land_inputs::{cstats_observer as stats, land_events as native};
+use engine_native::{
     carmy, ccountry, cequipment_variant as variant, cequipment_variant_pool as pool, cgame_state,
-    cland_combat as combat, cland_combatant as side, cprovince, cstats_observer as stats, cunit,
-    land_events as native,
+    cland_combat as combat, cland_combatant as side, cprovince, cunit,
 };
 use std::mem::size_of;
 
@@ -135,7 +135,7 @@ fn land_event_snapshot_scale() {
         for dispatched in [false, true] {
             let f = Fixture::new(countries, variants);
             assert_eq!(f.loss_variants.len(), variants);
-            let memory = unsafe { engine::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native::memory::LiveMemory::new() };
             const SAMPLES: usize = 201;
             let mut times = Vec::with_capacity(SAMPLES);
             let mut words = 0usize;

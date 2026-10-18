@@ -4,11 +4,10 @@
 //! budget, so scans running together never oversubscribe the machine. A scan keeping
 //! most tables reads one block at a time: its blocks are nearly whole raw blocks.
 
-use replay::{
-    container::{BlockIndex, Replay},
-    frame::{RecordedFrame, TABLE_COUNT},
-    rows::TableId,
-};
+use replay::{container::BlockIndex, container::Replay};
+use replay_data::rows::TABLE_COUNT;
+use replay_data::rows::TableId;
+use replay_frame::frame::RecordedFrame;
 use std::{
     io,
     marker::PhantomData,
@@ -84,11 +83,11 @@ pub fn scan_blocks<'a, R>(
     let (minimum, maximum) = blocks.size_hint();
     let mut collected = Vec::new();
     if maximum == Some(minimum) {
-        collected = engine::allocation::vec(minimum)?;
+        collected = engine_allocation::vec(minimum)?;
         collected.extend(blocks);
     } else {
         for block in blocks {
-            engine::allocation::reserve(&mut collected, 1)?;
+            engine_allocation::reserve(&mut collected, 1)?;
             collected.push(block);
         }
     }
@@ -149,7 +148,7 @@ pub fn scan_blocks_by<'a, T: Send, R>(
             handed: 0,
             stop: false,
             ahead,
-            reads: engine::allocation::default_vec(blocks.len())?,
+            reads: engine_allocation::default_vec(blocks.len())?,
         }),
         changed: Condvar::new(),
     };
@@ -160,7 +159,7 @@ pub fn scan_blocks_by<'a, T: Send, R>(
             .unwrap_or_else(|_| Err(io::Error::other("block read failed")))
     };
     // Measurement only: the readers' CPU is the scan's family's.
-    let cpu_family = replay::cpu::family();
+    let cpu_family = replay_frame::cpu::family();
     thread::scope(|scope| {
         // Install before spawning: a refused worker must wake and join those already running.
         let _stop = Stop(ahead);
@@ -168,7 +167,7 @@ pub fn scan_blocks_by<'a, T: Send, R>(
             let priority = job_priority::JobPriority::current();
             thread::Builder::new().spawn_scoped(scope, || {
                 priority.enter(job_priority::Level::Normal);
-                let _cpu = replay::cpu::scope("scan read-ahead", cpu_family);
+                let _cpu = replay_frame::cpu::scope("scan read-ahead", cpu_family);
                 while let Some(position) = ahead.take(cancelled) {
                     let result = read(position);
                     ahead.lock().reads[position] = Some(result);
@@ -299,7 +298,8 @@ impl Drop for Core {
 mod tests {
     use super::*;
     use crate::test_fixtures::{CAMPAIGN, records, source};
-    use replay::{frame::FrameEncoder, spool::Record};
+    use replay::spool::Record;
+    use replay_frame::frame::FrameEncoder;
 
     #[test]
     fn read_ahead_keeps_the_callers_job() {

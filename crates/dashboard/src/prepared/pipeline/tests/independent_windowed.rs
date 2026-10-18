@@ -9,10 +9,11 @@ use super::family_lanes::{assert_payloads_equal, payloads};
 use super::*;
 use crate::prepared::prepass;
 use independent::windowed;
-use replay::rows::{
-    DestroyedDivisionsRow, DivisionEquipmentDeletionRow, DivisionRow, DivisionStatusRow,
-    DivisionTemplateRow, LandEventCoverageRow, NameOperands, NavalCombatParticipantRow,
-    NavalCombatRow, Recorded, SunkShipEntry, SunkShipsRow,
+use replay_data::{
+    rows::DestroyedDivisionsRow, rows::DivisionEquipmentDeletionRow, rows::DivisionRow,
+    rows::DivisionStatusRow, rows::DivisionTemplateRow, rows::LandEventCoverageRow,
+    rows::NameOperands, rows::NavalCombatParticipantRow, rows::NavalCombatRow, rows::Recorded,
+    rows::SunkShipEntry, rows::SunkShipsRow,
 };
 use serde_json::Value;
 
@@ -118,8 +119,8 @@ fn windowed_frame(branch: u64, hour: i32) -> DecodedFrame {
                 division_handle: handle(3),
                 country: FIRST,
                 expeditionary_owner: u32::MAX,
-                disposition: replay::rows::DivisionDeletionDisposition::Loss,
-                cause: Some(replay::rows::EquipmentDestructionCause::DivisionDestroyed),
+                disposition: replay_data::rows::DivisionDeletionDisposition::Loss,
+                cause: Some(replay_data::rows::EquipmentDestructionCause::DivisionDestroyed),
             }]
         } else {
             Vec::new()
@@ -891,7 +892,7 @@ fn invalid_member_scenario() -> Replay {
                 let mut observed = windowed_frame(1, BASE + offset);
                 set(
                     &mut observed,
-                    TableRows::NavalResults(vec![replay::rows::NavalResultRow {
+                    TableRows::NavalResults(vec![replay_data::rows::NavalResultRow {
                         id: 50,
                         province: 7,
                         result_hour: BASE,
@@ -902,7 +903,7 @@ fn invalid_member_scenario() -> Replay {
                 );
                 set(
                     &mut observed,
-                    TableRows::NavalResultMembers(vec![replay::rows::NavalResultMemberRow {
+                    TableRows::NavalResultMembers(vec![replay_data::rows::NavalResultMemberRow {
                         result: 50,
                         member: 1,
                         side: 2,

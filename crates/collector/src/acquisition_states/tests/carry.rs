@@ -7,7 +7,7 @@ use crate::{
     sampled_verify::Check,
     territory_changes::{Domain, Target},
 };
-use engine::territory_mutations::{MUTATIONS, Receiver};
+use engine_mutations::{territory_mutations::MUTATIONS, territory_mutations::Receiver};
 
 fn domain() -> &'static Domain {
     Box::leak(Box::new(Domain::enabled(64, 64)))
@@ -21,7 +21,7 @@ fn store(domain: &'static Domain, check: Check) -> Option<Box<StateStore>> {
 /// the last, so a carried hour must lay out the name arena as a fresh read
 /// does.
 fn named() -> Vec<u8> {
-    use engine::msvc_string::LENGTH;
+    use engine_native::msvc_string::LENGTH;
     let mut bytes = fixture();
     for (at, text) in [
         (FIRST + cstate::PRIMARY_DISPLAY_NAME, b"Alpha".as_slice()),

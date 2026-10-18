@@ -10,24 +10,22 @@ use crate::{
     table_capture::{Arena, CaptureRows, bounded, grow_capacity, grow_vec},
     table_conversion::{table, unavailable},
 };
-use engine::allocation::{copy_vec, default_vec, map_slice, owned_vec, reserve, reserve_exact};
-use engine::{
-    Memory, agency_operation_buffers, agency_upgrade_levels, ccharacter, ccharacter_manager,
-    ccountry, ccountry_intel, ccountry_intel_network, ccountry_operation_manager,
-    ccountry_operation_token_manager, ccryptology, ccurrent_autonomy_status, cdiplomacy_status,
-    cflag_manager, cgame_state, cintelligence_agency, coperation_instance, coperative_leader,
-    cpdx_array::Array,
-    crelation_status, cscript_flag, cstate,
-    csubject_relation::{self, Name},
-    cvariables, cwar_relation, incoming_diplomatic_action_queue, operation_assigned_operative,
-    operative_missions, read, read_slice, strategic_operatives,
-    walk::Outcome,
+use engine_allocation::{copy_vec, default_vec, map_slice, owned_vec, reserve, reserve_exact};
+use engine_events::incoming_diplomatic_action_queue;
+use engine_intelligence::{
+    agency_operation_buffers, ccountry_intel_network, ccountry_operation_manager,
+    ccountry_operation_token_manager, strategic_operatives,
 };
-use replay::{
-    BranchId,
-    frame::{BaselineToken, TableInput, TableView},
-    rows::{self, TableId, TableRows, tables},
+use engine_native::{
+    Memory, agency_upgrade_levels, ccharacter, ccharacter_manager, ccountry, ccountry_intel,
+    ccryptology, ccurrent_autonomy_status, cdiplomacy_status, cgame_state, cintelligence_agency,
+    coperation_instance, coperative_leader, cpdx_array::Array, crelation_status, cstate,
+    csubject_relation, csubject_relation::Name, cwar_relation, operation_assigned_operative,
+    operative_missions, read, read_slice, walk::Outcome,
 };
+use engine_scripts::{cflag_manager, cscript_flag, cvariables};
+use replay_data::{BranchId, rows, rows::TableId, rows::TableRows, rows::tables};
+use replay_frame::{frame::BaselineToken, frame::TableInput, frame::TableView};
 use std::mem::size_of;
 use std::sync::Arc;
 
@@ -435,7 +433,7 @@ impl<R: Copy + PartialEq> NativeShadow<R> {
         if matches!(
             outcome,
             Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON
+                reason: replay_data::cadence::SKIPPED_REASON
             }
         ) {
             return TableInput::Sampled(convert());
@@ -751,7 +749,7 @@ impl Captured {
             opinion_cap: self.opinion_rows_cap(),
             tuple_cap: self.tuple_rows_cap(),
             active: [TABLES[13], TABLES[14]]
-                .map(|table| replay::cadence::should_walk(table, hour, force_full)),
+                .map(|table| replay_data::cadence::should_walk(table, hour, force_full)),
             epoch: relation_epoch(),
         };
         self.set_relation_activity(context.active);
@@ -1021,17 +1019,21 @@ impl Captured {
     pub fn fail_delegated_capture(&mut self, context: CaptureContext, reason: &'static str) {
         if !self.capitulation_raw_mode {
             self.fail_capitulation_capture(
-                if replay::cadence::should_walk(TABLES[0], context.hour, context.force_full) {
+                if replay_data::cadence::should_walk(TABLES[0], context.hour, context.force_full) {
                     reason
                 } else {
-                    replay::cadence::SKIPPED_REASON
+                    replay_data::cadence::SKIPPED_REASON
                 },
             );
         }
         if !self.relations_raw_mode {
             self.fail_relations_capture(
                 [13, 14].map(|index| {
-                    replay::cadence::should_walk(TABLES[index], context.hour, context.force_full)
+                    replay_data::cadence::should_walk(
+                        TABLES[index],
+                        context.hour,
+                        context.force_full,
+                    )
                 }),
                 reason,
             );
@@ -1045,16 +1047,17 @@ impl Captured {
         context: CaptureContext,
         reason: &'static str,
     ) -> CaptureReport {
-        let intel_due = replay::cadence::should_walk(TABLES[15], context.hour, context.force_full)
-            || self.country_intel_sample.is_some();
+        let intel_due =
+            replay_data::cadence::should_walk(TABLES[15], context.hour, context.force_full)
+                || self.country_intel_sample.is_some();
         self.reset_residual();
         macro_rules! fail {
             ($($index:literal => $field:ident),+ $(,)?) => {$(
                 self.$field.outcome = Outcome::Unavailable {
-                    reason: if replay::cadence::should_walk(TABLES[$index], context.hour, context.force_full) {
+                    reason: if replay_data::cadence::should_walk(TABLES[$index], context.hour, context.force_full) {
                         reason
                     } else {
-                        replay::cadence::SKIPPED_REASON
+                        replay_data::cadence::SKIPPED_REASON
                     },
                 };
             )+};
@@ -1082,7 +1085,7 @@ impl Captured {
             reason: if intel_due {
                 reason
             } else {
-                replay::cadence::SKIPPED_REASON
+                replay_data::cadence::SKIPPED_REASON
             },
         };
         self.country_intel_sample = intel_due.then_some(Err(reason));
@@ -1112,7 +1115,8 @@ impl Captured {
             hour,
             force_full,
         } = context;
-        let mut active = TABLES.map(|table| replay::cadence::should_walk(table, hour, force_full));
+        let mut active =
+            TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
         // The daily intelligence step writes every network. Outside it,
         // country dynamic reuse destroys that country's networks through
         // the strategic operative reset, and the console's intel network
@@ -1134,7 +1138,7 @@ impl Captured {
             ($($field:ident = $index:literal),+ $(,)?) => {$(
                 if !active[$index] {
                     self.$field.outcome = Outcome::Unavailable {
-                        reason: replay::cadence::SKIPPED_REASON,
+                        reason: replay_data::cadence::SKIPPED_REASON,
                     };
                 }
             )+};
@@ -1379,9 +1383,9 @@ impl Captured {
                             return walk;
                         }
                         let (scopes, entries, names) = (
-                            engine::walk::Buffer::Growing(scopes),
-                            engine::walk::Buffer::Growing(entries),
-                            engine::walk::Buffer::Growing(names),
+                            engine_native::walk::Buffer::Growing(scopes),
+                            engine_native::walk::Buffer::Growing(entries),
+                            engine_native::walk::Buffer::Growing(names),
                         );
                         match reuse.as_mut() {
                             Some(reuse) => cvariables::walk_scopes_carried(
@@ -1507,14 +1511,17 @@ impl Captured {
             // that finds it held carries the last sample and the next hour walks.
             self.country_intel_outcome = match self.country_intel.borrow(active[15]) {
                 Walk::Skip | Walk::Busy => Outcome::Unavailable {
-                    reason: replay::cadence::SKIPPED_REASON,
+                    reason: replay_data::cadence::SKIPPED_REASON,
                 },
                 Walk::Ready(buffer) => {
                     self.country_intel_sample = Some(Err("country intel acquisition incomplete"));
                     let begin = qpc();
                     let result = {
                         let _reads = read_accounting::table(TABLES[15]);
-                        if grow_vec(&mut buffer.scratch, engine::country_intel_row::STRIDE) {
+                        if grow_vec(
+                            &mut buffer.scratch,
+                            engine_native::country_intel_row::STRIDE,
+                        ) {
                             ccountry_intel::walk_with_reserved_growing(
                                 memory,
                                 base,
@@ -2589,8 +2596,8 @@ fn walk_flags(
         memory,
         base,
         state,
-        engine::walk::Buffer::Fixed(output),
-        engine::walk::Buffer::Fixed(scratch),
+        engine_native::walk::Buffer::Fixed(output),
+        engine_native::walk::Buffer::Fixed(scratch),
         None,
     )
 }
@@ -2609,8 +2616,8 @@ fn walk_flags_growing(
         memory,
         base,
         state,
-        engine::walk::Buffer::Growing(output),
-        engine::walk::Buffer::Growing(scratch),
+        engine_native::walk::Buffer::Growing(output),
+        engine_native::walk::Buffer::Growing(scratch),
         reuse,
     )
 }
@@ -2619,8 +2626,8 @@ fn walk_flags_buffer(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    mut output: engine::walk::Buffer<'_, ScopedFlag>,
-    mut scratch: engine::walk::Buffer<'_, cscript_flag::Row>,
+    mut output: engine_native::walk::Buffer<'_, ScopedFlag>,
+    mut scratch: engine_native::walk::Buffer<'_, cscript_flag::Row>,
     mut reuse: Option<FlagReuse<'_>>,
 ) -> Outcome {
     // A quiet hour publishes the held rows without walking any scope.
@@ -2697,7 +2704,7 @@ fn walk_flags_buffer(
                         memory,
                         base,
                         head,
-                        engine::walk::Buffer::Fixed(&mut scratch[..available]),
+                        engine_native::walk::Buffer::Fixed(&mut scratch[..available]),
                     ),
                     available,
                 )
@@ -3280,7 +3287,7 @@ fn sample_opinions(
             let sampled = select(owner) && check.covers_daily(u64::from(owner));
             if sampled {
                 let mut owners = owners.borrow_mut();
-                if engine::allocation::reserve_push_batch(&mut owners, 1).is_ok() {
+                if engine_allocation::reserve_push_batch(&mut owners, 1).is_ok() {
                     owners.push(owner);
                 } else {
                     short.set(true);
@@ -3544,14 +3551,14 @@ impl Captured {
             reason: if active[0] {
                 reason
             } else {
-                replay::cadence::SKIPPED_REASON
+                replay_data::cadence::SKIPPED_REASON
             },
         };
         self.relation_tuples.outcome = Outcome::Unavailable {
             reason: if active[1] {
                 reason
             } else {
-                replay::cadence::SKIPPED_REASON
+                replay_data::cadence::SKIPPED_REASON
             },
         };
         self.relations_raw_mode = false;
@@ -3565,12 +3572,12 @@ impl Captured {
             .walk
             .filter(|_| job.active.into_iter().any(|active| active))
         else {
-            self.fail_relations_capture(job.active, replay::cadence::SKIPPED_REASON);
+            self.fail_relations_capture(job.active, replay_data::cadence::SKIPPED_REASON);
             return;
         };
         let started = qpc();
         let skipped = Outcome::Unavailable {
-            reason: replay::cadence::SKIPPED_REASON,
+            reason: replay_data::cadence::SKIPPED_REASON,
         };
         install(
             job.active[0],
@@ -3604,7 +3611,7 @@ fn install<R: Copy + Default>(
         return;
     }
     let len = outcome.len();
-    if rows.rows.len() < len && engine::allocation::resize_default(&mut rows.rows, len).is_err() {
+    if rows.rows.len() < len && engine_allocation::resize_default(&mut rows.rows, len).is_err() {
         rows.outcome = Outcome::Unavailable {
             reason: "relation row storage allocation failed",
         };
@@ -3749,7 +3756,7 @@ fn copy_capitulation_pass(
     game_state: usize,
     log: &mut RawLog<1>,
 ) {
-    use engine::cgame_state;
+    use engine_native::cgame_state;
     let _reads = read_accounting::table(TABLES[0]);
     let Some(countries_start) = capspan(
         log,
@@ -3896,7 +3903,7 @@ fn copy_capitulation_pass(
 
 /// Mirror of the owned war-goal recipients read by `walk_capitulation`.
 fn copy_war_goals(log: &mut RawLog<1>, memory: &impl Memory, base: usize, goals: Array) {
-    let Some(vtable) = base.checked_add(engine::cwar_goal::VTABLE_RVA) else {
+    let Some(vtable) = base.checked_add(engine_native::cwar_goal::VTABLE_RVA) else {
         return;
     };
     for ordinal in 0..goals.count {
@@ -3918,7 +3925,7 @@ fn copy_war_goals(log: &mut RawLog<1>, memory: &impl Memory, base: usize, goals:
         if capspan(
             log,
             memory,
-            goal.checked_add(engine::cwar_goal::RECIPIENT),
+            goal.checked_add(engine_native::cwar_goal::RECIPIENT),
             4,
             M_CAPITULATION,
         )
@@ -4022,7 +4029,7 @@ impl Captured {
 /// slot zero is the reserved sentinel the walk never reaches.
 pub mod relations_test_kit {
     use super::*;
-    use engine::{
+    use engine_native::{
         cdiplomacy_status, cgame_state, cguarantee_relation, cmarket_access_rights_relation,
         crelation, memory::SliceMemory,
     };
@@ -4313,7 +4320,7 @@ pub fn intel_shadow_fixture(value: i64) -> Captured {
         unreachable!("a new frame holds its own buffer")
     };
     for (index, row) in buffer.rows.rows.iter_mut().enumerate() {
-        *row = engine::country_intel_row::Row {
+        *row = engine_native::country_intel_row::Row {
             owner_country: 7,
             target_index: index as u32,
             army: value,
@@ -4385,8 +4392,8 @@ mod tests {
         ] {
             let mut captured = intel_shadow_fixture(42);
             let active = [
-                replay::cadence::should_walk(TableId::RelationOpinions, hour, force_full),
-                replay::cadence::should_walk(TableId::RelationTuples, hour, force_full),
+                replay_data::cadence::should_walk(TableId::RelationOpinions, hour, force_full),
+                replay_data::cadence::should_walk(TableId::RelationTuples, hour, force_full),
             ];
             captured.set_relation_activity(active);
             captured.capitulation_raw_mode = capitulation_raw;
@@ -4419,7 +4426,7 @@ mod tests {
                         assert_eq!(
                             captured.outcomes()[slot],
                             Outcome::Unavailable {
-                                reason: replay::cadence::SKIPPED_REASON,
+                                reason: replay_data::cadence::SKIPPED_REASON,
                             }
                         );
                     }
@@ -4489,14 +4496,14 @@ mod tests {
                 assert_eq!(
                     captured.outcomes()[slot],
                     Outcome::Unavailable {
-                        reason: if replay::cadence::should_walk(
+                        reason: if replay_data::cadence::should_walk(
                             TABLES[slot],
                             context.hour,
                             context.force_full
                         ) {
                             "residual worker failed"
                         } else {
-                            replay::cadence::SKIPPED_REASON
+                            replay_data::cadence::SKIPPED_REASON
                         },
                     }
                 );
@@ -4530,7 +4537,7 @@ mod tests {
                 false
             }
         }
-        let memory = engine::memory::CountedMemory::new(Unreadable);
+        let memory = engine_native::memory::CountedMemory::new(Unreadable);
         let mut captured = Captured::with_capacities(&Capacities::default());
         for hour in 0..24 {
             let accounting = read_accounting::Capture::new();
@@ -4552,15 +4559,15 @@ mod tests {
             assert_ne!(
                 captured.outcomes()[6],
                 Outcome::Unavailable {
-                    reason: replay::cadence::SKIPPED_REASON
+                    reason: replay_data::cadence::SKIPPED_REASON
                 }
             );
             for index in (1..=12).chain(std::iter::once(15)) {
-                if index != 6 && !replay::cadence::should_walk(TABLES[index], hour, false) {
+                if index != 6 && !replay_data::cadence::should_walk(TABLES[index], hour, false) {
                     assert_eq!(
                         captured.outcomes()[index],
                         Outcome::Unavailable {
-                            reason: replay::cadence::SKIPPED_REASON
+                            reason: replay_data::cadence::SKIPPED_REASON
                         }
                     );
                     assert_eq!(counts[TABLES[index].index()].spans, 0);
@@ -4598,7 +4605,7 @@ mod tests {
             // Any outcome but the carried skip means the walk ran.
             captured.outcomes()[15]
                 != Outcome::Unavailable {
-                    reason: replay::cadence::SKIPPED_REASON,
+                    reason: replay_data::cadence::SKIPPED_REASON,
                 }
         };
         assert!(capture(&mut first, 0));
@@ -4815,13 +4822,13 @@ mod tests {
         assert_eq!(LOCAL.snapshot().current, Capacity::default());
     }
 
-    use engine::memory::SliceMemory;
-    use replay::rows::TableSchema;
+    use engine_native::memory::SliceMemory;
+    use replay_data::rows::TableSchema;
 
     fn small() -> (Capacities, Captured) {
         let capacities = Capacities {
             rows: [3; N],
-            intel_scratch: 2 * engine::country_intel_row::STRIDE,
+            intel_scratch: 2 * engine_native::country_intel_row::STRIDE,
             subject_names: 8,
             autonomy_names: 8,
             agency_names: 8,
@@ -4929,8 +4936,8 @@ mod tests {
         );
         put(
             &mut bytes,
-            AGENCY + cintelligence_agency::NAME + engine::msvc_string::CAPACITY,
-            &engine::msvc_string::INLINE_CAPACITY.to_le_bytes(),
+            AGENCY + cintelligence_agency::NAME + engine_native::msvc_string::CAPACITY,
+            &engine_native::msvc_string::INLINE_CAPACITY.to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -5035,27 +5042,27 @@ mod tests {
                 assert_eq!(upgrades[1].level, i32::MAX);
             }
 
-            let mut encoder = replay::frame::FrameEncoder::new();
+            let mut encoder = replay_frame::frame::FrameEncoder::new();
             let first = encoder
                 .encode(
-                    replay::frame::DecodedFrame {
+                    replay_frame::frame::DecodedFrame {
                         branch: 1,
                         hour: 0,
                         tables: std::array::from_fn(|_| {
                             unavailable("fixture table not acquired").into()
                         }),
-                        metrics: replay::frame::Metrics::default(),
+                        metrics: replay_frame::frame::Metrics::default(),
                     },
                     false,
                 )
                 .unwrap();
             let mut views = std::array::from_fn(|_| unavailable("fixture table not acquired"));
             views[TableId::AgencyUpgradeLevels.index()] = tables[17].clone();
-            let source = replay::frame::DecodedFrame {
+            let source = replay_frame::frame::DecodedFrame {
                 branch: 1,
                 hour: 1,
                 tables: views.map(Into::into),
-                metrics: replay::frame::Metrics::default(),
+                metrics: replay_frame::frame::Metrics::default(),
             };
             let decoded_wire = encoder
                 .encode(source.clone(), false)
@@ -5064,7 +5071,7 @@ mod tests {
                 .unwrap()
                 .decode()
                 .unwrap();
-            let mut decoder = replay::frame::FrameDecoder::new();
+            let mut decoder = replay_frame::frame::FrameDecoder::new();
             decoder.advance(&first).unwrap();
             let round_trip = decoder.advance(&decoded_wire).unwrap();
             assert_eq!(
@@ -5365,7 +5372,7 @@ mod tests {
                 capitulation.capitulated,
                 capitulation.legitimacy_raw
             ),
-            (u32::MAX, 0xfe, replay::rows::RetiredI64::default())
+            (u32::MAX, 0xfe, replay_data::rows::RetiredI64::default())
         );
         let operative = &complete::<tables::OperativeMemberships>(&views[4])[0];
         assert_eq!(
@@ -5831,18 +5838,20 @@ mod tests {
         (capture, previous)
     }
 
-    fn variable_baseline(previous: Vec<rows::ScriptVariablesRow>) -> replay::frame::FrameEncoder {
-        let mut encoder = replay::frame::FrameEncoder::new();
+    fn variable_baseline(
+        previous: Vec<rows::ScriptVariablesRow>,
+    ) -> replay_frame::frame::FrameEncoder {
+        let mut encoder = replay_frame::frame::FrameEncoder::new();
         let mut views = std::array::from_fn(|_| unavailable("fixture table not acquired"));
         views[TableId::ScriptVariables.index()] =
             TableView::Complete(rows::TableRows::ScriptVariables(previous));
         encoder
             .encode(
-                replay::frame::DecodedFrame {
+                replay_frame::frame::DecodedFrame {
                     branch: 1,
                     hour: 0,
                     tables: views.map(Into::into),
-                    metrics: replay::frame::Metrics::default(),
+                    metrics: replay_frame::frame::Metrics::default(),
                 },
                 false,
             )
@@ -6529,7 +6538,7 @@ mod tests {
         assert_eq!(direct.tuple_rows[0].ordinal, 0);
         assert_eq!(direct.tuple_rows[1].ordinal, 1);
         let mut intel = relations_kit::intel_captured(16, 16);
-        let memory = engine::memory::CountedMemory::new(memory);
+        let memory = engine_native::memory::CountedMemory::new(memory);
         let native = read_accounting::Capture::new();
         let (report, _) = relations_kit::split(&memory, &mut intel);
         let counts = native.finish();
@@ -6572,7 +6581,10 @@ mod tests {
         let mut job = RelationsJob::new();
         for fault in [false, true] {
             for hour in 0..24 {
-                let active = [replay::cadence::should_walk(TABLES[13], hour, false), true];
+                let active = [
+                    replay_data::cadence::should_walk(TABLES[13], hour, false),
+                    true,
+                ];
                 let opinion_cap = if active[0] { 16 } else { 0 };
                 let tuple_cap = hour as usize % 3;
                 let make_memory = || OpinionReads {
@@ -6609,7 +6621,7 @@ mod tests {
                 let mut ticks = [0; 2];
                 captured.decode_relations_payload(&job, &mut ticks);
                 let skipped = Outcome::Unavailable {
-                    reason: replay::cadence::SKIPPED_REASON,
+                    reason: replay_data::cadence::SKIPPED_REASON,
                 };
                 assert_eq!(
                     captured.relation_opinions.outcome,
@@ -6696,7 +6708,7 @@ mod tests {
 
     #[test]
     fn relations_job_matches_faults_with_identical_reasons() {
-        use engine::{csubject_relation, cwar_relation};
+        use engine_native::{csubject_relation, cwar_relation};
         let valid = relations_kit::opinionated_fixture();
         // Each mutation faults the whole family; both paths must agree on the
         // outcome reason while the other partition stays consistent.
@@ -6759,7 +6771,7 @@ mod tests {
                 |bytes: &mut Vec<u8>| {
                     relations_kit::p32(
                         bytes,
-                        relations_kit::RELATION[0] + engine::crelation::TYPE_ID,
+                        relations_kit::RELATION[0] + engine_native::crelation::TYPE_ID,
                         1,
                     );
                 },
@@ -6791,7 +6803,7 @@ mod tests {
 
     #[test]
     fn relations_war_and_subject_elements_are_skipped_but_consume_ordinals() {
-        use engine::{cguarantee_relation, csubject_relation, cwar_relation};
+        use engine_native::{cguarantee_relation, csubject_relation, cwar_relation};
         let mut bytes = relations_kit::fixture();
         relations_kit::relation(
             &mut bytes,
@@ -6822,8 +6834,8 @@ mod tests {
         relations_kit::relation(
             &mut bytes,
             market,
-            engine::cmarket_access_rights_relation::VTABLE_RVA,
-            engine::cmarket_access_rights_relation::TYPE,
+            engine_native::cmarket_access_rights_relation::VTABLE_RVA,
+            engine_native::cmarket_access_rights_relation::TYPE,
             1,
             3,
         );
@@ -6861,7 +6873,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 (cguarantee_relation::TYPE, 1),
-                (engine::cmarket_access_rights_relation::TYPE, 3),
+                (engine_native::cmarket_access_rights_relation::TYPE, 3),
             ]
         );
         let mut intel = relations_kit::intel_captured(16, 16);
@@ -7104,14 +7116,16 @@ mod tests {
         let slice = |hour: i32| {
             all.iter()
                 .copied()
-                .filter(|&owner| replay::cadence::slice_of(owner) == hour.rem_euclid(24) as u32)
+                .filter(|&owner| {
+                    replay_data::cadence::slice_of(owner) == hour.rem_euclid(24) as u32
+                })
                 .collect::<std::collections::BTreeSet<_>>()
         };
         let one = *all.iter().next().unwrap();
         // The first hour sized the shared store; the next reads every owner
         // again while its baseline records them.
         assert_eq!(hour(&mut pack, &mut store, 2, 16, None).0, all);
-        let own = replay::cadence::slice_of(one) as i32 + 24;
+        let own = replay_data::cadence::slice_of(one) as i32 + 24;
         assert_eq!(hour(&mut pack, &mut store, own, 16, None).0, slice(own));
         // An empty seed grows during its original worker walk and publishes
         // this hour's complete slice. The next hour reads only its own slice.
@@ -7204,7 +7218,9 @@ mod tests {
         let slice = |hour: i32| {
             all.iter()
                 .copied()
-                .filter(|&owner| replay::cadence::slice_of(owner) == hour.rem_euclid(24) as u32)
+                .filter(|&owner| {
+                    replay_data::cadence::slice_of(owner) == hour.rem_euclid(24) as u32
+                })
                 .collect::<std::collections::BTreeSet<_>>()
         };
         let (owners, unpublished) = read(25, &mut store, true);
@@ -7551,7 +7567,7 @@ mod tests {
     fn cap_capacities() -> Capacities {
         let mut capacities = Capacities {
             rows: [2; N],
-            intel_scratch: 2 * engine::country_intel_row::STRIDE,
+            intel_scratch: 2 * engine_native::country_intel_row::STRIDE,
             subject_names: 8,
             autonomy_names: 8,
             agency_names: 8,
@@ -7674,11 +7690,11 @@ mod tests {
             cap_put(
                 &mut bytes,
                 goal,
-                &(engine::cwar_goal::VTABLE_RVA as u64).to_le_bytes(),
+                &(engine_native::cwar_goal::VTABLE_RVA as u64).to_le_bytes(),
             );
             cap_put(
                 &mut bytes,
-                goal + engine::cwar_goal::RECIPIENT,
+                goal + engine_native::cwar_goal::RECIPIENT,
                 &recipient.to_le_bytes(),
             );
         }
@@ -7704,7 +7720,7 @@ mod tests {
             assert_eq!(split.capitulation.outcome, direct);
             assert_eq!(split.capitulation.rows[0], rows[0]);
             let table = split.capitulation_table(split.capitulation.outcome);
-            let TableView::Complete(replay::rows::TableRows::Capitulation(converted)) = table
+            let TableView::Complete(replay_data::rows::TableRows::Capitulation(converted)) = table
             else {
                 panic!("complete capitulation table");
             };
@@ -7743,11 +7759,11 @@ mod tests {
         cap_put(
             &mut bytes,
             0x4500,
-            &(engine::cwar_goal::VTABLE_RVA as u64).to_le_bytes(),
+            &(engine_native::cwar_goal::VTABLE_RVA as u64).to_le_bytes(),
         );
         cap_put(
             &mut bytes,
-            0x4500 + engine::cwar_goal::RECIPIENT,
+            0x4500 + engine_native::cwar_goal::RECIPIENT,
             &7_u32.to_le_bytes(),
         );
         let memory = Hole {
@@ -7781,7 +7797,7 @@ mod tests {
         split.decode_capitulation_payload(CAP_BASE, &job, &mut [0; 1]);
         assert_eq!(split.capitulation.outcome, direct);
         assert_eq!(split.capitulation.rows[0], rows[0]);
-        let TableView::Complete(replay::rows::TableRows::Capitulation(converted)) =
+        let TableView::Complete(replay_data::rows::TableRows::Capitulation(converted)) =
             split.capitulation_table(split.capitulation.outcome)
         else {
             panic!("complete capitulation table");
@@ -7819,11 +7835,11 @@ mod tests {
         cap_put(
             &mut bytes,
             0x4500,
-            &(engine::cwar_goal::VTABLE_RVA as u64).to_le_bytes(),
+            &(engine_native::cwar_goal::VTABLE_RVA as u64).to_le_bytes(),
         );
         cap_put(
             &mut bytes,
-            0x4500 + engine::cwar_goal::RECIPIENT,
+            0x4500 + engine_native::cwar_goal::RECIPIENT,
             &7_u32.to_le_bytes(),
         );
         let trace = || Trace {

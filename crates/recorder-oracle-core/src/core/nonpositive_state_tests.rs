@@ -1,5 +1,6 @@
 use super::*;
-use replay::{frame::TableView, rows::TableRows};
+use replay_data::rows::TableRows;
+use replay_frame::frame::TableView;
 
 fn fixture(
     owner: u32,
@@ -269,11 +270,11 @@ fn state_category_compares_its_token_spelling_with_the_saved_name() {
         save.states.get_mut(&1).unwrap().category = saved.map(|name| name.as_bytes().to_vec());
         frame.tables[TableId::LexicalTokens.index()] =
             TableView::Complete(TableRows::LexicalTokens(vec![
-                replay::rows::LexicalTokenRow {
+                replay_data::rows::LexicalTokenRow {
                     token: 41,
                     literal: b"Large_Town".to_vec(),
                 },
-                replay::rows::LexicalTokenRow {
+                replay_data::rows::LexicalTokenRow {
                     token: 42,
                     literal: b"city".to_vec(),
                 },
@@ -284,7 +285,7 @@ fn state_category_compares_its_token_spelling_with_the_saved_name() {
         else {
             unreachable!()
         };
-        states[0].category = replay::rows::Recorded::Value(actual);
+        states[0].category = replay_data::rows::Recorded::Value(actual);
         run(&frame, &save, &membership)
     };
     let category = |report: &Report| {
@@ -305,7 +306,7 @@ fn state_category_compares_its_token_spelling_with_the_saved_name() {
 /// admits only a nonpositive population.
 #[test]
 fn state_population_compares_with_the_saved_pool_total() {
-    let with = |actual: replay::rows::Recorded<i32>, saved: Option<Option<i32>>| {
+    let with = |actual: replay_data::rows::Recorded<i32>, saved: Option<Option<i32>>| {
         let (mut frame, mut save, membership) = fixture(0, 999);
         save.states.get_mut(&1).unwrap().population = saved;
         let TableView::Complete(TableRows::States(states)) =

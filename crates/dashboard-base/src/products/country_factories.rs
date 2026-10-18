@@ -3,7 +3,7 @@
 //!
 //! The values are the recorded `CountryFactories` rows (table 257, hourly): the
 //! stored totals the top bar, factory tooltips and factory triggers read
-//! (see `engine::factory_group` and `engine::civ_factory_consumer`). A group's
+//! (see `engine_native::factory_group` and `engine_native::civ_factory_consumer`). A group's
 //! buildings count through their content flags (`military_production`,
 //! `naval_production`, `general_production`), in the states the country controls
 //! and its offsite buildings, so occupied land is included and its own land
@@ -50,12 +50,10 @@ use crate::{
     catalogue::{self, Catalogue},
     metadata::{IdentityTrack, slot_read, tagged_countries, validate_campaign},
 };
-use installed_content::buildings::Buildings;
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder},
-    rows::{CountryFactoriesRow, TableId, tables},
-};
+use installed_content_core::buildings::Buildings;
+use replay::container::Replay;
+use replay_data::{rows::CountryFactoriesRow, rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -69,7 +67,7 @@ use ts_rs::TS;
 
 pub struct CountryFactories;
 
-/// The fixed5 scale of the recorded totals (`engine::factory_group`: i64 x100000).
+/// The fixed5 scale of the recorded totals (`engine_native::factory_group`: i64 x100000).
 const FIXED5: i64 = 100_000;
 
 const CACHED_BRANCHES: usize = 2;
@@ -95,7 +93,7 @@ impl FactoryGroupKey {
     pub const ALL: [Self; 3] = [Self::Military, Self::Naval, Self::Civilian];
 
     /// The building template flag that counts a building in this group
-    /// (`installed_content::buildings::FactoryFlags`).
+    /// (`installed_content_core::buildings::FactoryFlags`).
     pub fn flag(self) -> &'static str {
         match self {
             Self::Military => "military_production",
@@ -104,7 +102,7 @@ impl FactoryGroupKey {
         }
     }
 
-    fn counts(self, flags: &installed_content::buildings::FactoryFlags) -> bool {
+    fn counts(self, flags: &installed_content_core::buildings::FactoryFlags) -> bool {
         match self {
             Self::Military => flags.military(),
             Self::Naval => flags.naval(),
@@ -530,7 +528,7 @@ impl Scan {
     pub(crate) fn observe(
         &mut self,
         decoded: &DecodedFrame,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
     ) {
         self.observe_changes(decoded, format, None);
         self.seal();
@@ -548,7 +546,7 @@ impl Scan {
     fn observe_changes(
         &mut self,
         decoded: &DecodedFrame,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         changes: Option<&crate::prepared::frame_changes::FrameChanges>,
     ) {
         self.observed.clear();
@@ -1229,7 +1227,7 @@ pub fn content_groups(catalogue: &Catalogue) -> (Vec<FactoryGroupInfo>, Vec<Stri
 /// read is said in a warning. Missing titles remain unavailable; definition keys
 /// and group flags stay separate for diagnostics and selection.
 fn describe_groups_with_findings(
-    layers: &installed_content::ResolvedLayers,
+    layers: &installed_content_core::ResolvedLayers,
     localise: impl Fn(&str) -> Option<String>,
 ) -> (
     Vec<FactoryGroupInfo>,
@@ -1239,7 +1237,7 @@ fn describe_groups_with_findings(
     use crate::findings::{Finding, Kind};
     let mut warnings = Vec::new();
     let mut findings = Vec::new();
-    match installed_content::buildings::read(layers) {
+    match installed_content_core::buildings::read(layers) {
         Ok(buildings) => {
             for token in &buildings.ambiguous_factory_types {
                 let message = format!(

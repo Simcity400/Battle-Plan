@@ -7,7 +7,7 @@ use super::{
     Decimal, GameDate, block, boolean, bytes, decimal, field, integer, invalid, object_id,
     required_block, required_bytes, scalar, typed_handle,
 };
-use installed_content::parser::Item;
+use installed_content_core::parser::Item;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
@@ -106,7 +106,7 @@ fn parse_organisation(key: &[u8], items: &[Item]) -> io::Result<Organisation> {
     })
 }
 
-fn parse_equipment_roster(value: &installed_content::parser::Value) -> io::Result<Vec<u64>> {
+fn parse_equipment_roster(value: &installed_content_core::parser::Value) -> io::Result<Vec<u64>> {
     block(value)?
         .iter()
         .map(|item| {

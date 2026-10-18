@@ -1,6 +1,7 @@
 use super::*;
 use dashboard_base::test_fixtures::{CAMPAIGN, records};
-use replay::{frame::TableView, rows::TableRows};
+use replay_data::rows::TableRows;
+use replay_frame::frame::TableView;
 
 #[test]
 fn supply_phase_b_defines_cache_success_and_named_failure_before_observation() {
@@ -199,7 +200,7 @@ fn supply_phase_b_deferred_runs_match_oracle_after_two_commits_resume_append_and
             prepared
                 .observe(
                     frame,
-                    &tracker.observe(frame, replay::format::FormatVersion::CURRENT),
+                    &tracker.observe(frame, replay_data::format::FormatVersion::CURRENT),
                 )
                 .unwrap();
         }
@@ -500,14 +501,14 @@ fn phase_b_supply_one_status_row_does_not_visit_empty_countries_or_retired_holde
             }
             state.observe(
                 &frame,
-                &tracker.observe(&frame, replay::format::FormatVersion::CURRENT),
+                &tracker.observe(&frame, replay_data::format::FormatVersion::CURRENT),
             )?;
         }
         let work = observer_tests::unchanged_frames(
             state.scan.work,
             &frame,
             hours,
-            replay::format::FormatVersion::CURRENT,
+            replay_data::format::FormatVersion::CURRENT,
             |frame, changes| {
                 state.observe(frame, changes)?;
                 Ok(state.scan.work)
@@ -515,7 +516,7 @@ fn phase_b_supply_one_status_row_does_not_visit_empty_countries_or_retired_holde
         )?;
         assert_eq!(work, observer_tests::Work::default());
         frame.hour += hours;
-        tracker.observe(&frame, replay::format::FormatVersion::CURRENT);
+        tracker.observe(&frame, replay_data::format::FormatVersion::CURRENT);
         frame.hour += 1;
         if let TableView::Complete(TableRows::DivisionStatus(rows)) =
             &mut *frame.tables[TableId::DivisionStatus.index()]
@@ -525,7 +526,7 @@ fn phase_b_supply_one_status_row_does_not_visit_empty_countries_or_retired_holde
         let before = state.scan.work;
         state.observe(
             &frame,
-            &tracker.observe(&frame, replay::format::FormatVersion::CURRENT),
+            &tracker.observe(&frame, replay_data::format::FormatVersion::CURRENT),
         )?;
         let after = state.scan.work;
         let changed = observer_tests::Work {
@@ -553,10 +554,11 @@ fn assert_supply_counts_follow_changed_divisions(count: u64) {
         frame_changes::FrameChangeTracker,
         series::tests::{Fixture, assert_payloads_equal},
     };
-    use replay::frame::{FrameDecoder, FrameEncoder};
-    use replay::rows::{
-        CountryLinkRow, CountryRow, DivisionLandInputsRow, DivisionRow, DivisionStatusRow,
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::DivisionLandInputsRow, rows::DivisionRow,
+        rows::DivisionStatusRow,
     };
+    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
     let flag = AtomicBool::new(false);
     let mut input = crate::products::supply_health::tests::frame(100);
     *input.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
@@ -670,10 +672,10 @@ fn assert_supply_counts_follow_changed_divisions(count: u64) {
                 tracker.observe_updates(
                     &decoded,
                     std::sync::Arc::clone(&wire),
-                    replay::format::FormatVersion::CURRENT,
+                    replay_data::format::FormatVersion::CURRENT,
                 )
             } else {
-                tracker.observe(&decoded, replay::format::FormatVersion::CURRENT)
+                tracker.observe(&decoded, replay_data::format::FormatVersion::CURRENT)
             };
             let before = state.scan.division_visits;
             let before_totals = state.scan.total_visits;

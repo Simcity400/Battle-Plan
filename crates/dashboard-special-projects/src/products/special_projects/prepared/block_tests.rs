@@ -1,12 +1,9 @@
 use super::*;
 use crate::products::special_projects::history_tests::frame;
 use dashboard_base::test_fixtures::{CAMPAIGN, records};
-use replay::{
-    container::BlockChange,
-    frame::{TableUpdate, TableView},
-    rows::TableRows,
-    spool::Record,
-};
+use replay::{container::BlockChange, spool::Record};
+use replay_data::rows::TableRows;
+use replay_frame::{frame::TableUpdate, frame::TableView};
 
 /// Hours 100 to 105 whose rows are equal; at 103 the dictionary is recorded
 /// again whole, with the same rows.
@@ -109,7 +106,7 @@ fn the_watch_list_names_existing_fields() {
 
 fn extract() -> BlockExtract {
     BlockExtract {
-        format: replay::format::FormatVersion::CURRENT,
+        format: replay_data::format::FormatVersion::CURRENT,
         world: true,
         hours: Vec::new(),
         last: None,
@@ -123,7 +120,7 @@ fn extract() -> BlockExtract {
 #[test]
 fn unscoped_project_reads_leave_out_country_presentation_tables() {
     let selection = bound(false).unwrap();
-    for table in installed_content::country_names::TABLES {
+    for table in installed_content_country_names::country_names::TABLES {
         assert_eq!(
             selection.tables.contains(&table),
             matches!(table, TableId::Countries | TableId::CountryLinks)
@@ -141,7 +138,7 @@ fn unchanged_history_keeps_its_completion_deadline_without_scanning_again() {
     let mut first = frame(100, true, 2);
     first.tables[TableId::ProjectHistory.index()] =
         TableView::Complete(TableRows::ProjectHistory(vec![
-            replay::rows::ProjectHistoryRow {
+            replay_data::rows::ProjectHistoryRow {
                 owner: 1,
                 ordinal: 1,
                 date: 105,
@@ -215,7 +212,7 @@ fn an_extract_tells_whole_frames_from_frames_built_on_the_last() {
 /// again, the read's own, and the frame is whole.
 #[test]
 fn a_read_frame_carrying_a_table_built_earlier_is_not_whole() {
-    use replay::rows::{ScriptVariableEntry, ScriptVariablesRow, StateRow};
+    use replay_data::{rows::ScriptVariableEntry, rows::ScriptVariablesRow, rows::StateRow};
     let states = TableId::States.index();
     let variables = TableId::ScriptVariables.index();
     let with = |hour: i32, manpower: i32, flag: i64| {
@@ -232,7 +229,7 @@ fn a_read_frame_carrying_a_table_built_earlier_is_not_whole() {
             TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
                 scope_kind: 1,
                 scope_id: 1,
-                seed: replay::rows::Recorded::Value(None),
+                seed: replay_data::rows::Recorded::Value(None),
                 entries: vec![ScriptVariableEntry {
                     name: b"project_flag".to_vec(),
                     value_raw: flag,
@@ -276,7 +273,7 @@ fn a_read_frame_carrying_a_table_built_earlier_is_not_whole() {
 /// key's, and no owner whose rows are equal.
 #[test]
 fn changed_project_owners_are_those_a_delta_names() {
-    use replay::rows::ProjectRow;
+    use replay_data::rows::ProjectRow;
     let with = |rows: Vec<(u32, u32, i32)>| {
         let mut frame = frame(100, true, 2);
         frame.tables[TableId::Projects.index()] = TableView::Complete(TableRows::Projects(

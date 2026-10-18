@@ -317,7 +317,7 @@ typed_codec!(ArmyOrderPlanRow, 96, |row| (row.owner_group as u128) << 32 | row.i
   if inputs.group_child_count.is_some() && inputs.count.is_none_or(|count| count == 0) { return Err(invalid("army-group child count outside native demand")); }
   if let Some(sections) = &inputs.sections {
    let prefix = inputs.count.and_then(|count| if count == 0 { Some(0) } else { inputs.group_child_count.filter(|&group_count| group_count > 0).map(|group_count| count.min(group_count as u32) as usize) });
-   if prefix != Some(sections.len()) || sections.iter().any(|section| section.group == 0 || section.group as u32 != engine::corders_group::REFERENCE_TYPE) { return Err(invalid("invalid demanded child-front prefix or group identity")); }
+   if prefix != Some(sections.len()) || sections.iter().any(|section| section.group == 0 || section.group as u32 != engine_native::corders_group::REFERENCE_TYPE) { return Err(invalid("invalid demanded child-front prefix or group identity")); }
    if !sections.is_empty() && inputs.group_child_count.is_none_or(|count| count <= 0) { return Err(invalid("stored child spans outside native group-count demand")); }
   }
  }
@@ -517,7 +517,9 @@ typed_codec!(DivisionEtaInputsRow, 64, |row| row.division as u128,
 });
 
 /// Shared native operand/status types; replay owns their compact wire encoding.
-pub use engine::carmy::{StrategicAction, StrategicActionFailure, StrategicRedeploymentInputs};
+pub use engine_native::{
+    carmy::StrategicAction, carmy::StrategicActionFailure, carmy::StrategicRedeploymentInputs,
+};
 
 value_struct!(StrategicRedeploymentInputs {
     country_modifier: i64,
@@ -1682,7 +1684,7 @@ typed_codec!(LandTheatreMemberRow, 128, |row| (row.theater_group as u128) << 64 
 /// fields record nothing.
 ///
 /// The save writes only progress among the preparation operands, which the
-/// oracle compares. Unit selection lives in engine::invasion_preparations.
+/// oracle compares. Unit selection lives in engine_native::invasion_preparations.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct InvasionPreparationRow {
     pub owner_group: u64,

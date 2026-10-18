@@ -12,12 +12,12 @@ use crate::{
     products::{ContentOptions, LoadContext},
 };
 use dashboard_base::prepared::timing::{FamilyTimings, family_time, finish_timing, start_timing};
-use replay::frame::DecodedFrame;
-use replay::identity::IdentityCodec;
 use replay::{
-    container::{BlockIndex, Replay, ReplayCursor, ReplayStream},
-    rows::TableId,
+    container::BlockIndex, container::Replay, container::ReplayCursor, container::ReplayStream,
 };
+use replay_data::identity::IdentityCodec;
+use replay_data::rows::TableId;
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::io::Read;
@@ -884,7 +884,12 @@ struct BranchState {
     equipment_losses: Unsaved<crate::products::equipment_losses::prepared::Prepared>,
 }
 impl BranchState {
-    fn resume(&mut self, frame: &replay::frame::DecodedFrame, branch: u64, refused: &Refused) {
+    fn resume(
+        &mut self,
+        frame: &replay_frame::frame::DecodedFrame,
+        branch: u64,
+        refused: &Refused,
+    ) {
         if frame.branch == branch {
             if refused.live("naval") {
                 self.naval.resume(frame);
@@ -989,7 +994,7 @@ fn save_branch(writer: &mut store::Writer, branch: u64, state: &BranchState) -> 
 }
 /// The JSON encoding shared by hourly branch and independent family continuations.
 fn compressed_json<T: Serialize>(value: &T) -> io::Result<Vec<u8>> {
-    let _cpu = ::replay::cpu::scope("save serialize", None);
+    let _cpu = ::replay_frame::cpu::scope("save serialize", None);
     let mut encoded =
         io::BufWriter::with_capacity(1 << 20, zstd::stream::Encoder::new(Vec::new(), 1)?);
     serde_json::to_writer(&mut encoded, value)?;
@@ -999,7 +1004,7 @@ fn compressed_json<T: Serialize>(value: &T) -> io::Result<Vec<u8>> {
         .finish()
 }
 fn json<T: Serialize>(writer: &mut store::Writer, section: &str, value: &T) -> io::Result<()> {
-    let _cpu = ::replay::cpu::scope("save serialize", None);
+    let _cpu = ::replay_frame::cpu::scope("save serialize", None);
     writer.write_at(section, 0, serde_json::to_vec(value)?.as_slice())
 }
 fn header(replay: &Replay) -> io::Result<Vec<u8>> {
@@ -1456,7 +1461,7 @@ fn selected() -> &'static [TableId] {
             crate::products::game_score::SCORE_TABLES,
             crate::products::autonomy::TABLES,
             crate::products::land_owners::TABLES,
-            &installed_content::country_names::TABLES,
+            &installed_content_country_names::country_names::TABLES,
         ];
         TableId::ALL
             .into_iter()
@@ -1946,7 +1951,7 @@ pub struct PreparationTimings {
 macro_rules! time_family {
     ($timings:ident, $family:literal, $phase:ident, $operation:expr) => {{
         // Measurement only: thread CPU by family, when the harness enables it.
-        let _cpu = ::replay::cpu::scope(
+        let _cpu = ::replay_frame::cpu::scope(
             if stringify!($phase) == "flush" {
                 "commit"
             } else {
@@ -2069,14 +2074,18 @@ pub fn run_measured_through(
         prior_observe: Duration::ZERO,
         lane_families: None,
     };
-    let result = run_inner(
-        source,
-        content,
-        cancelled,
-        accepted,
-        |_| Ok(()),
-        Some(&mut measurement),
-    )?;
+    let result = {
+        // Release callback captures before recording the post-run timings.
+        let mut accepted = accepted;
+        run_inner(
+            source,
+            content,
+            cancelled,
+            &mut accepted,
+            &mut |_| Ok(()),
+            Some(&mut measurement),
+        )
+    }?;
     if let Some(started) = measurement.cleanup_started
         && let Some(families) = measurement.timings.families.as_mut()
     {
@@ -2109,18 +2118,27 @@ fn run_checked(
     source: &Source,
     content: Option<&ContentOptions>,
     cancelled: &AtomicBool,
-    accepted: impl FnMut(&Accepted),
-    before_commit: impl FnMut(usize) -> io::Result<()>,
+    mut accepted: impl FnMut(&Accepted),
+    mut before_commit: impl FnMut(usize) -> io::Result<()>,
 ) -> io::Result<Accepted> {
-    run_inner(source, content, cancelled, accepted, before_commit, None)
+    run_inner(
+        source,
+        content,
+        cancelled,
+        &mut accepted,
+        &mut before_commit,
+        None,
+    )
 }
 
+// Compile the preparation engine once, independently of caller callback types.
+#[inline(never)]
 fn run_inner(
     source: &Source,
     content: Option<&ContentOptions>,
     cancelled: &AtomicBool,
-    mut accepted: impl FnMut(&Accepted),
-    mut before_commit: impl FnMut(usize) -> io::Result<()>,
+    accepted: &mut dyn FnMut(&Accepted),
+    before_commit: &mut dyn FnMut(usize) -> io::Result<()>,
     mut measurement: Option<&mut Measurement<'_>>,
 ) -> io::Result<Accepted> {
     let mut family_timings: Option<BTreeMap<&'static str, FamilyTimings>> =
@@ -3583,7 +3601,7 @@ fn run_inner(
                     if let Some(value) = &mut measurement {
                         value.timings.worker_lanes = lanes.count();
                     }
-                    let mut observe = |updates: replay::frame::RecordedFrame,
+                    let mut observe = |updates: replay_frame::frame::RecordedFrame,
                                        frame: &DecodedFrame| {
                         let frame_started = start_timing(&family_timings);
                         let observing_started = measured.then(Instant::now);

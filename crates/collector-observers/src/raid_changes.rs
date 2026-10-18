@@ -1,5 +1,5 @@
 //! Allocation-free notifications from the native writers of the raid state
-//! inputs and the building-resource overrides ([`engine::raid_mutations`]).
+//! inputs and the building-resource overrides ([`engine_mutations::raid_mutations`]).
 //! A detour only marks the id its arguments name in one of the family's
 //! [`DirtySet`]s, counts its site and calls the original; it never changes
 //! game behaviour.
@@ -43,10 +43,10 @@ use crate::{
     dirty_set::{Dirty, DirtySet},
     hook::Hook,
 };
-use engine::{
-    Memory,
-    raid_mutations::{DAILY_CAPACITIES, MUTATIONS, Receiver},
+use engine_mutations::{
+    raid_mutations::DAILY_CAPACITIES, raid_mutations::MUTATIONS, raid_mutations::Receiver,
 };
+use engine_native::Memory;
 use std::{
     cell::Cell,
     ops::Range,
@@ -230,7 +230,7 @@ impl Watches {
     /// a state status marks its state, whose infrastructure building it may
     /// hold; a province status holds none a row reads.
     fn building(&self, flags: u32, location: u32) -> Option<Dirty<'_>> {
-        if flags & engine::cbuilding_status::STATE_FLAG == 0 {
+        if flags & engine_native::cbuilding_status::STATE_FLAG == 0 {
             return None;
         }
         self.buildings[0].fetch_add(1, Ordering::Relaxed);
@@ -342,31 +342,34 @@ pub const VERIFY: bool = cfg!(feature = "raid_verify");
 /// What a site's arguments name.
 fn target(receiver: Receiver, first: usize, second: usize, third: usize) -> Target {
     // SAFETY: guarded reads of live memory on the calling thread.
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     match receiver {
-        Receiver::CountryResources => {
-            Target::Country(engine::raid_mutations::country(&memory, first).map(|raw| raw as usize))
-        }
+        Receiver::CountryResources => Target::Country(
+            engine_mutations::raid_mutations::country(&memory, first).map(|raw| raw as usize),
+        ),
         Receiver::StrategicAir | Receiver::CountryTag | Receiver::PoolCapacity => {
-            match engine::raid_mutations::site_country(&memory, receiver, first, second, third) {
+            match engine_mutations::raid_mutations::site_country(
+                &memory, receiver, first, second, third,
+            ) {
                 Ok(Some(raw)) => Target::Site(Some(raw as usize)),
                 Ok(None) => Target::Nothing,
-                Err(engine::raid_mutations::Unreadable) => Target::Site(None),
+                Err(engine_mutations::raid_mutations::Unreadable) => Target::Site(None),
             }
         }
         Receiver::EveryCountry => Target::EverySite,
         Receiver::Route | Receiver::RouteSender => {
-            match engine::raid_mutations::route_country(&memory, receiver, first, second) {
+            match engine_mutations::raid_mutations::route_country(&memory, receiver, first, second)
+            {
                 Ok(Some(raw)) => Target::Route(Some(raw as usize)),
                 Ok(None) => Target::Nothing,
-                Err(engine::raid_mutations::Unreadable) => Target::Route(None),
+                Err(engine_mutations::raid_mutations::Unreadable) => Target::Route(None),
             }
         }
         Receiver::EveryRoute => Target::EveryRoute,
-        _ => match engine::raid_mutations::state(&memory, receiver, first, third) {
+        _ => match engine_mutations::raid_mutations::state(&memory, receiver, first, third) {
             Ok(Some(id)) => Target::State(Some(id as usize)),
             Ok(None) => Target::Nothing,
-            Err(engine::raid_mutations::Unreadable) => Target::State(None),
+            Err(engine_mutations::raid_mutations::Unreadable) => Target::State(None),
         },
     }
 }
@@ -380,7 +383,7 @@ fn note_air_clear(site: usize) {
 }
 
 /// The token RaidAirScores carries its off-phase pairs under
-/// ([`engine::raid_air_scores::Held::certify`]): the count of in-place clears
+/// ([`engine_raid_inputs::raid_air_scores::Held::certify`]): the count of in-place clears
 /// while the hooks observe, `None` while they do not. Enabling or disabling
 /// the hooks moves it, so a clear no hook saw cannot leave it unchanged.
 pub fn air_clear_token() -> Option<u64> {
@@ -558,7 +561,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "raid_changes")
             && MUTATIONS.iter().all(|(site, _)| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             BASE.store(base, Ordering::Release);
@@ -606,7 +609,7 @@ impl Hooks {
             // Without the daily pass's patch every store takes the setter's
             // own path.
             let daily = DAILY_CAPACITIES;
-            if engine::read::<[u8; 16]>(memory, base + daily.rva) == Some(daily.sentinel) {
+            if engine_native::read::<[u8; 16]>(memory, base + daily.rva) == Some(daily.sentinel) {
                 let hook = unsafe {
                     Hook::new(
                         base + daily.rva,
@@ -791,9 +794,13 @@ unsafe extern "system" fn set_country_pool_capacity(
         return timing.original(|| unsafe { original(first, second, third, fourth) });
     }
     // SAFETY: guarded reads of live memory on the calling thread.
-    let memory = unsafe { engine::memory::LiveMemory::new() };
-    let held =
-        engine::raid_mutations::pool_capacity(&memory, BASE.load(Ordering::Relaxed), first, third);
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let held = engine_mutations::raid_mutations::pool_capacity(
+        &memory,
+        BASE.load(Ordering::Relaxed),
+        first,
+        third,
+    );
     let changed = held != Some(second as i64);
     let _mark = WATCHES.capacity(CAPACITY_SITE, changed, || {
         target(MUTATIONS[CAPACITY_SITE].1, first, second, third)
@@ -805,7 +812,7 @@ unsafe extern "system" fn set_country_pool_capacity(
 /// `daily air base capacity refresh(air, pairs)`, the
 /// daily pass that calls the capacity setter for every (base, country) pair.
 /// When each of its stores keeps the capacity already there and it withdraws
-/// no base ([`engine::raid_mutations::daily_unchanged`]), the pass changes
+/// no base ([`engine_mutations::raid_mutations::daily_unchanged`]), the pass changes
 /// nothing the setter reads, so every one of its setter calls would find its
 /// store unchanged and mark nothing: they are counted here and run the
 /// original without reading. Any other pass, or one whose words do not read,
@@ -827,10 +834,10 @@ unsafe extern "system" fn daily_refresh_base_capacities(
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::RaidChanges);
     DAILY_FLIGHTS.fetch_add(1, Ordering::SeqCst);
     // SAFETY: guarded reads of live memory on the calling thread.
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let unchanged = collector_extended_support::hourly::ticking()
         .then(|| {
-            engine::raid_mutations::daily_unchanged(
+            engine_mutations::raid_mutations::daily_unchanged(
                 &memory,
                 BASE.load(Ordering::Relaxed),
                 first,
@@ -893,13 +900,14 @@ mod tests {
     #[test]
     fn receivers_name_their_state_or_country() {
         let mut state = vec![0_u8; 0x400];
-        state[engine::cstate::ID..][..4].copy_from_slice(&42_u32.to_le_bytes());
+        state[engine_native::cstate::ID..][..4].copy_from_slice(&42_u32.to_le_bytes());
         let state_at = state.as_ptr() as usize;
         let mut origin = vec![0_u8; 0x100];
-        origin[engine::cresource_origin::STATE..][..8]
+        origin[engine_resources::cresource_origin::STATE..][..8]
             .copy_from_slice(&(state_at as u64).to_le_bytes());
         let mut resources = vec![0_u8; 0x100];
-        resources[engine::ccountry_resources::OWNER..][..4].copy_from_slice(&9_u32.to_le_bytes());
+        resources[engine_resources::ccountry_resources::OWNER..][..4]
+            .copy_from_slice(&9_u32.to_le_bytes());
         assert_eq!(
             target(Receiver::State, state_at, 0, 0),
             Target::State(Some(42))
@@ -907,7 +915,7 @@ mod tests {
         assert_eq!(
             target(
                 Receiver::StatePool,
-                state_at + engine::cstate::RESOURCE_POOL,
+                state_at + engine_native::cstate::RESOURCE_POOL,
                 0,
                 0
             ),
@@ -922,7 +930,8 @@ mod tests {
             target(Receiver::Origin, origin.as_ptr() as usize, 0, 0),
             Target::State(Some(42))
         );
-        origin[engine::cresource_origin::STATE..][..8].copy_from_slice(&0_u64.to_le_bytes());
+        origin[engine_resources::cresource_origin::STATE..][..8]
+            .copy_from_slice(&0_u64.to_le_bytes());
         assert_eq!(
             target(Receiver::Origin, origin.as_ptr() as usize, 0, 0),
             Target::Nothing
@@ -944,7 +953,7 @@ mod tests {
         // A site list writer names its strategic air object's link, the
         // link RDX or R8 points to, or every country; link zero names none.
         let mut air = vec![0_u8; 0x100];
-        air[engine::cstrategic_air::COUNTRY..][..4].copy_from_slice(&7_u32.to_le_bytes());
+        air[engine_native::cstrategic_air::COUNTRY..][..4].copy_from_slice(&7_u32.to_le_bytes());
         let tag = 11_u32.to_le_bytes();
         let zero = 0_u32.to_le_bytes();
         assert_eq!(
@@ -968,7 +977,8 @@ mod tests {
         // A route writer names the country holding its route: the route's sender link, or
         // the link RDX points to for the constructors.
         let mut route = [0_u8; 0x40];
-        route[engine::resource_map::ROUTE_LINKS[0]..][..4].copy_from_slice(&6_u32.to_le_bytes());
+        route[engine_resources::resource_map::ROUTE_LINKS[0]..][..4]
+            .copy_from_slice(&6_u32.to_le_bytes());
         assert_eq!(
             target(Receiver::Route, route.as_ptr() as usize, 0, 0),
             Target::Route(Some(6))
@@ -1068,7 +1078,11 @@ mod tests {
             let watches = Watches::enabled(64, 64);
             let epoch = take(&watches, Family::States).0.unwrap();
             drop(watches.notify(index, Target::State(Some(12))));
-            assert_eq!(take(&watches, Family::States), (Some(epoch), vec![12]), "{name}");
+            assert_eq!(
+                take(&watches, Family::States),
+                (Some(epoch), vec![12]),
+                "{name}"
+            );
         }
     }
 
@@ -1088,12 +1102,15 @@ mod tests {
         // The province receiver names its state through the province.
         let mut memory = vec![0_u8; 0x200];
         let state = memory.as_ptr() as usize + 0x100;
-        let state_slot = engine::cprovince::STATE;
+        let state_slot = engine_native::cprovince::STATE;
         memory[state_slot..state_slot + 8].copy_from_slice(&(state as u64).to_le_bytes());
-        memory[0x100 + engine::cstate::ID..0x100 + engine::cstate::ID + 4]
+        memory[0x100 + engine_native::cstate::ID..0x100 + engine_native::cstate::ID + 4]
             .copy_from_slice(&12_u32.to_le_bytes());
         let province = memory.as_ptr() as usize;
-        assert_eq!(target(Receiver::Province, province, 0, 0), Target::State(Some(12)));
+        assert_eq!(
+            target(Receiver::Province, province, 0, 0),
+            Target::State(Some(12))
+        );
         memory[state_slot..state_slot + 8].fill(0);
         assert_eq!(target(Receiver::Province, province, 0, 0), Target::Nothing);
     }
@@ -1103,7 +1120,7 @@ mod tests {
     /// moves the state set's epoch.
     #[test]
     fn forwarded_building_writes_mark_state_statuses() {
-        use engine::cbuilding_status::{PROVINCE_FLAG, STATE_FLAG};
+        use engine_native::{cbuilding_status::PROVINCE_FLAG, cbuilding_status::STATE_FLAG};
         let watches = Watches::enabled(64, 64);
         let (Some(epoch), _) = take(&watches, Family::States) else {
             unreachable!("observing")
@@ -1210,7 +1227,7 @@ mod tests {
         }
         fn capacity(&mut self, base: usize, slot: usize, value: i64) {
             self.word(
-                Self::container(base, slot) + engine::ccountry_air_container::CAPACITY_RAW,
+                Self::container(base, slot) + engine_native::ccountry_air_container::CAPACITY_RAW,
                 value as u64,
             );
         }
@@ -1220,7 +1237,7 @@ mod tests {
             };
             world.word(0, world.at(Self::GAME) as u64);
             world.array(
-                Self::GAME + engine::cgame_state::COUNTRY_LINKS,
+                Self::GAME + engine_native::cgame_state::COUNTRY_LINKS,
                 Self::LINKS,
                 4,
             );
@@ -1228,13 +1245,13 @@ mod tests {
                 world.half(Self::LINKS + raw * 4, raw as u32);
             }
             world.array(Self::AIR + 0x10, Self::BASES, 2);
-            world.half(Self::AIR + engine::cstrategic_air::COUNTRY, 1);
+            world.half(Self::AIR + engine_native::cstrategic_air::COUNTRY, 1);
             world.word(Self::PAIRS, world.at(Self::VECTORS) as u64);
             for index in 0..2 {
                 world.word(Self::BASES + index * 8, world.at(Self::base(index)) as u64);
                 let containers = Self::base(index) + 0x100;
                 world.array(
-                    Self::base(index) + engine::cair_base::COUNTRY_CONTAINERS,
+                    Self::base(index) + engine_native::cair_base::COUNTRY_CONTAINERS,
                     containers,
                     4,
                 );
@@ -1251,12 +1268,12 @@ mod tests {
                     world.word(Self::entries(index) + entry * 16 + 8, 100_000);
                 }
             }
-            world.word(Self::base(1) + engine::cair_base::STATE, 0x77);
+            world.word(Self::base(1) + engine_native::cair_base::STATE, 0x77);
             world
         }
         fn pass(&self) {
             BASE.store(
-                self.at(0) - engine::cgame_state::SINGLETON_RVA,
+                self.at(0) - engine_native::cgame_state::SINGLETON_RVA,
                 Ordering::Release,
             );
             ORIGINAL[CAPACITY_SITE].store(store as *const () as usize, Ordering::Release);
@@ -1269,12 +1286,13 @@ mod tests {
 
     /// The native capacity store: the slot container's capacity.
     unsafe extern "system" fn store(base: usize, capacity: usize, tag: usize, _: usize) -> usize {
-        let containers =
-            unsafe { *((base + engine::cair_base::COUNTRY_CONTAINERS) as *const *const usize) };
+        let containers = unsafe {
+            *((base + engine_native::cair_base::COUNTRY_CONTAINERS) as *const *const usize)
+        };
         let slot = unsafe { *(tag as *const u32) } as usize;
         let container = unsafe { *containers.add(slot) };
         unsafe {
-            *((container + engine::ccountry_air_container::CAPACITY_RAW) as *mut i64) =
+            *((container + engine_native::ccountry_air_container::CAPACITY_RAW) as *mut i64) =
                 capacity as i64
         };
         0
@@ -1359,8 +1377,9 @@ mod tests {
         assert_eq!(sites(&mut marked), epoch);
         assert_eq!(marked, [3]);
         assert_eq!(
-            world.memory
-                [(DailyWorld::container(1, 3) + engine::ccountry_air_container::CAPACITY_RAW) / 8],
+            world.memory[(DailyWorld::container(1, 3)
+                + engine_native::ccountry_air_container::CAPACITY_RAW)
+                / 8],
             120_000
         );
         WATCHES.hooks.store(false, Ordering::SeqCst);
@@ -1392,17 +1411,21 @@ mod tests {
                 ((COUNTRIES as u64 + 1) << 32) | (COUNTRIES as u64 + 1),
             );
         };
-        array(&mut word, GAME + engine::cgame_state::COUNTRY_LINKS, LINKS);
         array(
             &mut word,
-            AIR_BASE + engine::cair_base::COUNTRY_CONTAINERS,
+            GAME + engine_native::cgame_state::COUNTRY_LINKS,
+            LINKS,
+        );
+        array(
+            &mut word,
+            AIR_BASE + engine_native::cair_base::COUNTRY_CONTAINERS,
             CONTAINERS,
         );
         for slot in 1..=COUNTRIES {
             let object = OBJECTS + slot * 0x100;
             word(CONTAINERS + slot * 8, (at + object) as u64);
             word(
-                object + engine::ccountry_air_container::CAPACITY_RAW,
+                object + engine_native::ccountry_air_container::CAPACITY_RAW,
                 100_000,
             );
         }
@@ -1420,17 +1443,21 @@ mod tests {
             tag: usize,
             _: usize,
         ) -> usize {
-            let containers =
-                unsafe { *((base + engine::cair_base::COUNTRY_CONTAINERS) as *const *const usize) };
+            let containers = unsafe {
+                *((base + engine_native::cair_base::COUNTRY_CONTAINERS) as *const *const usize)
+            };
             let slot = unsafe { *(tag as *const u32) } as usize;
             let container = unsafe { *containers.add(slot) };
             unsafe {
-                *((container + engine::ccountry_air_container::CAPACITY_RAW) as *mut i64) =
+                *((container + engine_native::ccountry_air_container::CAPACITY_RAW) as *mut i64) =
                     capacity as i64
             };
             0
         }
-        BASE.store(at - engine::cgame_state::SINGLETON_RVA, Ordering::Release);
+        BASE.store(
+            at - engine_native::cgame_state::SINGLETON_RVA,
+            Ordering::Release,
+        );
         ORIGINAL[CAPACITY_SITE].store(store as *const () as usize, Ordering::Release);
         let unchanged = || {
             for slot in 1..=COUNTRIES {
@@ -1469,7 +1496,7 @@ mod tests {
         const STATES: usize = 1500;
         let mut memory = vec![0_u64; STATES * 0x100 / 8];
         for state in 0..STATES {
-            memory[(state * 0x100 + engine::cstate::ID) / 8] = state as u64 + 1;
+            memory[(state * 0x100 + engine_native::cstate::ID) / 8] = state as u64 + 1;
         }
         let at = memory.as_ptr() as usize;
         let tag = 5_u32;

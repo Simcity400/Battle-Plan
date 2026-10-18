@@ -1,9 +1,7 @@
 use super::test_fixtures::{frame, replay};
 use super::*;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::*,
-};
+use replay_data::rows::*;
+use replay_frame::{frame::Metrics, frame::TableView};
 
 fn scan(frames: Vec<DecodedFrame>) -> PeaceDealsReply {
     scan_branch(&replay(frames), 1, &AtomicBool::new(false)).unwrap()
@@ -178,7 +176,7 @@ fn busy_drain_keeps_event_hour_tags_without_redating_victory_points() {
     let event = frame(101, 5, true, &[]);
     let mut busy = frame(102, 5, true, &[]);
     *busy.tables[TableId::PeaceSettlements.index()] = TableView::Unavailable {
-        reason: replay::rows::PEACE_DRAIN_BUSY.into(),
+        reason: replay_data::rows::PEACE_DRAIN_BUSY.into(),
     };
     let mut publication = frame(103, 5, true, &[]);
     for sample in [&mut busy, &mut publication] {
@@ -494,7 +492,7 @@ fn token_spelling_does_not_guess_an_action_naming_key() {
     )]);
     name_actions(
         &mut result,
-        &installed_content::localisation::Localisation::default(),
+        &installed_content_localisation::localisation::Localisation::default(),
         "english",
     );
     let action = &result.deals[0].captured.as_ref().unwrap().actions[0];
@@ -514,7 +512,7 @@ fn cached_native_type_name_keeps_saved_override_and_recording_language() {
     row.actions[0].name_key = None;
     let result = scan(vec![with_settlement(frame(101, 3, true, &[]), row)]);
     let mut same = result.clone();
-    let mut localisation = installed_content::localisation::Localisation::default();
+    let mut localisation = installed_content_localisation::localisation::Localisation::default();
     localisation.language = "english".into();
     name_actions(&mut same, &localisation, "english");
     assert_eq!(
@@ -629,8 +627,9 @@ fn exact_mod_action_names_follow_recorded_content_order() {
         )
         .unwrap();
     }
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&base, &[]), (&modded, &[])]).unwrap();
-    let localisation = installed_content::localisation::read(&layers, "english").unwrap();
+    let layers =
+        installed_content_core::ResolvedLayers::from_folders(&[(&base, &[]), (&modded, &[])]).unwrap();
+    let localisation = installed_content_localisation::localisation::read(&layers, "english").unwrap();
     let mut row = settled_row();
     row.actions[0].name_key = Some(b"custom_frontier_demand".to_vec());
     let mut result = scan(vec![with_settlement(frame(101, 3, true, &[]), row)]);
@@ -803,7 +802,7 @@ fn unresolved_or_replaced_wars_do_not_masquerade_as_a_removed_pair() {
 #[test]
 fn scheduled_roster_reads_without_timings_end_the_recorded_conference() {
     let hour = (100..)
-        .find(|hour| replay::cadence::is_refresh(TableId::PeaceConferences, *hour))
+        .find(|hour| replay_data::cadence::is_refresh(TableId::PeaceConferences, *hour))
         .unwrap();
     let mut after = frame(hour, 0, false, &[]);
     after.metrics = Metrics::default();
@@ -1564,8 +1563,8 @@ fn mod_localisation_renames_the_discovered_state_action_and_refuses_unsupported_
         std::fs::write(file, text).unwrap();
     }
     let layers =
-        installed_content::ResolvedLayers::from_folders(&[(&vanilla, &[]), (&modded, &[])]).unwrap();
-    let localisation = installed_content::localisation::read(&layers, "english").unwrap();
+        installed_content_core::ResolvedLayers::from_folders(&[(&vanilla, &[]), (&modded, &[])]).unwrap();
+    let localisation = installed_content_localisation::localisation::read(&layers, "english").unwrap();
     let mut result = scan(vec![frame(100, 2, false, &[9]), frame(101, 2, true, &[])]);
     name_actions(&mut result, &localisation, "english");
     assert_eq!(
@@ -1584,8 +1583,8 @@ fn mod_localisation_renames_the_discovered_state_action_and_refuses_unsupported_
     )
     .unwrap();
     let layers =
-        installed_content::ResolvedLayers::from_folders(&[(&vanilla, &[]), (&modded, &[])]).unwrap();
-    let localisation = installed_content::localisation::read(&layers, "english").unwrap();
+        installed_content_core::ResolvedLayers::from_folders(&[(&vanilla, &[]), (&modded, &[])]).unwrap();
+    let localisation = installed_content_localisation::localisation::read(&layers, "english").unwrap();
     name_actions(&mut result, &localisation, "english");
     assert!(result.deals[0].items[0].action.name.is_none());
     assert!(
@@ -1633,7 +1632,7 @@ fn missing_conflicting_or_unsupported_action_names_stay_neutral() {
     let mut result = scan(vec![frame(100, 2, false, &[9]), frame(101, 2, true, &[])]);
     name_actions(
         &mut result,
-        &installed_content::localisation::Localisation::default(),
+        &installed_content_localisation::localisation::Localisation::default(),
         "english",
     );
     assert!(result.deals[0].items[0].action.name.is_none());

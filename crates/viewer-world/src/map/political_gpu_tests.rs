@@ -982,7 +982,7 @@ fn political_gpu_recording() {
     let path =
         PathBuf::from(std::env::var_os("BATTLE_PLAN_POLITICAL_REPLAY").or_else(|| std::env::var_os("HOI4_POLITICAL_REPLAY")).expect("BATTLE_PLAN_POLITICAL_REPLAY"));
     let replay = replay::container::Replay::open(std::fs::read(&path).unwrap()).unwrap();
-    let options = installed_content::ResolveOptions {
+    let options = installed_content_core::ResolveOptions {
         game_dir: PathBuf::from(
             std::env::var_os("BATTLE_PLAN_POLITICAL_GAME_DIR").or_else(|| std::env::var_os("HOI4_POLITICAL_GAME_DIR")).expect("BATTLE_PLAN_POLITICAL_GAME_DIR"),
         ),
@@ -991,10 +991,13 @@ fn political_gpu_recording() {
         ),
         cache_dir: path.parent().unwrap().join("political-content-cache"),
     };
-    let content = installed_content::resolve(&replay.identity, &options).unwrap();
-    let map = installed_content::map::load(&content.layers).unwrap();
-    let field = FieldDefines::load(&installed_content::defines::read(&content.layers).unwrap()).unwrap();
-    let strategic = installed_content::regions::read(&content.layers).unwrap().regions;
+    let content = installed_content_core::resolve(&replay.identity, &options).unwrap();
+    let map = installed_content_core::map::load(&content.layers).unwrap();
+    let field =
+        FieldDefines::load(&installed_content_core::defines::read(&content.layers).unwrap()).unwrap();
+    let strategic = installed_content_regions::regions::read(&content.layers)
+        .unwrap()
+        .regions;
     let bitmap = ProvinceMap {
         width: map.width,
         height: map.height,
@@ -1024,10 +1027,8 @@ fn political_gpu_recording() {
             .expect("positive BATTLE_PLAN_POLITICAL_STEP")
     });
     assert!(step > 0, "BATTLE_PLAN_POLITICAL_STEP must be positive");
-    use replay::{
-        frame::FrameDecoder,
-        rows::{TableId, tables},
-    };
+    use replay_data::{rows::TableId, rows::tables};
+    use replay_frame::frame::FrameDecoder;
     // Keep full wire validation, but materialize only the political operands and campaign identity.
     let selected = [
         TableId::Campaign,

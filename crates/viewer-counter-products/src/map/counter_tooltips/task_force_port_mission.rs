@@ -8,8 +8,9 @@
 //! Neither unit selection nor a client tooltip/animation cache is an input.
 
 use super::*;
-use replay::rows::{
-    NavalPortMissionInputs, ShipModelRow, ShipRow, TaskForceCounterInputRow, TaskForceRow,
+use replay_data::{
+    rows::NavalPortMissionInputs, rows::ShipModelRow, rows::ShipRow,
+    rows::TaskForceCounterInputRow, rows::TaskForceRow,
 };
 use viewer_foundation::map::port_mission_defines::Defines;
 #[cfg(test)]
@@ -706,9 +707,9 @@ pub(super) fn append_searching(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{
-        CountryLinkRow, CountryRow, NavalEngagementTarget, NavalSearcher, ShipCounterInputs,
-        TableRows,
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::NavalEngagementTarget, rows::NavalSearcher,
+        rows::ShipCounterInputs, rows::TableRows,
     };
     use viewer_foundation::map::test_support::{test_frame, test_put};
 
@@ -747,7 +748,7 @@ mod tests {
 
     fn packet(entries: Vec<NavalSearcher>) -> NavalPortMissionInputs {
         NavalPortMissionInputs {
-            sample_hour: replay::rows::PacketHour::Stamped(7),
+            sample_hour: replay_data::rows::PacketHour::Stamped(7),
             searching: Some(entries),
             ..Default::default()
         }
@@ -878,7 +879,7 @@ mod tests {
             assert_eq!(searcher(context, 50).unwrap(), None)
         });
         let stale = task_input(NavalPortMissionInputs {
-            sample_hour: replay::rows::PacketHour::Stamped(6),
+            sample_hour: replay_data::rows::PacketHour::Stamped(6),
             searching: Some(Vec::new()),
             ..Default::default()
         });
@@ -906,7 +907,7 @@ mod tests {
             &mut frame,
             TableRows::TaskForceCounterInputs(vec![TaskForceCounterInputRow {
                 task_force: 50,
-                port_mission: replay::rows::Recorded::NotRecorded,
+                port_mission: replay_data::rows::Recorded::NotRecorded,
                 ..Default::default()
             }]),
         );
@@ -1064,7 +1065,7 @@ mod tests {
                 TableRows::TaskForceCounterInputs(vec![TaskForceCounterInputRow {
                     engagement_rule: rule,
                     ..task_input(NavalPortMissionInputs {
-                        sample_hour: replay::rows::PacketHour::Stamped(7),
+                        sample_hour: replay_data::rows::PacketHour::Stamped(7),
                         engagement_target: Some(target),
                         ..Default::default()
                     })
@@ -1080,7 +1081,7 @@ mod tests {
             TableRows::TaskForceCounterInputs(vec![TaskForceCounterInputRow {
                 engagement_rule: 4,
                 ..task_input(NavalPortMissionInputs {
-                    sample_hour: replay::rows::PacketHour::Stamped(7),
+                    sample_hour: replay_data::rows::PacketHour::Stamped(7),
                     engagement_target: Some(NavalEngagementTarget {
                         reference: 101,
                         resolves: None,

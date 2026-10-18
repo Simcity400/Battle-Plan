@@ -8,11 +8,12 @@
 //! against the written bytes instead.
 
 use super::*;
-use engine::{
-    cequipment_module, cequipment_type, cequipment_upgrade, cequipment_upgrades_instance,
-    equipment_module_entry, equipment_upgrade_entry,
+use engine_equipment::cequipment_upgrades_instance;
+use engine_native::{
+    cequipment_module, cequipment_type, cequipment_upgrade, equipment_module_entry,
+    equipment_upgrade_entry,
 };
-use replay::rows::TableSchema;
+use replay_data::rows::TableSchema;
 
 /// Through the icon entry's string header.
 const VARIANT: usize = cequipment_variant::ICON_OVERRIDE_TOKEN + 32;
@@ -60,8 +61,8 @@ pub(super) struct Space {
 }
 
 impl Space {
-    pub fn memory(&self) -> engine::memory::SliceMemory<'_> {
-        engine::memory::SliceMemory {
+    pub fn memory(&self) -> engine_native::memory::SliceMemory<'_> {
+        engine_native::memory::SliceMemory {
             base: self.bytes.as_ptr() as usize,
             bytes: &self.bytes,
         }
@@ -356,7 +357,7 @@ fn capacities(variants: usize) -> Capacities {
 /// The registry census and variant details, as the Variants job acquires
 /// them, and the acquisition's wall time in milliseconds.
 fn capture(memory: &impl Memory, space: &Space, variants: usize) -> ([TableView; 4], f64) {
-    let slot = replay::cadence::refresh_slot(TableId::VariantDefinitions).unwrap() as i32;
+    let slot = replay_data::cadence::refresh_slot(TableId::VariantDefinitions).unwrap() as i32;
     let mut registry = super::registry::Registry::new(variants);
     let mut captured = Captured::with_capacities(&capacities(variants));
     let mut family = captured.take_variants();
@@ -468,8 +469,9 @@ fn variants_walk_bench() {
         let variants = countries * 16;
         let space = space(countries, 16);
         // SAFETY: the space is immutable synthetic storage for this loop.
-        let memory =
-            engine::memory::CountedMemory::new(unsafe { engine::memory::LiveMemory::new() });
+        let memory = engine_native::memory::CountedMemory::new(unsafe {
+            engine_native::memory::LiveMemory::new()
+        });
         let mut evict = vec![0_u8; 512 << 20];
         let mut samples = Vec::new();
         let mut calls = 0;

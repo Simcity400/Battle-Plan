@@ -1,5 +1,5 @@
 //! Content-derived model visibility and popup operands.
-use installed_content::defines::Defines;
+use installed_content_core::defines::Defines;
 use std::io;
 
 /// The camera heights, transport scale and popup rates the content's

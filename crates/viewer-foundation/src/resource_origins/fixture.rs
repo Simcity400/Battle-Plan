@@ -16,14 +16,14 @@
 //! - [`GIVEN`] (GER): steel 1, its rights given to AFG.
 //! - [`ALIASED`] (GER): steel 1, its rights given to GER itself under another reference.
 
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{
-        BuildingRow, CountryLinkRow, CountryOilFactorRow, LexicalTokenRow, ResourceDefinitionRow,
-        ResourceOriginRow, ResourceRightRow, StateBaseResourceRow, StateResourceInputRow,
-        StateResourceRow, StateRow, StateTemporaryResourceRow, TableId, TableRows, TradeRouteRow,
-    },
+use replay_data::{
+    rows::BuildingRow, rows::CountryLinkRow, rows::CountryOilFactorRow, rows::LexicalTokenRow,
+    rows::ResourceDefinitionRow, rows::ResourceOriginRow, rows::ResourceRightRow,
+    rows::StateBaseResourceRow, rows::StateResourceInputRow, rows::StateResourceRow,
+    rows::StateRow, rows::StateTemporaryResourceRow, rows::TableId, rows::TableRows,
+    rows::TradeRouteRow,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 use super::Content;
 
@@ -38,7 +38,7 @@ pub const OIL: u32 = 101;
 pub const STEEL: u32 = 102;
 pub const RUBBER: u32 = 103;
 pub const REFINERY: u32 = 104;
-pub const INFRASTRUCTURE: u32 = engine::cbuilding_database::INFRASTRUCTURE_TOKEN;
+pub const INFRASTRUCTURE: u32 = engine_native::cbuilding_database::INFRASTRUCTURE_TOKEN;
 
 pub const MIXED: u32 = 1;
 pub const EMPTY: u32 = 2;
@@ -52,14 +52,14 @@ pub const ALIASED: u32 = 8;
 /// The content: three resources, an infrastructure building and a refinery granting one oil
 /// per healthy level.
 pub fn content() -> Content {
-    let mut buildings = installed_content::buildings::Buildings::default();
+    let mut buildings = installed_content_core::buildings::Buildings::default();
     for (name, grants) in [
         ("infrastructure", Vec::new()),
         ("refinery", vec![("oil".to_owned(), 100_000)]),
     ] {
         buildings.types.insert(
             name.to_owned(),
-            installed_content::buildings::BuildingType {
+            installed_content_core::buildings::BuildingType {
                 name: name.to_owned(),
                 local_resources: grants,
                 ..Default::default()
@@ -70,7 +70,7 @@ pub fn content() -> Content {
         resources: ["oil", "steel", "rubber"]
             .into_iter()
             .enumerate()
-            .map(|(at, token)| installed_content::resources::Resource {
+            .map(|(at, token)| installed_content_core::resources::Resource {
                 token: token.to_owned(),
                 icon_frame: Some(at as u32 + 1),
             })

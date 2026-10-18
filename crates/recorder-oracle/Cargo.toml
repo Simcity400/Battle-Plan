@@ -10,6 +10,14 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+replay.workspace = true
+engine-executable.workspace = true
+installed-content-core.workspace = true
+installed-content-raids.workspace = true
+installed-content-regions.workspace = true
+installed-content-weather.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
 recorder-oracle-weather.workspace = true
 recorder-oracle-wars.workspace = true
 recorder-oracle-visibility.workspace = true
@@ -55,12 +63,13 @@ recorder-oracle-relations.workspace = true
 recorder-oracle-air-ledger.workspace = true
 recorder-oracle-air.workspace = true
 recorder-oracle-support.workspace = true
-engine.workspace = true
-replay.workspace = true
-installed-content.workspace = true
 installed-content-save.workspace = true
 recorder-platform.workspace = true
 
 [dev-dependencies]
+engine-native.workspace = true
+installed-content-core = { workspace = true, features = ["test-support"] }
+installed-content-raids = { workspace = true, features = ["test-support"] }
+installed-content-regions = { workspace = true, features = ["test-support"] }
+installed-content-weather = { workspace = true, features = ["test-support"] }
 recorder-oracle-support = { workspace = true, features = ["test-support"] }
-installed-content = { workspace = true, features = ["test-support"] }

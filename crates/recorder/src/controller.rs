@@ -1,11 +1,11 @@
 //! The in-process recording API the tray recorder drives. The command line
 //! runs the same capture through [`crate::recording`].
-use replay::identity::IdentityCodec;
 use crate::{
     recording::{self, COLLECTOR_LOADED, CaptureOptions, TWO_GAMES, UNSUPPORTED_BUILD},
     windows::{self, Process, ProcessMemory},
 };
-use engine::{PINNED_BUILD, build::hash_executable};
+use engine_executable::{build::PINNED_BUILD, build::hash_executable};
+use replay_data::identity::IdentityCodec;
 use std::{
     fs::File,
     path::{Path, PathBuf},
@@ -126,8 +126,11 @@ impl Probe {
             return None;
         }
         let memory = ProcessMemory(&self.process.handle);
-        let read =
-            || engine::allocation::advisory(|| engine::cgame_state::read_clock(&memory, self.base));
+        let read = || {
+            engine_allocation::advisory(|| {
+                engine_native::cgame_state::read_clock(&memory, self.base)
+            })
+        };
         let first = read()?;
         let second = read()?;
         if first.play_session_started_at != second.play_session_started_at {
@@ -145,15 +148,16 @@ impl Probe {
 
 /// The content identity a session records with (installation, DLC and mods),
 /// from the collector configuration the recorder wrote for it.
-pub fn session_identity(session: &Path) -> Result<replay::identity::Identity, String> {
+pub fn session_identity(session: &Path) -> Result<replay_data::identity::Identity, String> {
     let config: serde_json::Value = serde_json::from_slice(
         &std::fs::read(session.join("bin/collector.json")).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
     let bytes: Vec<u8> =
         serde_json::from_value(config["session_start"].clone()).map_err(|e| e.to_string())?;
-    let mut decoder = replay::codec::Decoder::new(&bytes);
-    let start = replay::identity::SessionStart::decode(&mut decoder).map_err(|e| e.to_string())?;
+    let mut decoder = replay_data::codec::Decoder::new(&bytes);
+    let start =
+        replay_data::identity::SessionStart::decode(&mut decoder).map_err(|e| e.to_string())?;
     decoder.finish().map_err(|e| e.to_string())?;
     Ok(start.identity)
 }
@@ -167,7 +171,7 @@ pub fn first_loaded_campaign(session: &Path) -> Option<String> {
 
 /// A campaign identity read twice the same, in the recorded UUID form.
 fn agreed_campaign(first: &[u8], second: &[u8]) -> Option<String> {
-    (first == second && replay::identity::is_campaign_uuid(first))
+    (first == second && replay_data::identity::is_campaign_uuid(first))
         .then(|| String::from_utf8(first.to_vec()).ok())
         .flatten()
 }
@@ -218,7 +222,10 @@ mod tests {
 
     #[test]
     fn a_sessions_content_identity_comes_from_its_collector_configuration() {
-        use replay::identity::{Identity, SampleBoundary, SessionStart, Verification};
+        use replay_data::{
+            identity::Identity, identity::SampleBoundary, identity::SessionStart,
+            identity::Verification,
+        };
         let session = std::env::temp_dir().join(format!(
             "hoi4-session-identity-{}-{}",
             std::process::id(),

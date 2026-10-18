@@ -1,7 +1,10 @@
 //! The native wing-range law shared by raid gates and battle-plan labels.
 //! Callers retain their own lazy table admission and current-frame joins.
 
-use replay::rows::{AceRangeInputRow, AirWingRow, CountryCommandPowerRow, RaidCountryInputRow};
+use replay_data::{
+    rows::AceRangeInputRow, rows::AirWingRow, rows::CountryCommandPowerRow,
+    rows::RaidCountryInputRow,
+};
 
 #[derive(Clone, Copy)]
 pub struct Defines {

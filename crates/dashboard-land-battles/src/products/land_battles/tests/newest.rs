@@ -7,9 +7,9 @@ use dashboard_base::prepared::{
     newest::{Outcome, Unproven},
     series::tests::Fixture,
 };
-use replay::rows::{
-    LandCombatResultsRow, LandEventCoverageRow, LandResultSide, LandSideLosses, LexicalTokenRow,
-    VariantDefinitionRow,
+use replay_data::{
+    rows::LandCombatResultsRow, rows::LandEventCoverageRow, rows::LandResultSide,
+    rows::LandSideLosses, rows::LexicalTokenRow, rows::VariantDefinitionRow,
 };
 use serde_json::{Value, json};
 use std::{io::Read, ops::RangeInclusive};

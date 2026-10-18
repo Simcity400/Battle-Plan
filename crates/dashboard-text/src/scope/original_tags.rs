@@ -2,11 +2,8 @@
 //! Changing an original tag can reorder a bucket without changing final
 //! country operands; canonical country rows cannot reconstruct either list.
 
-use replay::{
-    Hour,
-    frame::{DecodedFrame, SharedView, TableView},
-    rows::{TableSchema, tables},
-};
+use replay_data::{Hour, rows::TableSchema, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Default)]
@@ -21,7 +18,7 @@ impl OriginalTagLists {
         }
     }
 
-    fn row(&self) -> Result<&replay::rows::ReservedCountryNamingRow, String> {
+    fn row(&self) -> Result<&replay_data::rows::ReservedCountryNamingRow, String> {
         let table = self
             .table
             .as_deref()
@@ -88,7 +85,7 @@ impl OriginalTagLists {
     /// can establish the native cache's mutation order.
     pub fn derive(
         replay: &replay::container::Replay,
-        branch: replay::BranchId,
+        branch: replay_data::BranchId,
         hours: &std::collections::BTreeSet<Hour>,
         cancelled: &std::sync::atomic::AtomicBool,
     ) -> std::io::Result<BTreeMap<Hour, Self>> {
@@ -107,7 +104,7 @@ impl OriginalTagLists {
                     "request cancelled",
                 ));
             }
-            let mut decoder = replay::frame::FrameDecoder::for_tables(&selected);
+            let mut decoder = replay_frame::frame::FrameDecoder::for_tables(&selected);
             for frame in replay.read_block_selected(block, &selected)? {
                 let decoded = decoder.advance(&frame)?;
                 if hours.contains(&decoded.hour) {

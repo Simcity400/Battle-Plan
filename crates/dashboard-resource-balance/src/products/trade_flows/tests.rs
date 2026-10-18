@@ -1,9 +1,7 @@
 use dashboard_core::test_fixtures::{CAMPAIGN, records, resource_frame, scale_frame};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::sync::{Arc, atomic::AtomicBool};
 
 /// Each flow as (seller, buyer, resource) tags and its runs as (first, last,
@@ -321,7 +319,9 @@ fn trade_flows_treat_tags_as_opaque_strings() {
 /// `count` countries each selling the next one steel and oil, the amount changing
 /// at every hourly read.
 fn world_trade_frame(hour: i32, count: u32) -> DecodedFrame {
-    use replay::rows::{LexicalTokenRow, ResourceDefinitionRow, ResourceExchangeRow};
+    use replay_data::{
+        rows::LexicalTokenRow, rows::ResourceDefinitionRow, rows::ResourceExchangeRow,
+    };
     let mut frame = scale_frame(1, hour, count);
     *frame.tables[TableId::LexicalTokens.index()] =
         TableView::Complete(TableRows::LexicalTokens(vec![

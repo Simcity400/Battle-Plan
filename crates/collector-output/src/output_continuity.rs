@@ -4,14 +4,10 @@ use crate::{
     table_capture::{grow_capacity, grow_vec},
     table_conversion::unavailable,
 };
-use engine::{
-    allocation::{collect_vec, default_vec, owned_vec},
-    walk::Outcome,
-};
-use replay::{
-    BranchId,
-    frame::{TableInput, TableView},
-};
+use engine_allocation::{collect_vec, default_vec, owned_vec};
+use engine_native::walk::Outcome;
+use replay_data::BranchId;
+use replay_frame::{frame::TableInput, frame::TableView};
 use std::{collections::HashMap, io, marker::PhantomData, ops::Range};
 
 pub type OutputMap<L> = HashMap<u64, L>;
@@ -83,7 +79,7 @@ impl<O: Observation, const N: usize> Captured<O, N> {
         entries: &[O::Entry],
     ) {
         if self.entries.len() < entries.len() {
-            engine::allocation::resize_default(&mut self.entries, entries.len()).unwrap();
+            engine_allocation::resize_default(&mut self.entries, entries.len()).unwrap();
         }
         self.entries[..entries.len()].copy_from_slice(entries);
         self.drained = Some(drained);
@@ -233,7 +229,7 @@ pub fn holds_publication(output: &TableInput) -> bool {
     match output {
         TableInput::Sampled(TableView::Complete(_)) | TableInput::SharedComplete(_) => true,
         TableInput::Sampled(TableView::Unavailable { reason }) => {
-            reason == replay::cadence::SKIPPED_REASON
+            reason == replay_data::cadence::SKIPPED_REASON
         }
         _ => false,
     }

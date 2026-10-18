@@ -1,5 +1,5 @@
 use super::*;
-use engine::allocation::{owned_vec, reserve_map, vec};
+use engine_allocation::{owned_vec, reserve_map, vec};
 
 #[derive(Debug, Clone)]
 pub(super) struct TraitDefinition {
@@ -76,7 +76,7 @@ impl TraitDefinitions {
     pub(super) fn grow(&mut self) {
         if self.overflowed {
             let required = self.entries.len().saturating_add(1);
-            if engine::allocation::reserve_exact(&mut self.entries, 1).is_err() {
+            if engine_allocation::reserve_exact(&mut self.entries, 1).is_err() {
                 return;
             }
             let additional = required.saturating_sub(self.by_address.len());
@@ -90,7 +90,7 @@ impl TraitDefinitions {
 
     fn room(&mut self) -> Result<(), &'static str> {
         if self.growing {
-            engine::allocation::reserve(&mut self.entries, 1)
+            engine_allocation::reserve(&mut self.entries, 1)
                 .map_err(|_| "character trait definition allocation failed")?;
         }
         if self.entries.len() == self.entries.capacity() {
@@ -396,10 +396,10 @@ impl TraitCapture {
     pub(super) fn grow(&mut self) {
         if self.overflowed {
             if self.vectors.len() == self.vectors.capacity() {
-                let _ = engine::allocation::reserve(&mut self.vectors, 1);
+                let _ = engine_allocation::reserve(&mut self.vectors, 1);
             }
             if self.occurrences.len() == self.occurrences.capacity() {
-                let _ = engine::allocation::reserve(&mut self.occurrences, 1);
+                let _ = engine_allocation::reserve(&mut self.occurrences, 1);
             }
             self.update_charge();
         }
@@ -424,7 +424,7 @@ impl TraitCapture {
         params: TraitVectorCopy,
     ) -> Result<(), &'static str> {
         if self.growing {
-            engine::allocation::reserve(&mut self.vectors, 1)
+            engine_allocation::reserve(&mut self.vectors, 1)
                 .map_err(|_| "character trait vector allocation failed")?;
         }
         if self.vectors.len() == self.vectors.capacity() {
@@ -484,7 +484,7 @@ impl TraitCapture {
             // Assigned trait visitor bounds this vector by its count. Its original acquired count
             // reserves every occurrence before reads.
             if self.growing {
-                engine::allocation::reserve(&mut self.occurrences, array.count as usize)
+                engine_allocation::reserve(&mut self.occurrences, array.count as usize)
                     .map_err(|_| "character trait occurrence allocation failed")?;
             }
             base.checked_add(cunit_leader_trait::VTABLE_RVA)

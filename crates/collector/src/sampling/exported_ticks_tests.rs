@@ -1,5 +1,5 @@
 use super::exported_table_ticks;
-use replay::rows::TableId;
+use replay_data::rows::TableId;
 
 /// A due walk keeps its cost; a skipped table records none; a deferred
 /// CountryIntel walk retried off its slot keeps its cost, and a deferred

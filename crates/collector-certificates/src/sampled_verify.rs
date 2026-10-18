@@ -45,7 +45,7 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// Hours in one rotation: one game day.
-pub const ROTATION: u64 = replay::cadence::STAGGER_PERIOD as u64;
+pub const ROTATION: u64 = replay_data::cadence::STAGGER_PERIOD as u64;
 /// Days in a burned-in family's rotation.
 pub const BURNED_IN_DAYS: u64 = ROTATION;
 /// Hours in a burned-in family's rotation.

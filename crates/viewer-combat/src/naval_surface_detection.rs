@@ -5,8 +5,8 @@
 //! dense air-base containers, not its separately indexed registration table.
 
 use super::{keyed::Keyed, naval_environment::modifier_default_leader};
-use engine::modifier_keys as keys;
-use replay::rows::{NavalCombatShipRow, ShipModelRow};
+use engine_executable::modifier_keys as keys;
+use replay_data::{rows::NavalCombatShipRow, rows::ShipModelRow};
 use std::collections::BTreeMap;
 
 const ONE: i64 = 100_000;
@@ -102,7 +102,7 @@ pub(super) fn sum_active_surface_detection(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{NavalShipModifierSource, NavalShipModifierTerm};
+    use replay_data::{rows::NavalShipModifierSource, rows::NavalShipModifierTerm};
 
     fn keyed(models: &[ShipModelRow]) -> Option<Keyed<'_, ShipModelRow>> {
         Keyed::new(models, |model| model.ship)
@@ -125,7 +125,7 @@ mod tests {
             ship,
             live_ship: 1,
             group_index: 0,
-            weapon_context: replay::rows::NavalShipWeaponContext {
+            weapon_context: replay_data::rows::NavalShipWeaponContext {
                 detection_base: ONE,
                 ..Default::default()
             },

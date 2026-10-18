@@ -375,7 +375,7 @@ fn raw_links_resolve_to_opaque_mod_tags_at_scale() {
 
 #[test]
 fn mod_added_law_uses_overridden_localisation_and_sprite() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut cat, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
         ("base/common/occupation_laws/a.txt", "renamed={icon=1}"),
@@ -402,9 +402,11 @@ fn mod_added_law_uses_overridden_localisation_and_sprite() {
     ]);
     let base = folder.0.join("base");
     let added = folder.0.join("mod");
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&base, &[]), (&added, &[])]).unwrap();
-    cat.localisation = Arc::new(installed_content::localisation::read(&layers, "english").unwrap());
-    cat.sprites = installed_content::gfx::read(&layers).unwrap();
+    let layers =
+        installed_content_core::ResolvedLayers::from_folders(&[(&base, &[]), (&added, &[])]).unwrap();
+    cat.localisation =
+        Arc::new(installed_content_localisation::localisation::read(&layers, "english").unwrap());
+    cat.sprites = installed_content_gfx::gfx::read(&layers).unwrap();
     assert_eq!(
         cat.sprites
             .find("overridden_sprite")
@@ -414,11 +416,11 @@ fn mod_added_law_uses_overridden_localisation_and_sprite() {
             .as_deref(),
         Some("gfx/mod_missing.dds")
     );
-    cat.content = Arc::new(installed_content::ResolvedContent {
+    cat.content = Arc::new(installed_content_core::ResolvedContent {
         layers,
         stats: Default::default(),
     });
-    let laws = installed_content::occupation_laws::read(&cat.content.layers).unwrap();
+    let laws = installed_content_core::occupation_laws::read(&cat.content.layers).unwrap();
     assert_eq!(laws.definitions["mod_law"].sprite, "overridden_sprite");
     let info = law_content(&cat, &laws, "mod_law");
     assert_eq!(info.name.as_deref(), Some("Extra law"));
@@ -461,7 +463,7 @@ fn mod_added_law_uses_overridden_localisation_and_sprite() {
 
 #[test]
 fn law_icons_follow_vertical_native_frames_and_name_missing_effects() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (cat, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
         (
@@ -482,9 +484,9 @@ fn law_icons_follow_vertical_native_frames_and_name_missing_effects() {
     tga.extend_from_slice(&[0, 0, 255, 255, 255, 0, 0, 255]);
     std::fs::create_dir_all(folder.0.join("gfx")).unwrap();
     std::fs::write(folder.0.join("gfx/strip.tga"), tga).unwrap();
-    let laws = installed_content::occupation_laws::read(&cat.content.layers).unwrap();
+    let laws = installed_content_core::occupation_laws::read(&cat.content.layers).unwrap();
     let vertical = law_content(&cat, &laws, "extra");
-    let blue = catalogue::png_data_url(&installed_content::image::Rgba8Image {
+    let blue = catalogue::png_data_url(&installed_content_image::Rgba8Image {
         width: 1,
         height: 1,
         pixels: vec![0, 0, 255, 255],
@@ -504,7 +506,10 @@ fn law_icons_follow_vertical_native_frames_and_name_missing_effects() {
 }
 
 fn frame(hour: i32, read: bool) -> DecodedFrame {
-    use replay::rows::{OccupationSettingsRow, StateGarrisonRow, StateOccupationLawRow, TableRows};
+    use replay_data::{
+        rows::OccupationSettingsRow, rows::StateGarrisonRow, rows::StateOccupationLawRow,
+        rows::TableRows,
+    };
     let mut frame = dashboard_base::test_fixtures::source(1, hour, Some(0));
     *frame.tables[TableId::States.index()] =
         TableView::Complete(TableRows::States(vec![StateRow {
@@ -546,8 +551,8 @@ fn frame(hour: i32, read: bool) -> DecodedFrame {
             country: 11,
             law: b"lower_precedence_default".to_vec(),
             default_law_present: 1,
-            group_laws: replay::rows::Recorded::Value(None),
-            fallback_law: replay::rows::Recorded::Value(None),
+            group_laws: replay_data::rows::Recorded::Value(None),
+            fallback_law: replay_data::rows::Recorded::Value(None),
             ..Default::default()
         }]));
     if read {
@@ -601,7 +606,7 @@ fn branch_scan_dates_equal_reads_and_requires_a_new_read_after_a_gap() {
 
 #[test]
 fn garrison_strength_keeps_the_native_early_zero_but_never_uses_strength_ratio() {
-    use replay::rows::{StateGarrisonRow, TableRows};
+    use replay_data::{rows::StateGarrisonRow, rows::TableRows};
     let mut missing = frame(100, true);
     let mut garrison = StateGarrisonRow {
         controller: 9001,
@@ -636,7 +641,7 @@ fn garrison_strength_keeps_the_native_early_zero_but_never_uses_strength_ratio()
 
 #[test]
 fn partial_resistance_keeps_known_rows_and_does_not_claim_an_empty_inventory() {
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
     // A keyframe cannot carry a partial table; start with a complete baseline.
     let first = frame(100, true);
     let mut partial = frame(101, true);
@@ -682,9 +687,11 @@ fn partial_resistance_keeps_known_rows_and_does_not_claim_an_empty_inventory() {
 
 #[test]
 fn a_branch_with_five_thousand_states_and_countries_is_not_capped() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{Recorded, ScriptVariableEntry, ScriptVariablesRow, TableRows};
+    use replay_data::{
+        rows::Recorded, rows::ScriptVariableEntry, rows::ScriptVariablesRow, rows::TableRows,
+    };
     let (cat, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/synthetic.lua",
@@ -713,7 +720,7 @@ fn a_branch_with_five_thousand_states_and_countries_is_not_capped() {
                 id,
                 canonical_slot: id + 7000,
                 tag: format!("Mod country {id}").into_bytes(),
-                border_land_doctrine_level: replay::rows::Recorded::Value(None),
+                border_land_doctrine_level: replay_data::rows::Recorded::Value(None),
                 ..Default::default()
             })
             .collect(),
@@ -743,18 +750,18 @@ fn a_branch_with_five_thousand_states_and_countries_is_not_capped() {
     *first.tables[TableId::OccupationSettings.index()] =
         TableView::Complete(TableRows::OccupationSettings(
             (1..=5000)
-                .map(|id| replay::rows::OccupationSettingsRow {
+                .map(|id| replay_data::rows::OccupationSettingsRow {
                     country: id,
                     default_law_present: 1,
                     law: b"synthetic_default".to_vec(),
-                    group_laws: replay::rows::Recorded::Value(Some(vec![
-                        replay::rows::OccupationGroupLaw {
+                    group_laws: replay_data::rows::Recorded::Value(Some(vec![
+                        replay_data::rows::OccupationGroupLaw {
                             occupied: id,
                             scope_country: Some(id),
                             law: (id % 2 == 0).then(|| b"synthetic_group_law".to_vec()),
                         },
                     ])),
-                    fallback_law: replay::rows::Recorded::Value(Some(
+                    fallback_law: replay_data::rows::Recorded::Value(Some(
                         b"synthetic_fallback".to_vec(),
                     )),
                     ..Default::default()
@@ -831,7 +838,7 @@ fn a_branch_with_five_thousand_states_and_countries_is_not_capped() {
 
 #[test]
 fn controller_and_link_changes_between_reads_do_not_redate_occupation_values() {
-    use replay::rows::{StateGarrisonRow, StateOccupationLawRow, TableRows};
+    use replay_data::{rows::StateGarrisonRow, rows::StateOccupationLawRow, rows::TableRows};
     let (cat, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[]);
     let mut first = frame(100, true);
     let mut countries = vec![
@@ -938,7 +945,7 @@ fn controller_and_link_changes_between_reads_do_not_redate_occupation_values() {
 
 #[test]
 fn native_zero_strength_requires_complete_resolved_manpower_or_the_failure_flag() {
-    use replay::rows::{StateAssignedManpowerRow, StateGarrisonRow, TableRows};
+    use replay_data::{rows::StateAssignedManpowerRow, rows::StateGarrisonRow, rows::TableRows};
     let (cat, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[(
         "common/defines/mod.lua",
         "NDefines = { NInterface = { GARRISON_STRENGTH_TO_SHOW_RED = 0.75 } }",
@@ -1017,11 +1024,11 @@ fn native_zero_strength_requires_complete_resolved_manpower_or_the_failure_flag(
 
 #[test]
 fn positive_strength_uses_recorded_native_weights_and_mod_content_at_its_daily_read() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{
-        GarrisonEquipment, GarrisonEquipmentInputs, LexicalTokenRow, Recorded,
-        StateAssignedManpowerRow, StateGarrisonRow, TableRows,
+    use replay_data::{
+        rows::GarrisonEquipment, rows::GarrisonEquipmentInputs, rows::LexicalTokenRow,
+        rows::Recorded, rows::StateAssignedManpowerRow, rows::StateGarrisonRow, rows::TableRows,
     };
     let (cat, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
         (
@@ -1114,7 +1121,7 @@ fn positive_strength_uses_recorded_native_weights_and_mod_content_at_its_daily_r
 
 #[test]
 fn a_mod_threshold_uses_native_fixed5_and_missing_garrisons_are_not_zero() {
-    use replay::rows::{StateGarrisonRow, TableRows};
+    use replay_data::{rows::StateGarrisonRow, rows::TableRows};
     let (cat, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[(
         "common/defines/mod.lua",
         "NDefines = { NInterface = { GARRISON_STRENGTH_TO_SHOW_RED = 0.0000001 } }",
@@ -1146,7 +1153,7 @@ fn a_mod_threshold_uses_native_fixed5_and_missing_garrisons_are_not_zero() {
 
 #[test]
 fn non_utf8_overrides_and_unresolved_links_are_named_and_counted_by_reason() {
-    use replay::rows::{StateOccupationLawRow, TableRows};
+    use replay_data::{rows::StateOccupationLawRow, rows::TableRows};
     let mut read = frame(100, true);
     *read.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
         StateRow {
@@ -1209,7 +1216,7 @@ fn non_utf8_overrides_and_unresolved_links_are_named_and_counted_by_reason() {
 #[test]
 #[ignore = "long-campaign projection benchmark; run explicitly with --ignored --nocapture"]
 fn long_campaign_scan_at_design_scale() {
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
     use std::time::Instant;
     let mut frame = frame(0, true);
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
@@ -1295,12 +1302,12 @@ fn long_campaign_scan_at_design_scale() {
 
 #[test]
 fn occupation_default_validation_uses_native_root_from_and_prev_links() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use dashboard_text::triggers::{ContentFacts, World};
     let mut frame = frame(100, true);
     *frame.tables[TableId::Countries.index()] =
-        TableView::Complete(replay::rows::TableRows::Countries(vec![
+        TableView::Complete(replay_data::rows::TableRows::Countries(vec![
             CountryRow {
                 id: 2,
                 canonical_slot: 2,
@@ -1315,7 +1322,7 @@ fn occupation_default_validation_uses_native_root_from_and_prev_links() {
             },
         ]));
     *frame.tables[TableId::CountryLinks.index()] =
-        TableView::Complete(replay::rows::TableRows::CountryLinks(vec![
+        TableView::Complete(replay_data::rows::TableRows::CountryLinks(vec![
             CountryLinkRow {
                 id: 2,
                 canonical_slot: 2,
@@ -1330,9 +1337,9 @@ fn occupation_default_validation_uses_native_root_from_and_prev_links() {
             },
         ]));
     *frame.tables[TableId::CountryCounterInputs.index()] =
-        TableView::Complete(replay::rows::TableRows::CountryCounterInputs(
+        TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(
             [2, 9001]
-                .map(|country| replay::rows::CountryCounterInputRow {
+                .map(|country| replay_data::rows::CountryCounterInputRow {
                     country,
                     owned_state_count: 1,
                     ..Default::default()
@@ -1340,15 +1347,15 @@ fn occupation_default_validation_uses_native_root_from_and_prev_links() {
                 .into(),
         ));
     let dlcs = std::collections::BTreeSet::new();
-    let triggers = installed_content::trigger_keys::TriggerNames::default();
-    let aliases = Arc::new(installed_content::tag_aliases::TagAliases::default());
+    let triggers = installed_content_core::trigger_keys::TriggerNames::default();
+    let aliases = Arc::new(installed_content_core::tag_aliases::TagAliases::default());
     let world = World::read(
         &frame,
         ContentFacts::content_only(&dlcs, &triggers, &aliases),
     );
-    let laws = installed_content::occupation_laws::parse(
+    let laws = installed_content_core::occupation_laws::parse(
         b"graph={visible={PREV={tag=OCC} FROM={ROOT={tag=OCC} FROM={tag=TGT}}} available={FROM={tag=TGT}}} hidden={visible={always=no} available={unreached_operand=yes}} self={available={always=no}}",
-        &installed_content::key_names::KeyNames::default(),
+        &installed_content_core::key_names::KeyNames::default(),
     ).unwrap();
     assert_eq!(occupation_law_valid(&world, &laws[0], 7, 2), Ok(true));
     assert_eq!(occupation_law_valid(&world, &laws[1], 7, 2), Ok(false));
@@ -1358,9 +1365,11 @@ fn occupation_default_validation_uses_native_root_from_and_prev_links() {
 
 #[test]
 fn occupation_group_law_and_null_default_are_joined_at_the_supplying_read() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{OccupationGroupLaw, OccupationSettingsRow, Recorded, TableRows};
+    use replay_data::{
+        rows::OccupationGroupLaw, rows::OccupationSettingsRow, rows::Recorded, rows::TableRows,
+    };
     let (cat, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/synthetic.lua",
@@ -1421,9 +1430,11 @@ fn occupation_group_law_and_null_default_are_joined_at_the_supplying_read() {
 
 #[test]
 fn occupation_default_scope_uses_the_retained_country_pointer_independently_of_membership() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{OccupationGroupLaw, OccupationSettingsRow, Recorded, TableRows};
+    use replay_data::{
+        rows::OccupationGroupLaw, rows::OccupationSettingsRow, rows::Recorded, rows::TableRows,
+    };
     let (cat, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/synthetic.lua",
@@ -1502,11 +1513,12 @@ fn occupation_default_scope_uses_the_retained_country_pointer_independently_of_m
 
 #[test]
 fn occupation_political_default_does_not_require_unrelated_map_assets() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{
-        CompletedFocusRow, CountryAppearanceRow, LexicalTokenRow, OccupationGroupLaw,
-        OccupationSettingsRow, PoliticalPartyRow, Recorded, ScriptFlagRow, TableRows,
+    use replay_data::{
+        rows::CompletedFocusRow, rows::CountryAppearanceRow, rows::LexicalTokenRow,
+        rows::OccupationGroupLaw, rows::OccupationSettingsRow, rows::PoliticalPartyRow,
+        rows::Recorded, rows::ScriptFlagRow, rows::TableRows,
     };
     for visible in [
         "has_government=mod_party",
@@ -1569,7 +1581,7 @@ fn occupation_political_default_does_not_require_unrelated_map_assets() {
         countries[0].tag = b"MDA".to_vec();
         *read.tables[TableId::CountryCounterInputs.index()] =
             TableView::Complete(TableRows::CountryCounterInputs(vec![
-                replay::rows::CountryCounterInputRow {
+                replay_data::rows::CountryCounterInputRow {
                     country: 9001,
                     owned_state_count: 1,
                     ..Default::default()
@@ -1609,11 +1621,11 @@ fn occupation_political_default_does_not_require_unrelated_map_assets() {
 
 #[test]
 fn occupation_default_continent_reads_the_retained_cache_through_from_capital() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{
-        LexicalTokenRow, OccupationGroupLaw, OccupationSettingsRow, PoliticsRow, Recorded,
-        TableRows,
+    use replay_data::{
+        rows::LexicalTokenRow, rows::OccupationGroupLaw, rows::OccupationSettingsRow,
+        rows::PoliticsRow, rows::Recorded, rows::TableRows,
     };
     let (cat, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
         (

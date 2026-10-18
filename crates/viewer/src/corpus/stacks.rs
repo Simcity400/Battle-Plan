@@ -1,6 +1,6 @@
 //! The corpus's content stacks: vanilla, then each installed mod on its own,
 //! each gathered as a new recording gathers its content
-//! (`installed_content::content::gather`): vanilla, every installed DLC, then the mod
+//! (`installed_content_core::content::gather`): vanilla, every installed DLC, then the mod
 //! with the installed mods its descriptor depends on, in the engine's mount
 //! order.
 //!
@@ -18,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use installed_content::parser;
+use installed_content_core::parser;
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -230,7 +230,7 @@ pub fn user_folder(
 pub fn language(user: &Path) -> io::Result<String> {
     Ok(format!(
         "l_{}",
-        installed_content::settings::read_keys(user)?.language()?
+        installed_content_settings::settings::read_keys(user)?.language()?
     ))
 }
 

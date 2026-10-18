@@ -1,12 +1,11 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{
-        CountryCounterInputRow, CountryLinkRow, CountryMovementModifiers, CountryRow,
-        LexicalTokenRow, ModifierDefinitionRow, MovementDefines, ProvinceRow, Recorded,
-        SimulationFeatureRow, StateFlagRow, TableId, TableRows, WeatherProvinceRow,
-    },
+use replay_data::{
+    rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryMovementModifiers,
+    rows::CountryRow, rows::LexicalTokenRow, rows::ModifierDefinitionRow, rows::MovementDefines,
+    rows::ProvinceRow, rows::Recorded, rows::SimulationFeatureRow, rows::StateFlagRow,
+    rows::TableId, rows::TableRows, rows::WeatherProvinceRow,
 };
+use replay_frame::frame::TableView;
 #[cfg(test)]
 use viewer_foundation::tooltip_text::NoIcons;
 
@@ -127,9 +126,9 @@ fn frame(province: u32, path_total: u32, path: Vec<u32>) -> DecodedFrame {
         }]),
     );
     // Every built-in modifier, each token spelling its script name.
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
-    let mut keys = engine::modifier_keys::all().collect::<Vec<_>>();
+    let mut keys = engine_executable::modifier_keys::all().collect::<Vec<_>>();
     keys.sort_unstable_by_key(|key| key.index);
     put(
         &mut frame,
@@ -191,7 +190,7 @@ fn render_with(frame: &DecodedFrame, lookups: Result<&Lookups<'_>, String>) -> T
     .map(|(key, value)| (key.into(), value.into()))
     .collect();
     let vision = Vision::sharing(1, []);
-    let names = installed_content::division_names::Database::default();
+    let names = installed_content_division_names::division_names::Database::default();
     let units = Err("unused".into());
     let context = Context {
         nato: false,
@@ -248,11 +247,11 @@ fn composition(frame: &mut DecodedFrame, unreadable: u8) {
     const INFANTRY: u32 = 900_003;
     put(
         frame,
-        TableRows::DivisionTemplateIcons(vec![replay::rows::DivisionTemplateIconRow {
+        TableRows::DivisionTemplateIcons(vec![replay_data::rows::DivisionTemplateIconRow {
             template: 0,
             subunits: [MARINE, INFANTRY]
                 .into_iter()
-                .map(|token| replay::rows::TemplateSubunit {
+                .map(|token| replay_data::rows::TemplateSubunit {
                     token,
                     local: 0,
                     count: 1,
@@ -263,7 +262,7 @@ fn composition(frame: &mut DecodedFrame, unreadable: u8) {
         }]),
     );
     let mut tokens = frame
-        .complete::<replay::rows::tables::LexicalTokens>()
+        .complete::<replay_data::rows::tables::LexicalTokens>()
         .map(<[_]>::to_vec)
         .unwrap_or_default();
     tokens.retain(|row| row.token < MARINE);
@@ -280,7 +279,7 @@ fn composition(frame: &mut DecodedFrame, unreadable: u8) {
 
 /// [`rendered`] with a sub-unit database naming `marine` special forces.
 fn rendered_with_sub_units(frame: &DecodedFrame) -> Tooltip {
-    let mut units = installed_content::unit_leader::SubUnits::default();
+    let mut units = installed_content_core::unit_leader::SubUnits::default();
     units.read(
         b"sub_units={ marine={special_forces=yes type=infantry} infantry={type=infantry} }",
         "common/units/test.txt",
@@ -498,9 +497,9 @@ fn a_moving_unit_without_weather_attrition_has_no_weather_lines() {
         &mut frame,
         TableRows::WeatherProvinces(vec![WeatherProvinceRow {
             id: 7,
-            modifiers: Recorded::Value(Some(replay::rows::ProvinceWeatherModifiers {
-                entries: vec![replay::rows::ProvinceModifierEntry {
-                    key: engine::modifier_keys::WINTER_ATTRITION,
+            modifiers: Recorded::Value(Some(replay_data::rows::ProvinceWeatherModifiers {
+                entries: vec![replay_data::rows::ProvinceModifierEntry {
+                    key: engine_executable::modifier_keys::WINTER_ATTRITION,
                     value: 10_000,
                 }],
             })),

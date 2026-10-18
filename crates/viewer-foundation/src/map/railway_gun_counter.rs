@@ -7,7 +7,7 @@
 //! made here as pure functions of those rows and matching content.
 
 use super::counter_action::{self, Action};
-use replay::rows::RailwayGunCounterInputRow;
+use replay_data::rows::RailwayGunCounterInputRow;
 
 /// The action categories the native own-gun plate join distinguishes. Other
 /// actions can differ and still join. Route or combat presence wins over the
@@ -69,7 +69,7 @@ pub struct RailStatus {
 }
 
 impl RailStatus {
-    pub fn read(row: &replay::rows::RailCooldownRow, hour: i32) -> Result<Self, String> {
+    pub fn read(row: &replay_data::rows::RailCooldownRow, hour: i32) -> Result<Self, String> {
         if row
             .selection_hour
             .require("RailCooldowns.selection_hour")?
@@ -126,7 +126,7 @@ mod tests {
 
     #[test]
     fn railway_status_admits_only_current_raw_count_without_other_rail_domains() {
-        use replay::rows::{RailCooldownRow, RailwaySelectionInputs, Recorded};
+        use replay_data::{rows::RailCooldownRow, rows::RailwaySelectionInputs, rows::Recorded};
         let mut row = RailCooldownRow {
             province: 3,
             cooldown_ticks: -1,

@@ -30,10 +30,13 @@ use dashboard_text::metadata::{
     IdentityTrack, LinkTags, TaggedCountry, branch_bounds, link_slot, slot_read, tagged_countries,
     validate_campaign,
 };
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder, SharedView, TableView, ViewIdentity},
-    rows::{SunkConvoyRow, SunkShipEntry, TableId, TableRows, tables},
+use replay::container::Replay;
+use replay_data::{
+    rows::SunkConvoyRow, rows::SunkShipEntry, rows::TableId, rows::TableRows, rows::tables,
+};
+use replay_frame::{
+    frame::DecodedFrame, frame::FrameDecoder, frame::SharedView, frame::TableView,
+    frame::ViewIdentity,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -276,7 +279,7 @@ impl Scanned {
     fn observe_tables(
         &mut self,
         track: &mut Tracker,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         frame: &DecodedFrame,
         tags: &HashMap<u32, String>,
         changes: Option<&FrameChanges>,
@@ -969,7 +972,7 @@ impl RetentionDefines {
         let values = catalogue.map(|catalogue| {
             #[cfg(test)]
             work::WORK.with(|work| work.borrow_mut().defines += 1);
-            let defines = installed_content::defines::read(&catalogue.content.layers);
+            let defines = installed_content_core::defines::read(&catalogue.content.layers);
             [
                 "NAVAL_COMBAT_RESULT_TIMEOUT_YEARS",
                 "CONVOY_LOSS_HISTORY_TIMEOUT_MONTHS",
@@ -1128,14 +1131,14 @@ impl RetentionProgress {
 /// Store zero-based month + ((hour - HOUR_EPOCH) / 0x2238) * 12,
 /// exactly this absolute month encoding.
 pub fn month(hour: i32) -> Option<i32> {
-    let elapsed = i64::from(hour) - i64::from(engine::cdate::HOUR_EPOCH);
+    let elapsed = i64::from(hour) - i64::from(engine_native::cdate::HOUR_EPOCH);
     if elapsed < 0 {
         return None;
     }
     let mut day = (elapsed / 24) % 365;
     let mut m = 0;
-    while day >= i64::from(engine::cdate::MONTH_LENGTHS[m]) {
-        day -= i64::from(engine::cdate::MONTH_LENGTHS[m]);
+    while day >= i64::from(engine_native::cdate::MONTH_LENGTHS[m]) {
+        day -= i64::from(engine_native::cdate::MONTH_LENGTHS[m]);
         m += 1;
     }
     i32::try_from(elapsed / (365 * 24) * 12 + m as i64).ok()
@@ -1146,11 +1149,11 @@ pub fn month_start(bucket: i32) -> Option<i32> {
         return None;
     }
     let days = i64::from(bucket / 12) * 365
-        + engine::cdate::MONTH_LENGTHS[..(bucket % 12) as usize]
+        + engine_native::cdate::MONTH_LENGTHS[..(bucket % 12) as usize]
             .iter()
             .map(|n| i64::from(*n))
             .sum::<i64>();
-    i32::try_from(i64::from(engine::cdate::HOUR_EPOCH) + days * 24).ok()
+    i32::try_from(i64::from(engine_native::cdate::HOUR_EPOCH) + days * 24).ok()
 }
 
 /// Serialize cache construction too: simultaneous widgets share one scan.
@@ -1466,12 +1469,12 @@ impl ShipHistory {
         }
     }
 
-    pub fn observe(&mut self, format: replay::format::FormatVersion, frame: &DecodedFrame) {
+    pub fn observe(&mut self, format: replay_data::format::FormatVersion, frame: &DecodedFrame) {
         self.observe_with_changes(format, frame, None);
     }
     fn observe_with_changes(
         &mut self,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         frame: &DecodedFrame,
         changes: Option<&FrameChanges>,
     ) {

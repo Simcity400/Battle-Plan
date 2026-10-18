@@ -4,7 +4,7 @@ use crate::{
     army_stat_changes::{VERIFY, Watches},
     extended::attack_stats::ArmyStatStore,
 };
-use engine::memory::LiveMemory;
+use engine_native::memory::LiveMemory;
 use std::{hint::black_box, time::Instant};
 
 const RUNS: usize = 25;

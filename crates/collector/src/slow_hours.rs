@@ -23,7 +23,7 @@ impl Hour {
         status!({
             "hour": self.hour,
             "qpc": self.qpc,
-            "daily_slot": self.hour.rem_euclid(replay::cadence::STAGGER_PERIOD),
+            "daily_slot": self.hour.rem_euclid(replay_data::cadence::STAGGER_PERIOD),
             "callback_ns": self.callback_ns,
             "entry_ns": cost.entry_ns,
             "buffer_wait_ns": cost.buffer_wait_ns,

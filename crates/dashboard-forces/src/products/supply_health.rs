@@ -24,7 +24,7 @@
 //! LOW_SUPPLY is fixed5; SUPPLY_GRACE is integer hours.
 //! NGraphics.SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD and
 //! SUPPLY_UNIT_COUNTER_LOW_THRESHOLD are f32 inputs. Their staged fixed5
-//! conversion is shared by installed_content::defines::fixed5. Every value resolves
+//! conversion is shared by installed_content_core::defines::fixed5. Every value resolves
 //! through the recorded content stack; province supply is no proxy.
 //!
 //! Owner: positive signed expeditionary_owner, else roster_owner, through
@@ -57,24 +57,23 @@ use dashboard_core::{config::LoadContext, protocol::validate_tag, transport::jso
 use dashboard_text::metadata::{IdentityTrack, recorded_rows, slot_read, tagged_countries};
 use std::collections::BTreeMap;
 
+#[cfg(any(test, feature = "test-support"))]
+use dashboard_text::{metadata::check_cancel, metadata::validate_campaign};
+#[cfg(any(test, feature = "test-support"))]
+use replay::container::Replay;
 #[cfg(test)]
-use replay::rows::DivisionLandInputsRow;
-use replay::{
-    frame::{DecodedFrame, ViewIdentity},
-    rows::{DivisionRow, DivisionStatusRow, Recorded, TableId, tables},
+use replay_data::rows::DivisionLandInputsRow;
+use replay_data::{
+    rows::DivisionRow, rows::DivisionStatusRow, rows::Recorded, rows::TableId, rows::tables,
 };
+#[cfg(any(test, feature = "test-support"))]
+use replay_frame::frame::FrameDecoder;
+use replay_frame::{frame::DecodedFrame, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io, sync::atomic::AtomicBool};
-use ts_rs::TS;
 #[cfg(any(test, feature = "test-support"))]
-use {
-    dashboard_text::metadata::{check_cancel, validate_campaign},
-    replay::{container::Replay, frame::FrameDecoder},
-    std::{
-        sync::{Arc, Mutex, Weak},
-        time::Duration,
-    },
-};
+use std::{sync::Arc, sync::Mutex, sync::Weak, time::Duration};
+use ts_rs::TS;
 
 pub struct SupplyHealth;
 
@@ -164,19 +163,19 @@ struct Defines {
     low_icon: i64,
 }
 
-pub fn check_content(layers: &installed_content::ResolvedLayers) -> io::Result<()> {
+pub fn check_content(layers: &installed_content_core::ResolvedLayers) -> io::Result<()> {
     content_defines(layers).map(|_| ())
 }
 
-fn content_defines(layers: &installed_content::ResolvedLayers) -> io::Result<Defines> {
+fn content_defines(layers: &installed_content_core::ResolvedLayers) -> io::Result<Defines> {
     layers
         .derived::<dashboard_text::catalogue::CachedResult<Defines>>()
-        .get_or_init(|| Defines::read(&installed_content::defines::read(layers)?))
+        .get_or_init(|| Defines::read(&installed_content_core::defines::read(layers)?))
         .map(|defines| *defines)
 }
 
 impl Defines {
-    fn read(defines: &installed_content::defines::Defines) -> io::Result<Self> {
+    fn read(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
         let grace = defines
             .number("NMilitary", "SUPPLY_GRACE")
             .and_then(|_| defines.int32("NMilitary", "SUPPLY_GRACE"));
@@ -291,7 +290,7 @@ struct Scan {
     /// The recording's format, which dates its daily tables
     /// ([`dashboard_text::metadata::slot_read`]).
     #[serde(skip)]
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
     series: Vec<SupplyHealthSeries>,
     #[serde(serialize_with = "dashboard_core::map_pairs::ordered_map")]
     selected: HashMap<String, usize>,
@@ -490,7 +489,7 @@ impl Scan {
 
     fn count_divisions(
         &mut self,
-        land: &[replay::rows::DivisionLandInputsRow],
+        land: &[replay_data::rows::DivisionLandInputsRow],
         status: &[DivisionStatusRow],
         defines: Defines,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
@@ -651,7 +650,7 @@ impl Scan {
         defines: Defines,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
     ) -> io::Result<bool> {
-        let cpu = ::replay::cpu::scope_phase("supply:observe_apply");
+        let cpu = ::replay_frame::cpu::scope_phase("supply:observe_apply");
         let hour = frame.hour;
         self.identities.resize(self.series.len(), None);
         self.counts.resize(self.series.len(), None);
@@ -777,14 +776,14 @@ impl Scan {
             }
             self.roster_from = Some(frame.tables[TableId::Divisions.index()].identity());
             drop(cpu);
-            let _cpu = ::replay::cpu::scope_phase("supply:division_counts");
+            let _cpu = ::replay_frame::cpu::scope_phase("supply:division_counts");
             (partial, next) =
                 self.count_divisions(land?, status?, defines, changes, !full && same_roster)?;
         } else {
             self.buckets_ready = false;
             drop(cpu);
         }
-        let _cpu = ::replay::cpu::scope_phase("supply:projection_series");
+        let _cpu = ::replay_frame::cpu::scope_phase("supply:projection_series");
         let candidates: Vec<_> = if partial {
             next.keys().copied().collect()
         } else {
@@ -939,7 +938,7 @@ struct Cache {
     defines: Option<Defines>,
     entries: HashMap<(u64, String), (bool, Arc<SupplyHealthSeries>)>,
     in_flight: HashMap<u64, Weak<Mutex<()>>>,
-    content: Option<(Arc<installed_content::content::ResolvedContent>, Defines)>,
+    content: Option<(Arc<installed_content_core::content::ResolvedContent>, Defines)>,
     inputs: HashMap<u64, bool>,
 }
 
@@ -1045,7 +1044,7 @@ fn cached_scan(
 fn land_present(frame: &DecodedFrame) -> bool {
     !matches!(
         &*frame.tables[TableId::DivisionLandInputs.index()],
-        replay::frame::TableView::Unavailable { .. }
+        replay_frame::frame::TableView::Unavailable { .. }
     )
 }
 

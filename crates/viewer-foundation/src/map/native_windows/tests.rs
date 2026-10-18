@@ -10,7 +10,7 @@ const STILL: Tick = Tick { time: 0.0, dt: 0.0 };
 /// Missing localisation keys show themselves.
 #[test]
 fn inline_icons_of_localised_authored_texts_are_acquired() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let source = SYNTHETIC_NAVAL_GUI.replacen(
         "buttonType = { name = \"bg_btn\"",
@@ -25,7 +25,7 @@ fn inline_icons_of_localised_authored_texts_are_acquired() {
         VIEWPORT,
     )
     .unwrap();
-    let localisation: installed_content::localisation::Localisation = [
+    let localisation: installed_content_localisation::localisation::Localisation = [
         ("NOTE_KEY".to_owned(), "a £note_icon b".to_owned()),
         ("BUTTON_KEY".to_owned(), "£button_icon".to_owned()),
         ("UNRELATED_KEY".to_owned(), "£unrelated_inline".to_owned()),
@@ -49,7 +49,7 @@ fn inline_icons_of_localised_authored_texts_are_acquired() {
 
 #[test]
 fn raid_tooltip_regression_inventory_loads_runtime_selected_localisation() {
-    let loc: installed_content::localisation::Localisation = [
+    let loc: installed_content_localisation::localisation::Localisation = [
         ("arbitrary_scripted_choice", "\u{a3}scripted|2"),
         ("ABCDE_project_narrative", "\u{a3}project"),
         ("cosmetic_country_name", "\u{a3}country"),
@@ -83,9 +83,9 @@ const MAX_RESOLUTION_NAVY: &str = r#"guiTypes = {
 /// fonts and textures.
 #[test]
 fn the_asset_set_does_not_depend_on_the_gui_viewport() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let localisation = installed_content::localisation::Localisation::default();
+    let localisation = installed_content_localisation::localisation::Localisation::default();
     for source in [
         format!(
             "{SYNTHETIC_NAVY_GUI}
@@ -109,7 +109,7 @@ fn the_asset_set_does_not_depend_on_the_gui_viewport() {
 /// laid out in `gui_viewport(size, ui_scale)` (1366 x 768 at 1.25 is 1092 x 614).
 #[test]
 fn a_max_resolution_window_lays_out_under_the_viewers_viewport() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let viewport = crate::map::native_shader::draw::gui_viewport([1366, 768], 1.25);
     assert_eq!(viewport, [1092, 614]);
@@ -135,7 +135,7 @@ fn a_max_resolution_window_lays_out_under_the_viewers_viewport() {
 /// map-icon windows, so their backgrounds and glyphs draw.
 #[test]
 fn intel_and_resource_icon_windows_load_their_authored_sprites() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut source = format!("{SYNTHETIC_NAVY_GUI}\n{SYNTHETIC_NAVAL_GUI}");
     for (window, sprite) in [

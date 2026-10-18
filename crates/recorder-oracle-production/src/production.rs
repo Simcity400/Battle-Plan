@@ -6,12 +6,9 @@ use std::{
 };
 
 use installed_content_save::{Save, production};
-use replay::{
-    Hour,
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder},
-    rows::{CountryRow, ProductionLineRow, TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{Hour, rows::CountryRow, rows::ProductionLineRow, rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
 
 use super::{Report, TokenNames, complete, country_tag, daily_read, invalid, required_country_tag};
 
@@ -504,7 +501,7 @@ fn compare_license_records(
         .countries
         .as_ref()
         .ok_or_else(|| invalid("save lacks production country roster"))?;
-    let mut recorded: BTreeMap<Vec<u8>, Vec<&replay::rows::ProductionLicenseRecordRow>> =
+    let mut recorded: BTreeMap<Vec<u8>, Vec<&replay_data::rows::ProductionLicenseRecordRow>> =
         BTreeMap::new();
     for row in complete::<tables::ProductionLicenseRecords>(frame)? {
         recorded
@@ -809,7 +806,7 @@ fn compare_lines_of(
     parent: &str,
     conveyor: u64,
     expected: &production::Conveyor,
-    lines: &mut BTreeMap<u64, &replay::rows::DeploymentLineRow>,
+    lines: &mut BTreeMap<u64, &replay_data::rows::DeploymentLineRow>,
     manpower: &ManpowerEntries,
     equipment: &BTreeMap<u64, Vec<(u32, u64, i64)>>,
     links: &BTreeMap<u32, &CountryRow>,
@@ -1211,7 +1208,7 @@ fn compare_efficiency(
         report,
         format!("{label}.efficiency"),
         actual.efficiency_raw,
-        engine::cequipment_production_line::efficiency_average(sum, count),
+        engine_native::cequipment_production_line::efficiency_average(sum, count),
     );
 }
 
@@ -1343,7 +1340,7 @@ fn compare_token(
     writer: TokenWriter,
     report: &mut Report,
 ) -> io::Result<()> {
-    if id == engine::cpdx_lexer::FIXED15_TOKEN && matches!(writer, TokenWriter::Token) {
+    if id == engine_native::cpdx_lexer::FIXED15_TOKEN && matches!(writer, TokenWriter::Token) {
         return Err(invalid(format!(
             "{label} uses reserved token 0x167; the token writer formats fixed15 rather than its lexical name"
         )));
@@ -1387,7 +1384,7 @@ fn name_field(report: &mut Report, label: &str, actual: &[u8], saved: Option<&[u
         saved.is_some(),
     );
     if let Some(saved) = saved {
-        let end = installed_content::parser::c_string(actual).len();
+        let end = installed_content_core::parser::c_string(actual).len();
         equal(report, label, &actual[..end], saved);
         if end < actual.len() {
             report.limitation("text string serialization stops at the first NUL; the captured suffix is not present in the save", label);

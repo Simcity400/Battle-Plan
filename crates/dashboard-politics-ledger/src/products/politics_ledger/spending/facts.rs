@@ -11,7 +11,7 @@ pub(super) struct CharacterFact {
     pub id: u32,
     pub script_token: Option<String>,
     pub saved_name: String,
-    pub template: Result<installed_content::characters::BuiltTemplate, String>,
+    pub template: Result<installed_content_core::characters::BuiltTemplate, String>,
     pub leader_category: Option<i32>,
     pub portrait: RecordedPortrait,
 }
@@ -233,13 +233,13 @@ pub(super) fn character_fact(
     // small army/navy portraits.
     let (role, size) = match cause {
         PowerCause::Advisor | PowerCause::AdvisorRemoval | PowerCause::Idea => (
-            replay::rows::PORTRAIT_CIVILIAN,
-            replay::rows::PORTRAIT_LARGE,
+            replay_data::rows::PORTRAIT_CIVILIAN,
+            replay_data::rows::PORTRAIT_LARGE,
         ),
         PowerCause::OfficerUpgrade => (1, 0),
         PowerCause::CaptainUpgrade => (2, 0),
         PowerCause::ScientistRecruitment | PowerCause::ScientistFaction => {
-            (4, replay::rows::PORTRAIT_LARGE)
+            (4, replay_data::rows::PORTRAIT_LARGE)
         }
         _ => (
             match category {
@@ -248,7 +248,7 @@ pub(super) fn character_fact(
                 Some(3) => 4,
                 _ => u32::MAX,
             },
-            replay::rows::PORTRAIT_LARGE,
+            replay_data::rows::PORTRAIT_LARGE,
         ),
     };
     Some(CharacterFact {

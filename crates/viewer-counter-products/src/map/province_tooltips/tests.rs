@@ -6,7 +6,7 @@ fn thermal_identifier_notes_reach_province_content_warnings() {
         members: Default::default(),
         impassable: Default::default(),
         neighbors: Ok(Default::default()),
-        temperature: Ok(installed_content::weather::TemperatureRanges {
+        temperature: Ok(installed_content_weather::weather::TemperatureRanges {
             ranges: Default::default(),
             notes: vec!["fixture modifier: unsupported identifier field (1 modifier)".into()],
         }),

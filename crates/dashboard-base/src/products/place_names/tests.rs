@@ -1,11 +1,10 @@
 use super::*;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{
-        CampaignRow, CountryAppearanceRow, CountryLinkRow, CountryRow, ProvinceNameRow,
-        ProvinceRow, Recorded, StateRow, TableRows, TableSchema,
-    },
+use replay_data::{
+    rows::CampaignRow, rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow,
+    rows::ProvinceNameRow, rows::ProvinceRow, rows::Recorded, rows::StateRow, rows::TableRows,
+    rows::TableSchema,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 
 fn set<T: TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
     *frame.tables[T::ID.index()] = TableView::Complete(T::wrap(rows));
@@ -146,7 +145,7 @@ fn content_source(
 
 #[test]
 fn state_names_use_recorded_custom_owner_and_content_precedence_at_5000_countries() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_cat, folder) = catalogue();
     let mut f = frame(1);
@@ -197,7 +196,7 @@ fn state_names_use_recorded_custom_owner_and_content_precedence_at_5000_countrie
 
 #[test]
 fn state_names_only_need_states_and_the_catalogues_own_state_cache() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_cat, folder) = catalogue();
     std::fs::write(
@@ -215,18 +214,18 @@ fn state_names_only_need_states_and_the_catalogues_own_state_cache() {
     let cat = catalogue::catalogue(&source, context.content.as_ref().unwrap()).unwrap();
     let mut content = scripted_text::read_state_content(&cat.content.layers).unwrap();
     content.warnings.extend([
-        installed_content::states::Diagnostic {
-            kind: installed_content::DiagnosticKind::Warning,
+        installed_content_states::states::Diagnostic {
+            kind: installed_content_core::DiagnosticKind::Warning,
             message: "native state template skip".into(),
             cause: None,
         },
-        installed_content::states::Diagnostic {
-            kind: installed_content::DiagnosticKind::Misread,
+        installed_content_states::states::Diagnostic {
+            kind: installed_content_core::DiagnosticKind::Misread,
             message: "proven state recovery".into(),
-            cause: Some(installed_content::states::MisreadCause::InvalidImpassable),
+            cause: Some(installed_content_states::states::MisreadCause::InvalidImpassable),
         },
-        installed_content::states::Diagnostic {
-            kind: installed_content::DiagnosticKind::Unsupported,
+        installed_content_states::states::Diagnostic {
+            kind: installed_content_core::DiagnosticKind::Unsupported,
             message: "unsupported fixture state form".into(),
             cause: None,
         },
@@ -275,7 +274,7 @@ fn state_names_only_need_states_and_the_catalogues_own_state_cache() {
 
 #[test]
 fn place_names_mixed_requests_preserve_province_bytes_and_state_only_labels() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_cat, folder) = catalogue();
     let (source, context) = content_source(vec![frame(1)], &folder);
@@ -308,7 +307,7 @@ fn place_names_mixed_requests_preserve_province_bytes_and_state_only_labels() {
 
 #[test]
 fn state_names_key_recorded_renames_by_each_requested_hour_and_keep_gaps() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_cat, folder) = catalogue();
     let mut first = frame(1);
@@ -407,7 +406,7 @@ fn state_names_preserve_successful_empty_names_and_stored_language_failures() {
 
 #[test]
 fn place_names_return_all_states_and_refuse_the_combined_transport_budget() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_cat, folder) = catalogue();
     let (source, context) = content_source(vec![frame(1)], &folder);
@@ -451,7 +450,7 @@ fn place_names_return_all_states_and_refuse_the_combined_transport_budget() {
 
 #[test]
 fn place_names_use_the_recorded_owner_and_stored_name_precedence_at_5000_countries() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (cat, _folder) = catalogue();
     let names = BTreeMap::from([(64, Ok("MOD_STATE".into()))]);
@@ -497,7 +496,7 @@ fn place_names_use_the_recorded_owner_and_stored_name_precedence_at_5000_countri
 
 #[test]
 fn place_names_refuse_missing_rename_data_and_preserve_recorded_language() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut cat, _folder) = catalogue();
     let names = BTreeMap::from([(64, Ok("MOD_STATE".into()))]);
@@ -642,7 +641,7 @@ fn name(
 }
 #[test]
 fn place_names_primary_name_needs_no_state_lookup_and_names_sea_regions() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (cat, _folder) = catalogue();
     let mut f = frame(1);
@@ -679,7 +678,7 @@ fn place_names_primary_name_needs_no_state_lookup_and_names_sea_regions() {
 
 #[test]
 fn land_place_names_try_the_state_after_empty_primary_and_never_use_a_region() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_cat, folder) = catalogue();
     let path = folder.0.join("localisation/mod_l_english.yml");
@@ -751,7 +750,7 @@ fn land_place_names_try_the_state_after_empty_primary_and_never_use_a_region() {
 
 #[test]
 fn place_names_unresolvable_names_keep_ids_out_of_display_text() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (cat, _folder) = catalogue();
     let mut f = frame(1);
@@ -789,10 +788,10 @@ fn selected_place_reads_keep_the_reserved_original_tag_operand() {
     );
     set::<tables::ReservedCountryNaming>(
         &mut f,
-        vec![replay::rows::ReservedCountryNamingRow {
+        vec![replay_data::rows::ReservedCountryNamingRow {
             tag: b"ZZ0".to_vec(),
-            original_tag_reference: replay::rows::Recorded::Value(Some(1)),
-            original_tag: replay::rows::Recorded::Value(Some(b"OR0".to_vec())),
+            original_tag_reference: replay_data::rows::Recorded::Value(Some(1)),
+            original_tag: replay_data::rows::Recorded::Value(Some(b"OR0".to_vec())),
             ..Default::default()
         }],
     );

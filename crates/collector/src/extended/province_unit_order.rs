@@ -26,16 +26,12 @@ use crate::{
     spooling::table,
     table_capture::{Arena, CaptureRows, grow_vec},
 };
-use engine::allocation::{advisory, copy_vec, owned_vec, reserve};
-use engine::{
-    Memory, carmy,
-    cprovince::{self, KnownUnit, UnitOrderRow},
-    walk::Outcome,
+use engine_allocation::{advisory, copy_vec, owned_vec, reserve};
+use engine_native::{
+    Memory, carmy, cprovince, cprovince::KnownUnit, cprovince::UnitOrderRow, walk::Outcome,
 };
-use replay::{
-    frame::TableView,
-    rows::{ProvinceUnitOrderRow, TableId, tables},
-};
+use replay_data::{rows::ProvinceUnitOrderRow, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ProvinceUnitOrder];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
@@ -653,7 +649,7 @@ impl Captured {
             return;
         };
         if !matches!(census.outcome(), Outcome::Rows { len } if len == seeds.len())
-            || engine::allocation::advisory(|| reserve(&mut self.known, seeds.len())).is_err()
+            || engine_allocation::advisory(|| reserve(&mut self.known, seeds.len())).is_err()
         {
             return;
         }
@@ -793,7 +789,7 @@ pub(crate) mod owned_tests {
     /// incomplete or absent census, are left to the walk.
     #[test]
     fn only_complete_census_divisions_with_their_own_identity_are_known() {
-        use engine::carmy::DivisionSeed;
+        use engine_native::carmy::DivisionSeed;
         const BASE: usize = 0x1_4000_0000;
         let handle = |id: u64| (id << 32) | 4713;
         let division = |pointer: usize, id: u64| DivisionSeed {
@@ -891,7 +887,7 @@ pub(crate) mod owned_tests {
                 reads: Default::default(),
                 fault: None,
             };
-            world.header(STATE + engine::cgame_state::PROVINCES, SLOTS, 4);
+            world.header(STATE + engine_native::cgame_state::PROVINCES, SLOTS, 4);
             for id in 1..=3 {
                 world.word(SLOTS + 8 * id as usize, province(id) as u64);
                 world.word(province(id), cprovince::VTABLE_RVA as u64);
@@ -930,7 +926,7 @@ pub(crate) mod owned_tests {
                 })
             };
             let seeds: Vec<_> = (0..3)
-                .map(|index| engine::carmy::DivisionSeed {
+                .map(|index| engine_native::carmy::DivisionSeed {
                     pointer: unit(index),
                     division: handle(index),
                     primary_vtable: Some(carmy::VTABLE_RVA as u64),
@@ -1166,7 +1162,7 @@ pub(crate) mod owned_tests {
         };
         let state = 0x100;
         let slots = 0x1000;
-        let root = state + engine::cgame_state::PROVINCES;
+        let root = state + engine_native::cgame_state::PROVINCES;
         put(&mut heap, root, &((base + slots) as u64).to_le_bytes());
         put(&mut heap, root + 8, &((PROVINCES + 1) as u32).to_le_bytes());
         put(
@@ -1202,7 +1198,7 @@ pub(crate) mod owned_tests {
                 let unit = base + unit_area + seeds.len() * 0x100;
                 put(&mut heap, lane + 8 * at, &(unit as u64).to_le_bytes());
                 let handle = ((seeds.len() as u64 + 1) << 32) | 4713;
-                seeds.push(engine::carmy::DivisionSeed {
+                seeds.push(engine_native::carmy::DivisionSeed {
                     pointer: unit,
                     division: handle,
                     primary_vtable: Some((base + carmy::VTABLE_RVA) as u64),
@@ -1216,7 +1212,7 @@ pub(crate) mod owned_tests {
         }
         let census = UnitInputs::fixture(seeds.clone(), Outcome::Rows { len: seeds.len() });
         // SAFETY: the heap outlives every walk and is not written during one.
-        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let domain = Box::leak(Box::new(province_unit_changes::Domain::enabled(
             PROVINCES + 1,
         )));

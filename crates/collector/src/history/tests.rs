@@ -1,19 +1,18 @@
 use super::*;
-use replay::{
-    identity::{SampleBoundary, Verification},
-    spool::Record,
-};
+use replay::spool::Record;
+use replay_data::{identity::SampleBoundary, identity::Verification};
 
 #[test]
 fn event_feed_history_seeds_sequence_generation_and_counts_from_retained_rows() {
-    use replay::{
-        branches::{BranchReason, BranchStart, Parentage},
-        event_feed_rows::{
-            EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent,
-            EventFeedHistoryRow, EventFeedSource,
-        },
-        frame::{DecodedFrame, FrameEncoder, Metrics, TableUpdate, TableView},
-        rows::{CampaignRow, TableId, TableRows},
+    use replay_data::{
+        event_feed_rows::EventFeedCountry, event_feed_rows::EventFeedCounts,
+        event_feed_rows::EventFeedCoverage, event_feed_rows::EventFeedEvent,
+        event_feed_rows::EventFeedHistoryRow, event_feed_rows::EventFeedSource, rows::CampaignRow,
+        rows::TableId, rows::TableRows,
+    };
+    use replay_frame::{
+        branches::BranchReason, branches::BranchStart, branches::Parentage, frame::DecodedFrame,
+        frame::FrameEncoder, frame::Metrics, frame::TableUpdate, frame::TableView,
     };
     let id = b"01234567-89ab-cdef-0123-456789abcdef";
     let mut records = vec![Record::SessionStart(session())];
@@ -167,7 +166,7 @@ fn session() -> SessionStart {
             vanilla_hash: [2; 32],
             dlc: Vec::new(),
             mods: Vec::new(),
-            coverage_policy: replay::identity::COVERAGE_POLICY_VERSION,
+            coverage_policy: replay_data::identity::COVERAGE_POLICY_VERSION,
             language: "l_english".into(),
             recorder_version: "synthetic".into(),
             collector_hash: [3; 32],
@@ -178,10 +177,12 @@ fn session() -> SessionStart {
 
 #[test]
 fn completion_sequence_seed_keeps_finalized_keys_across_reattach_and_branches() {
-    use replay::{
-        branches::{BranchReason, BranchStart, Parentage},
-        frame::{DecodedFrame, FrameEncoder, Metrics, TableView},
-        rows::{CampaignRow, OperationCompletionRow, TableId, TableRows},
+    use replay_data::{
+        rows::CampaignRow, rows::OperationCompletionRow, rows::TableId, rows::TableRows,
+    };
+    use replay_frame::{
+        branches::BranchReason, branches::BranchStart, branches::Parentage, frame::DecodedFrame,
+        frame::FrameEncoder, frame::Metrics, frame::TableView,
     };
     let id = b"01234567-89ab-cdef-0123-456789abcdef";
     let frame = |branch, hour, sequence| {
@@ -250,10 +251,13 @@ fn completion_sequence_seed_keeps_finalized_keys_across_reattach_and_branches() 
 
 #[test]
 fn resumed_politics_epoch_includes_observed_rows_when_coverage_is_unavailable() {
-    use replay::{
-        branches::{BranchReason, BranchStart, Parentage},
-        frame::{DecodedFrame, FrameEncoder, Metrics, TableView},
-        rows::{CampaignRow, ClockRow, CountryPowerChangeRow, TableId, TableRows},
+    use replay_data::{
+        rows::CampaignRow, rows::ClockRow, rows::CountryPowerChangeRow, rows::TableId,
+        rows::TableRows,
+    };
+    use replay_frame::{
+        branches::BranchReason, branches::BranchStart, branches::Parentage, frame::DecodedFrame,
+        frame::FrameEncoder, frame::Metrics, frame::TableView,
     };
     let session = session();
     let mut tables = std::array::from_fn(|_| TableView::Unavailable {
@@ -310,10 +314,13 @@ fn resumed_politics_epoch_includes_observed_rows_when_coverage_is_unavailable() 
 
 #[test]
 fn naval_sequence_prepares_every_retained_branch_before_resuming_same_process() {
-    use replay::{
-        branches::{BranchReason, BranchStart, Parentage},
-        frame::{Frame, Metrics, TableUpdate},
-        rows::{CampaignRow, ClockRow, NavalResultSourceRow, TableId, TableRows},
+    use replay_data::{
+        rows::CampaignRow, rows::ClockRow, rows::NavalResultSourceRow, rows::TableId,
+        rows::TableRows,
+    };
+    use replay_frame::{
+        branches::BranchReason, branches::BranchStart, branches::Parentage, frame::Frame,
+        frame::Metrics, frame::TableUpdate,
     };
     let id = "01234567-89ab-cdef-0123-456789abcdef";
     let other_id = "11234567-89ab-cdef-0123-456789abcdef";
@@ -416,13 +423,13 @@ fn naval_sequence_prepares_every_retained_branch_before_resuming_same_process() 
 #[test]
 fn event_ledger_sequences_restore_all_retained_prefixes_before_same_process_resume() {
     use crate::event_ledger::EventLedger;
-    use replay::{
-        branches::{BranchReason, BranchStart, Parentage},
-        frame::{Frame, Metrics, TableUpdate},
-        rows::{
-            AirLossEventRow, BuildingBombingDamageRow, CampaignRow, ClockRow, NuclearStrikeRow,
-            TableId, TableRows,
-        },
+    use replay_data::{
+        rows::AirLossEventRow, rows::BuildingBombingDamageRow, rows::CampaignRow, rows::ClockRow,
+        rows::NuclearStrikeRow, rows::TableId, rows::TableRows,
+    };
+    use replay_frame::{
+        branches::BranchReason, branches::BranchStart, branches::Parentage, frame::Frame,
+        frame::Metrics, frame::TableUpdate,
     };
     let id = "21234567-89ab-cdef-0123-456789abcdef";
     let other_id = "31234567-89ab-cdef-0123-456789abcdef";
@@ -562,7 +569,7 @@ fn event_ledger_sequences_restore_all_retained_prefixes_before_same_process_resu
     assert!(losses.drain(&mut Vec::new()).is_err());
     assert!(bombing.drain(&mut Vec::new()).is_err());
     let clock = |hour| {
-        Some(engine::cgame_state::Clock {
+        Some(engine_native::cgame_state::Clock {
             hour,
             play_session_started_at: 2,
             game_state: 0,

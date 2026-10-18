@@ -10,11 +10,8 @@ use crate::{
     naval_icon_frames::naval_icon_hour,
     naval_sides::NavalSides,
 };
-use replay::{
-    BranchId, Hour,
-    frame::DecodedFrame,
-    rows::{NavalProvinceCombatRow, tables},
-};
+use replay_data::{BranchId, Hour, rows::NavalProvinceCombatRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::BTreeMap,
     io,

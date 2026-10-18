@@ -1,7 +1,8 @@
 //! Private saved-operand fixtures; no native/save acceptance claim follows them.
 use super::*;
-use replay::rows::{
-    DivisionTemplateIconRow, DivisionTemplateRow, TemplateDisplayName, TemplateNameValue,
+use replay_data::{
+    rows::DivisionTemplateIconRow, rows::DivisionTemplateRow, rows::TemplateDisplayName,
+    rows::TemplateNameValue,
 };
 
 fn fixture_name(value: TemplateNameValue) -> (DecodedFrame, Save) {
@@ -44,7 +45,7 @@ fn fixture_name(value: TemplateNameValue) -> (DecodedFrame, Save) {
                 template,
                 country: 102,
                 display_name: Recorded::Value(Some(TemplateDisplayName {
-                    sample_hour: replay::rows::PacketHour::Host,
+                    sample_hour: replay_data::rows::PacketHour::Host,
                     value,
                 })),
                 ..Default::default()
@@ -80,7 +81,7 @@ fn report_daily_name(frame: &DecodedFrame, saved: &Save) -> Report {
     let mut report = Report::default();
     report
         .observed_refresh
-        .push(replay::cadence::cadence(TableId::DivisionTemplates));
+        .push(replay_data::cadence::cadence(TableId::DivisionTemplates));
     compare_division_templates(frame, saved, &countries, &mut report).unwrap();
     report
 }
@@ -173,7 +174,7 @@ fn missing_same_frame_certificate_and_malformed_demand_fail_saved_comparison() {
     assert!(report_name(&frame, &saved).outcome().is_err());
     let mut row = frame.complete::<tables::DivisionTemplateIcons>().unwrap()[0].clone();
     row.display_name = Recorded::Value(Some(TemplateDisplayName {
-        sample_hour: replay::rows::PacketHour::Host,
+        sample_hour: replay_data::rows::PacketHour::Host,
         value: TemplateNameValue::Changed {
             literal: b"New".to_vec(),
             fallback_key: Some(b"inactive".to_vec()),
@@ -227,7 +228,7 @@ fn daily_and_hourly_names_compare_native_nul_prefix_without_changing_demand() {
         let mut report = report_name(&frame, &saved);
         report
             .observed_refresh
-            .push(replay::cadence::cadence(TableId::DivisionTemplates));
+            .push(replay_data::cadence::cadence(TableId::DivisionTemplates));
         compare_division_templates(&frame, &saved, &context, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert!(
@@ -250,7 +251,7 @@ fn daily_and_hourly_names_compare_native_nul_prefix_without_changing_demand() {
         let mut report = report_name(&frame, &saved);
         report
             .observed_refresh
-            .push(replay::cadence::cadence(TableId::DivisionTemplates));
+            .push(replay_data::cadence::cadence(TableId::DivisionTemplates));
         compare_division_templates(&frame, &saved, &context, &mut report).unwrap();
         assert!(
             report
@@ -288,7 +289,7 @@ fn daily_and_hourly_leading_nul_keys_compare_emitted_empty_presence() {
     let mut report = report_name(&frame, &saved);
     report
         .observed_refresh
-        .push(replay::cadence::cadence(TableId::DivisionTemplates));
+        .push(replay_data::cadence::cadence(TableId::DivisionTemplates));
     compare_division_templates(&frame, &saved, &context, &mut report).unwrap();
     assert!(report.differences.is_empty());
     assert!(report.failed_comparisons.is_empty());

@@ -1,20 +1,18 @@
 //! Synthetic selected movement fixtures.
 use super::super::test_support::{assets, frame, put};
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{
-        CountryCounterInputRow, CountryLinkRow, CountryRow, DirectedWars, ProvinceUnitOrderRow,
-        Recorded, ReverseZeroVisibilityInputs, ShipModelRow, ShipRow, TableId, TaskForceRow,
-        WarCell,
-    },
+use replay_data::{
+    rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryRow, rows::DirectedWars,
+    rows::ProvinceUnitOrderRow, rows::Recorded, rows::ReverseZeroVisibilityInputs,
+    rows::ShipModelRow, rows::ShipRow, rows::TableId, rows::TaskForceRow, rows::WarCell,
 };
+use replay_frame::frame::TableView;
 
 const FORCE: u64 = 0x100;
 const SHIP: u64 = 0x200;
 
 fn subject_frame() -> DecodedFrame {
-    use replay::rows::{RelationLinkRow, TransportSubjectAccess};
+    use replay_data::{rows::RelationLinkRow, rows::TransportSubjectAccess};
     let mut frame = strait_frame();
     put::<tables::FactionMembers>(&mut frame, Vec::new());
     let mut rows = frame
@@ -32,7 +30,7 @@ fn subject_frame() -> DecodedFrame {
             country: 30,
             target_index: 2,
             transport_subject: Recorded::Value(Some(TransportSubjectAccess {
-                sample_hour: replay::rows::PacketHour::Stamped(hour),
+                sample_hour: replay_data::rows::PacketHour::Stamped(hour),
                 complete_owner: true,
                 ..Default::default()
             })),
@@ -57,7 +55,10 @@ fn subject_query(frame: &DecodedFrame, current_only: bool) -> Fact<bool> {
 
 #[test]
 fn selected_current_subject_pointer_overrides_historical_subject_dates() {
-    use replay::rows::{RelationLinkRow, SubjectRow, TransportSubjectAccess, ZeroSubjectInputs};
+    use replay_data::{
+        rows::RelationLinkRow, rows::SubjectRow, rows::TransportSubjectAccess,
+        rows::ZeroSubjectInputs,
+    };
     let mut frame = subject_frame();
     put::<tables::Subjects>(
         &mut frame,
@@ -83,10 +84,10 @@ fn selected_current_subject_pointer_overrides_historical_subject_dates() {
                 country: 30,
                 target_index: 3,
                 transport_subject: Recorded::Value(Some(TransportSubjectAccess {
-                    sample_hour: replay::rows::PacketHour::Stamped(hour),
+                    sample_hour: replay_data::rows::PacketHour::Stamped(hour),
                     target_raw: Some(40),
                     subject: Some(ZeroSubjectInputs {
-                        relation_type: Some(engine::csubject_relation::TYPE_VALUE),
+                        relation_type: Some(engine_native::csubject_relation::TYPE_VALUE),
                         parties: Some([Some(30), Some(40)]),
                     }),
                     ..Default::default()
@@ -119,7 +120,7 @@ fn selected_subject_current_hour_and_complete_table_are_required() {
     let mut frame = subject_frame();
     let rows = frame.complete::<tables::RelationLinks>().unwrap().to_vec();
     *frame.tables[TableId::RelationLinks.index()] = TableView::Truncated {
-        rows: replay::rows::TableRows::RelationLinks(rows),
+        rows: replay_data::rows::TableRows::RelationLinks(rows),
         missing: 1,
     };
     assert!(
@@ -130,7 +131,7 @@ fn selected_subject_current_hour_and_complete_table_are_required() {
 }
 
 fn railway_frame() -> DecodedFrame {
-    use replay::rows::{RailCooldownRow, RailwaySelectionInputs};
+    use replay_data::{rows::RailCooldownRow, rows::RailwaySelectionInputs};
     let mut frame = strait_frame();
     put::<tables::RailCooldowns>(
         &mut frame,
@@ -155,11 +156,11 @@ fn railway_frame() -> DecodedFrame {
 
 fn railway_answers(frame: &DecodedFrame, target: u32) -> (Fact<bool>, Fact<bool>) {
     let mut assets = assets();
-    let graph = installed_content::province_graph::ProvinceGraph {
+    let graph = installed_content_core::province_graph::ProvinceGraph {
         edges: BTreeMap::from([(1, vec![(3, None), (2, None), (2, None)]), (4, Vec::new())]),
         ..Default::default()
     };
-    assets.moves = Ok(installed_content::unit_path::MoveGraph::new(
+    assets.moves = Ok(installed_content_unit_path::unit_path::MoveGraph::new(
         &graph,
         &assets.geometry,
     ));
@@ -173,7 +174,10 @@ fn railway_answers(frame: &DecodedFrame, target: u32) -> (Fact<bool>, Fact<bool>
     )
 }
 
-fn change_railway(frame: &mut DecodedFrame, edit: impl FnOnce(&mut replay::rows::RailCooldownRow)) {
+fn change_railway(
+    frame: &mut DecodedFrame,
+    edit: impl FnOnce(&mut replay_data::rows::RailCooldownRow),
+) {
     let mut rows = frame.complete::<tables::RailCooldowns>().unwrap().to_vec();
     edit(&mut rows[0]);
     put::<tables::RailCooldowns>(frame, rows);
@@ -314,7 +318,7 @@ fn strait_frame() -> DecodedFrame {
             .map(|country| CountryCounterInputRow {
                 country,
                 directed_wars: Recorded::Value(Some(DirectedWars {
-                    sample_hour: replay::rows::PacketHour::Stamped(12),
+                    sample_hour: replay_data::rows::PacketHour::Stamped(12),
                     receiver_raw_id: country as i32,
                     receiver_slot: if country == 30 { 2 } else { 3 },
                     matrix_count: 4,
@@ -396,7 +400,7 @@ fn selected_strait_stops_model_reads_after_the_first_clear_formation_flag() {
     assert_eq!(query(&frame, 20), Ok(StraitFleet::Unseen));
     put::<tables::UnitIntel>(
         &mut frame,
-        vec![replay::rows::UnitIntelRow {
+        vec![replay_data::rows::UnitIntelRow {
             unit: FORCE,
             viewer: 1,
             level: 1,
@@ -546,7 +550,9 @@ fn selected_strait_route_gate_does_not_demand_unavailable_ship_models() {
 
 #[test]
 fn selected_common_route_keeps_the_callers_class_when_handles_coincide() {
-    use replay::rows::{DivisionMovementRow, DivisionRow, RailwayGunCounterInputRow};
+    use replay_data::{
+        rows::DivisionMovementRow, rows::DivisionRow, rows::RailwayGunCounterInputRow,
+    };
     let mut frame = strait_frame();
     put::<tables::Divisions>(
         &mut frame,
@@ -598,14 +604,15 @@ fn selected_common_route_keeps_the_callers_class_when_handles_coincide() {
 #[test]
 fn selected_transport_follows_areas_and_naval_bases_and_refuses_past_them() {
     use crate::unit_handle::Unit;
-    use replay::rows::{
-        ControllerAreaNode, DivisionRow, NavalBaseRow, ProvinceRow, RailwayGunCounterInputRow,
+    use replay_data::{
+        rows::ControllerAreaNode, rows::DivisionRow, rows::NavalBaseRow, rows::ProvinceRow,
+        rows::RailwayGunCounterInputRow,
     };
     let check = |frame: &DecodedFrame, selection: &[Unit], target| {
         let mut assets = assets();
         assets.geometry.land.extend([1, 2, 3]);
-        assets.moves = Ok(installed_content::unit_path::MoveGraph::new(
-            &installed_content::province_graph::ProvinceGraph::default(),
+        assets.moves = Ok(installed_content_unit_path::unit_path::MoveGraph::new(
+            &installed_content_core::province_graph::ProvinceGraph::default(),
             &assets.geometry,
         ));
         let world = World::read(frame, assets.trigger_content.facts());
@@ -625,7 +632,7 @@ fn selected_transport_follows_areas_and_naval_bases_and_refuses_past_them() {
             .unwrap()
             .selected_transport_message(selection, target, &text)
     };
-    let none = || -> Result<installed_content::unit_path::selected_transport::Outputs, String> {
+    let none = || -> Result<installed_content_unit_path::unit_path::selected_transport::Outputs, String> {
         Ok(Default::default())
     };
     let bases = |frame: &mut DecodedFrame, provinces: &[u32]| {
@@ -699,10 +706,12 @@ fn selected_transport_follows_areas_and_naval_bases_and_refuses_past_them() {
     );
     assert_eq!(
         check(&frame, &[Unit::RailwayGun(FORCE)], 3),
-        Ok(installed_content::unit_path::selected_transport::Outputs {
-            primary: Vec::new(),
-            secondary: b"No port here".to_vec(),
-        })
+        Ok(
+            installed_content_unit_path::unit_path::selected_transport::Outputs {
+                primary: Vec::new(),
+                secondary: b"No port here".to_vec(),
+            }
+        )
     );
 }
 
@@ -710,7 +719,7 @@ fn selected_transport_follows_areas_and_naval_bases_and_refuses_past_them() {
 fn selected_rule_warning_localises_the_native_name_and_preserves_defined_empty() {
     let frame = strait_frame();
     let state_keys = BTreeMap::new();
-    let rule = installed_content::adjacency_rules::parse(b"adjacency_rule = { name = fixture_rule }")
+    let rule = installed_content_core::adjacency_rules::parse(b"adjacency_rule = { name = fixture_rule }")
         .unwrap()
         .remove(0);
     for (value, expected) in [
@@ -741,9 +750,9 @@ fn selected_rule_warning_localises_the_native_name_and_preserves_defined_empty()
 
 #[test]
 fn selected_primary_combat_scan_keeps_order_and_border_duration_uses_its_own_gate() {
-    use replay::rows::{
-        DivisionMovementRow, LandBorderWarInputs, LandCombatDetailsRow, LandCombatRow,
-        UnitCombatReference, UnitCombatReferences,
+    use replay_data::{
+        rows::DivisionMovementRow, rows::LandBorderWarInputs, rows::LandCombatDetailsRow,
+        rows::LandCombatRow, rows::UnitCombatReference, rows::UnitCombatReferences,
     };
     let mut frame = strait_frame();
     put::<tables::DivisionMovement>(
@@ -752,7 +761,7 @@ fn selected_primary_combat_scan_keeps_order_and_border_duration_uses_its_own_gat
             division: FORCE,
             combat_count: 2,
             combat_references: Recorded::Value(Some(UnitCombatReferences {
-                sample_hour: replay::rows::PacketHour::Stamped(12),
+                sample_hour: replay_data::rows::PacketHour::Stamped(12),
                 entries: vec![
                     UnitCombatReference { combat: 8, kind: 1 },
                     UnitCombatReference { combat: 9, kind: 2 },
@@ -813,7 +822,7 @@ mod selected_routes;
 
 #[test]
 fn selected_naval_duration_uses_its_own_signed_content_threshold() {
-    use replay::rows::NavalCombatDetailsRow;
+    use replay_data::rows::NavalCombatDetailsRow;
     let mut frame = strait_frame();
     *frame.tables[TableId::LandCombats.index()] = TableView::Unavailable {
         reason: "naval duration check must not demand land combat data".into(),
@@ -854,7 +863,7 @@ fn selected_naval_duration_uses_its_own_signed_content_threshold() {
 
 #[test]
 fn selected_naval_duration_refuses_missing_rows_tables_defines_and_unknown_classes() {
-    use replay::rows::{NavalCombatDetailsRow, TableRows};
+    use replay_data::{rows::NavalCombatDetailsRow, rows::TableRows};
     let mut frame = strait_frame();
     let query = |frame: &DecodedFrame, minimum: Fact<i32>, kind| {
         let mut assets = assets();
@@ -913,7 +922,7 @@ fn selected_naval_duration_refuses_missing_rows_tables_defines_and_unknown_class
 /// controller through the hour's relations: refused, then admitted by military access.
 #[test]
 fn selected_transport_access_stage_reads_the_recorded_relations() {
-    use replay::rows::{DivisionRow, ProvinceRow, RelationLinkRow};
+    use replay_data::{rows::DivisionRow, rows::ProvinceRow, rows::RelationLinkRow};
     let mut frame = subject_frame();
     put::<tables::Divisions>(
         &mut frame,

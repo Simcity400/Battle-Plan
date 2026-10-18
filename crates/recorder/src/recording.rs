@@ -1,16 +1,14 @@
 //! Passive process discovery, injection, detach and finalization.
-use replay::identity::IdentityCodec;
 use crate::{
     directories::{default_capture_directory, resolve_user_directory},
     replay_io,
     windows::{self, Event, Process},
 };
-use engine::{PINNED_BUILD, build::hash_executable};
-use installed_content::content::{GatherOptions, gather};
-use replay::{
-    identity::SessionStart,
-    witness::{TerminalWitness, WITNESS_FILE_NAME},
-};
+use engine_executable::{build::PINNED_BUILD, build::hash_executable};
+use installed_content_core::{content::GatherOptions, content::gather};
+use replay_data::identity::IdentityCodec;
+use replay_data::identity::SessionStart;
+use replay_data::{witness::TerminalWitness, witness::WITNESS_FILE_NAME};
 use serde_json::{Value, json};
 use std::{
     cell::Cell,
@@ -702,7 +700,7 @@ pub(crate) fn capture(
             hex(&exe.sha256)
         ));
     }
-    engine::executable_tables::initialize_executable(&process.path)
+    engine_executable::executable_tables::initialize_executable(&process.path)
         .map_err(|error| format!("Cannot prepare game tables: {error}"))?;
     let game_version = PINNED_BUILD
         .read_version_banner(&mut executable)
@@ -799,7 +797,7 @@ pub(crate) fn capture(
         process_id: pid,
         process_start_time: process.start_time,
         qpc_frequency: frequency as u64,
-        sample_boundary: replay::identity::SampleBoundary::EndOfHour,
+        sample_boundary: replay_data::identity::SampleBoundary::EndOfHour,
         identity,
     };
     let mut session_bytes = Vec::new();
@@ -1936,7 +1934,7 @@ fn ensure_finalizable(directory: &Path) -> Result<(bool, SessionStart), String> 
     .map_err(|e| e.to_string())?;
     let bytes: Vec<u8> =
         serde_json::from_value(config["session_start"].clone()).map_err(|e| e.to_string())?;
-    let mut decoder = replay::codec::Decoder::new(&bytes);
+    let mut decoder = replay_data::codec::Decoder::new(&bytes);
     let session = SessionStart::decode(&mut decoder).map_err(|e| e.to_string())?;
     decoder.finish().map_err(|e| e.to_string())?;
     if !windows::games()?.contains(&session.process_id) {
@@ -2608,7 +2606,7 @@ mod tests {
         assert!(!control.stopping() && !control.discarding());
     }
 
-    fn published_hours(path: &Path) -> Vec<(replay::BranchId, replay::Hour)> {
+    fn published_hours(path: &Path) -> Vec<(replay_data::BranchId, replay_data::Hour)> {
         let replay = Replay::open(fs::read(path).unwrap()).unwrap();
         replay
             .index
@@ -2810,7 +2808,7 @@ mod tests {
             ALLOCATION_CAMPAIGN, allocation_records, allocation_test_directory,
             write_campaign_spool,
         };
-        use replay::spool::{ControlRecord, Record};
+        use replay::{spool::ControlRecord, spool::Record};
         const LATER: &str = "00000000-0000-4000-8000-000000000001";
         let first = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
         assert!(LATER < first, "the later campaign's UUID sorts first");

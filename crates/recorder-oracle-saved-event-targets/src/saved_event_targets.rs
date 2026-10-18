@@ -1,10 +1,8 @@
 //! Ordered saved-global registry: header writer, row writer.
 use super::{Report, complete, counters::eq, country_tag};
 use installed_content_save::saved_event_targets::Target;
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryRow, GlobalSavedEventTargetRow, tables},
-};
+use replay_data::{rows::CountryRow, rows::GlobalSavedEventTargetRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 pub fn compare(
     frame: &DecodedFrame,

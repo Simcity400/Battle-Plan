@@ -158,7 +158,9 @@ Each component's README describes its layout, concepts and local rules.
 | [recorder-oracle-wars](crates/recorder-oracle-wars/README.md) | wars save comparisons and recorded consistency checks. |
 | [recorder-oracle-weather](crates/recorder-oracle-weather/README.md) | weather save comparisons and recorded consistency checks. |
 | [recorder-app](crates/recorder-app/README.md) | Battle Plan Recorder: the tray program that records campaigns while HOI4 runs. |
-| [replay](crates/replay/README.md) | Recording format, tables, branches and sample history. |
+| [replay](crates/replay/README.md) | Compressed recording containers, spool files, recovery and publication. |
+| [replay-frame](crates/replay-frame/README.md) | Frame encoding, reconstruction, branch continuity and provenance without recording I/O. |
+| [replay-derive](crates/replay-derive/README.md) | Playback calculations over recorded operands, independent of compressed I/O. |
 | [job-priority](crates/job-priority/README.md) | The scheduling priority every preparation thread takes from its job, in every crate that starts one. |
 | [replay-data](crates/replay-data/README.md) | Recorded rows, cadence, exact values, identity and shared data codecs. |
 | [store](crates/store/README.md) | Immutable prepared ranges, manifest publication and storage Clear. |
@@ -225,6 +227,10 @@ The [dashboard architecture](docs/dashboard.md) explains how recordings become d
 | [Worker CPU profiles](tools/worker_profile.py) | Symbolize diagnostic collector instruction samples and rank self CPU costs by function, thread role and pool job. |
 
 ## Recording and dependency checks
+
+See [Rust builds](docs/builds.md) for fast default builds, the optimized
+`interactive` profile and the recording compilation layers. Check the workspace
+boundaries after dependency changes with `python tools/check-build-dependencies.py`.
 
 Shared recordings are untrusted input. The [replay reader](crates/replay/README.md)
 validates container and compressed-block framing and uses checked growth; the

@@ -26,7 +26,7 @@ fn projects_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_
     assert_eq!(LOCAL.snapshot().current, Capacity::default());
 }
 
-use replay::rows::TableSchema;
+use replay_data::rows::TableSchema;
 
 fn small() -> (Capacities, Captured) {
     let capacities = Capacities {
@@ -84,18 +84,18 @@ fn daily_project_siblings_do_no_inactive_native_work_after_shared_faults() {
             false
         }
     }
-    let memory = engine::memory::CountedMemory::new(Unreadable);
+    let memory = engine_native::memory::CountedMemory::new(Unreadable);
     let (_, mut captured) = small();
     for hour in 0..24 {
         let accounting = read_accounting::Capture::new();
         captured.capture(&memory, 0, 0x1000, hour, false);
         let counts = accounting.finish();
         for (index, outcome) in captured.outcomes().into_iter().enumerate() {
-            if !replay::cadence::should_walk(TABLES[index], hour, false) {
+            if !replay_data::cadence::should_walk(TABLES[index], hour, false) {
                 assert_eq!(
                     outcome,
                     Outcome::Unavailable {
-                        reason: replay::cadence::SKIPPED_REASON
+                        reason: replay_data::cadence::SKIPPED_REASON
                     }
                 );
                 assert_eq!(counts[TABLES[index].index()].spans, 0);
@@ -110,10 +110,10 @@ fn daily_project_job_skips_empty_storage_and_preserves_raw_typed_identity() {
     let bytes = kit::fixture();
     let (capacities, _) = small();
     for hour in 0..24 {
-        let active = replay::cadence::should_walk(TableId::ProjectPrograms, hour, false);
+        let active = replay_data::cadence::should_walk(TableId::ProjectPrograms, hour, false);
         assert_eq!(
             active,
-            Some(hour as u32) == replay::cadence::refresh_slot(TableId::ProjectPrograms)
+            Some(hour as u32) == replay_data::cadence::refresh_slot(TableId::ProjectPrograms)
         );
         let memory = ProgramSource::new(&bytes);
         let mut job = if active {
@@ -147,13 +147,13 @@ fn daily_project_job_skips_empty_storage_and_preserves_raw_typed_identity() {
             assert_eq!(ticks, [0; RAW.len()]);
             assert!([0, 3].iter().all(|&index| captured.outcomes()[index]
                 == Outcome::Unavailable {
-                    reason: replay::cadence::SKIPPED_REASON,
+                    reason: replay_data::cadence::SKIPPED_REASON,
                 }));
             captured.fail_projects_capture(false, "accepted worker stopped");
             assert_eq!(
                 captured.programs.outcome,
                 Outcome::Unavailable {
-                    reason: replay::cadence::SKIPPED_REASON
+                    reason: replay_data::cadence::SKIPPED_REASON
                 }
             );
         }
@@ -225,7 +225,7 @@ fn conversion_preserves_native_keys_fixed_values_presence_and_literal_building_b
         program_reference: u64::MAX,
         started: 1,
         completed: 0,
-        state: engine::nproject_cproject_state_machine::State {
+        state: engine_projects::nproject_cproject_state_machine::State {
             current_offset: u32::MAX,
             state_enums: [1, 2, 3, u32::MAX],
             not_completed: 1,
@@ -243,7 +243,7 @@ fn conversion_preserves_native_keys_fixed_values_presence_and_literal_building_b
         prototype_reward_handle: u32::MAX,
         option_handle: u32::MAX - 1,
         date: i32::MIN,
-        context: engine::nproject_sproject_context::Row {
+        context: engine_projects::nproject_sproject_context::Row {
             province: i32::MIN,
             progress: i32::MAX,
             character_reference: u64::MAX,
@@ -281,7 +281,7 @@ fn conversion_preserves_native_keys_fixed_values_presence_and_literal_building_b
     captured.raid_type_tokens.len = 2;
     // The player cache's tokens follow the parents' in the arena.
     captured.raid_player.outcome = Outcome::Rows { len: 1 };
-    captured.raid_player.rows[0] = engine::cplayer_status_cache::Row {
+    captured.raid_player.rows[0] = engine_visibility::cplayer_status_cache::Row {
         country: u32::MAX,
         allowed_start: 1,
         allowed_len: 1,
@@ -298,7 +298,7 @@ fn conversion_preserves_native_keys_fixed_values_presence_and_literal_building_b
         outcome: -1,
         show_for_start: 0,
         show_for_len: 1,
-        source: engine::craid_source::Row {
+        source: engine_native::craid_source::Row {
             kind: None,
             kind_present: 0,
             province: u32::MAX,
@@ -572,7 +572,7 @@ fn split_capacities() -> Capacities {
 }
 
 struct ProgramSource<'a> {
-    memory: engine::memory::SliceMemory<'a>,
+    memory: engine_native::memory::SliceMemory<'a>,
     pointer: usize,
     fail: Option<usize>,
     partial: usize,
@@ -1044,7 +1044,7 @@ fn split_copy_matches_direct_walk() {
     let memory = kit::memory(&bytes);
     let capacities = split_capacities();
     let direct = kit::direct(&memory, &capacities);
-    let memory = engine::memory::CountedMemory::new(memory);
+    let memory = engine_native::memory::CountedMemory::new(memory);
     let native = read_accounting::Capture::new();
     let (split, report, _) = kit::split(&memory, &capacities);
     let counts = native.finish();
@@ -1192,12 +1192,12 @@ fn split_copy_matches_direct_walk_under_truncation() {
 #[test]
 fn split_copy_matches_direct_walk_on_fault_matrix() {
     use super::projects_test_kit as kit;
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: std::ops::Range<usize>,
     }
-    impl engine::Memory for Fault<'_> {
+    impl engine_native::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let Some(end) = address.checked_add(output.len()) else {
                 return false;

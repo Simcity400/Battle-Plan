@@ -1,11 +1,8 @@
 //! Synthetic native weather layout for census benchmarks.
 //! Values change in place between captures.
 use super::*;
-use engine::{
-    cpdx_array::Array,
-    memory::{LiveMemory, SliceMemory},
-};
-use replay::rows::RowCodec;
+use engine_native::{cpdx_array::Array, memory::LiveMemory, memory::SliceMemory};
+use replay_data::rows::RowCodec;
 use std::{cell::Cell, hint::black_box, time::Instant};
 
 // This test must delegate batching to LiveMemory without using engine's
@@ -110,7 +107,7 @@ impl World {
             bytes[offset..offset + value.len()].copy_from_slice(value)
         };
         put(
-            STATE + engine::cgame_state::WEATHER_MANAGER,
+            STATE + engine_native::cgame_state::WEATHER_MANAGER,
             &((origin + MANAGER) as u64).to_le_bytes(),
         );
         put(

@@ -90,12 +90,12 @@ impl Prepared {
     pub fn observe(
         &mut self,
         frame: &DecodedFrame,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         source: &Source,
     ) -> io::Result<()> {
         let changes = dashboard_base::prepared::frame_changes::FrameChanges {
-            rows_changed: [true; replay::frame::TABLE_COUNT],
-            table_read: [true; replay::frame::TABLE_COUNT],
+            rows_changed: [true; replay_data::rows::TABLE_COUNT],
+            table_read: [true; replay_data::rows::TABLE_COUNT],
             slot_read: std::array::from_fn(|index| {
                 slot_read(format, &frame.metrics, TableId::ALL[index], frame.hour)
             }),
@@ -107,7 +107,7 @@ impl Prepared {
     pub fn observe_changed(
         &mut self,
         frame: &DecodedFrame,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         source: &Source,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
@@ -119,7 +119,7 @@ impl Prepared {
     pub fn observe_changed_in(
         &mut self,
         frame: &DecodedFrame,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         windows: &[HourSpan],
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
@@ -1091,10 +1091,8 @@ mod tests {
         CIVILIAN, building_at, building_line, construction_frame,
     };
     use dashboard_core::test_fixtures::{CAMPAIGN, records};
-    use replay::{
-        frame::TableView,
-        rows::{ConstructionLineOutputRow, TableRows},
-    };
+    use replay_data::{rows::ConstructionLineOutputRow, rows::TableRows};
+    use replay_frame::frame::TableView;
 
     fn source_for(frames: &[DecodedFrame]) -> Source {
         let replay = Arc::new(
@@ -1134,7 +1132,7 @@ mod tests {
                     observed_since_creation: true,
                     exact: true,
                     ended: !open,
-                    completion: replay::rows::Recorded::Value(None),
+                    completion: replay_data::rows::Recorded::Value(None),
                     ..Default::default()
                 },
             ]));
@@ -1352,7 +1350,7 @@ mod tests {
                             observed_since_creation: true,
                             exact: true,
                             ended: hour == 148,
-                            completion: replay::rows::Recorded::Value(None),
+                            completion: replay_data::rows::Recorded::Value(None),
                             ..Default::default()
                         }]
                     } else {
@@ -1766,7 +1764,7 @@ mod tests {
         );
         *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
             (1..=5000)
-                .map(|index| replay::rows::CountryRow {
+                .map(|index| replay_data::rows::CountryRow {
                     canonical_slot: index,
                     id: index,
                     tag: format!("opaque / country {index}").into_bytes(),
@@ -1777,7 +1775,7 @@ mod tests {
         *frame.tables[TableId::CountryLinks.index()] =
             TableView::Complete(TableRows::CountryLinks(
                 (1..=5000)
-                    .map(|index| replay::rows::CountryLinkRow {
+                    .map(|index| replay_data::rows::CountryLinkRow {
                         canonical_slot: index,
                         id: index,
                     })

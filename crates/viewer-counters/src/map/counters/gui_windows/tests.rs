@@ -20,7 +20,7 @@ fn read_gui(bytes: &[u8]) -> native::Gui {
 /// Missing counter-column templates become named layout refusals.
 #[test]
 fn the_native_windows_load_and_lay_out_without_the_legacy_readers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "hoi4_viewer_native_windows_{}_{:?}",
@@ -67,7 +67,7 @@ fn the_native_windows_load_and_lay_out_without_the_legacy_readers() {
     let layouts = Layouts::read(&windows);
     assert!(layouts.land.as_ref().unwrap_err().contains(LAND_WINDOW));
     assert!(layouts.columns.as_ref().unwrap_err().contains(STACK_WINDOW));
-    let localisation = installed_content::localisation::Localisation::default();
+    let localisation = installed_content_localisation::localisation::Localisation::default();
     let registry = native::resources::Registry::load(&layers).unwrap();
     let mut gui = GuiResources::new(registry, b"l_english", [5632, 2048], Default::default());
     let assets = window_assets(&windows, gui.registry(), &localisation);
@@ -347,7 +347,7 @@ fn production_selected(
 
 #[test]
 fn detailed_coarse_and_port_selection_follows_the_first_task_force() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use viewer_foundation::unit_handle::Unit;
     let fixture = navy_fixture();
@@ -417,7 +417,7 @@ fn detailed_coarse_and_port_selection_follows_the_first_task_force() {
 /// other-coloured plate and withhold the hull.
 #[test]
 fn an_at_sea_counter_takes_the_type_icon_relation_for_its_plate_and_hull() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = navy_fixture();
     let windows = windows();
@@ -458,7 +458,7 @@ fn an_at_sea_counter_takes_the_type_icon_relation_for_its_plate_and_hull() {
 /// continue; country-colour mode instead uses the logical owner's colour.
 #[test]
 fn a_mission_item_takes_its_own_allegiance_for_its_plate() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = navy_fixture();
     let windows = windows();
@@ -524,7 +524,7 @@ fn a_mission_item_takes_its_own_allegiance_for_its_plate() {
 /// owner's.
 #[test]
 fn a_detailed_counter_at_sea_draws_the_native_write_set() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = navy_fixture();
     let windows = windows();
@@ -621,7 +621,7 @@ fn a_detailed_counter_at_sea_draws_the_native_write_set() {
 /// remaining detail. Without a prior detailed update, invalid_orders stays authored.
 #[test]
 fn a_coarse_counter_recomputes_the_naval_arm_and_hides_the_group_marker() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = navy_fixture();
     let windows = windows();
@@ -666,7 +666,7 @@ const PORTRAIT_NAVY: &str = r#"guiTypes = { containerWindowType = { name = "unit
 /// window, never coarse, still shows its portrait.
 #[test]
 fn a_counter_window_keeps_what_its_updates_leave() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = navy_fixture();
     let gui = read_gui(PORTRAIT_NAVY.as_bytes());
@@ -708,7 +708,7 @@ fn a_counter_window_keeps_what_its_updates_leave() {
 /// windows retain the glyph from their last full update.
 #[test]
 fn a_pooled_mission_item_keeps_what_its_updater_does_not_write() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = navy_fixture();
     let windows = windows();
@@ -772,7 +772,7 @@ fn a_pooled_mission_item_keeps_what_its_updater_does_not_write() {
 /// with Hide keeps that control hidden through later window shows.
 #[test]
 fn the_updaters_hide_bit_writes_reach_authored_hidden_controls() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = navy_fixture();
     let gui = read_gui(
@@ -838,7 +838,7 @@ fn the_updaters_hide_bit_writes_reach_authored_hidden_controls() {
 /// fallback artwork for measurement.
 #[test]
 fn a_scaled_bar_steps_by_its_integer_drawable_extent() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = read_gui(
         br#"guiTypes = { containerWindowType = { name = "unit_counter_navy"
@@ -875,7 +875,7 @@ fn a_scaled_bar_steps_by_its_integer_drawable_extent() {
 /// reason where it would draw. No-intel replacements follow their own sprite setter.
 #[test]
 fn an_undecidable_hull_leaves_the_type_sprite_unknown() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = navy_fixture();
     let windows = windows();
@@ -951,7 +951,7 @@ fn an_undecidable_hull_leaves_the_type_sprite_unknown() {
 /// without showing or hiding those undecided children.
 #[test]
 fn missing_operands_leave_exactly_their_parts_unknown() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = navy_fixture();
     let windows = windows();
@@ -1049,7 +1049,7 @@ fn missing_operands_leave_exactly_their_parts_unknown() {
 /// by name and retain the drawable ([`CARRIER_SPRITE`]), as hull and convoy names do.
 #[test]
 fn an_undefined_carrier_sprite_is_counted_by_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = navy_fixture();
     let windows = windows();
@@ -1081,7 +1081,7 @@ fn an_undefined_carrier_sprite_is_counted_by_name() {
 /// sprite is undefined, including when X replaced the authored sprite earlier.
 #[test]
 fn a_hull_followed_by_an_undefined_no_intel_sprite_keeps_the_hull() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = navy_fixture();
     fixture
@@ -1122,7 +1122,7 @@ fn a_hull_followed_by_an_undefined_no_intel_sprite_keeps_the_hull() {
 /// or sprite writes, so scrollbar text never takes the refused control-write path.
 #[test]
 fn texts_and_sprites_are_ordered_calls_of_their_own() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = navy_fixture();
     let windows = windows();
@@ -1179,7 +1179,7 @@ fn texts_and_sprites_are_ordered_calls_of_their_own() {
 /// country without one refuses the window by name.
 #[test]
 fn the_counter_options_select_the_nato_frame_and_the_country_colour() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = navy_fixture();
     let windows = windows();
@@ -1278,7 +1278,7 @@ fn the_combat_progress_value_rounds_as_the_game_does() {
 /// turns half a rotation and moves by its type size.
 #[test]
 fn the_combat_state_calls_go_through_the_native_lookups() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let windows = windows();
     let window = windows.naval_combat();
@@ -1387,7 +1387,7 @@ fn the_combat_state_calls_go_through_the_native_lookups() {
 /// [`ROTATION`] unknown. Frames, bar hiding/flags, Show, turning, fill and HQ all apply.
 #[test]
 fn an_unmeasured_flipped_bar_takes_every_call_but_its_move() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let windows = windows();
     let window = windows.naval_combat();
@@ -1453,7 +1453,7 @@ fn an_unmeasured_flipped_bar_takes_every_call_but_its_move() {
 /// the holder's content at their slot plus saved offset.
 #[test]
 fn grid_items_are_finalized_and_placed_through_the_module() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new(
         &[
@@ -1503,7 +1503,7 @@ fn grid_items_are_finalized_and_placed_through_the_module() {
 /// place plus each slot and saved construction offset. Items past slot limits omit.
 #[test]
 fn port_items_are_placed_in_box_ships() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new(
         &[

@@ -344,7 +344,7 @@ fn scalar_stats_channels(
         (40, 77),
     ] {
         let Some(address) = index
-            .checked_mul(engine::loop_history_record_fields::VALUE_STRIDE)
+            .checked_mul(engine_air_history::loop_history_record_fields::VALUE_STRIDE)
             .and_then(|offset| values.data.checked_add(offset))
         else {
             return false;

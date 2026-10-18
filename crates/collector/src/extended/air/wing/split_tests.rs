@@ -2,7 +2,7 @@
 //! joins them, against the serial walk of the same world.
 use super::*;
 use crate::{unit_scale_tests::fixture, wing_changes::Watches};
-use engine::{
+use engine_native::{
     air_mission, cair_wing_pool, cgame_state, cpdx_array::Array, cstrategic_air,
     cstrategic_air_manager,
 };
@@ -39,8 +39,8 @@ const FULL: Config = Config {
 fn quiet() -> Config {
     let hour = (0..24)
         .find(|&hour| {
-            !replay::cadence::should_walk(TableId::WingCumulative, hour, false)
-                && !replay::cadence::should_walk(TableId::AirTheatreMembers, hour, false)
+            !replay_data::cadence::should_walk(TableId::WingCumulative, hour, false)
+                && !replay_data::cadence::should_walk(TableId::AirTheatreMembers, hour, false)
         })
         .unwrap();
     Config {
@@ -185,7 +185,7 @@ fn assert_same(split: &AirWingJob, serial: &AirWingJob) {
 }
 
 fn pointer(memory: &impl Memory, address: usize) -> usize {
-    engine::read::<u64>(memory, address).unwrap() as usize
+    engine_native::read::<u64>(memory, address).unwrap() as usize
 }
 
 fn array(memory: &impl Memory, header: usize) -> Array {
@@ -273,7 +273,7 @@ fn owner_slot_parts_join_to_the_serial_census_at_5000_countries() {
         assert_eq!(read.len, 2, "slot {slot}");
         assert_eq!(
             sites.iter().map(|site| site.base).collect::<Vec<_>>(),
-            [slot, slot + 1].map(|id| id << 32 | engine::cair_base::TYPE as u64),
+            [slot, slot + 1].map(|id| id << 32 | engine_native::cair_base::TYPE as u64),
             "slot {slot}"
         );
     }
@@ -452,7 +452,7 @@ fn a_fault_in_any_part_refuses_what_the_serial_walk_refuses() {
         element(&world.live(), pool(world, slot) + cair_wing_pool::WINGS, 0)
     };
     let equipment = wing(&world, 1_300) + cair_wing::EQUIPMENT_POOL;
-    let name = wing(&world, 2_600) + cair_wing::NAME + engine::msvc_string::LENGTH;
+    let name = wing(&world, 2_600) + cair_wing::NAME + engine_native::msvc_string::LENGTH;
     let region = wing(&world, 1_300) + cair_wing::MISSION + air_mission::REGION;
     let later_pool = pool(&world, 3_800);
     for faults in [

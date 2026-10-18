@@ -278,7 +278,7 @@ fn river_height_bilinearly_filters_bytes_before_scaling() {
 
 #[test]
 fn junction_partition_keeps_every_marker_and_orders_both_keys() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for count in [0, 1, 32, 33, 41, 42, 264, 1024] {
         let mut items: Vec<_> = (0..count).map(|i| (i, 0, 1 + (i % 7 == 0) as u8)).collect();

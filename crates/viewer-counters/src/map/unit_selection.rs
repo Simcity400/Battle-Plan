@@ -6,7 +6,8 @@ use viewer_foundation::map::counter_hovers::unit_hits::Hit;
 use viewer_foundation::map::counter_hovers::unit_hits::Kind;
 use viewer_foundation::unit_handle::Unit;
 
-use replay::{BranchId, frame::DecodedFrame, rows::tables};
+use replay_data::{BranchId, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use viewer_foundation::map::perspective::Country;
 
@@ -121,8 +122,9 @@ impl Selection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{
-        CountryLinkRow, DivisionRow, RailwayGunCounterInputRow, TableRows, TaskForceRow,
+    use replay_data::{
+        rows::CountryLinkRow, rows::DivisionRow, rows::RailwayGunCounterInputRow, rows::TableRows,
+        rows::TaskForceRow,
     };
     use viewer_foundation::map::test_support::{test_frame, test_put as put};
 
@@ -431,7 +433,8 @@ mod tests {
 
     #[test]
     fn missing_owner_links_and_partial_censuses_preserve_selection() {
-        use replay::{frame::TableView, rows::TableId};
+        use replay_data::rows::TableId;
+        use replay_frame::frame::TableView;
 
         let mut frame = ownership_frame(&[(7, 999, 201, 201), (8, 101, 101, 0)]);
         let mut selection = Selection::default();
@@ -537,8 +540,8 @@ mod tests {
 
     #[test]
     fn a_partial_census_holds_members_and_a_branch_change_clears_them() {
-        use replay::frame::TableView;
-        use replay::rows::TableId;
+        use replay_data::rows::TableId;
+        use replay_frame::frame::TableView;
         let mut frame = test_frame(42);
         let mut selection = Selection::default();
         selection.observe(frame.branch, &Country::Recorded, 1, &frame);

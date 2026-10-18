@@ -127,26 +127,28 @@ fn game_user_folder() -> Result<PathBuf, String> {
     if config.user_dir.as_os_str().is_empty() {
         return Err("Choose the Paradox user folder in Settings".into());
     }
-    engine::executable_tables::initialize(&config.game_dir)
+    engine_executable::executable_tables::initialize(&config.game_dir)
         .map_err(|error| format!("Game tables: {error}"))?;
     Ok(config.user_dir)
 }
 fn game_settings() -> Result<VideoSettings, String> {
     let user = game_user_folder()?;
-    parse_game_display(&installed_content::settings::read_keys(&user).map_err(|e| e.to_string())?)
+    parse_game_display(&installed_content_settings::settings::read_keys(&user).map_err(|e| e.to_string())?)
 }
 /// The viewer computes the same from the recording's user folder and the same monitors.
 fn game_map_ui_scale() -> Option<f64> {
     let user = game_user_folder().ok()?;
-    let display = installed_content::settings::read_display(&user).ok()?;
-    let scale = display.screen_scale(&installed_content::settings::desktops().ok()?)?;
+    let display = installed_content_settings::settings::read_display(&user).ok()?;
+    let scale = display.screen_scale(&installed_content_settings::settings::desktops().ok()?)?;
     dashboard::protocol::MAP_UI_SCALE_RANGE
         .contains(&scale)
         .then(|| (f64::from(scale) * 100.0).round())
 }
 /// The preferences from `settings.txt`'s keys as the game reads them
-/// ([`installed_content::settings::SettingsKeys`]: any case, the last stored value of each field).
-fn parse_game_display(keys: &installed_content::settings::SettingsKeys) -> Result<VideoSettings, String> {
+/// ([`installed_content_settings::settings::SettingsKeys`]: any case, the last stored value of each field).
+fn parse_game_display(
+    keys: &installed_content_settings::settings::SettingsKeys,
+) -> Result<VideoSettings, String> {
     if !keys.has(&["graphics"]) {
         return Err("Missing graphics block in game settings".to_owned());
     }
@@ -442,9 +444,9 @@ mod tests {
     use super::*;
     #[test]
     fn game_display_defaults_keep_scale_and_vsync_without_resizing() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let keys = installed_content::settings::SettingsKeys::read(b"graphics={size={x=2048 y=1152} gui_scale=1.125 fullScreen=no borderless=yes VSync=no}");
+        let keys = installed_content_settings::settings::SettingsKeys::read(b"graphics={size={x=2048 y=1152} gui_scale=1.125 fullScreen=no borderless=yes VSync=no}");
         let settings = parse_game_display(&keys).unwrap();
         assert_eq!(settings.ui_scale, 112.5);
         assert!(settings.use_game_settings && !settings.vsync);

@@ -2,11 +2,9 @@ use super::super::tests::{applied, day, hour, line};
 use super::*;
 use crate::prepared::series::tests::Fixture;
 use crate::prepared::series::{Accumulator, Run};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 fn at(runs: &Value, hour: i32) -> Option<(Value, Value)> {
     runs.as_array()
@@ -414,7 +412,7 @@ fn production_spending_extrema_clip_partial_ranges_and_resolve_wide_integer_ties
 fn production_spending_shared_runs_keep_new_refit_and_rocket_source_extrema_distinct() {
     let flag = AtomicBool::new(false);
     let mut refit = line(8, 1, 100_000);
-    refit.kind = engine::cequipment_production_line::KIND_SHIP_REFIT;
+    refit.kind = engine_native::cequipment_production_line::KIND_SHIP_REFIT;
     let mut frames = day(
         0,
         vec![line(7, 1, 100_000), refit.clone()],
@@ -430,7 +428,7 @@ fn production_spending_shared_runs_keep_new_refit_and_rocket_source_extrema_dist
         if let TableView::Complete(TableRows::RocketProductionOutput(rows)) =
             &mut *frame.tables[TableId::RocketProductionOutput.index()]
         {
-            rows.push(replay::rows::RocketProductionOutputRow {
+            rows.push(replay_data::rows::RocketProductionOutputRow {
                 country: 1,
                 variant: 1,
                 since_hour: hour(0),
@@ -513,7 +511,10 @@ fn production_spending_shared_runs_keep_new_refit_and_rocket_source_extrema_dist
 #[cfg(feature = "slow-tests")]
 #[test]
 fn production_spending_preserves_all_5000_country_endpoints_and_sparse_leaf_keys() {
-    use replay::rows::{CountryLinkRow, CountryRow, ProductionLineOutputRow, ProductionLineRow};
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::ProductionLineOutputRow,
+        rows::ProductionLineRow,
+    };
     let flag = AtomicBool::new(false);
     let mut frame = day(0, vec![], Some(vec![])).remove(0);
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
@@ -554,10 +555,10 @@ fn production_spending_preserves_all_5000_country_endpoints_and_sparse_leaf_keys
                 })
                 .collect(),
         ));
-    let mut state = pages::ProductionAccumulator::new(replay::FORMAT_VERSION, 1, frame.hour);
+    let mut state = pages::ProductionAccumulator::new(replay_data::FORMAT_VERSION, 1, frame.hour);
     state
         .ingest(
-            replay::format::FormatVersion::read(replay::FORMAT_VERSION).unwrap(),
+            replay_data::format::FormatVersion::read(replay_data::FORMAT_VERSION).unwrap(),
             &frame,
             Named::default(),
             &flag,

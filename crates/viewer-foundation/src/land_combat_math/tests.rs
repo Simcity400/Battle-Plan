@@ -14,8 +14,8 @@ fn early_score_uses_opposing_committed_damage_and_all_current_organisation() {
             side: 0,
             division: 1,
             stat_values: [10_000_000, 5_000_000, 0, 10_000_000, 0]
-                .map(replay::rows::Recorded::Value),
-            scales: [100_000; 4].map(replay::rows::Recorded::Value),
+                .map(replay_data::rows::Recorded::Value),
+            scales: [100_000; 4].map(replay_data::rows::Recorded::Value),
             ..Default::default()
         },
         LandCombatDivisionRow {
@@ -23,8 +23,8 @@ fn early_score_uses_opposing_committed_damage_and_all_current_organisation() {
             side: 1,
             division: 2,
             stat_values: [10_000_000, 5_000_000, 0, 10_000_000, 0]
-                .map(replay::rows::Recorded::Value),
-            scales: [100_000; 4].map(replay::rows::Recorded::Value),
+                .map(replay_data::rows::Recorded::Value),
+            scales: [100_000; 4].map(replay_data::rows::Recorded::Value),
             ..Default::default()
         },
         LandCombatDivisionRow {
@@ -79,10 +79,8 @@ fn early_score_uses_opposing_committed_damage_and_all_current_organisation() {
 /// organisation)` Divisions rows, and `(id, maximum hit points)`
 /// DivisionStatus rows.
 fn recorded(divisions: &[(u64, i64, i64)], status: &[(u64, i64)]) -> Conditions {
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{DivisionRow, DivisionStatusRow, TableId, TableRows},
-    };
+    use replay_data::{rows::DivisionRow, rows::DivisionStatusRow, rows::TableId, rows::TableRows};
+    use replay_frame::{frame::Metrics, frame::TableView};
     let mut frame = DecodedFrame {
         branch: 0,
         hour: 1,
@@ -135,8 +133,9 @@ fn a_missing_status_row_blocks_only_early_firing_damage() {
         combat: 9,
         side,
         division,
-        stat_values: [10_000_000, 5_000_000, 0, 10_000_000, 0].map(replay::rows::Recorded::Value),
-        scales: [100_000; 4].map(replay::rows::Recorded::Value),
+        stat_values: [10_000_000, 5_000_000, 0, 10_000_000, 0]
+            .map(replay_data::rows::Recorded::Value),
+        scales: [100_000; 4].map(replay_data::rows::Recorded::Value),
         ..Default::default()
     };
     let divisions = [member(0, 1), member(1, 2), member(0, 3)];
@@ -332,7 +331,7 @@ fn survival_keeps_native_wrapping_sums_products_and_special_values() {
     detail.sides[0].organisation_loss_sum = i64::MAX;
     assert_eq!(score(&detail, organisation, &[1]), Some(2));
     // One more sample wraps the sum to i64::MIN, another special value.
-    detail.sides[0].organisation_loss_sum = replay::rows::LandCombatSideDetails::loss_sum(&{
+    detail.sides[0].organisation_loss_sum = replay_data::rows::LandCombatSideDetails::loss_sum(&{
         let mut samples = [0; 24];
         samples[0] = i64::MAX;
         samples[1] = 1;

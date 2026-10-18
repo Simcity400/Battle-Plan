@@ -3,7 +3,7 @@
 //! own job beside them ([`TemplatesRequest`]).
 
 use crate::acquisition_gather::{Report as GatherReport, Request as GatherRequest};
-use engine::{Memory, ccountry, country_memory::Cache, walk::Outcome};
+use engine_native::{Memory, ccountry, country_memory::Cache, walk::Outcome};
 use std::sync::Arc;
 
 pub(crate) struct Request {
@@ -135,7 +135,7 @@ impl Request {
     }
 
     pub(crate) fn run(&mut self, memory: &impl Memory) -> Report {
-        let _countries_reads = crate::read_accounting::table(replay::rows::TableId::Countries);
+        let _countries_reads = crate::read_accounting::table(replay_data::rows::TableId::Countries);
         let cached = self.countries.view(memory);
         let base = self.links.base;
         let game_state = self.links.game_state;
@@ -146,11 +146,12 @@ impl Request {
             // Countries began. Its later transparent fallback is still an
             // original family operation, but cannot heal that first control
             // failure for the new authority or authorize a Map source retry.
-            if let engine::country_memory::SeedStatus::Unavailable { reason } = cached.seed_status()
+            if let engine_native::country_memory::SeedStatus::Unavailable { reason } =
+                cached.seed_status()
             {
                 naming.appearance.raw.link_controls(Err(reason));
                 naming.appearance.raw.table(
-                    engine::raw_country_observations::Source::Countries,
+                    engine_native::raw_country_observations::Source::Countries,
                     Outcome::Unavailable { reason },
                 );
             }
@@ -169,7 +170,7 @@ impl Request {
         };
         let countries_ticks = crate::sampling::qpc().saturating_sub(begin).max(0);
         drop(_countries_reads);
-        let _links_reads = crate::read_accounting::table(replay::rows::TableId::CountryLinks);
+        let _links_reads = crate::read_accounting::table(replay_data::rows::TableId::CountryLinks);
         let begin = crate::sampling::qpc();
         let links = self.links.run(|rows| match &mut self.naming {
             Some(naming) => ccountry::walk_links_observed(
@@ -185,7 +186,7 @@ impl Request {
         drop(_links_reads);
         if let Some(naming) = &mut self.naming {
             naming.appearance.raw.table(
-                engine::raw_country_observations::Source::Countries,
+                engine_native::raw_country_observations::Source::Countries,
                 countries,
             );
             let carry = naming
@@ -290,7 +291,9 @@ impl TemplatesRequest {
 mod tests {
     use super::*;
     use crate::acquisition;
-    use engine::{cconvoys, cgame_state, cpolitical_status, memory::SliceMemory, msvc_string};
+    use engine_native::{
+        cconvoys, cgame_state, cpolitical_status, memory::SliceMemory, msvc_string,
+    };
     use std::cell::RefCell;
 
     const STATE: usize = 0x1000;
@@ -413,8 +416,8 @@ mod tests {
     #[test]
     fn accounting_charges_shared_seed_once_and_preserves_single_table_reads() {
         use crate::read_accounting::{self, Capture};
-        use engine::memory::{CountedMemory, ReadCounts};
-        use replay::rows::TableId;
+        use engine_native::{memory::CountedMemory, memory::ReadCounts};
+        use replay_data::rows::TableId;
 
         let bytes = fixture();
         for cells in [0, 256] {

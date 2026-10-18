@@ -10,8 +10,8 @@
 //! the viewing country and `intel_network_state_level_penalty` for the controller, scaled
 //! by the strength's share of 100%.
 use super::{Arg, Context, Tooltip, line};
-use installed_content::fixed5::fixed5_to_string;
-use replay::rows::{IntelNetworkRow, tables};
+use installed_content_core::fixed5::fixed5_to_string;
+use replay_data::{rows::IntelNetworkRow, rows::tables};
 use viewer_foundation::map::native_text::{COLOR, FLAG};
 
 /// One whole in fixed5, and 100%.
@@ -304,7 +304,7 @@ fn cap_parts(context: &impl Source, node: &IntelNetworkRow) -> Result<String, St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content::localisation::Localisation;
+    use installed_content_localisation::localisation::Localisation;
 
     /// Raw 1 is GER (slot 0), raw 2 SOV (slot 1); state 7 is named Kiev.
     struct Fake(Localisation);

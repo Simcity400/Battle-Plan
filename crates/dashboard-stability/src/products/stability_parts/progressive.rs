@@ -1,7 +1,7 @@
 //! Stateless part extraction; only supplying-read character names need history.
 use super::*;
 use dashboard_base::prepared::query::progressive::Samples;
-use replay::frame::DecodedFrame;
+use replay_frame::frame::DecodedFrame;
 
 #[cfg(test)]
 thread_local! {

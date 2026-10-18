@@ -1,10 +1,8 @@
 //! Terrain-category text preceding the naval background's weather and night lines.
-use installed_content::{
-    ResolvedLayers,
-    defines::Defines,
-    localisation::{Argument, Localisation},
-    terrain::{TerrainAdjuster, TerrainDefinitions},
+use installed_content_core::{
+    ResolvedLayers, defines::Defines, terrain::TerrainAdjuster, terrain::TerrainDefinitions,
 };
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
 use std::{io, sync::Arc};
 use viewer_foundation::naval_math::dominance_value;
 use viewer_foundation::tooltip_text::country_localised;
@@ -93,7 +91,7 @@ impl Content {
         defines: &Defines,
         terrain: Arc<TerrainDefinitions>,
     ) -> io::Result<Self> {
-        let sub_units = installed_content::unit_leader::sub_units(layers)?;
+        let sub_units = installed_content_core::unit_leader::sub_units(layers)?;
         let mut ship_classes = Vec::new();
         for index in 1.. {
             let Some(name) = sub_units.name(index) else {
@@ -114,7 +112,7 @@ impl Content {
     pub(super) fn test_empty(name: &[u8]) -> Self {
         Self {
             terrain: Arc::new(TerrainDefinitions {
-                categories: vec![installed_content::terrain::TerrainCategory {
+                categories: vec![installed_content_core::terrain::TerrainCategory {
                     name: name.to_vec(),
                     movement_cost: 0,
                     combat_width: 0,

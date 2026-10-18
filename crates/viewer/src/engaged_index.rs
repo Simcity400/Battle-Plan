@@ -36,12 +36,10 @@
 //! ([`naval_check`]), publishing [`History::byte_check`].
 //! [`check_recorded_bytes`] uses the same fold for a dump.
 
-use replay::{
-    BranchId, Hour,
-    branches::{BranchReason, BranchStart},
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder},
-    rows::{TableId, tables},
+use replay::container::Replay;
+use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
+use replay_frame::{
+    branches::BranchReason, branches::BranchStart, frame::DecodedFrame, frame::FrameDecoder,
 };
 use std::{
     collections::BTreeMap,

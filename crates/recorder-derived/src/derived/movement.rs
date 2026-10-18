@@ -10,15 +10,14 @@
 
 use std::collections::BTreeMap;
 
-use installed_content::movement::MovementMap;
-use replay::{
-    eta_derive::{
-        self, Defines, OrganisationDefines, RailDefines,
-        frame_terms::{FrameTerms, Geography, SubUnitContent},
-    },
-    frame::DecodedFrame,
-    rows::{DivisionRow, Recorded, tables},
+use installed_content_core::movement::MovementMap;
+use replay_data::{rows::DivisionRow, rows::Recorded, rows::tables};
+use replay_derive::{
+    eta_derive, eta_derive::Defines, eta_derive::OrganisationDefines, eta_derive::RailDefines,
+    eta_derive::frame_terms::FrameTerms, eta_derive::frame_terms::Geography,
+    eta_derive::frame_terms::SubUnitContent,
 };
+use replay_frame::frame::DecodedFrame;
 
 /// The content the movement speed reads.
 pub struct Content {
@@ -29,15 +28,15 @@ pub struct Content {
     /// Each province's strategic region id.
     pub regions: BTreeMap<u32, u32>,
     /// The sub-unit database: special forces and type masks.
-    pub sub_units: Result<installed_content::unit_leader::SubUnits, String>,
+    pub sub_units: Result<installed_content_core::unit_leader::SubUnits, String>,
 }
 
 impl Content {
-    pub fn read(layers: &installed_content::ResolvedLayers) -> std::io::Result<Self> {
-        let defines = installed_content::defines::read(layers)?;
-        let movement = installed_content::movement::MovementDefines::read(&defines)?;
-        let terrain = installed_content::terrain::read_definitions(layers)?;
-        let regions = installed_content::regions::read(layers)?;
+    pub fn read(layers: &installed_content_core::ResolvedLayers) -> std::io::Result<Self> {
+        let defines = installed_content_core::defines::read(layers)?;
+        let movement = installed_content_core::movement::MovementDefines::read(&defines)?;
+        let terrain = installed_content_core::terrain::read_definitions(layers)?;
+        let regions = installed_content_regions::regions::read(layers)?;
         Ok(Self {
             map: MovementMap::read(layers, &defines)?,
             defines: Defines {
@@ -66,7 +65,8 @@ impl Content {
                 .iter()
                 .flat_map(|(&id, region)| region.provinces.iter().map(move |&p| (p, id)))
                 .collect(),
-            sub_units: installed_content::unit_leader::sub_units(layers).map_err(|error| error.to_string()),
+            sub_units: installed_content_core::unit_leader::sub_units(layers)
+                .map_err(|error| error.to_string()),
         })
     }
 }
@@ -116,12 +116,12 @@ impl Geography for Content {
 }
 
 /// The tables the speed witness decodes: each mover's Divisions and DivisionMovement
-/// rows and every table the speed terms read ([`replay::eta_derive::frame_terms::TABLES`]).
-pub fn tables() -> impl Iterator<Item = replay::rows::TableId> {
-    use replay::rows::TableId::{DivisionMovement, Divisions};
+/// rows and every table the speed terms read ([`replay_derive::eta_derive::frame_terms::TABLES`]).
+pub fn tables() -> impl Iterator<Item = replay_data::rows::TableId> {
+    use replay_data::{rows::TableId::DivisionMovement, rows::TableId::Divisions};
     [Divisions, DivisionMovement]
         .into_iter()
-        .chain(replay::eta_derive::frame_terms::TABLES)
+        .chain(replay_derive::eta_derive::frame_terms::TABLES)
 }
 
 /// One division's edge at an hour: its location, first route province, route,
@@ -260,8 +260,8 @@ fn classify(frame: &DecodedFrame, division: u64, movement: &MovementRowKey) -> S
         return "no status".into();
     };
     let mut terms = Vec::new();
-    if status.move_flags & replay::rows::DivisionStatusRow::MOVE_NONCORE_SUPPLY_BYPASS == 0
-        && status.move_flags & replay::rows::DivisionStatusRow::MOVE_EXILED == 0
+    if status.move_flags & replay_data::rows::DivisionStatusRow::MOVE_NONCORE_SUPPLY_BYPASS == 0
+        && status.move_flags & replay_data::rows::DivisionStatusRow::MOVE_EXILED == 0
     {
         terms.push("noncore unbypassed");
     }

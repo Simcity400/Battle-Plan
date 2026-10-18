@@ -1,12 +1,14 @@
 //! Peace conference frames and replays for tests here and in the crates above.
 
 use super::*;
-use replay::{
-    branches::{BranchReason, BranchStart, Parentage},
-    frame::{FrameEncoder, Metrics, TableView},
-    identity::{Identity, Roster, SampleBoundary, SessionStart, Verification},
-    rows::*,
-    spool::Record,
+use replay::spool::Record;
+use replay_data::{
+    identity::Identity, identity::Roster, identity::SampleBoundary, identity::SessionStart,
+    identity::Verification, rows::*,
+};
+use replay_frame::{
+    branches::BranchReason, branches::BranchStart, branches::Parentage, frame::FrameEncoder,
+    frame::Metrics, frame::TableView,
 };
 
 pub const CAMPAIGN: &[u8] = b"derived-peace-fixture";

@@ -1,9 +1,7 @@
 //! The land window's HQ badge, from the recorded commander formation.
 
-use replay::{
-    frame::DecodedFrame,
-    rows::{LandCombatSideDetails, tables},
-};
+use replay_data::{rows::LandCombatSideDetails, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{fmt, io};
 use viewer_foundation::table_access::{Available, rows};
 
@@ -103,10 +101,10 @@ pub(super) fn unit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::TableView,
-        rows::{OrdersGroupRow, SimulationFeatureRow, TableId, TableRows},
+    use replay_data::{
+        rows::OrdersGroupRow, rows::SimulationFeatureRow, rows::TableId, rows::TableRows,
     };
+    use replay_frame::frame::TableView;
 
     const LEADER: u64 = (11 << 32) | 4713;
     const FORMATION: u64 = (19 << 32) | 4721;

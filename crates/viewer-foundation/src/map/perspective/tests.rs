@@ -1,14 +1,12 @@
 use super::*;
 use crate::map::visibility::tests::fixture;
-use replay::{
-    frame::TableView,
-    rows::{
-        CountryIntelRow, CountryVisibilityRow, DivisionRow, FactionMemberRow, TableId,
-        UnitIntelRow, WarRelationRow,
-    },
+use replay_data::{
+    rows::CountryIntelRow, rows::CountryVisibilityRow, rows::DivisionRow, rows::FactionMemberRow,
+    rows::TableId, rows::UnitIntelRow, rows::WarRelationRow,
 };
+use replay_frame::frame::TableView;
 
-fn set<T: replay::rows::TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
+fn set<T: replay_data::rows::TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
     *frame.tables[T::ID.index()] = TableView::Complete(T::wrap(rows));
 }
 
@@ -22,7 +20,7 @@ fn hour() -> (
     let (mut frame, links, content) = fixture();
     set::<tables::LocalPlayer>(
         &mut frame,
-        vec![replay::rows::LocalPlayerRow {
+        vec![replay_data::rows::LocalPlayerRow {
             country: 101,
             observer_country: 0,
         }],
@@ -197,7 +195,7 @@ fn detection_takes_the_first_entry_and_the_viewer_modifier_scales_it() {
 
 #[test]
 fn a_truncated_intel_census_leaves_an_unlisted_foreign_task_force_unknown() {
-    use replay::rows::TableSchema;
+    use replay_data::rows::TableSchema;
     let (mut frame, links, tags, content) = hour();
     *frame.tables[tables::UnitIntel::ID.index()] = TableView::Truncated {
         rows: tables::UnitIntel::wrap(vec![UnitIntelRow {

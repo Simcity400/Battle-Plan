@@ -1,10 +1,10 @@
 use super::values::*;
 use super::*;
 use crate::map::raids::test_support::{self, put};
-use replay::rows::{
-    AgencyBufferedOperation, AgencyOperationBuffersRow, OperationEquipment,
-    OperationEquipmentTotal, OperationRequirement, PoliticsRow, RaidCounterOperative,
-    RaidIntelInputRow, StateRow,
+use replay_data::{
+    rows::AgencyBufferedOperation, rows::AgencyOperationBuffersRow, rows::OperationEquipment,
+    rows::OperationEquipmentTotal, rows::OperationRequirement, rows::PoliticsRow,
+    rows::RaidCounterOperative, rows::RaidIntelInputRow, rows::StateRow,
 };
 use viewer_foundation::map::{native_resources::Context, sprites::Batch, test_support::gui};
 
@@ -152,7 +152,7 @@ fn root_out_stacks_greatest_first_ties_by_reference_with_successive_weights() {
 
 #[test]
 fn operation_states_phases_and_progress_follow_the_elapsed_days() {
-    let epoch = replay::day_night::EPOCH;
+    let epoch = replay_data::day_night::EPOCH;
     let mut row = OperationRow {
         start_hour: epoch + 24 * 10,
         duration_days: 10,
@@ -346,7 +346,7 @@ fn entries_group_by_state_sort_and_bound_the_operations() {
         &raids,
         &frame,
         2,
-        &installed_content::localisation::Localisation::default(),
+        &installed_content_localisation::localisation::Localisation::default(),
         "english",
     );
     // One omission for this view's offers, and one per hidden operative highlight.
@@ -422,13 +422,13 @@ fn a_shield_needs_its_country_to_control_its_capital_state() {
         ..Default::default()
     };
     let assets = IntelAssets::test(defines(), Vec::new(), Vec::new(), 0);
-    let built = |frame: &replay::frame::DecodedFrame| {
+    let built = |frame: &replay_frame::frame::DecodedFrame| {
         icons(
             &assets,
             &raids,
             frame,
             2,
-            &installed_content::localisation::Localisation::default(),
+            &installed_content_localisation::localisation::Localisation::default(),
             "english",
         )
     };
@@ -509,7 +509,7 @@ fn drawn_into(view: &mut IntelView, writes: Vec<Write>) -> Vec<IntelHit> {
 /// A child a withheld write hid shows again once a later hour's write sets it.
 #[test]
 fn a_withheld_child_shows_again_when_a_later_write_sets_it() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = IntelView::default();
     let top = 308.0 + 14.0 + 5.0;
@@ -566,7 +566,7 @@ fn title(hits: &[IntelHit], point: [f32; 2]) -> Option<String> {
 
 #[test]
 fn entries_take_the_list_places_and_hover_by_their_own_children() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // The container stands at (262, 308) and its list 14 below; four entries of 68 with one
     // between start at 12.
@@ -591,7 +591,7 @@ fn entries_take_the_list_places_and_hover_by_their_own_children() {
 
 #[test]
 fn compressed_entries_overlap_and_the_later_one_wins() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // Five 68-pixel entries in 300 advance by 58 from 0.
     let (hits, _, report) = drawn(&[EntryKind::More; 5]);
@@ -606,7 +606,7 @@ fn compressed_entries_overlap_and_the_later_one_wins() {
 
 #[test]
 fn both_operative_frames_test_alpha_and_transparent_pixels_leave_lower_hits() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut resources = gui::fixture();
     resources.physical = Some([2048, 1152]);
@@ -695,7 +695,7 @@ fn buffered_operation_icons(
         &raids,
         &frame,
         2,
-        &installed_content::localisation::Localisation::default(),
+        &installed_content_localisation::localisation::Localisation::default(),
         "english",
     )
 }
@@ -791,7 +791,7 @@ fn unavailable_ui_buffer_withholds_saved_operations_and_names_the_refusal() {
 
 #[test]
 fn running_duration_substitutes_the_lowercase_green_number_and_keeps_authored_units() {
-    let localisation: installed_content::localisation::Localisation = [(
+    let localisation: installed_content_localisation::localisation::Localisation = [(
         "ABILITY_DUR_DAYS".to_owned(),
         "\u{11}Y$num|H$ cycles\u{11}!".to_owned(),
     )]
@@ -814,7 +814,7 @@ fn a_nonterminal_operation_at_zero_remaining_days_has_the_finished_entry_present
             start_hour,
             duration_days: 1,
             terminal: 0,
-            detected: replay::rows::Recorded::Value(0),
+            detected: replay_data::rows::Recorded::Value(0),
             ..buffered_test_operation(1)
         }],
     );

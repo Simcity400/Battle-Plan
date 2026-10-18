@@ -1,12 +1,10 @@
 //! Authored building reads shared by world admission and counter/province hovers.
 use crate::table_access::TokenKeys;
-use installed_content::{
-    buildings::{BuildingType, Buildings, Slot, SpawnPoint},
-    map::{MapData, ProvinceKind},
-    mesh::Roster,
-    positions::BuildingPosition,
-    states::StateDefinition,
+use installed_content_core::{
+    buildings::BuildingType, buildings::Buildings, buildings::Slot, buildings::SpawnPoint,
+    map::MapData, map::ProvinceKind, mesh::Roster, positions::BuildingPosition,
 };
+use installed_content_states::states::StateDefinition;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The base kinds the game keeps a state site for: an ordinary air base, a
@@ -388,7 +386,9 @@ fn own_air_base(types: &Buildings, name: &str) -> Option<bool> {
         Err(_) => {
             let all = declarations(types, name);
             let first = all.first().is_some_and(|kind| kind.air_base);
-            all.iter().all(|kind| kind.air_base == first).then_some(first)
+            all.iter()
+                .all(|kind| kind.air_base == first)
+                .then_some(first)
         }
     }
 }
@@ -410,7 +410,12 @@ fn site_buckets(types: &Buildings, test: fn(&BuildingType) -> bool) -> BucketSet
             .map(|kind| test(kind).then(|| redirect(types, kind)).flatten())
             .collect();
         let agree = buckets.windows(2).all(|pair| pair[0] == pair[1])
-            && all.iter().map(|kind| test(kind)).collect::<BTreeSet<_>>().len() == 1;
+            && all
+                .iter()
+                .map(|kind| test(kind))
+                .collect::<BTreeSet<_>>()
+                .len()
+                == 1;
         for bucket in buckets.into_iter().flatten() {
             if agree {
                 set.certain.insert(bucket.clone());
@@ -510,7 +515,9 @@ fn icon_anchor(
             ));
         }
     }
-    Ok(answer.map_or(IconAnchor::Province, |record| IconAnchor::Record(record.position)))
+    Ok(answer.map_or(IconAnchor::Province, |record| {
+        IconAnchor::Record(record.position)
+    }))
 }
 
 pub struct BuildingFacts {
@@ -601,7 +608,7 @@ fn bucket_registered(spawn: &SpawnPoint, roster: &Roster) -> bool {
     if spawn.max <= 0 || spawn.meshes <= 0 {
         return false;
     }
-    let base = format!("{}{}", installed_content::buildings::ENTITY_PREFIX, spawn.name);
+    let base = format!("{}{}", installed_content_core::buildings::ENTITY_PREFIX, spawn.name);
     let names: Vec<String> = if spawn.meshes == 1 {
         vec![base]
     } else {
@@ -655,9 +662,9 @@ mod tests {
     /// ahead of `shared`'s own, and a lone `shared` record fell to slot 0.
     #[test]
     fn state_sites_resolve_through_building_types() {
-        let types = installed_content::buildings::parse(
+        let types = installed_content_core::buildings::parse(
             b"buildings={ mod_airfield={ air_base=yes } shared={ air_base=yes spawn_point=hangar } rocket_site={ rocket_launch_capacity=1 spawn_point=site } gun={ gun_emplacement=yes spawn_point=site } } spawn_points={ hangar={ max=1 } site={ max=1 } }",
-            &installed_content::key_names::KeyNames::default(),
+            &installed_content_core::key_names::KeyNames::default(),
         )
         .unwrap();
         let slot = |kind: &str, x: f32| BuildingPosition {
@@ -706,7 +713,12 @@ mod tests {
         assert!(sites.refused().is_empty());
         // `shared`'s generated bucket is queued ahead of its hangar redirect,
         // so a lone `shared` record holds the icon itself.
-        let alone = SiteSlots::build(&[slot("shared", 3.0)], &types, |_, _| Some(13), |_, _, _| true);
+        let alone = SiteSlots::build(
+            &[slot("shared", 3.0)],
+            &types,
+            |_, _| Some(13),
+            |_, _, _| true,
+        );
         assert_eq!(
             alone.site_icons(AIR_BASE)[&13].anchor,
             Ok(IconAnchor::Record([3.0, 10.0, 5.0]))
@@ -737,9 +749,9 @@ mod tests {
     /// in file order, once per state.
     #[test]
     fn the_air_base_icon_follows_type_order_then_record_order_per_province() {
-        let types = installed_content::buildings::parse(
+        let types = installed_content_core::buildings::parse(
             b"buildings={ airfield={ air_base=yes } airstrip={ air_base=yes } }",
-            &installed_content::key_names::KeyNames::default(),
+            &installed_content_core::key_names::KeyNames::default(),
         )
         .unwrap();
         // Province 10 lists airstrip, then airfield; province 11 holds
@@ -762,9 +774,9 @@ mod tests {
         assert_eq!(icons[&11].anchor, Ok(IconAnchor::Record([3.0, 0.0, 0.0])));
         // A province whose records' buckets hold no air-base type owns no
         // icon.
-        let types = installed_content::buildings::parse(
+        let types = installed_content_core::buildings::parse(
             b"buildings={ airfield={ air_base=yes } hangar={ spawn_point=apron } } spawn_points={ apron={ max=1 } }",
-            &installed_content::key_names::KeyNames::default(),
+            &installed_content_core::key_names::KeyNames::default(),
         )
         .unwrap();
         let sites = SiteSlots::build(
@@ -787,9 +799,9 @@ mod tests {
     /// no rocket-site or gun-emplacement icon was placed.
     #[test]
     fn rocket_sites_and_gun_emplacements_own_icons_per_province() {
-        let types = installed_content::buildings::parse(
+        let types = installed_content_core::buildings::parse(
             b"buildings={ airfield={ air_base=yes } rocket={ rocket_launch_capacity=1 spawn_point=pad } gun={ gun_emplacement=yes spawn_point=pit } radar_station={ radar=yes } } spawn_points={ pad={ max=1 } pit={ max=1 } }",
-            &installed_content::key_names::KeyNames::default(),
+            &installed_content_core::key_names::KeyNames::default(),
         )
         .unwrap();
         let positions = [
@@ -803,7 +815,17 @@ mod tests {
         let sites = SiteSlots::build(
             &positions,
             &types,
-            |x, _| Some(if x < 2.5 { 10 } else if x < 3.5 { 11 } else if x < 4.5 { 12 } else { 13 }),
+            |x, _| {
+                Some(if x < 2.5 {
+                    10
+                } else if x < 3.5 {
+                    11
+                } else if x < 4.5 {
+                    12
+                } else {
+                    13
+                })
+            },
             |_, _, _| true,
         );
         let at_record = |x: f32| Ok(IconAnchor::Record([x, 0.0, 0.0]));
@@ -814,7 +836,10 @@ mod tests {
                 .map(|(province, icon)| (*province, icon.state, icon.anchor.clone()))
                 .collect::<Vec<_>>()
         };
-        assert_eq!(anchors(ROCKET_SITE), [(10, 1, at_record(2.0)), (13, 1, at_record(5.0))]);
+        assert_eq!(
+            anchors(ROCKET_SITE),
+            [(10, 1, at_record(2.0)), (13, 1, at_record(5.0))]
+        );
         assert_eq!(anchors(GUN_EMPLACEMENT), [(11, 1, at_record(3.0))]);
         assert_eq!(anchors(AIR_BASE), [(12, 1, at_record(4.0))]);
         // A radar station lists its province and places its icon the same way.
@@ -827,9 +852,9 @@ mod tests {
     /// `rocket` record ahead of it was taken.
     #[test]
     fn a_rocket_site_stands_in_the_bucket_its_type_spawns_in() {
-        let types = installed_content::buildings::parse(
+        let types = installed_content_core::buildings::parse(
             b"buildings={ rocket={ rocket_launch_capacity=1 spawn_point=pad } gun={ gun_emplacement=yes spawn_point=pit } } spawn_points={ pad={ max=1 } pit={ max=1 } }",
-            &installed_content::key_names::KeyNames::default(),
+            &installed_content_core::key_names::KeyNames::default(),
         )
         .unwrap();
         let positions = [
@@ -853,9 +878,9 @@ mod tests {
     /// the undecided `apron` left the base undecided.
     #[test]
     fn an_undecided_listing_that_reaches_the_same_record_decides_nothing() {
-        let types = installed_content::buildings::parse(
+        let types = installed_content_core::buildings::parse(
             b"buildings={ airfield={ air_base=yes } hangar={ air_base=yes spawn_point=apron } hangar={ air_base=no spawn_point=apron } } spawn_points={ apron={ max=1 } }",
-            &installed_content::key_names::KeyNames::default(),
+            &installed_content_core::key_names::KeyNames::default(),
         )
         .unwrap();
         let positions = [at(1, "apron", 1.0), at(1, "airfield", 2.0)];
@@ -882,7 +907,11 @@ mod tests {
             |_, _, _| true,
         );
         assert_eq!(sites.base(1, AIR_BASE), Some(Ok([2.0, 0.0, 0.0])));
-        let positions = [at(1, "apron", 6.0), at(1, "hangar", 7.0), at(1, "airfield", 2.0)];
+        let positions = [
+            at(1, "apron", 6.0),
+            at(1, "hangar", 7.0),
+            at(1, "airfield", 2.0),
+        ];
         let sites = SiteSlots::build(
             &positions,
             &types,
@@ -898,13 +927,18 @@ mod tests {
     /// Before, any repeat refused the icon.
     #[test]
     fn repeats_that_place_identically_keep_their_icon() {
-        let types = installed_content::buildings::parse(
+        let types = installed_content_core::buildings::parse(
             b"buildings={ airfield={ air_base=yes icon_frame=1 } airfield={ air_base=yes icon_frame=2 } }",
-            &installed_content::key_names::KeyNames::default(),
+            &installed_content_core::key_names::KeyNames::default(),
         )
         .unwrap();
         assert!(types.repeated_types.contains_key("airfield"));
-        let sites = SiteSlots::build(&[at(1, "airfield", 1.0)], &types, |_, _| Some(10), |_, _, _| true);
+        let sites = SiteSlots::build(
+            &[at(1, "airfield", 1.0)],
+            &types,
+            |_, _| Some(10),
+            |_, _, _| true,
+        );
         assert_eq!(
             sites.site_icons(AIR_BASE)[&10].anchor,
             Ok(IconAnchor::Record([1.0, 0.0, 0.0]))
@@ -918,12 +952,17 @@ mod tests {
     /// generated bucket stood in and the `rocket` record was taken.
     #[test]
     fn a_site_type_without_an_explicit_spawn_point_matches_nothing() {
-        let types = installed_content::buildings::parse(
+        let types = installed_content_core::buildings::parse(
             b"buildings={ rocket={ rocket_launch_capacity=1 show_on_map=1 } }",
-            &installed_content::key_names::KeyNames::default(),
+            &installed_content_core::key_names::KeyNames::default(),
         )
         .unwrap();
-        let sites = SiteSlots::build(&[at(1, "rocket", 1.0)], &types, |_, _| Some(10), |_, _, _| true);
+        let sites = SiteSlots::build(
+            &[at(1, "rocket", 1.0)],
+            &types,
+            |_, _| Some(10),
+            |_, _, _| true,
+        );
         assert_eq!(sites.base(1, ROCKET_SITE), None);
     }
 
@@ -934,9 +973,9 @@ mod tests {
     /// an uncertain redirect ahead of `apron` and refused the icon.
     #[test]
     fn repeated_declarations_bind_spawn_points_as_the_content_does() {
-        let types = installed_content::buildings::parse(
+        let types = installed_content_core::buildings::parse(
             b"buildings={ early={ air_base=yes spawn_point=decoy icon_frame=1 } early={ air_base=yes spawn_point=decoy icon_frame=2 } decoy={ show_on_map=1 } late={ air_base=yes spawn_point=apron } } spawn_points={ apron={ max=1 } }",
-            &installed_content::key_names::KeyNames::default(),
+            &installed_content_core::key_names::KeyNames::default(),
         )
         .unwrap();
         assert!(types.repeated_types.contains_key("early"));
@@ -956,15 +995,16 @@ mod tests {
     /// repeated warehouse left its state's air base and icon undecided.
     #[test]
     fn only_admitted_records_that_could_change_an_answer_are_refused() {
-        let types = installed_content::buildings::parse(
+        let types = installed_content_core::buildings::parse(
             b"buildings={ airfield={ air_base=yes } warehouse={ show_on_map=1 } warehouse={ show_on_map=2 } hybrid={ air_base=yes } hybrid={ air_base=no } }",
-            &installed_content::key_names::KeyNames::default(),
+            &installed_content_core::key_names::KeyNames::default(),
         )
         .unwrap();
         assert!(types.repeated_types.contains_key("warehouse"));
         let positions = [at(1, "airfield", 1.0), at(1, "warehouse", -1.0)];
         let on_map = |x: f32, _| (x >= 0.0).then_some(10);
-        let admitted = |_: &SpawnPoint, _: &BuildingPosition, province: Option<u32>| province.is_some();
+        let admitted =
+            |_: &SpawnPoint, _: &BuildingPosition, province: Option<u32>| province.is_some();
         let sites = SiteSlots::build(&positions, &types, on_map, admitted);
         assert_eq!(sites.base(1, AIR_BASE), Some(Ok([1.0, 0.0, 0.0])));
         assert_eq!(
@@ -987,13 +1027,16 @@ mod tests {
         let positions = [at(1, "airfield", 1.0), at(1, "hybrid", 1.5)];
         let sites = SiteSlots::build(&positions, &types, on_map, admitted);
         assert_eq!(sites.base(1, AIR_BASE), Some(Ok([1.0, 0.0, 0.0])));
-        assert_eq!(sites.site_icons(AIR_BASE)[&10].anchor, Ok(IconAnchor::Record([1.0, 0.0, 0.0])));
+        assert_eq!(
+            sites.site_icons(AIR_BASE)[&10].anchor,
+            Ok(IconAnchor::Record([1.0, 0.0, 0.0]))
+        );
         assert!(sites.refused().is_empty());
     }
 
     #[test]
     fn ordinary_slots_require_land_in_their_declared_state() {
-        use installed_content::map::{CountryColors, ProvinceDefinition};
+        use installed_content_core::{map::CountryColors, map::ProvinceDefinition};
         let definition = |id, kind| ProvinceDefinition {
             id,
             rgb: [0, 0, 0],

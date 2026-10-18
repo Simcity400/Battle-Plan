@@ -38,16 +38,14 @@ use crate::{
     ship_model_changes::{self, Certificate, Changes, Counts, NO_SLOTS, Slots},
     table_capture::{CaptureRows, grow_capacity},
 };
-use engine::allocation::{copy_vec, filled, owned_vec, reserve, resize_default};
+use engine_allocation::{copy_vec, filled, owned_vec, reserve, resize_default};
 #[cfg(test)]
-use engine::memory::RecordField;
-use engine::{
-    Memory, cship,
-    memory::{RecordLayout, RecordSources},
-    modifier_accumulator::{
-        SNAPSHOT_ENTRY_CAPACITY, SNAPSHOT_NODE_CAPACITY, SnapshotArena, SnapshotCapacity, Value,
-    },
-    walk::Outcome,
+use engine_native::memory::RecordField;
+use engine_native::{
+    Memory, cship, memory::RecordLayout, memory::RecordSources,
+    modifier_accumulator::SNAPSHOT_ENTRY_CAPACITY, modifier_accumulator::SNAPSHOT_NODE_CAPACITY,
+    modifier_accumulator::SnapshotArena, modifier_accumulator::SnapshotCapacity,
+    modifier_accumulator::Value, walk::Outcome,
 };
 use std::cell::{Cell, RefCell};
 
@@ -165,7 +163,7 @@ fn record_address(sources: RecordSources<'_>, row: usize, field: &RecordField) -
 #[cfg(test)]
 impl<M: Memory> Memory for BoundedMemory<'_, M> {
     #[inline]
-    fn read_scalar<T: engine::memory::Raw>(&self, address: usize) -> Option<T> {
+    fn read_scalar<T: engine_native::memory::Raw>(&self, address: usize) -> Option<T> {
         let (calls, bytes) = self.used.get();
         let len = std::mem::size_of::<T>();
         if calls >= READ_LIMIT || len > COPY_LIMIT.saturating_sub(bytes) {
@@ -190,7 +188,7 @@ impl<M: Memory> Memory for BoundedMemory<'_, M> {
         &self,
         base: usize,
         state: usize,
-    ) -> Option<engine::ccountry::AuthenticatedRoster<'_>> {
+    ) -> Option<engine_native::ccountry::AuthenticatedRoster<'_>> {
         // Forward the callback's current authenticated roster without extending it.
         self.inner.authenticated_countries(base, state)
     }
@@ -199,14 +197,14 @@ impl<M: Memory> Memory for BoundedMemory<'_, M> {
         &self,
         base: usize,
         state: usize,
-    ) -> Option<Result<engine::ccountry::Country, &'static str>> {
+    ) -> Option<Result<engine_native::ccountry::Country, &'static str>> {
         self.inner.authenticated_reserved_country(base, state)
     }
     fn authenticated_reserved_country_observation(
         &self,
         base: usize,
         state: usize,
-    ) -> Option<engine::ccountry::ReservedCountryObservation> {
+    ) -> Option<engine_native::ccountry::ReservedCountryObservation> {
         self.inner
             .authenticated_reserved_country_observation(base, state)
     }
@@ -321,7 +319,7 @@ struct ModifierMemory<'a, M> {
 
 impl<M: Memory> Memory for ModifierMemory<'_, M> {
     #[inline]
-    fn read_scalar<T: engine::memory::Raw>(&self, address: usize) -> Option<T> {
+    fn read_scalar<T: engine_native::memory::Raw>(&self, address: usize) -> Option<T> {
         self.inner.read_scalar::<T>(address)
     }
 
@@ -347,7 +345,7 @@ impl<M: Memory> Memory for ModifierMemory<'_, M> {
         &self,
         base: usize,
         state: usize,
-    ) -> Option<engine::ccountry::AuthenticatedRoster<'_>> {
+    ) -> Option<engine_native::ccountry::AuthenticatedRoster<'_>> {
         self.inner.authenticated_countries(base, state)
     }
 
@@ -355,14 +353,14 @@ impl<M: Memory> Memory for ModifierMemory<'_, M> {
         &self,
         base: usize,
         state: usize,
-    ) -> Option<Result<engine::ccountry::Country, &'static str>> {
+    ) -> Option<Result<engine_native::ccountry::Country, &'static str>> {
         self.inner.authenticated_reserved_country(base, state)
     }
     fn authenticated_reserved_country_observation(
         &self,
         base: usize,
         state: usize,
-    ) -> Option<engine::ccountry::ReservedCountryObservation> {
+    ) -> Option<engine_native::ccountry::ReservedCountryObservation> {
         self.inner
             .authenticated_reserved_country_observation(base, state)
     }
@@ -379,12 +377,10 @@ impl<M: Memory> Memory for ModifierMemory<'_, M> {
         }
     }
 }
+use replay_data::{rows::ShipModelRow, rows::TableId, rows::tables};
+use replay_frame::frame::TableInput;
 #[cfg(any(test, feature = "test-support"))]
-use replay::frame::TableView;
-use replay::{
-    frame::TableInput,
-    rows::{ShipModelRow, TableId, tables},
-};
+use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ShipModels];
@@ -1134,7 +1130,9 @@ impl Captured {
             .seed_len
             .checked_add(1)
             .ok_or("ship model seed count overflow")
-            .and_then(|required| engine::walk::Buffer::Growing(&mut self.seeds).ensure(required));
+            .and_then(|required| {
+                engine_native::walk::Buffer::Growing(&mut self.seeds).ensure(required)
+            });
         if let Err(reason) = result {
             self.terminal_failure = Some(reason);
             return;
@@ -1144,15 +1142,15 @@ impl Captured {
 
     pub fn finish_sources(&mut self, parent: Outcome) {
         if let Err(reason) =
-            engine::walk::Buffer::Growing(&mut self.rows.rows).ensure(self.seed_len)
+            engine_native::walk::Buffer::Growing(&mut self.rows.rows).ensure(self.seed_len)
         {
             self.terminal_failure = Some(reason);
         }
         let rows = part_rows(self.seed_len);
         for part in &mut self.extra {
             for result in [
-                engine::walk::Buffer::Growing(&mut part.seeds).ensure(rows),
-                engine::walk::Buffer::Growing(&mut part.rows.rows).ensure(rows),
+                engine_native::walk::Buffer::Growing(&mut part.seeds).ensure(rows),
+                engine_native::walk::Buffer::Growing(&mut part.rows.rows).ensure(rows),
             ] {
                 if let Err(reason) = result {
                     self.terminal_failure = Some(reason);
@@ -1306,7 +1304,7 @@ impl Captured {
         // province terms follow.
         let night_factor = held
             .and_then(|held| held.weather)
-            .and_then(|(weather, _, _)| engine::read::<u64>(memory, weather.night_factor()));
+            .and_then(|(weather, _, _)| engine_native::read::<u64>(memory, weather.night_factor()));
         if let Some(held) = held
             && !covered
         {
@@ -1371,23 +1369,25 @@ impl Captured {
             .country_terms()
             .filter(|&(observed, _)| observed == country)
             .and_then(|(_, terms)| Some((carrying.changes.tree_sequence(country)?, terms)));
-        let weather =
-            self.doctrine
-                .weather()
-                .filter(|weather| weather.task() == task.pointer)
-                .and_then(|weather| {
-                    let factor =
+        let weather = self
+            .doctrine
+            .weather()
+            .filter(|weather| weather.task() == task.pointer)
+            .and_then(|weather| {
+                let factor = state
+                    .night_factor
+                    .filter(|_| {
                         state
-                            .night_factor
-                            .filter(|_| {
-                                state.held.and_then(|held| held.weather).is_some_and(
-                                    |(held, _, _)| held.night_factor() == weather.night_factor(),
-                                )
+                            .held
+                            .and_then(|held| held.weather)
+                            .is_some_and(|(held, _, _)| {
+                                held.night_factor() == weather.night_factor()
                             })
-                            .or_else(|| engine::read::<u64>(memory, weather.night_factor()))?;
-                    let certificate = weather_certificate(carrying.changes, &weather, country)?;
-                    Some((weather, certificate, factor))
-                });
+                    })
+                    .or_else(|| engine_native::read::<u64>(memory, weather.night_factor()))?;
+                let certificate = weather_certificate(carrying.changes, &weather, country)?;
+                Some((weather, certificate, factor))
+            });
         if let Some(held) = state.held.filter(|_| state.covered) {
             let modifiers_differ = held.mine_exposure == task.mine_exposure
                 && held
@@ -1519,7 +1519,9 @@ impl Captured {
                 Ok(matches) => matches,
                 Err(_) => {
                     carrying.guard_fallback = true;
-                    engine::batch_fallback::record(engine::batch_fallback::Batch::ShipModelGuards);
+                    engine_native::batch_fallback::record(
+                        engine_native::batch_fallback::Batch::ShipModelGuards,
+                    );
                     return false;
                 }
             }
@@ -1807,8 +1809,8 @@ impl Captured {
                     Ok(matches) => matches,
                     Err(_) => {
                         carrying.guard_fallback = true;
-                        engine::batch_fallback::record(
-                            engine::batch_fallback::Batch::ShipModelGuards,
+                        engine_native::batch_fallback::record(
+                            engine_native::batch_fallback::Batch::ShipModelGuards,
                         );
                         false
                     }
@@ -2035,7 +2037,7 @@ impl Captured {
                     spare.at = at;
                     Ok(spare)
                 }
-                None => engine::allocation::boxed(Held {
+                None => engine_allocation::boxed(Held {
                     pointer,
                     ship: row.id,
                     task_force: row.task_force,
@@ -2495,9 +2497,12 @@ impl Captured {
                     && row.fallback_sprite.as_bytes() == previous.fallback_sprite
                     && row.model_number == previous.model_number
                     && row.formation_flags == previous.formation_flags
-                    && previous.subunit_index == replay::rows::Recorded::Value(row.subunit_index)
+                    && previous.subunit_index
+                        == replay_data::rows::Recorded::Value(row.subunit_index)
                     && previous.hull_variant
-                        == replay::rows::Recorded::Value(row.hull_variant.map(hull_variant_inputs))
+                        == replay_data::rows::Recorded::Value(
+                            row.hull_variant.map(hull_variant_inputs),
+                        )
                     && previous.counter.as_ref().is_some_and(|counter| {
                         row.roster_ordinal == counter.roster_ordinal
                             && row.definition_valid == counter.definition_valid
@@ -2515,12 +2520,12 @@ impl Captured {
                 fallback_sprite: owned_vec(copy_vec(r.fallback_sprite.as_bytes())),
                 model_number: r.model_number,
                 formation_flags: r.formation_flags,
-                subunit_index: replay::rows::Recorded::Value(r.subunit_index),
-                strike: replay::rows::Recorded::Value(replay::rows::Retired),
-                hull_variant: replay::rows::Recorded::Value(
+                subunit_index: replay_data::rows::Recorded::Value(r.subunit_index),
+                strike: replay_data::rows::Recorded::Value(replay_data::rows::Retired),
+                hull_variant: replay_data::rows::Recorded::Value(
                     r.hull_variant.map(hull_variant_inputs),
                 ),
-                counter: Some(replay::rows::ShipCounterInputs {
+                counter: Some(replay_data::rows::ShipCounterInputs {
                     roster_ordinal: r.roster_ordinal,
                     definition_valid: r.definition_valid,
                     carrier_air_base: r.carrier_air_base,
@@ -2580,8 +2585,8 @@ struct Carrying<'a> {
     revalidated: bool,
 }
 
-fn hull_variant_inputs(value: cship::HullVariantInputs) -> replay::rows::HullVariantInputs {
-    replay::rows::HullVariantInputs {
+fn hull_variant_inputs(value: cship::HullVariantInputs) -> replay_data::rows::HullVariantInputs {
+    replay_data::rows::HullVariantInputs {
         definition_index: value.definition_index,
         module_count: value.module_count,
         upgrade_level_sum: value.upgrade_level_sum,

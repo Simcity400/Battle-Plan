@@ -1,9 +1,8 @@
 //! Offline observer/staging/census benchmark; no native gameplay is executed.
 use super::*;
-use engine::{
-    active_ability_record as active, cability, ccountry, cgame_state, cpolitical_status, crelation,
-    cunit_leader, nindustrial_organisation_corganisation as mio,
-};
+use engine_land_inputs::{active_ability_record as active, cability};
+use engine_native::{ccountry, cgame_state, cpolitical_status, crelation, cunit_leader};
+use engine_production::nindustrial_organisation_corganisation as mio;
 use std::{hint::black_box, time::Instant};
 const HEAP: usize = 0x350_0000;
 const STATE: usize = 0x10000;
@@ -269,7 +268,7 @@ fn measure(values: &mut [std::time::Duration]) -> (u128, u128) {
 fn politics_daily_tap_profile() {
     for countries in [1500, 5000] {
         let mut world = World::new(countries);
-        let define = engine::politics_sites::BLOCKADE_COST_DEFINE_RVA;
+        let define = engine_events::politics_sites::BLOCKADE_COST_DEFINE_RVA;
         world.bytes[define..define + 8].copy_from_slice(&1i64.to_le_bytes());
         let mut modifier = [0u8; 0x400];
         let mut rate = [0u8; 0x400];
@@ -319,7 +318,7 @@ fn politics_daily_scale() {
         let world = World::new(countries);
         let events = world.events();
         let core: Vec<_> = (1..=countries)
-            .map(|n| engine::ccountry::Row {
+            .map(|n| engine_native::ccountry::Row {
                 id: n as u32,
                 political_power_raw: Some(2),
                 command_power_raw: 0,
@@ -329,7 +328,7 @@ fn politics_daily_scale() {
             .collect();
         let baseline: Vec<_> = core
             .iter()
-            .map(|r| engine::ccountry::Row {
+            .map(|r| engine_native::ccountry::Row {
                 political_power_raw: Some(0),
                 ..*r
             })
@@ -346,7 +345,7 @@ fn politics_daily_scale() {
         let mut total = Vec::new();
         for iteration in 0..100 {
             let mut ledger = Ledger::default();
-            let mut tables: Vec<_> = (0..replay::frame::TABLE_COUNT)
+            let mut tables: Vec<_> = (0..replay_data::rows::TABLE_COUNT)
                 .map(|_| TableInput::Sampled(unavailable("fixture")))
                 .collect();
             capture.capture();
@@ -393,9 +392,9 @@ fn politics_daily_scale() {
                 panic!()
             };
             assert!(coverage.iter().all(|r| r.streams == 15));
-            let frame = replay::frame::FrameEncoder::new()
+            let frame = replay_frame::frame::FrameEncoder::new()
                 .encode_input(
-                    replay::frame::FrameInput {
+                    replay_frame::frame::FrameInput {
                         branch: 1,
                         hour: 0,
                         tables: tables.try_into().unwrap(),
@@ -490,10 +489,10 @@ fn native_operand_rows_are_byte_identical_to_guarded_rows() {
             fast[index].identity = b;
         }
     }
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let (_, a, akeys) = hooks::stage_fixture(&original, &memory);
     let (_, b, bkeys) = hooks::stage_fixture(&fast, &unsafe {
-        engine::politics_sites::NativeOperands::new()
+        engine_events::politics_sites::NativeOperands::new()
     });
     assert_eq!(a, b);
     assert_eq!(akeys, bkeys);

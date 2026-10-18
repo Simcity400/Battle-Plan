@@ -1,10 +1,10 @@
 use super::*;
 use crate::test_fixtures::{CAMPAIGN, records, source};
-use replay::{
-    container::Replay,
-    frame::DecodedFrame,
-    rows::{CountryLinkRow, CountryRow, RocketProductionOutputRow, TableRows},
+use replay::container::Replay;
+use replay_data::{
+    rows::CountryLinkRow, rows::CountryRow, rows::RocketProductionOutputRow, rows::TableRows,
 };
+use replay_frame::frame::DecodedFrame;
 
 #[test]
 fn prepared_endpoints_resume_and_match_the_reference_production_observer() {
@@ -254,7 +254,7 @@ fn prepared_endpoints_stop_variant_names_at_unavailable_reads_without_losing_uni
 }
 
 fn hour(year: i64, month: usize, day: i64, hour: i64) -> i32 {
-    use engine::cdate::{HOUR_EPOCH, MONTH_LENGTHS};
+    use engine_native::{cdate::HOUR_EPOCH, cdate::MONTH_LENGTHS};
     let before: i64 = MONTH_LENGTHS[..month - 1]
         .iter()
         .map(|days| i64::from(*days))
@@ -368,7 +368,7 @@ fn a_month_before_is_the_same_moment_of_the_month_before_or_its_last_day() {
         month_before(hour(1940, 1, 10, 0)),
         Some(hour(1939, 12, 10, 0))
     );
-    assert_eq!(month_before(engine::cdate::HOUR_EPOCH - 1), None);
+    assert_eq!(month_before(engine_native::cdate::HOUR_EPOCH - 1), None);
     assert_eq!(month_before(hour(0, 1, 5, 0)), None);
 }
 
@@ -617,7 +617,7 @@ fn clipped_pieces_keep_a_break_only_where_they_start() {
     );
 }
 
-fn produced_units(texts: &[&[u8]]) -> io::Result<installed_content::equipment::Database> {
+fn produced_units(texts: &[&[u8]]) -> io::Result<installed_content_core::equipment::Database> {
     let paths: Vec<_> = (0..texts.len())
         .map(|i| format!("common/units/equipment/{i:03}.txt"))
         .collect();
@@ -626,7 +626,7 @@ fn produced_units(texts: &[&[u8]]) -> io::Result<installed_content::equipment::D
         .zip(texts)
         .map(|(p, text)| (p.as_str(), std::str::from_utf8(text).unwrap()))
         .collect();
-    let units = installed_content::equipment::fixture::load(&files).0;
+    let units = installed_content_core::equipment::fixture::load(&files).0;
     match &units.lost {
         Some(reason) => Err(crate::invalid(reason)),
         None => Ok(units),
@@ -634,12 +634,12 @@ fn produced_units(texts: &[&[u8]]) -> io::Result<installed_content::equipment::D
 }
 
 fn produced_hour(day: i32) -> i32 {
-    let replay::cadence::Cadence::Daily(slot) =
-        replay::cadence::cadence(TableId::ProductionLineOutput)
+    let replay_data::cadence::Cadence::Daily(slot) =
+        replay_data::cadence::cadence(TableId::ProductionLineOutput)
     else {
         panic!("ProductionLineOutput is read in a daily slot");
     };
-    day * replay::cadence::STAGGER_PERIOD + slot as i32
+    day * replay_data::cadence::STAGGER_PERIOD + slot as i32
 }
 
 /// One output row: line, ordinal, producer link, variant, units, exact, ended.
@@ -659,8 +659,9 @@ fn produced_frame(
     lines: &[(u64, u32, u8, u64)],
     output: Option<&[OutputFixture]>,
 ) -> DecodedFrame {
-    use replay::rows::{
-        LexicalTokenRow, ProductionLineOutputRow, ProductionLineRow, VariantDefinitionRow,
+    use replay_data::{
+        rows::LexicalTokenRow, rows::ProductionLineOutputRow, rows::ProductionLineRow,
+        rows::VariantDefinitionRow,
     };
     let mut frame = source(1, hour, Some(1));
     let country = |id, canonical_slot, tag: &[u8]| CountryRow {
@@ -777,7 +778,7 @@ fn produced_day(
     lines: &[(u64, u32, u8, u64)],
     output: Option<&[OutputFixture]>,
 ) -> Vec<DecodedFrame> {
-    (0..replay::cadence::STAGGER_PERIOD)
+    (0..replay_data::cadence::STAGGER_PERIOD)
         .map(|offset| {
             produced_frame(
                 produced_hour(day) + offset,
@@ -902,8 +903,8 @@ fn produced_per_day_counts_one_tick_and_ic_ranks_every_type_in_one_currency() {
                 unreachable!()
             };
             // 1.5 IC a day goes into Germany's line and 4 IC a day into Italy's.
-            rows[0].spent_raw = replay::rows::Recorded::Value(Some(150_000 * i64::from(day)));
-            rows[1].spent_raw = replay::rows::Recorded::Value(Some(400_000 * i64::from(day)));
+            rows[0].spent_raw = replay_data::rows::Recorded::Value(Some(150_000 * i64::from(day)));
+            rows[1].spent_raw = replay_data::rows::Recorded::Value(Some(400_000 * i64::from(day)));
         }
         frames.extend(next);
     }
@@ -989,7 +990,7 @@ fn produced_scan_widens_signed_row_corrections_and_keeps_applied_ic_independent(
             else {
                 unreachable!()
             };
-            rows[0].spent_raw = replay::rows::Recorded::Value(Some(spent));
+            rows[0].spent_raw = replay_data::rows::Recorded::Value(Some(spent));
         }
         frames.extend(next);
     }
@@ -1046,7 +1047,7 @@ fn produced_scan_retains_multiline_totals_above_unit_transport_and_keeps_applied
             unreachable!()
         };
         for row in rows {
-            row.spent_raw = replay::rows::Recorded::Value(Some(i64::MAX));
+            row.spent_raw = replay_data::rows::Recorded::Value(Some(i64::MAX));
         }
     }
     let source = produced_source(frames);
@@ -1280,7 +1281,7 @@ pub(crate) fn produced_decode(
 
 #[test]
 fn produced_empty_resolved_groups_remain_unknown_for_an_unresolved_only_country() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::equipment_produced::{
         Named, ProducedGrouping, ProducedMeasure, reply, scan,
@@ -1370,7 +1371,7 @@ fn produced_empty_resolved_groups_remain_unknown_for_an_unresolved_only_country(
 
 #[test]
 fn produced_types_an_unresolved_variant_could_belong_to_are_unknown_while_it_holds_anything() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{
         equipment::Texts,
@@ -1384,7 +1385,7 @@ fn produced_types_an_unresolved_variant_could_belong_to_are_unknown_while_it_hol
         }
     "#])
     .unwrap();
-    let texts: installed_content::localisation::Localisation = std::iter::empty().collect();
+    let texts: installed_content_localisation::localisation::Localisation = std::iter::empty().collect();
     let since = produced_hour(0);
     let lines = [(1, 9001, 0, 10), (2, 9001, 1, 30)];
     // Rifles every day; the destroyer is delivered from day 2 on.
@@ -1639,7 +1640,7 @@ fn produced_totals_survive_deleted_lines_and_count_lines_made_between_reads() {
             .any(|warning| warning.starts_with("Equipment names and types are unavailable:"))
     );
     // With that context, the retained variant is named only from its naming read.
-    let mut texts = installed_content::localisation::Localisation::default();
+    let mut texts = installed_content_localisation::localisation::Localisation::default();
     texts.language = "english".into();
     let scanned = equipment::production::scanned(&source, 1, &AtomicBool::new(false)).unwrap();
     let named_variants = super::reply(
@@ -1863,7 +1864,7 @@ fn produced_zero_windows_remain_known_without_any_top_n_member() {
         LoadContext, Product,
         equipment_produced::{EquipmentProduced, ProducedGrouping, ProducedMeasure},
     };
-    let start = engine::cdate::HOUR_EPOCH / 24;
+    let start = engine_native::cdate::HOUR_EPOCH / 24;
     let since = produced_hour(start);
     let lines = [(1, 9001, 0, 10)];
     let source = produced_source(
@@ -2038,7 +2039,7 @@ fn coverage_merges_overlaps_and_subtracts_unknown_spans_without_walking_hours() 
 
 #[test]
 fn produced_types_and_names_come_from_the_recorded_content_stack_mods_included() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{
         equipment::Texts,
@@ -2076,15 +2077,15 @@ fn produced_types_and_names_come_from_the_recorded_content_stack_mods_included()
         "common/units/equipment/ships.txt",
         "equipments = { }",
     );
-    let layers = installed_content::content::ResolvedLayers::from_folders(&[
+    let layers = installed_content_core::content::ResolvedLayers::from_folders(&[
         (&root.join("vanilla"), &[][..]),
         (&root.join("mod"), &[][..]),
     ])
     .unwrap();
-    let units = installed_content::equipment::Database::load_complete(&layers).unwrap();
+    let units = installed_content_core::equipment::Database::load_complete(&layers).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
     // The mod's localisation names its type.
-    let texts: installed_content::localisation::Localisation = [
+    let texts: installed_content_localisation::localisation::Localisation = [
         ("mod_small_arms".to_owned(), "Mod Rifles".to_owned()),
         (
             "infantry_equipment".to_owned(),

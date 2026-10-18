@@ -9,18 +9,17 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use viewer_foundation::table_access::TokenNames;
 
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        AvailableEquipmentVariantRow, CountryLinkRow, TableSchema, VariantDefinitionRow,
-        VariantUpgradeRow, tables,
-    },
+use replay_data::{
+    rows::AvailableEquipmentVariantRow, rows::CountryLinkRow, rows::TableSchema,
+    rows::VariantDefinitionRow, rows::VariantUpgradeRow, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 use super::{Candidate, legacy};
 use {
     crate::map::model_selection::Content, crate::map::model_selection::SubUnit,
-    installed_content::equipment_graphics::countries::ModelCountry, viewer_foundation::map::tables::rows,
+    installed_content_equipment_graphics::equipment_graphics::countries::ModelCountry,
+    viewer_foundation::map::tables::rows,
 };
 
 pub struct Prepared<'a> {
@@ -570,7 +569,7 @@ mod tests {
 
     #[test]
     fn availability_preserves_native_order_and_duplicate_variant_membership() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let by_handle = BTreeMap::from([(handle(1), 0), (handle(2), 1)]);
         let links = BTreeMap::from([(10, 1), (11, 1)]);
@@ -637,7 +636,7 @@ mod tests {
 
     #[test]
     fn the_recorded_best_candidates_decide_the_conventional_winner() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut bridge = prepared(vec![variant(1, 1), variant(2, 3)]);
         let country = legacy::Country {

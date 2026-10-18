@@ -1,12 +1,10 @@
 use super::*;
 use dashboard_core::test_fixtures::{CAMPAIGN, records, source};
-use replay::{
-    frame::TableView,
-    rows::{
-        AceDeath, AirWingRow, CountryLinkRow, CountryRow, LexicalTokenRow, TableRows,
-        VariantDefinitionRow, WingEquipmentRow,
-    },
+use replay_data::{
+    rows::AceDeath, rows::AirWingRow, rows::CountryLinkRow, rows::CountryRow,
+    rows::LexicalTokenRow, rows::TableRows, rows::VariantDefinitionRow, rows::WingEquipmentRow,
 };
+use replay_frame::frame::TableView;
 use std::time::Instant;
 
 pub(super) fn ace(id: u64, alive: bool) -> AirAceRow {
@@ -341,10 +339,10 @@ fn air_aces_product_caches_branch_and_serves_all_campaign_reads() {
 
 #[test]
 fn air_aces_mod_content_portrait_name_and_opaque_tag_override_through_stack() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use dashboard_text::catalogue::tests::{folder_catalogue, layers_catalogue};
-    use installed_content::ResolvedLayers;
+    use installed_content_core::ResolvedLayers;
     let (base_cat, base) = folder_catalogue(&[(
         "interface/aces.gfx",
         "spriteTypes = { spriteType = { name = \"GFX_mod tag:Ω_ace_Mod name_Surname\" texturefile = \"missing.tga\" } }",
@@ -536,16 +534,16 @@ fn air_aces_five_thousand_countries_twenty_aces_served_under_reply_budget() {
 fn air_aces_five_thousand_countries_twenty_aces_scan_budget() {
     let mut sample = scale_frame_with_wings();
     let first = (100..124)
-        .find(|hour| replay::cadence::is_refresh(TableId::AirAces, *hour))
+        .find(|hour| replay_data::cadence::is_refresh(TableId::AirAces, *hour))
         .unwrap();
     sample.hour = first;
     let frames = (first..=first + 47)
         .map(|hour| {
             sample.hour = hour;
             sample.metrics.table_ns[TableId::AirAces.index()] =
-                u64::from(replay::cadence::is_refresh(TableId::AirAces, hour));
+                u64::from(replay_data::cadence::is_refresh(TableId::AirAces, hour));
             sample.metrics.table_ns[TableId::VariantDefinitions.index()] = u64::from(
-                replay::cadence::is_refresh(TableId::VariantDefinitions, hour),
+                replay_data::cadence::is_refresh(TableId::VariantDefinitions, hour),
             );
             sample.clone()
         })
@@ -674,7 +672,7 @@ fn air_aces_recorded_wing_names_preserve_cached_text_and_capture_refusals() {
     else {
         unreachable!()
     };
-    wings[0].name = replay::rows::Recorded::Value(Some(b"Ordinary cached wing".to_vec()));
+    wings[0].name = replay_data::rows::Recorded::Value(Some(b"Ordinary cached wing".to_vec()));
     let mut warnings = Refusals::default();
     assert_eq!(
         dashboard_text::air_wing_names::recorded_names(
@@ -689,7 +687,7 @@ fn air_aces_recorded_wing_names_preserve_cached_text_and_capture_refusals() {
     else {
         unreachable!()
     };
-    wings[0].name = replay::rows::Recorded::Value(None);
+    wings[0].name = replay_data::rows::Recorded::Value(None);
     assert!(
         dashboard_text::air_wing_names::recorded_names(
             &sample,
@@ -920,7 +918,7 @@ fn air_aces_refusal_counts_only_assigned_wing_names() {
             .into_iter()
             .map(|id| AirWingRow {
                 id,
-                name: replay::rows::Recorded::Value(None),
+                name: replay_data::rows::Recorded::Value(None),
                 ..Default::default()
             })
             .collect(),
@@ -1249,10 +1247,10 @@ fn air_aces_multi_year_window_size_is_flat_and_manifest_has_only_identities() {
 
 #[test]
 fn air_aces_generic_portrait_preserves_retained_pool_and_native_culture_holes() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use dashboard_text::catalogue::tests::folder_catalogue;
-    use replay::rows::{AirAcePortraitInputs, AirAcePresentation, Recorded};
+    use replay_data::{rows::AirAcePortraitInputs, rows::AirAcePresentation, rows::Recorded};
     let (cat, folder) = folder_catalogue(&[(
         "interface/aces.gfx",
         r#"

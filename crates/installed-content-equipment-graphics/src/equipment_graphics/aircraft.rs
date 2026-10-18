@@ -372,7 +372,7 @@ impl Catalogue {
 /// Whether effective category flags ([`equipment::Database::category`]) are
 /// the engine's plane family.
 fn is_plane(category: u64) -> bool {
-    category & engine::cequipment_type::PLANE_MASK != 0
+    category & engine_native::cequipment_type::PLANE_MASK != 0
 }
 
 /// The keys of every plane equipment type.
@@ -405,7 +405,11 @@ impl PlaneKeys {
             let family = &database.equipment[kind.family];
             let family_archetype = family.archetype.map(|at| &database.equipment[at]);
             let named = [Some(kind), archetype, Some(family), family_archetype];
-            for name in named.into_iter().flatten().filter_map(|kind| text(&kind.name)) {
+            for name in named
+                .into_iter()
+                .flatten()
+                .filter_map(|kind| text(&kind.name))
+            {
                 keys.pools.insert(name.to_ascii_lowercase());
             }
             let ladder = [Some(kind), archetype, Some(family)]

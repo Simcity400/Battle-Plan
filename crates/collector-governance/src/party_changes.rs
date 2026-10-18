@@ -1,6 +1,6 @@
 //! Allocation-free notifications from the native writers of the political
 //! party fields PoliticalParties carries
-//! ([`engine::political_party_mutations`]). A detour only notifies the shared
+//! ([`engine_mutations::political_party_mutations`]). A detour only notifies the shared
 //! watch registry ([`WatchRegistry`]) for the party its first argument names,
 //! counts its site and calls the original; it never changes game behaviour.
 //! Receivers are the `CPoliticalParty` addresses a PoliticalParties capture
@@ -13,7 +13,8 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{Memory, political_party_mutations::MUTATIONS};
+use engine_mutations::political_party_mutations::MUTATIONS;
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -246,7 +247,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "party_changes")
             && MUTATIONS.iter().all(|site| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [

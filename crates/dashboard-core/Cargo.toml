@@ -15,11 +15,14 @@ doctest = false
 test-support = ["installed-content-core/test-support"]
 
 [dependencies]
+replay.workspace = true
+engine-allocation.workspace = true
+engine-executable.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
 job-priority.workspace = true
-engine.workspace = true
 installed-content-core.workspace = true
 installed-content-settings.workspace = true
-replay.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
 ts-rs = "11.1"

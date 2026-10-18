@@ -1,5 +1,5 @@
 use super::*;
-use engine::creference_registry;
+use engine_native::creference_registry;
 use std::cell::Cell;
 
 #[derive(Default)]

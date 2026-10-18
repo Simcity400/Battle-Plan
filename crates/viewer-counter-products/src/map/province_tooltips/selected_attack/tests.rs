@@ -1,8 +1,6 @@
 use super::*;
-use replay::{
-    attack_derive::{NIGHT, TERRAIN},
-    rows::{DivisionRow, TableRows},
-};
+use replay_data::{rows::DivisionRow, rows::TableRows};
+use replay_derive::{attack_derive::NIGHT, attack_derive::TERRAIN};
 use std::cell::RefCell;
 use viewer_foundation::map::test_support::{test_frame, test_put as put};
 

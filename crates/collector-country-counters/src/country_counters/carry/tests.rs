@@ -1,10 +1,10 @@
 use super::*;
 use crate::{country_input_changes::Domain, reserved_visibility};
-use engine::{
+use engine_native::{
     ccountry_characters, cdiplomacy_status as diplomacy, cgame_state, cname_group_member,
     creference_registry, crelation_status, cship, memory::SliceMemory, reference_bucket as bucket,
 };
-use replay::frame::TableView;
+use replay_frame::frame::TableView;
 use std::cell::RefCell;
 
 const STATE: usize = 0x1000;
@@ -211,7 +211,7 @@ fn domain(ids: usize) -> &'static Domain {
 /// One hour's counter pass with the reserved country's reverse visibility.
 struct Hour {
     captured: Captured,
-    reverse: Option<replay::rows::ReservedReverseVisibilityInputs>,
+    reverse: Option<replay_data::rows::ReservedReverseVisibilityInputs>,
     /// The counter pass's reads, after the naming observation.
     reads: Vec<(usize, usize)>,
 }
@@ -348,22 +348,22 @@ fn a_quiet_hour_reads_no_carried_country_and_equals_a_full_read() {
             .iter()
             .any(|&(address, _)| (world.pride..world.pride + 0x5000).contains(&address))
     );
-    let TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)) =
+    let TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)) =
         &carried.captured.tables()[0]
     else {
         panic!("carried table refused");
     };
     assert_eq!(
         rows[1].pride_name,
-        replay::rows::Recorded::Value(Some(b"Pride of a fleet with a long name".to_vec()))
+        replay_data::rows::Recorded::Value(Some(b"Pride of a fleet with a long name".to_vec()))
     );
     assert_eq!(
         rows[4].neighbors,
-        replay::rows::Recorded::Value(Some(vec![50]))
+        replay_data::rows::Recorded::Value(Some(vec![50]))
     );
     assert_eq!(
         rows[4].co_belligerents,
-        replay::rows::Recorded::Value(Some(vec![0]))
+        replay_data::rows::Recorded::Value(Some(vec![0]))
     );
     assert!(full.reverse.is_some());
 }

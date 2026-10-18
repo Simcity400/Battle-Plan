@@ -551,7 +551,11 @@ fn growing_map_census_starts_without_optional_pointers_and_keeps_later_demand() 
         assert_eq!(capture.outcome, Outcome::Rows { len: 1 });
         assert_eq!((capture.participants_len, visited), (count, 1));
         assert!(participants[..count].iter().all(|id| *id == 1));
-        assert!(classes[..count].iter().all(|class| *class == DIVISION_CLASS));
+        assert!(
+            classes[..count]
+                .iter()
+                .all(|class| *class == DIVISION_CLASS)
+        );
         fixture.array(STATE + cgame_state::COMBATS + 8, registry, count as u32);
         fixture.array(ATTACK + cland_combatant::UNITS, 0, 0);
         let capture = walk_with_growing(
@@ -2119,7 +2123,14 @@ fn row_and_arena_capacities_omit_whole_combats_and_report_growth() {
         }
     );
     assert_eq!(
-        walk(&fixture.memory(), BASE, STATE, &mut [], &mut [0; 8], &mut [0; 8]),
+        walk(
+            &fixture.memory(),
+            BASE,
+            STATE,
+            &mut [],
+            &mut [0; 8],
+            &mut [0; 8]
+        ),
         captured
     );
     assert_eq!(participants, [0; 2]);
@@ -2173,7 +2184,15 @@ fn bad_objects_fail_the_table_instead_of_producing_a_partial_census() {
     }
     let fixture = Fixture::new();
     assert!(matches!(
-        walk(&fixture.memory(), BASE, usize::MAX, &mut [], &mut [], &mut []).outcome,
+        walk(
+            &fixture.memory(),
+            BASE,
+            usize::MAX,
+            &mut [],
+            &mut [],
+            &mut []
+        )
+        .outcome,
         Outcome::Unavailable { .. }
     ));
 }

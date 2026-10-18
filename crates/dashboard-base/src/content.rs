@@ -1,8 +1,9 @@
 //! Refuse unverified recorded content unless the user explicitly allows it.
 
 use crate::{Source, invalid, products::ContentOptions};
-use installed_content::{ResolveOptions, localisation::Localisation};
-use replay::identity::Verification;
+use installed_content_core::ResolveOptions;
+use installed_content_localisation::localisation::Localisation;
+use replay_data::identity::Verification;
 use std::{io, path::PathBuf, sync::Arc};
 
 /// What a resolved country name depends on besides the recording.
@@ -53,7 +54,10 @@ pub(crate) fn localisation_with_key(
     let mut warnings = Vec::new();
     check_replay(&source.replay(), content.allow_unverified, &mut warnings)?;
     let layers = source.content(&content.options)?;
-    let localisation = Arc::new(installed_content::localisation::read(&layers.layers, &key.2)?);
+    let localisation = Arc::new(installed_content_localisation::localisation::read(
+        &layers.layers,
+        &key.2,
+    )?);
     *state = Some((key, Arc::clone(&localisation)));
     Ok(localisation)
 }
@@ -72,7 +76,7 @@ pub fn name_localisation(
 
 /// The user's game language from the configured user folder's `settings.txt`.
 pub fn language(options: &ResolveOptions) -> io::Result<String> {
-    installed_content::settings::read_keys(&options.user_dir)?.language()
+    installed_content_settings::settings::read_keys(&options.user_dir)?.language()
 }
 
 pub fn check_verification(

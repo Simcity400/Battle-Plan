@@ -1,5 +1,5 @@
 use super::*;
-use replay::rows::{CountryCounterInputRow, Recorded, ZeroSubjectInputs};
+use replay_data::{rows::CountryCounterInputRow, rows::Recorded, rows::ZeroSubjectInputs};
 
 #[test]
 fn zero_subject_reports_history_capture_refusal_and_unsaved_native_branches() {
@@ -39,7 +39,7 @@ fn zero_subject_reports_history_capture_refusal_and_unsaved_native_branches() {
         let mut report = Report::default();
         compare_lists(
             &[CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
+                forward_visibility: replay_data::rows::Recorded::NotRecorded,
                 country: 101,
                 zero_subject: value,
                 ..Default::default()

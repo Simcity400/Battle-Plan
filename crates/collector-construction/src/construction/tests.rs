@@ -4,14 +4,14 @@ use super::*;
 fn buildings_read_on_their_slot_while_construction_rest_waits_for_its_slot() {
     use construction_rest_test_kit as kit;
     let bytes = kit::fixture();
-    let memory = engine::memory::CountedMemory::new(engine::memory::SliceMemory {
+    let memory = engine_native::memory::CountedMemory::new(engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     });
     let direct = kit::direct(&memory, &kit::capacities());
     let mut captured = Captured::with_capacities(&kit::capacities());
     let skipped = Outcome::Unavailable {
-        reason: replay::cadence::SKIPPED_REASON,
+        reason: replay_data::cadence::SKIPPED_REASON,
     };
     for (hour, force_full) in (-24_i32..24).map(|hour| (hour, false)).chain([(0, true)]) {
         let active = force_full || hour.rem_euclid(24) == 3;
@@ -23,13 +23,16 @@ fn buildings_read_on_their_slot_while_construction_rest_waits_for_its_slot() {
         let mut ticks = captured.capture(&memory, 0, kit::BASE, hour, force_full);
         ticks[0] = captured.finish_buildings(hour, force_full);
         let counts = native.finish();
-        if replay::cadence::should_walk(TableId::StateBuildings, hour, force_full) {
+        if replay_data::cadence::should_walk(TableId::StateBuildings, hour, force_full) {
             assert_eq!(&captured.outcomes()[..2], &direct.outcomes()[..2]);
             assert!(counts[TABLES[0].index()].spans > 0);
         } else {
             assert_eq!(&captured.outcomes()[..2], &[skipped; 2], "{hour}");
             assert_eq!(ticks[0], 0);
-            assert_eq!(counts[TABLES[0].index()], engine::memory::ReadCounts::ZERO);
+            assert_eq!(
+                counts[TABLES[0].index()],
+                engine_native::memory::ReadCounts::ZERO
+            );
         }
         if active {
             kit::assert_matches_direct(&captured, &direct);
@@ -38,7 +41,10 @@ fn buildings_read_on_their_slot_while_construction_rest_waits_for_its_slot() {
             for (index, table) in TABLES.iter().enumerate().skip(2) {
                 assert_eq!(captured.outcomes()[index], skipped, "{hour}: {index}");
                 assert_eq!(ticks[index], 0);
-                assert_eq!(counts[table.index()], engine::memory::ReadCounts::ZERO);
+                assert_eq!(
+                    counts[table.index()],
+                    engine_native::memory::ReadCounts::ZERO
+                );
             }
             assert_eq!((captured.routes.len, captured.routes.required), (0, 0));
             assert_eq!(
@@ -84,7 +90,7 @@ fn building_handoff_consumes_its_report_without_live_retry_and_retains_growth() 
     let grown = part.allocated_bytes();
     captured.restore_buildings(part, Ok(37));
     assert_eq!(captured.allocated_bytes(), before - borrowed + grown);
-    let memory = engine::memory::CountedMemory::new(engine::memory::SliceMemory {
+    let memory = engine_native::memory::CountedMemory::new(engine_native::memory::SliceMemory {
         base: 0,
         bytes: &[],
     });
@@ -138,7 +144,7 @@ fn construction_rest_job_capacity_accounting_tracks_all_vectors_through_growth_c
     assert_eq!(LOCAL.snapshot().current, Capacity::default());
 }
 
-use replay::rows::TableSchema;
+use replay_data::rows::TableSchema;
 
 fn capacity() -> Capacities {
     Capacities {
@@ -456,7 +462,7 @@ fn growth_counts_omitted_rows_and_primary_arena_pressure() {
 fn construction_rest_split_copy_matches_direct_walk() {
     use super::construction_rest_test_kit as kit;
     let bytes = kit::fixture();
-    let memory = engine::memory::CountedMemory::new(engine::memory::SliceMemory {
+    let memory = engine_native::memory::CountedMemory::new(engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     });
@@ -495,7 +501,7 @@ fn occupied_roster_split_copy_preserves_settings_on_short_arena_and_native_failu
             bytes[address - kit::BASE..address - kit::BASE + 8]
                 .copy_from_slice(&0xdead_0000_u64.to_le_bytes());
         }
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: kit::BASE,
             bytes: &bytes,
         };
@@ -531,7 +537,7 @@ fn construction_rest_truncation_matrix_preserves_unrelated_caps() {
     // retains the direct walk's truncation behavior.
     use super::construction_rest_test_kit as kit;
     let bytes = kit::fixture();
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -571,7 +577,7 @@ fn construction_rest_truncation_matrix_preserves_unrelated_caps() {
 fn construction_rest_split_copy_matches_direct_walk_under_truncation() {
     use super::construction_rest_test_kit as kit;
     let bytes = kit::fixture();
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -612,7 +618,7 @@ fn construction_rest_split_copy_matches_direct_walk_under_truncation() {
 fn construction_rest_first_decode_grows_settings_and_shared_law_bytes() {
     use super::construction_rest_test_kit as kit;
     let bytes = kit::fixture();
-    let memory = engine::memory::CountedMemory::new(engine::memory::SliceMemory {
+    let memory = engine_native::memory::CountedMemory::new(engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     });
@@ -655,7 +661,8 @@ fn construction_rest_first_decode_grows_settings_and_shared_law_bytes() {
 
 fn garrison_equipment_fixture() -> Vec<u8> {
     use super::construction_rest_test_kit as kit;
-    use engine::{cequipment_type as ty, cequipment_variant_pool as pool, garrison_equipment_pool};
+    use engine_native::{cequipment_type as ty, cequipment_variant_pool as pool};
+    use engine_occupation::garrison_equipment_pool;
     let mut bytes = kit::fixture();
     const REQUIRED: usize = 0x18000;
     const ALLOCATED: usize = REQUIRED + 5_000 * 16;
@@ -705,7 +712,7 @@ fn garrison_equipment_fixture() -> Vec<u8> {
 fn garrison_equipment_first_acquisition_grows_5000_operands_and_matches_owned_read_witness() {
     use super::construction_rest_test_kit as kit;
     let bytes = garrison_equipment_fixture();
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -781,13 +788,13 @@ fn garrison_equipment_acquisition_covers_5000_authenticated_countries_without_a_
             &(carmy_manpower_values::VTABLE_RVA as u64).to_le_bytes(),
         );
     }
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
     let mut job = construction_rest_test_kit::job();
     job.log = RawLog::new(1 << 18, 16 << 20);
-    engine::allocation::reserve_exact(&mut job.census, 5_000).unwrap();
+    engine_allocation::reserve_exact(&mut job.census, 5_000).unwrap();
     job.update_capacity_charge();
     let report = copy_construction_rest_refresh(
         &memory,
@@ -820,13 +827,13 @@ fn failed_garrison_equipment_read_keeps_scalar_siblings_and_names_the_local_refu
     struct MissingWeight<'a> {
         bytes: &'a [u8],
     }
-    impl engine::Memory for MissingWeight<'_> {
+    impl engine_native::Memory for MissingWeight<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             const EQUIPMENT: usize = 0x18000 + 5_000 * 16 + 24;
-            if address == EQUIPMENT + engine::cequipment_type::BUILD_COST_IC {
+            if address == EQUIPMENT + engine_native::cequipment_type::BUILD_COST_IC {
                 return false;
             }
-            engine::memory::SliceMemory {
+            engine_native::memory::SliceMemory {
                 base: kit::BASE,
                 bytes: self.bytes,
             }
@@ -861,7 +868,7 @@ fn failed_garrison_equipment_read_keeps_scalar_siblings_and_names_the_local_refu
 fn construction_rest_law_growth_preserves_original_faults_and_failed_payload_demand() {
     use super::construction_rest_test_kit as kit;
     struct Fault<'a> {
-        memory: engine::memory::SliceMemory<'a>,
+        memory: engine_native::memory::SliceMemory<'a>,
         address: usize,
         len: usize,
         occurrence: usize,
@@ -892,7 +899,7 @@ fn construction_rest_law_growth_preserves_original_faults_and_failed_payload_dem
         (name + 7, 1, 1, 28),
     ] {
         let memory = || Fault {
-            memory: engine::memory::SliceMemory {
+            memory: engine_native::memory::SliceMemory {
                 base: kit::BASE,
                 bytes: &bytes,
             },
@@ -932,7 +939,7 @@ fn construction_rest_law_growth_preserves_original_faults_and_failed_payload_dem
 fn construction_rest_demand_failures_are_explicit_and_keep_successful_allocations() {
     use super::construction_rest_test_kit as kit;
     let bytes = kit::fixture();
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -988,7 +995,7 @@ fn construction_rest_demand_failures_are_explicit_and_keep_successful_allocation
 fn construction_rest_staging_overflow_falls_back_to_typed_walk() {
     use super::construction_rest_test_kit as kit;
     let bytes = kit::fixture();
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -1011,7 +1018,7 @@ fn occupation_group_and_database_laws_survive_raw_copy_without_changing_state_ze
     use construction_rest_test_kit as kit;
     const DATABASE: usize = 0x8500;
     struct DatabaseMemory<'a> {
-        inner: engine::memory::SliceMemory<'a>,
+        inner: engine_native::memory::SliceMemory<'a>,
         fail_group: bool,
     }
     impl Memory for DatabaseMemory<'_> {
@@ -1037,7 +1044,7 @@ fn occupation_group_and_database_laws_survive_raw_copy_without_changing_state_ze
             bytes[at..at + 8].copy_from_slice(&(kit::LAW_OBJ as u64).to_le_bytes());
         }
         let memory = DatabaseMemory {
-            inner: engine::memory::SliceMemory {
+            inner: engine_native::memory::SliceMemory {
                 base: kit::BASE,
                 bytes: &bytes,
             },
@@ -1139,10 +1146,11 @@ fn cold_construction_owned_arenas_keep_original_mod_sized_queue_and_state_demand
         // The building target and garrison retain their authenticated state-1 object.
         bytes[states - kit::BASE + 8..states - kit::BASE + 16]
             .copy_from_slice(&0x4000u64.to_le_bytes());
-        let memory = engine::memory::CountedMemory::new(engine::memory::SliceMemory {
-            base: kit::BASE,
-            bytes: &bytes,
-        });
+        let memory =
+            engine_native::memory::CountedMemory::new(engine_native::memory::SliceMemory {
+                base: kit::BASE,
+                bytes: &bytes,
+            });
         let native = read_accounting::Capture::new();
         let report = copy_construction_rest_refresh_growing(
             &memory,

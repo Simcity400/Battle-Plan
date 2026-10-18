@@ -2,7 +2,7 @@ use super::*;
 #[cfg(feature = "slow-tests")]
 use dashboard_base::test_fixtures::scale_frame;
 use dashboard_base::test_fixtures::{stability_frame, stability_inputs};
-use replay::rows::{CountryStabilityLineRow, TableRows};
+use replay_data::{rows::CountryStabilityLineRow, rows::TableRows};
 
 fn samples(frame: &DecodedFrame, requested: Option<&[(String, String)]>) -> Samples {
     sample(
@@ -33,7 +33,7 @@ fn sampler_and_observer_agree_on_every_key_for_5000_countries() {
         TableView::Complete(TableRows::CountryStabilityLines(vec![]));
     *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(
         (0..5_000)
-            .map(|index| replay::rows::SliceReadRow {
+            .map(|index| replay_data::rows::SliceReadRow {
                 owner: 100_000 + index,
                 table: TableId::CountryStabilityInputs as u32,
                 sample_hour: 100,
@@ -149,13 +149,14 @@ fn carried_character_parts_never_use_the_current_names_but_formula_parts_stay_kn
         ..Default::default()
     };
     let mut frame = stability_frame(100, stability_inputs(), 100, vec![line]);
-    *frame.tables[TableId::Characters.index()] =
-        TableView::Complete(TableRows::Characters(vec![replay::rows::CharacterRow {
+    *frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(vec![
+        replay_data::rows::CharacterRow {
             id: 7,
             token: b"Old name".to_vec(),
             name_token_id: -1,
             ..Default::default()
-        }]));
+        },
+    ]));
     let first = samples(&frame, None);
     assert!(first.keys().any(|(tag, _)| tag.contains("Old name")));
     frame.hour = 101;

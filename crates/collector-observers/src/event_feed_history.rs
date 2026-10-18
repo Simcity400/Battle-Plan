@@ -1,12 +1,13 @@
 //! Owned native observations and pointer-free hourly publications with exact receipts.
 
-use engine::{Memory, allocation, event_feed_sites as native};
-use replay::{
-    event_feed_rows::{
-        EventFeedCause, EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent,
-        EventFeedHistoryRow, EventFeedSource,
-    },
-    rows::Recorded,
+use engine_allocation as allocation;
+use engine_events::event_feed_sites as native;
+use engine_native::Memory;
+use replay_data::{
+    event_feed_rows::EventFeedCause, event_feed_rows::EventFeedCountry,
+    event_feed_rows::EventFeedCounts, event_feed_rows::EventFeedCoverage,
+    event_feed_rows::EventFeedEvent, event_feed_rows::EventFeedHistoryRow,
+    event_feed_rows::EventFeedSource, rows::Recorded,
 };
 use std::{io, mem::size_of};
 

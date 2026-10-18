@@ -22,18 +22,18 @@ use dashboard_text::{
     metadata::{self, TaggedCountry, tagged_countries},
 };
 use dashboard_wars::products::war_casualties::same_name_rows;
-use installed_content::country_names::{self, CountryNames};
-use installed_content::{faction_templates::Catalog, localisation::Localisation};
-use replay::{
-    BranchId,
-    container::Replay,
-    format::FormatVersion,
-    frame::{DecodedFrame, FrameDecoder, SharedView, ViewIdentity},
-    rows::{
-        AirWingGameScoreStatsRow, CountryFactoriesRow, CountryGameScoreInputRow, CountryLinkRow,
-        CountryRow, DeltaRow, FactionMemberRow, GameScoreAirSite, GameScoreMultiplierRow, TableId,
-        full_mask, tables,
-    },
+use installed_content_core::faction_templates::Catalog;
+use installed_content_country_names::{country_names, country_names::CountryNames};
+use installed_content_localisation::localisation::Localisation;
+use replay::container::Replay;
+use replay_data::{
+    BranchId, format::FormatVersion, rows::AirWingGameScoreStatsRow, rows::CountryFactoriesRow,
+    rows::CountryGameScoreInputRow, rows::CountryLinkRow, rows::CountryRow, rows::DeltaRow,
+    rows::FactionMemberRow, rows::GameScoreAirSite, rows::GameScoreMultiplierRow, rows::TableId,
+    rows::full_mask, rows::tables,
+};
+use replay_frame::{
+    frame::DecodedFrame, frame::FrameDecoder, frame::SharedView, frame::ViewIdentity,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -393,7 +393,7 @@ fn multipliers_at(
 ) -> GameScoreValues {
     if old
         || matches!(&*frame.tables[TableId::GameScoreMultipliers.index()],
-        replay::frame::TableView::Unavailable { reason } if reason == replay::format::GAME_SCORE_DISABLED_REASON)
+        replay_frame::frame::TableView::Unavailable { reason } if reason == replay_data::format::GAME_SCORE_DISABLED_REASON)
     {
         return old_multipliers();
     }
@@ -410,7 +410,9 @@ fn multipliers_at(
 
 // Defines::fixed5 owns Lua double -> f32 and separate multiply, add, subtract
 // and truncating integer conversion. Old recordings have no runtime define read.
-fn content_multipliers(defines: Result<&installed_content::defines::Defines, &str>) -> GameScoreValues {
+fn content_multipliers(
+    defines: Result<&installed_content_core::defines::Defines, &str>,
+) -> GameScoreValues {
     let read = |key: &str| match defines {
         Ok(defines) => match defines.fixed5("NCountry", key) {
             Ok(raw) => GameScoreAmount::known(raw, false),
@@ -471,7 +473,7 @@ fn air_score(
     multiplier: &GameScoreAmount,
     // Complete tables, whose rows ascend by their unique keys.
     wings: Option<&[AirWingGameScoreStatsRow]>,
-    registrations: Option<&[replay::rows::AirBaseRegistrationRow]>,
+    registrations: Option<&[replay_data::rows::AirBaseRegistrationRow]>,
 ) -> GameScoreAmount {
     match row.air_state {
         CountryGameScoreInputRow::AIR_ABSENT => return GameScoreAmount::known(0, true),
@@ -540,7 +542,7 @@ struct ScoreContext<'a> {
     multipliers: &'a GameScoreValues,
     input_refusal: Option<&'a str>,
     wings: Option<&'a [AirWingGameScoreStatsRow]>,
-    registrations: Option<&'a [replay::rows::AirBaseRegistrationRow]>,
+    registrations: Option<&'a [replay_data::rows::AirBaseRegistrationRow]>,
 }
 
 /// One stateless observation retains diagnostics for the existing reply builder.
@@ -552,7 +554,7 @@ struct ScoreSamples {
 
 fn sample(
     frame: &DecodedFrame,
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
     fallback: &mut impl FnMut() -> GameScoreValues,
 ) -> ScoreSamples {
     let old = !TableId::CountryGameScoreInputs
@@ -1021,7 +1023,7 @@ fn read_content_multipliers(source: &Source, context: &LoadContext) -> GameScore
             catalogue::catalogue(source, options).map_err(|error| error.to_string())
         })
         .and_then(|cat| {
-            installed_content::defines::read(&cat.content.layers).map_err(|error| error.to_string())
+            installed_content_core::defines::read(&cat.content.layers).map_err(|error| error.to_string())
         });
     content_multipliers(defines.as_ref().map_err(String::as_str))
 }
@@ -1438,7 +1440,7 @@ struct Held {
 /// The table's view when it is not complete.
 fn incomplete(frame: &DecodedFrame, table: TableId) -> Option<SharedView> {
     let view = &frame.tables[table.index()];
-    (!matches!(**view, replay::frame::TableView::Complete(_))).then(|| view.clone())
+    (!matches!(**view, replay_frame::frame::TableView::Complete(_))).then(|| view.clone())
 }
 
 impl Held {
@@ -2303,7 +2305,7 @@ pub fn check_content(catalogue: &catalogue::Catalogue) -> Vec<dashboard_core::fi
         .map(|(_, reason)| Finding::new(Kind::Refused, "game score hints", reason))
         .collect();
     let defines =
-        installed_content::defines::read(&catalogue.content.layers).map_err(|error| error.to_string());
+        installed_content_core::defines::read(&catalogue.content.layers).map_err(|error| error.to_string());
     for amount in content_multipliers(defines.as_ref().map_err(String::as_str)).amounts() {
         if let Some(missing) = &amount.missing {
             findings.push(Finding::new(

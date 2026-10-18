@@ -2,12 +2,11 @@
 //! and shader come from the recorded content stack.
 use std::{collections::BTreeMap, sync::Arc};
 
-use installed_content::{
-    ResolvedLayers,
-    defines::Defines,
-    gui::native::sprites::{self, AnimatedMapTextDefinition, ObjectKind},
-    image::native::Decode,
+use installed_content_core::{
+    ResolvedLayers, defines::Defines, gui::native::sprites,
+    gui::native::sprites::AnimatedMapTextDefinition, gui::native::sprites::ObjectKind,
 };
+use installed_content_image::native::Decode;
 use shader_pipeline::library::Effect;
 
 /// The animated map text type a producer names.

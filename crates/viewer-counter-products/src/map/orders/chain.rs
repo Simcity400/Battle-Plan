@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 
-use installed_content::map::MapData;
+use installed_content_core::map::MapData;
 
 use super::fixed::{self, Point, SCALE, Smoothing};
 

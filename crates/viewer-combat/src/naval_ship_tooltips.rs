@@ -1,10 +1,10 @@
 //! Naval combat box hovers. Combat members' cached labels are stored text and
 //! can be drawn only in the recording language.
-use installed_content::localisation::{Argument, Localisation};
-use replay::{
-    frame::DecodedFrame,
-    rows::{NavalCombatDetailsRow, NavalCombatShipRow, VariantDefinitionRow, tables},
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use replay_data::{
+    rows::NavalCombatDetailsRow, rows::NavalCombatShipRow, rows::VariantDefinitionRow, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 use viewer_foundation::table_access::country_slot;
 use viewer_foundation::tooltip_text::displayable;
@@ -200,7 +200,7 @@ fn group_tooltip(
     side: u8,
     ships: &BTreeMap<(u8, u32), &NavalCombatShipRow>,
     variants: &BTreeMap<u64, &VariantDefinitionRow>,
-    countries: &BTreeMap<u32, &replay::rows::CountryRow>,
+    countries: &BTreeMap<u32, &replay_data::rows::CountryRow>,
     icons: &dyn TextIcons,
     loc: &Localisation,
     context: Option<&VariantContext<'_>>,
@@ -560,7 +560,7 @@ fn escape_text(
     let speed_modifier = if row.live_ship != 0 {
         super::naval_environment::modifier_default_leader(
             &row.weapon_context,
-            engine::modifier_keys::NAVAL_SPEED_FACTOR,
+            engine_executable::modifier_keys::NAVAL_SPEED_FACTOR,
         )
         .ok_or_else(|| {
             format!(
@@ -675,7 +675,7 @@ fn evacuation_names(
     let links = rows::<tables::CountryLinks>(frame).map_err(|error| error.to_string())?;
     let owner = country_slot(&links, row.owner)?
         .ok_or_else(|| format!("evacuation state {id} has null country owner"))?;
-    let names = installed_content::country_names::CountryNames::read(frame, loc);
+    let names = installed_content_country_names::country_names::CountryNames::read(frame, loc);
     let country = names.name(owner)?;
     Ok((displayable(icons, state)?, displayable(icons, country)?))
 }

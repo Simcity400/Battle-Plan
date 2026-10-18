@@ -1,20 +1,18 @@
 //! World tension frames for tests here and in the crates above.
 
 use dashboard_base::test_fixtures::world_frame;
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{TableId, TableRows},
-};
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 /// The first hour of day `day`. The tension tables are read every hour, so
 /// every recorded hour holding them is a read; a quiet hour publishes the held
 /// read, which the fixtures repeat.
 pub fn tension_slot(day: i32) -> i32 {
     assert_eq!(
-        replay::cadence::cadence(TableId::WorldTension),
-        replay::cadence::Cadence::Hourly
+        replay_data::cadence::cadence(TableId::WorldTension),
+        replay_data::cadence::Cadence::Hourly
     );
-    day * replay::cadence::STAGGER_PERIOD
+    day * replay_data::cadence::STAGGER_PERIOD
 }
 
 /// A threat source: (country link, date, reason, current, final).
@@ -29,7 +27,9 @@ pub fn tension_frame(
     aggregates: &[(u32, i64)],
     sources: &[Threat],
 ) -> DecodedFrame {
-    use replay::rows::{ThreatCountryAggregateRow, ThreatSourceRow, WorldTensionRow};
+    use replay_data::{
+        rows::ThreatCountryAggregateRow, rows::ThreatSourceRow, rows::WorldTensionRow,
+    };
     let mut frame = world_frame(hour, austria);
     *frame.tables[TableId::WorldTension.index()] =
         TableView::Complete(TableRows::WorldTension(vec![WorldTensionRow {

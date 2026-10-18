@@ -1,17 +1,15 @@
 //! Script scope targets resolved over one recorded hour.
 //!
-//! [`installed_content::scope::parse`] reads a scope as the game's event target
+//! [`installed_content_core::scope::parse`] reads a scope as the game's event target
 //! reader does; this resolves it against what the recording
 //! holds. Whatever the recording cannot reach is refused by name with the
 //! missing input, never guessed. The viewer and the dashboard both reach it
 //! (the viewer depends on the dashboard), behind [`RecordedScopes::resolve`].
 
-use installed_content::scope::{Keyword, Names, Scope, ScopeKind};
-use installed_content::tag_aliases::{TagAlias, TagAliases};
-use replay::{
-    frame::{DecodedFrame, SharedView, TableView},
-    rows::{FactionMemberRow, TableSchema, tables},
-};
+use installed_content_core::{scope::Keyword, scope::Names, scope::Scope, scope::ScopeKind};
+use installed_content_core::{tag_aliases::TagAlias, tag_aliases::TagAliases};
+use replay_data::{rows::FactionMemberRow, rows::TableSchema, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView};
 use std::{
     collections::BTreeMap,
     sync::{Arc, OnceLock},
@@ -32,7 +30,7 @@ pub enum Target {
 }
 
 impl Target {
-    /// The target's kind for [`installed_content::scope::TriggerScopes`]. A scope
+    /// The target's kind for [`installed_content_core::scope::TriggerScopes`]. A scope
     /// set with the clearing flag carries only this kind; callers that keep
     /// other carried targets pass them themselves.
     pub fn kind(self) -> ScopeKind {
@@ -170,11 +168,11 @@ fn table<T: TableSchema>(frame: &DecodedFrame) -> (&[T::Row], String) {
 }
 
 /// Saved-target validity using captured object liveness.
-pub(crate) fn valid_saved_target(r: &replay::rows::GlobalSavedEventTargetRow) -> bool {
+pub(crate) fn valid_saved_target(r: &replay_data::rows::GlobalSavedEventTargetRow) -> bool {
     !r.name.is_empty()
         && (r.state != 0
             || r.country > 0
-            || r.live & !replay::rows::GlobalSavedEventTargetRow::UNSAVED_NAME != 0)
+            || r.live & !replay_data::rows::GlobalSavedEventTargetRow::UNSAVED_NAME != 0)
 }
 
 /// A recorded query of the hour's scopes ([`crate::triggers::inputs`]).
@@ -209,7 +207,7 @@ impl Query {
     /// ([`crate::triggers::inputs::Key::dependence`]); None when undeclared.
     pub(crate) fn dependence(&self) -> Option<Vec<crate::triggers::inputs::TableRead>> {
         use crate::triggers::inputs::TableRead;
-        use replay::rows::TableId;
+        use replay_data::rows::TableId;
         let link = |raw: u32| {
             TableRead::fields(TableId::CountryLinks, &["canonical_slot"]).row(raw.into())
         };
@@ -244,7 +242,7 @@ impl Query {
     /// resolving its raw reference and testing whether it owns a state.
     fn tag_dependence() -> Vec<crate::triggers::inputs::TableRead> {
         use crate::triggers::inputs::TableRead;
-        use replay::rows::TableId;
+        use replay_data::rows::TableId;
         vec![
             TableRead::fields(TableId::Countries, &["canonical_slot", "tag"]),
             TableRead::fields(TableId::CountryLinks, &["canonical_slot"]),
@@ -344,7 +342,7 @@ impl RecordedScopes {
         original_tags: OriginalTagLists,
         aliases: Arc<TagAliases>,
     ) -> Self {
-        let complete = |id: replay::rows::TableId| {
+        let complete = |id: replay_data::rows::TableId| {
             matches!(&*frame.tables[id.index()], TableView::Complete(_))
         };
         let mut gaps = BTreeMap::new();
@@ -373,7 +371,7 @@ impl RecordedScopes {
             "GlobalSavedEventTargets",
             table::<tables::GlobalSavedEventTargets>(frame).1,
         );
-        let view = |id: replay::rows::TableId| frame.tables[id.index()].clone();
+        let view = |id: replay_data::rows::TableId| frame.tables[id.index()].clone();
         Self {
             views: Some(Arc::new(Views {
                 links: view(tables::CountryLinks::ID),
@@ -506,7 +504,7 @@ impl RecordedScopes {
         self.rows::<tables::FactionMembers>(|views| &views.faction_members)
     }
 
-    fn saved_targets(&self) -> &[replay::rows::GlobalSavedEventTargetRow] {
+    fn saved_targets(&self) -> &[replay_data::rows::GlobalSavedEventTargetRow] {
         self.rows::<tables::GlobalSavedEventTargets>(|views| &views.saved_targets)
     }
 
@@ -515,7 +513,7 @@ impl RecordedScopes {
     pub(crate) fn saved_target(
         &self,
         name: &[u8],
-    ) -> Result<Option<&replay::rows::GlobalSavedEventTargetRow>, String> {
+    ) -> Result<Option<&replay_data::rows::GlobalSavedEventTargetRow>, String> {
         crate::triggers::inputs::query_debug(
             || crate::triggers::inputs::Key::Scopes(Query::SavedTarget(name.to_vec())),
             || self.saved_target_unrecorded(name),
@@ -525,7 +523,7 @@ impl RecordedScopes {
     fn saved_target_unrecorded(
         &self,
         name: &[u8],
-    ) -> Result<Option<&replay::rows::GlobalSavedEventTargetRow>, String> {
+    ) -> Result<Option<&replay_data::rows::GlobalSavedEventTargetRow>, String> {
         if !self.saved_targets_complete {
             return Err(format!(
                 "saved event target {}: GlobalSavedEventTargets {}",
@@ -911,7 +909,7 @@ impl RecordedScopes {
     }
 
     /// Parses `text` as the game's event target reader does
-    /// ([`installed_content::scope::parse`]) with this hour's countries and
+    /// ([`installed_content_core::scope::parse`]) with this hour's countries and
     /// characters, and resolves it in `context`.
     pub fn resolve_text(
         &self,
@@ -937,7 +935,7 @@ impl RecordedScopes {
         quoted: bool,
         context: &Context,
     ) -> Result<Target, Unresolved> {
-        self.resolve(&installed_content::scope::parse(text, quoted, self), context)
+        self.resolve(&installed_content_core::scope::parse(text, quoted, self), context)
     }
 
     /// Resolves a parsed scope in `context`: the target, a scope that names
@@ -1213,13 +1211,12 @@ mod faction_zero_tests;
 #[cfg(any(test, feature = "test-support"))]
 pub mod tests {
     use super::*;
-    use replay::{
-        frame::Metrics,
-        rows::{
-            CharacterRow, CountryAppearanceRow, CountryCounterInputRow, CountryLinkRow, CountryRow,
-            LexicalTokenRow, PoliticsRow, Recorded, StateRow, TableId, TableRows,
-        },
+    use replay_data::{
+        rows::CharacterRow, rows::CountryAppearanceRow, rows::CountryCounterInputRow,
+        rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow, rows::PoliticsRow,
+        rows::Recorded, rows::StateRow, rows::TableId, rows::TableRows,
     };
+    use replay_frame::frame::Metrics;
 
     /// GER (slot 0, link 100) with capital state 64, SOV (slot 1, link 200)
     /// a subject of GER, state 64 owned by GER and controlled by SOV.
@@ -1360,7 +1357,7 @@ pub mod tests {
         let mut frame = positive_frame();
         *frame.tables[TableId::ReservedCountryNaming.index()] =
             TableView::Complete(TableRows::ReservedCountryNaming(vec![
-                replay::rows::ReservedCountryNamingRow {
+                replay_data::rows::ReservedCountryNamingRow {
                     tag: b"ZZ0".to_vec(),
                     original_tag_reference: Recorded::Value(Some(0)),
                     original_tag: Recorded::Value(Some(Vec::new())),
@@ -1602,7 +1599,7 @@ pub mod tests {
 
     #[test]
     fn a_target_is_its_scope_kind_for_the_trigger_check() {
-        use installed_content::scope::TriggerScopes;
+        use installed_content_core::scope::TriggerScopes;
         let country = Target::Country(0);
         assert!(TriggerScopes(0x4).accepts(|kind| kind == country.kind()));
         assert!(!TriggerScopes(0x2).accepts(|kind| kind == country.kind()));
@@ -1690,7 +1687,7 @@ pub mod tests {
     /// member; without a faction it clears the target's validity.
     #[test]
     fn faction_leader_scope_uses_the_first_member_and_clears_an_absent_target() {
-        use replay::rows::FactionMemberRow;
+        use replay_data::rows::FactionMemberRow;
 
         let mut frame = frame();
         *frame.tables[TableId::FactionMembers.index()] =
@@ -1732,11 +1729,11 @@ pub mod tests {
     /// short, any unknown three-byte name is.
     #[test]
     fn a_tag_alias_scope_is_refused_by_name() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let aliases = installed_content::tag_aliases::parse(
+        let aliases = installed_content_core::tag_aliases::parse(
             &[("a.txt", b"SPA = { }")],
-            &installed_content::key_names::KeyNames::default(),
+            &installed_content_core::key_names::KeyNames::default(),
         );
         let scopes = RecordedScopes::read(&positive_frame(), Arc::new(aliases));
         let sov = Context::country(2);

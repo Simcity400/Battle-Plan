@@ -4,9 +4,10 @@
 //! spool retires it. No live pointer leaves the observer.
 
 use crate::hook::Hook;
-use engine::{
-    Memory,
-    peace_settlement::{self as native, Action, Snapshot, Subject, Transfer},
+use engine_native::Memory;
+use engine_peace::{
+    peace_settlement as native, peace_settlement::Action, peace_settlement::Snapshot,
+    peace_settlement::Subject, peace_settlement::Transfer,
 };
 use std::{
     cell::UnsafeCell,
@@ -80,11 +81,11 @@ pub struct Storage {
     pub used: [usize; 7],
 }
 fn buffer<T: Default>(count: usize) -> Option<Vec<T>> {
-    engine::allocation::default_vec(count).ok()
+    engine_allocation::default_vec(count).ok()
 }
 impl Storage {
     pub fn with_capacities(capacity: Capacities) -> Self {
-        use engine::allocation::{default_vec, owned_vec};
+        use engine_allocation::{default_vec, owned_vec};
         Self {
             events: owned_vec(default_vec(capacity.events)),
             winners: owned_vec(default_vec(capacity.countries)),
@@ -185,7 +186,7 @@ impl Storage {
         hour: i32,
         sequence: u64,
     ) {
-        use engine::walk::Buffer::GrowingFrom;
+        use engine_native::walk::Buffer::GrowingFrom;
         let [_, winners, losers, actions, transfers, subjects, name_bytes] = self.used;
         let snapshot = native::copy_bids_growing(
             memory,
@@ -281,7 +282,7 @@ impl Drop for Lease {
 }
 
 pub fn presize(capacity: Capacities) {
-    engine::allocation::advisory(|| presize_storage(capacity));
+    engine_allocation::advisory(|| presize_storage(capacity));
 }
 
 fn presize_storage(capacity: Capacities) {
@@ -298,7 +299,7 @@ fn presize_storage(capacity: Capacities) {
     }
     let capacity = offered.map_or(capacity, |offered| offered.merge(capacity));
     if let Some(storage) = Storage::new(capacity)
-        && let Ok(next) = engine::allocation::boxed(Log {
+        && let Ok(next) = engine_allocation::boxed(Log {
             capacity,
             storage: UnsafeCell::new(storage),
         })
@@ -332,16 +333,16 @@ pub fn collect() {
     }
 }
 
-fn sizing_array<T: engine::memory::Raw>(
+fn sizing_array<T: engine_native::memory::Raw>(
     memory: &impl Memory,
     state: usize,
     offset: usize,
-) -> Option<engine::cpdx_array::Array> {
+) -> Option<engine_native::cpdx_array::Array> {
     let array = state
         .checked_add(offset)
-        .and_then(|at| engine::cpdx_array::Array::read(memory, at, size_of::<T>()))?;
+        .and_then(|at| engine_native::cpdx_array::Array::read(memory, at, size_of::<T>()))?;
     if let Some(last) = array.count.checked_sub(1) {
-        engine::read::<T>(memory, array.element(last, size_of::<T>())?)?;
+        engine_native::read::<T>(memory, array.element(last, size_of::<T>())?)?;
     }
     Some(array)
 }
@@ -350,19 +351,19 @@ fn sizing_array<T: engine::memory::Raw>(
 /// Population headroom covers conferences created between sizing reads.
 pub fn capacity_for_world(memory: &impl Memory, base: usize) -> Capacities {
     let Some(state) = base
-        .checked_add(engine::cgame_state::SINGLETON_RVA)
-        .and_then(|at| engine::read::<u64>(memory, at))
+        .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+        .and_then(|at| engine_native::read::<u64>(memory, at))
     else {
         return Capacities::default();
     };
     let state = state as usize;
     let countries = [
-        sizing_array::<u64>(memory, state, engine::cgame_state::COUNTRIES),
-        sizing_array::<u32>(memory, state, engine::cgame_state::COUNTRY_LINKS),
-        sizing_array::<[u8; engine::msvc_string::STRIDE]>(
+        sizing_array::<u64>(memory, state, engine_native::cgame_state::COUNTRIES),
+        sizing_array::<u32>(memory, state, engine_native::cgame_state::COUNTRY_LINKS),
+        sizing_array::<[u8; engine_native::msvc_string::STRIDE]>(
             memory,
             state,
-            engine::cgame_state::COUNTRY_TAGS,
+            engine_native::cgame_state::COUNTRY_TAGS,
         ),
     ]
     .into_iter()
@@ -370,7 +371,7 @@ pub fn capacity_for_world(memory: &impl Memory, base: usize) -> Capacities {
     .map(|array| array.count as usize)
     .max()
     .unwrap_or(0);
-    let states = sizing_array::<u64>(memory, state, engine::cgame_state::STATES)
+    let states = sizing_array::<u64>(memory, state, engine_native::cgame_state::STATES)
         .map_or(0, |array| array.count as usize);
     let mut capacity = Capacities::for_counts(countries, states);
     if let Some(demand) = resident_capacity(memory, base, state) {
@@ -380,12 +381,16 @@ pub fn capacity_for_world(memory: &impl Memory, base: usize) -> Capacities {
 }
 
 fn resident_capacity(memory: &impl Memory, base: usize, state: usize) -> Option<Capacities> {
-    let roster = sizing_array::<u64>(memory, state, engine::cgame_state::PEACE_CONFERENCES_DATA)?;
+    let roster = sizing_array::<u64>(
+        memory,
+        state,
+        engine_native::cgame_state::PEACE_CONFERENCES_DATA,
+    )?;
     let mut capacity = Capacities::default();
     for index in 0..roster.count {
         let pointer = roster
             .element(index, 8)
-            .and_then(|at| engine::read::<u64>(memory, at))?;
+            .and_then(|at| engine_native::read::<u64>(memory, at))?;
         let demand = native::demand(memory, base, pointer as usize);
         // Only complete demands from backed arrays and validated history size
         // grow storage. Capture paths still report failures independently.
@@ -419,7 +424,7 @@ pub fn lost_drain() {
 fn drain_mode(output: &mut Storage, continuous: bool, growing: bool) -> Result<u64, &'static str> {
     output.used = [0; 7];
     let Some(_lease) = Lease::try_enter() else {
-        return Err(replay::rows::PEACE_DRAIN_BUSY);
+        return Err(replay_data::rows::PEACE_DRAIN_BUSY);
     };
     let Some(log) = (unsafe { LOG.load(Ordering::Acquire).as_ref() }) else {
         return Err("peace finalizer log unavailable");
@@ -433,22 +438,22 @@ fn drain_mode(output: &mut Storage, continuous: bool, growing: bool) -> Result<u
     if growing && continuous {
         for (target, count) in [
             (
-                engine::walk::Buffer::Growing(&mut output.winners),
+                engine_native::walk::Buffer::Growing(&mut output.winners),
                 storage.used[1],
             ),
             (
-                engine::walk::Buffer::Growing(&mut output.losers),
+                engine_native::walk::Buffer::Growing(&mut output.losers),
                 storage.used[2],
             ),
         ] {
             let mut target = target;
             target.ensure(count)?;
         }
-        engine::walk::Buffer::Growing(&mut output.events).ensure(storage.used[0])?;
-        engine::walk::Buffer::Growing(&mut output.actions).ensure(storage.used[3])?;
-        engine::walk::Buffer::Growing(&mut output.transfers).ensure(storage.used[4])?;
-        engine::walk::Buffer::Growing(&mut output.subjects).ensure(storage.used[5])?;
-        engine::walk::Buffer::Growing(&mut output.name_bytes).ensure(storage.used[6])?;
+        engine_native::walk::Buffer::Growing(&mut output.events).ensure(storage.used[0])?;
+        engine_native::walk::Buffer::Growing(&mut output.actions).ensure(storage.used[3])?;
+        engine_native::walk::Buffer::Growing(&mut output.transfers).ensure(storage.used[4])?;
+        engine_native::walk::Buffer::Growing(&mut output.subjects).ensure(storage.used[5])?;
+        engine_native::walk::Buffer::Growing(&mut output.name_bytes).ensure(storage.used[6])?;
     }
     let mut lost = LOST.swap(0, Ordering::Relaxed);
     if !continuous {
@@ -521,13 +526,16 @@ unsafe extern "system" fn observe(conference: usize) {
     if ENABLED.load(Ordering::Acquire) {
         if let Some(_lease) = Lease::try_enter() {
             if let Some(log) = unsafe { LOG.load(Ordering::Acquire).as_ref() } {
-                let memory = unsafe { engine::memory::LiveMemory::new() };
+                let memory = unsafe { engine_native::memory::LiveMemory::new() };
                 let base = BASE.load(Ordering::Relaxed);
-                let hour = engine::read::<u64>(&memory, base + engine::cgame_state::SINGLETON_RVA)
-                    .and_then(|state| {
-                        (state as usize).checked_add(engine::cgame_state::CURRENT_HOUR)
-                    })
-                    .and_then(|at| engine::read(&memory, at));
+                let hour = engine_native::read::<u64>(
+                    &memory,
+                    base + engine_native::cgame_state::SINGLETON_RVA,
+                )
+                .and_then(|state| {
+                    (state as usize).checked_add(engine_native::cgame_state::CURRENT_HOUR)
+                })
+                .and_then(|at| engine_native::read(&memory, at));
                 unsafe { &mut *log.storage.get() }
                     .observe(&memory, base, conference, hour, sequence, true);
             } else {
@@ -594,7 +602,8 @@ impl Hooks {
         presize(capacity);
         install_offered();
         let attempt = (|| {
-            let site = engine::peace_finalizer_site::verify(memory, base).map_err(str::to_owned)?;
+            let site =
+                engine_peace::peace_finalizer_site::verify(memory, base).map_err(str::to_owned)?;
             if LOG.load(Ordering::Acquire).is_null() {
                 return Err("peace finalizer allocation failed".into());
             }
@@ -602,12 +611,13 @@ impl Hooks {
                 Hook::new(
                     site,
                     peace_finalizer_entry as *const () as usize,
-                    engine::peace_finalizer_site::SENTINEL,
+                    engine_peace::peace_finalizer_site::SENTINEL,
                 )
             }?;
             ORIGINAL.store(hook.trampoline(), Ordering::Release);
             RETURN.store(
-                site - engine::peace_finalizer_site::RVA + engine::peace_finalizer_site::RETURN_RVA,
+                site - engine_peace::peace_finalizer_site::RVA
+                    + engine_peace::peace_finalizer_site::RETURN_RVA,
                 Ordering::Release,
             );
             BASE.store(base, Ordering::Relaxed);
@@ -750,13 +760,13 @@ mod tests {
         fn allocation_failed() {
             ALLOCATION_REFUSED.store(true, Ordering::Relaxed);
         }
-        assert!(!engine::allocation::capture_active());
+        assert!(!engine_allocation::capture_active());
         ALLOCATION_REFUSED.store(false, Ordering::Relaxed);
-        engine::allocation::set_hooks(None, Some(allocation_failed));
+        engine_allocation::set_hooks(None, Some(allocation_failed));
         let result = crate::test_support::with_allocations_denied(|| {
             Storage::new(Capacities::for_counts(1, 1))
         });
-        engine::allocation::set_hooks(None, None);
+        engine_allocation::set_hooks(None, None);
         assert!(result.is_none());
         assert!(ALLOCATION_REFUSED.load(Ordering::Relaxed));
     }
@@ -853,7 +863,7 @@ mod tests {
         stack.0[24] = 0x202;
         // The synthetic return is the instruction after the patched site, never the
         // site itself, whose `E9` the unwinder would take for an epilogue.
-        let site = 0x140000000 + engine::peace_finalizer_site::RETURN_RVA as u64;
+        let site = 0x140000000 + engine_peace::peace_finalizer_site::RETURN_RVA as u64;
         stack.0[25] = site;
         let original_rsp = stack.0.as_ptr() as u64 + 208;
         let mut context: CONTEXT = unsafe { std::mem::zeroed() };
@@ -936,7 +946,7 @@ mod tests {
         ENABLED.store(true, Ordering::Release);
         let f = Fixture::new(0, 1);
         let log = unsafe { &*LOG.load(Ordering::Acquire) };
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &f.bytes,
         };
@@ -945,7 +955,7 @@ mod tests {
         let lease = Lease::try_enter().unwrap();
         assert_eq!(
             drain(&mut output, true),
-            Err(replay::rows::PEACE_DRAIN_BUSY)
+            Err(replay_data::rows::PEACE_DRAIN_BUSY)
         );
         assert_eq!(unsafe { &*log.storage.get() }.used[0], 1);
         drop(lease);
@@ -970,7 +980,7 @@ mod tests {
             collect();
             BASE.store(base, Ordering::Relaxed);
             RETURN.store(
-                base + engine::peace_finalizer_site::RETURN_RVA,
+                base + engine_peace::peace_finalizer_site::RETURN_RVA,
                 Ordering::Release,
             );
             ORIGINAL.store(peace_test_resume as *const () as usize, Ordering::Release);
@@ -1011,7 +1021,7 @@ mod tests {
         let roster = fixture.bytes.len();
         fixture.bytes.resize(roster + 8, 0);
         fixture.array(
-            0x10000 + engine::cgame_state::PEACE_CONFERENCES_DATA,
+            0x10000 + engine_native::cgame_state::PEACE_CONFERENCES_DATA,
             roster,
             1,
             8,
@@ -1039,12 +1049,12 @@ mod tests {
     #[test]
     fn peace_settlement_failed_demand_contributes_no_capacity() {
         let mut fixture = Fixture::new(3, 2);
-        fixture.bytes[0x100 + engine::peace_conference::FINALIZED] = 0;
+        fixture.bytes[0x100 + engine_peace::peace_conference::FINALIZED] = 0;
         fixture.u32(0x908, 99);
         let roster = fixture.bytes.len();
         fixture.bytes.resize(roster + 8, 0);
         fixture.array(
-            0x10000 + engine::cgame_state::PEACE_CONFERENCES_DATA,
+            0x10000 + engine_native::cgame_state::PEACE_CONFERENCES_DATA,
             roster,
             1,
             8,
@@ -1072,7 +1082,7 @@ mod tests {
         }
         let mut fixture = Fixture::new(1, 0);
         fixture.array(
-            0x100 + engine::peace_conference::WINNERS,
+            0x100 + engine_peace::peace_conference::WINNERS,
             0x20000,
             i32::MAX as usize,
             4,
@@ -1080,7 +1090,7 @@ mod tests {
         let roster = fixture.bytes.len();
         fixture.bytes.resize(roster + 8, 0);
         fixture.array(
-            0x10000 + engine::cgame_state::PEACE_CONFERENCES_DATA,
+            0x10000 + engine_native::cgame_state::PEACE_CONFERENCES_DATA,
             roster,
             1,
             8,
@@ -1090,13 +1100,13 @@ mod tests {
         presize(Capacities::default());
         let offered = SWAP.lock().unwrap().next.as_ref().unwrap().as_ref() as *const Log;
         ALLOCATION_REFUSED.store(false, Ordering::Relaxed);
-        engine::allocation::set_hooks(None, Some(allocation_failed));
+        engine_allocation::set_hooks(None, Some(allocation_failed));
         let capacity = crate::test_support::with_allocations_denied(|| {
             let capacity = resident_capacity(&memory, 0, 0x10000).unwrap();
             presize(capacity);
             capacity
         });
-        engine::allocation::set_hooks(None, None);
+        engine_allocation::set_hooks(None, None);
         let unchanged = SWAP.lock().unwrap().next.as_ref().unwrap().as_ref() as *const Log;
         *SWAP.lock().unwrap() = Swap::default();
         assert_eq!(capacity, Capacities::default());
@@ -1108,14 +1118,14 @@ mod tests {
     fn peace_settlement_unbacked_world_rosters_do_not_size_storage() {
         let mut fixture = Fixture::new(1, 0);
         for (offset, width) in [
-            (engine::cgame_state::COUNTRIES, 8),
-            (engine::cgame_state::COUNTRY_LINKS, 4),
+            (engine_native::cgame_state::COUNTRIES, 8),
+            (engine_native::cgame_state::COUNTRY_LINKS, 4),
             (
-                engine::cgame_state::COUNTRY_TAGS,
-                engine::msvc_string::STRIDE,
+                engine_native::cgame_state::COUNTRY_TAGS,
+                engine_native::msvc_string::STRIDE,
             ),
-            (engine::cgame_state::STATES, 8),
-            (engine::cgame_state::PEACE_CONFERENCES_DATA, 8),
+            (engine_native::cgame_state::STATES, 8),
+            (engine_native::cgame_state::PEACE_CONFERENCES_DATA, 8),
         ] {
             fixture.array(0x10000 + offset, 0x20000, i32::MAX as usize, width);
         }

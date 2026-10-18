@@ -7,19 +7,18 @@ use crate::{
     spooling::unavailable,
     table_capture::CaptureRows,
 };
-use engine::{
+use engine_native::{
     cair_wing, cfleet, chuman, cland_combat, cnaval_combat, cnaval_combatant, corder_instance,
     cship, ctask_force, walk::Outcome,
 };
-#[cfg(test)]
-use replay::frame::TableView;
-use replay::{
-    frame::TableInput,
-    rows::{
-        AirWingRow, ArmyOrderRow, FleetRow, HumanControllerRow, LandCombatRow,
-        NavalCombatParticipantRow, NavalCombatRow, PlayerRow, ShipRow, TaskForceRow, tables,
-    },
+use replay_data::{
+    rows::AirWingRow, rows::ArmyOrderRow, rows::FleetRow, rows::HumanControllerRow,
+    rows::LandCombatRow, rows::NavalCombatParticipantRow, rows::NavalCombatRow, rows::PlayerRow,
+    rows::ShipRow, rows::TaskForceRow, rows::tables,
 };
+use replay_frame::frame::TableInput;
+#[cfg(test)]
+use replay_frame::frame::TableView;
 
 pub(crate) fn table_inputs(
     captured: &MapCaptured,
@@ -118,10 +117,10 @@ fn players(
             id: row.id,
             country: row.country,
             flags: row.flags,
-            user: engine::allocation::owned_vec(engine::allocation::copy_vec(
+            user: engine_allocation::owned_vec(engine_allocation::copy_vec(
                 &names[row.user_start..row.user_start + row.user_len],
             )),
-            name: engine::allocation::owned_vec(engine::allocation::copy_vec(
+            name: engine_allocation::owned_vec(engine_allocation::copy_vec(
                 &names[row.name_start..row.name_start + row.name_len],
             )),
         },
@@ -168,7 +167,7 @@ fn land_combats(
         .map(|row| row.attacker_len.max(row.defender_len))
         .max()
         .unwrap_or(0);
-    if engine::allocation::reserve_exact(&mut scratch, maximum).is_err() {
+    if engine_allocation::reserve_exact(&mut scratch, maximum).is_err() {
         return unavailable("collector allocation failed").into();
     }
     for row in rows {
@@ -214,16 +213,16 @@ fn land_combats(
             province: row.province,
             duration: row.duration,
             day: row.day,
-            attackers: engine::allocation::owned_vec(engine::allocation::copy_vec(
+            attackers: engine_allocation::owned_vec(engine_allocation::copy_vec(
                 &participants[row.attacker_start..row.attacker_start + row.attacker_len],
             )),
-            defenders: engine::allocation::owned_vec(engine::allocation::copy_vec(
+            defenders: engine_allocation::owned_vec(engine_allocation::copy_vec(
                 &participants[row.defender_start..row.defender_start + row.defender_len],
             )),
-            attacker_classes: engine::allocation::owned_vec(engine::allocation::copy_vec(
+            attacker_classes: engine_allocation::owned_vec(engine_allocation::copy_vec(
                 &classes[row.attacker_start..row.attacker_start + row.attacker_len],
             )),
-            defender_classes: engine::allocation::owned_vec(engine::allocation::copy_vec(
+            defender_classes: engine_allocation::owned_vec(engine_allocation::copy_vec(
                 &classes[row.defender_start..row.defender_start + row.defender_len],
             )),
         },
@@ -246,7 +245,7 @@ fn fleets(
             home_base: row.home_base,
             name: if row.name_known {
                 range(names, row.name_start, row.name_len)
-                    .map(|bytes| engine::allocation::owned_vec(engine::allocation::copy_vec(bytes)))
+                    .map(|bytes| engine_allocation::owned_vec(engine_allocation::copy_vec(bytes)))
             } else {
                 None
             }
@@ -388,11 +387,11 @@ fn air_wings(
         eligibility_limit: row.eligibility_limit,
         attached_orders_group: row.attached_orders_group,
         pool_ordinal: row.pool_ordinal,
-        name: replay::rows::Recorded::Value(None),
+        name: replay_data::rows::Recorded::Value(None),
         strategic_bombing_raw: row.strategic_bombing_raw.into(),
         pool_subunit: row.pool_subunit.into(),
-        raid_reference: replay::rows::Recorded::Value(row.raid_reference.map(|value| {
-            replay::rows::AirWingRaidReference {
+        raid_reference: replay_data::rows::Recorded::Value(row.raid_reference.map(|value| {
+            replay_data::rows::AirWingRaidReference {
                 raw: value.raw,
                 resolves: value.resolves,
             }
@@ -421,22 +420,21 @@ fn air_wings(
                 && row.attached_orders_group == previous.attached_orders_group
                 && row.pool_ordinal == previous.pool_ordinal
                 && previous.strategic_bombing_raw
-                    == replay::rows::Recorded::Value(row.strategic_bombing_raw)
-                && previous.pool_subunit == replay::rows::Recorded::Value(row.pool_subunit)
+                    == replay_data::rows::Recorded::Value(row.strategic_bombing_raw)
+                && previous.pool_subunit == replay_data::rows::Recorded::Value(row.pool_subunit)
                 && previous.raid_reference
-                    == replay::rows::Recorded::Value(row.raid_reference.map(|value| {
-                        replay::rows::AirWingRaidReference {
+                    == replay_data::rows::Recorded::Value(row.raid_reference.map(|value| {
+                        replay_data::rows::AirWingRaidReference {
                             raw: value.raw,
                             resolves: value.resolves,
                         }
                     }))
-                && matches!(&previous.name, replay::rows::Recorded::Value(value) if value.as_deref() == name(row))
+                && matches!(&previous.name, replay_data::rows::Recorded::Value(value) if value.as_deref() == name(row))
         },
         |row| AirWingRow {
-            name: replay::rows::Recorded::Value(
-                name(row).map(|bytes| {
-                    engine::allocation::owned_vec(engine::allocation::copy_vec(bytes))
-                }),
+            name: replay_data::rows::Recorded::Value(
+                name(row)
+                    .map(|bytes| engine_allocation::owned_vec(engine_allocation::copy_vec(bytes))),
             ),
             ..scalar(row)
         },
@@ -485,10 +483,10 @@ fn army_orders(
             country: row.country,
             order_type: row.order_type,
             active: row.active,
-            path: engine::allocation::owned_vec(engine::allocation::copy_vec(
+            path: engine_allocation::owned_vec(engine_allocation::copy_vec(
                 &geometry[row.path_start..row.path_start + row.path_len],
             )),
-            target_states: engine::allocation::owned_vec(engine::allocation::copy_vec(
+            target_states: engine_allocation::owned_vec(engine_allocation::copy_vec(
                 &geometry[row.target_start..row.target_start + row.target_len],
             )),
             paradrop_target: row.paradrop_target,
@@ -512,7 +510,7 @@ fn tables(captured: &MapCaptured) -> [TableView; 10] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
 
     #[test]
     fn stored_air_wing_name_projection_preserves_bytes_and_refuses_only_bad_spans() {
@@ -534,7 +532,7 @@ mod tests {
             )) else {
                 panic!("complete wing census")
             };
-            assert_eq!(rows[0].name, replay::rows::Recorded::Value(expected));
+            assert_eq!(rows[0].name, replay_data::rows::Recorded::Value(expected));
             assert_eq!(
                 (rows[0].planes, rows[0].owner, rows[0].id),
                 (i32::MIN, u32::MAX, u64::MAX)
@@ -545,10 +543,8 @@ mod tests {
     #[test]
     fn native_projection_preserves_all_map_fields_and_current_arena_failures() {
         use crate::projection::ProjectionScratch;
-        use replay::{
-            frame::{FrameEncoder, FrameInput, Metrics},
-            rows::TableId,
-        };
+        use replay_data::rows::TableId;
+        use replay_frame::{frame::FrameEncoder, frame::FrameInput, frame::Metrics};
         let map_tables = [
             TableId::Players,
             TableId::HumanControllers,
@@ -802,8 +798,8 @@ mod tests {
                 id: u64::MAX,
                 owner: u32::MAX,
                 home_base: u32::MAX - 1,
-                name: replay::rows::Recorded::Value(Some(b"Fleet".to_vec())),
-                leader: replay::rows::Recorded::Value(None),
+                name: replay_data::rows::Recorded::Value(Some(b"Fleet".to_vec())),
+                leader: replay_data::rows::Recorded::Value(None),
             }]),
             TableRows::TaskForces(vec![TaskForceRow {
                 id: u64::MAX,
@@ -862,11 +858,11 @@ mod tests {
                 eligibility_counter: i32::MIN,
                 eligibility_limit: i32::MAX,
                 attached_orders_group: Some(u64::MAX),
-                name: replay::rows::Recorded::Value(None),
-                strategic_bombing_raw: replay::rows::Recorded::Value(Some(i64::MIN)),
-                pool_subunit: replay::rows::Recorded::Value(Some(u32::MAX)),
-                raid_reference: replay::rows::Recorded::Value(Some(
-                    replay::rows::AirWingRaidReference {
+                name: replay_data::rows::Recorded::Value(None),
+                strategic_bombing_raw: replay_data::rows::Recorded::Value(Some(i64::MIN)),
+                pool_subunit: replay_data::rows::Recorded::Value(Some(u32::MAX)),
+                raid_reference: replay_data::rows::Recorded::Value(Some(
+                    replay_data::rows::AirWingRaidReference {
                         raw: u64::MAX,
                         resolves: false,
                     },

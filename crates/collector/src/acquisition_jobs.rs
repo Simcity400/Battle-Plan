@@ -18,7 +18,7 @@ use crate::{
     acquisition, acquisition_factions, acquisition_states, acquisition_wars, map_capture, sampling,
 };
 pub(crate) use acquisition::{Completion, Failure, SubmitError, Ticket};
-use engine::memory::{CountedMemory, LiveMemory};
+use engine_native::{memory::CountedMemory, memory::LiveMemory};
 use serde::Serialize;
 use std::sync::Arc;
 use std::{
@@ -30,7 +30,7 @@ use std::{
 };
 
 pub(crate) struct RawRequest<J, C> {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub context: C,
     pub payload: J,
 }
@@ -48,7 +48,7 @@ pub(crate) struct WorldPart<J, C> {
 /// The production and construction rests; each part owns a payload only in
 /// its scheduled hour. The economy rest is its own [`EconomyRequest`].
 pub(crate) struct WorldRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub construction: Option<
         WorldPart<construction::ConstructionRestJob, construction::ConstructionRestCopyContext>,
     >,
@@ -67,7 +67,7 @@ pub(crate) struct WorldReport {
 pub(crate) type EconomyRequest =
     RawRequest<economy::EconomyRestJob, economy::EconomyRestCopyContext>;
 pub(crate) struct GovernanceRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub context: governance::CaptureContext,
     pub captured: governance::Captured,
     pub buildings: construction::Buildings,
@@ -124,7 +124,7 @@ impl VariantsRequest {
 /// The governance family's hourly research tables, walked beside the rest
 /// of the family (see `governance::ResearchPart`).
 pub(crate) struct ResearchRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub context: governance::CaptureContext,
     pub part: governance::ResearchPart,
     /// The attachment's only fingerprint store, loaned for this hour.
@@ -135,7 +135,7 @@ pub(crate) struct ResearchReport {
     pub ticks: [u64; 3],
 }
 pub(crate) struct IntelResidualRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub context: intel::CaptureContext,
     pub captured: intel::Captured,
     /// Held ScriptFlags rows ([`intel::FlagStore`]); absent reads every
@@ -149,7 +149,7 @@ pub(crate) struct IntelResidualRequest {
 /// train inventory and carries the hour's owner selection with the family's
 /// fingerprint store.
 pub(crate) struct SupplyTrainsRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub context: supply_trains::CaptureContext,
     pub part: usize,
     pub nodes: supply_trains::Part,
@@ -161,12 +161,12 @@ pub(crate) struct CharacterPortraitsRequest {
     pub context: character_portraits::CaptureContext,
     pub part: usize,
     pub captured: character_portraits::Part,
-    pub census: Option<Arc<engine::ccharacter_manager::PortraitCensus>>,
+    pub census: Option<Arc<engine_native::ccharacter_manager::PortraitCensus>>,
 }
 /// The Ordinary family's counter part, dispatched once the Countries job has
 /// restored the naming buffers its reserved visibility reads.
 pub(crate) struct OrdinaryRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -189,7 +189,7 @@ impl OrdinaryRequest {
 /// One independent part of the Ordinary family, dispatched with the first
 /// burst (`extended::OrdinaryPart`).
 pub(crate) struct OrdinaryPartRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -207,7 +207,7 @@ impl OrdinaryPartRequest {
     }
 }
 pub(crate) struct SlowRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -219,7 +219,7 @@ pub(crate) struct SlowRequest {
 /// One part of the hour's AirCountryRelations copies
 /// (`air_relations::PARTS`).
 pub(crate) struct AirRelationsRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub part: usize,
@@ -233,11 +233,11 @@ pub(crate) struct AirRelationsReport;
 /// It needs only the wing census, never an Ordinary part's packs; the air
 /// statistics and base verdicts are installed in its pack when it returns.
 pub(crate) struct AirMissionsRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     /// The map census the typed visitor supplied the wing identities in.
-    pub parent: engine::walk::Outcome,
+    pub parent: engine_native::walk::Outcome,
     pub pack: Box<crate::extended::air::Captured>,
     pub histories: Vec<crate::extended::air_histories::Staging>,
     /// Held AirRegionalMissions registrations, lent by the game thread for
@@ -258,7 +258,7 @@ pub(crate) struct AirMissionsReport;
 /// One part of the hour's naval-patrol history copies
 /// (`air_histories::PARTS`).
 pub(crate) struct AirHistoriesRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub part: usize,
@@ -269,7 +269,7 @@ pub(crate) struct AirHistoriesReport;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SlowReport;
 pub(crate) struct StabilityRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -282,7 +282,7 @@ pub(crate) struct StabilityRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct StabilityReport;
 pub(crate) struct ProductionDailyRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -294,14 +294,14 @@ pub(crate) struct ProductionDailyReport;
 /// One slot range of a split production modifier capture, beside the
 /// ProductionDaily job, which captures the first.
 pub(crate) struct ProductionModifierPartRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
     pub force_full: bool,
     pub part: usize,
     pub slots: std::ops::Range<u32>,
-    pub provided: Option<Result<engine::production_modifiers::Context, &'static str>>,
+    pub provided: Option<Result<engine_production::production_modifiers::Context, &'static str>>,
     pub captured: Box<crate::extended::production_modifiers::Part>,
 }
 #[derive(Clone, Copy, Default)]
@@ -309,7 +309,7 @@ pub(crate) struct ProductionModifierPartReport {
     pub ticks: u64,
 }
 pub(crate) struct WarOverviewRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -319,7 +319,7 @@ pub(crate) struct WarOverviewRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct WarOverviewReport;
 pub(crate) struct RaidStateRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -331,7 +331,7 @@ pub(crate) struct RaidStateRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RaidStateReport;
 pub(crate) struct RaidLaunchRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -343,7 +343,7 @@ pub(crate) struct RaidLaunchRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RaidLaunchReport;
 pub(crate) struct RaidTargetsRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -356,7 +356,7 @@ pub(crate) struct RaidTargetsReport;
 pub(crate) struct OrdinaryReport;
 pub(crate) struct LateRequest {
     /// The same held country snapshot used by the Orders phase.
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
     pub base: usize,
     pub game_state: usize,
@@ -417,7 +417,7 @@ pub(crate) struct ArmyIconsRequest {
 /// resolving countries from the hour's snapshot bytes. The Late job keeps the
 /// tables they leave in the frame's packs.
 pub(crate) struct ScoresRailsRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -426,7 +426,7 @@ pub(crate) struct ScoresRailsRequest {
     pub score_capacity: [usize; 2],
     pub parts: Box<crate::extended::ScoresRailsParts>,
     /// The attachment's held RaidAirScores table, loaned for this hour.
-    pub air_scores: Box<engine::raid_air_scores::Held>,
+    pub air_scores: Box<engine_raid_inputs::raid_air_scores::Held>,
     /// Held rail outputs ([`naval_history::RailStore`]); absent reads every
     /// rail info afresh.
     pub rail_store: Option<Box<naval_history::RailStore>>,
@@ -436,7 +436,7 @@ pub(crate) struct ScoresRailsRequest {
 /// completed OOB copy, to the ChildFronts job, which completes the child
 /// fronts' owner operands. The Late job reads the roots and plans they leave.
 pub(crate) struct OrdersRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub base: usize,
     /// This pass's game state, for the invasion preparations' countries and
     /// provinces.
@@ -457,13 +457,13 @@ impl OrdersRequest {
     /// the single census and plans, then every other pass over them as the
     /// single Orders job made them; plans the next pass's split. A census a
     /// failed or refused job failed stays failed.
-    fn stitch(&mut self, memory: &impl engine::Memory) {
+    fn stitch(&mut self, memory: &impl engine_native::Memory) {
         if self.orders.failed() {
             return;
         }
         let part_ticks = self.orders.stitch();
         if self.orders.failed() {
-            if let engine::walk::Outcome::Unavailable { reason } = self.orders.rows.outcome {
+            if let engine_native::walk::Outcome::Unavailable { reason } = self.orders.rows.outcome {
                 self.plans.fail(reason);
             }
             return;
@@ -533,7 +533,7 @@ pub(crate) struct GatedRequest {
     pub project_fingerprints: Box<crate::slicing::SliceFingerprints>,
     /// The hour's authenticated country census, which the projects family's
     /// per-slot census reads instead of each country object.
-    pub countries: Option<Arc<engine::country_memory::Cache>>,
+    pub countries: Option<Arc<engine_native::country_memory::Cache>>,
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct GatedReport;
@@ -548,10 +548,10 @@ pub(crate) struct ProvinceUnitOrderRequest {
 }
 /// Independent core-map walk moved to the pool so its pointer chase overlaps the
 /// other readers. Owns its pre-sized row buffers; the callback restores them.
-pub(crate) type ProvincesRequest = GatherRequest<engine::cprovince::Capture>;
+pub(crate) type ProvincesRequest = GatherRequest<engine_native::cprovince::Capture>;
 pub(crate) type ProvincesReport = GatherReport;
 pub(crate) struct ShipModelsRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub context: ship_models::CaptureContext,
     pub game_state: usize,
     pub captured: ship_models::Captured,
@@ -562,13 +562,13 @@ pub(crate) struct ShipModelsRequest {
 /// One contiguous census range of the ShipModels details (part 0 is the
 /// family's own capture).
 pub(crate) struct ShipModelDetailsRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub context: ship_models::CaptureContext,
     pub part: usize,
     pub captured: ship_models::Captured,
 }
 pub(crate) struct PresentationRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
     pub captured: division_presentation::Captured,
     pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
@@ -613,7 +613,7 @@ impl PresentationRequest {
 /// DivisionMovement, DivisionLandInputs and the dig-in factors, beside the
 /// Presentation job.
 pub(crate) struct PresentationMovementRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
     pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
     pub pass: division_presentation::MovementPass,
@@ -624,7 +624,7 @@ impl PresentationMovementRequest {
     }
 }
 pub(crate) struct IntelRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub context: fog::IntelCopyContext,
     pub payload: fog::IntelJob,
     pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
@@ -660,7 +660,7 @@ pub(crate) type DivisionsRequest =
 /// census the DivisionInputs job walks the first part of
 /// ([`crate::division_census::Census::absorb`]).
 pub(crate) struct DivisionPartRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub slots: (u32, u32),
@@ -902,8 +902,8 @@ impl Role {
     }
     /// Shared native work follows an hourly consumer in mixed families. Detail
     /// acquisition opens nested scopes when it reads its own sources.
-    fn read_anchor(self) -> replay::rows::TableId {
-        use replay::rows::TableId as T;
+    fn read_anchor(self) -> replay_data::rows::TableId {
+        use replay_data::rows::TableId as T;
         match self {
             Self::Characters => T::Characters,
             Self::CountryLeaderRoles => T::CountryLeaderRoles,
@@ -1305,17 +1305,17 @@ pub(crate) struct CountryCacheCalibration {
 }
 
 impl CountryCacheCalibration {
-    fn observe(&mut self, seed: engine::country_memory::SeedStatus, entries: usize) {
+    fn observe(&mut self, seed: engine_native::country_memory::SeedStatus, entries: usize) {
         self.latest = Some(match seed {
-            engine::country_memory::SeedStatus::Ready => {
+            engine_native::country_memory::SeedStatus::Ready => {
                 self.ready = self.ready.saturating_add(1);
                 CountryCacheSeed::Ready { entries }
             }
-            engine::country_memory::SeedStatus::Capacity { required_cells } => {
+            engine_native::country_memory::SeedStatus::Capacity { required_cells } => {
                 self.capacity_fallbacks = self.capacity_fallbacks.saturating_add(1);
                 CountryCacheSeed::Capacity { required_cells }
             }
-            engine::country_memory::SeedStatus::Unavailable { reason } => {
+            engine_native::country_memory::SeedStatus::Unavailable { reason } => {
                 self.unavailable_fallbacks = self.unavailable_fallbacks.saturating_add(1);
                 CountryCacheSeed::Unavailable { reason }
             }
@@ -1422,8 +1422,8 @@ impl Default for SharedCalibration {
 }
 pub(crate) fn run_world(
     request: &mut WorldRequest,
-    memory: &impl engine::Memory,
-    production_memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
+    production_memory: &impl engine_native::Memory,
 ) -> WorldReport {
     let started = crate::sampling::qpc();
     let production = request
@@ -1457,7 +1457,7 @@ pub(crate) fn run_world(
 /// country cache is observed once an hour, by the Economy job.
 fn run_world_shared(
     request: &mut WorldRequest,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     calibration: &Mutex<WorldCalibration>,
 ) -> WorldReport {
     let started = crate::sampling::qpc();
@@ -1478,7 +1478,7 @@ fn run_world_shared(
 /// once an hour.
 fn run_economy_shared(
     request: &mut EconomyRequest,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     calibration: &Mutex<WorldCalibration>,
 ) -> economy::EconomyRestCopyReport {
     let started = crate::sampling::qpc();
@@ -1497,13 +1497,13 @@ fn run_economy_shared(
 }
 
 #[cfg(test)]
-pub(crate) fn run_for_test(job: &mut Job, memory: &impl engine::Memory) -> Report {
+pub(crate) fn run_for_test(job: &mut Job, memory: &impl engine_native::Memory) -> Report {
     run_with_memory(job, memory, &SharedCalibration::default())
 }
 
 fn run_with_memory(
     job: &mut Job,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     calibration: &SharedCalibration,
 ) -> Report {
     let started = sampling::qpc();
@@ -1635,7 +1635,7 @@ fn run_with_memory(
         }
         Job::DivisionInputParts(request) => {
             let cached = request.countries.view(memory);
-            let _reads = crate::read_accounting::table(replay::rows::TableId::Divisions);
+            let _reads = crate::read_accounting::table(replay_data::rows::TableId::Divisions);
             let begin = sampling::qpc();
             request.census.capture_inputs_part(
                 &cached,
@@ -1940,7 +1940,7 @@ fn run_with_memory(
                 request.inputs.as_deref(),
                 &request.packs.orders,
             );
-            request.packs.ticks[replay::rows::TableId::DivisionMovement.index()] += cost;
+            request.packs.ticks[replay_data::rows::TableId::DivisionMovement.index()] += cost;
             Report::Late(LateReport)
         }
         Job::ScoresRails(request) => {
@@ -2078,7 +2078,7 @@ fn run_with_memory(
         Job::Presentation(request) => {
             let cached = request.countries.roster_view(memory);
             let inputs = request.inputs.as_deref();
-            let missing = engine::walk::Outcome::Unavailable {
+            let missing = engine_native::walk::Outcome::Unavailable {
                 reason: "acquisition source not supplied",
             };
             let sources = || production::Sources {
@@ -2110,7 +2110,7 @@ fn run_with_memory(
                 production::Sources {
                     rows: inputs.map_or(&[], |inputs| inputs.seeds()),
                     outcome: inputs.map_or(
-                        engine::walk::Outcome::Unavailable {
+                        engine_native::walk::Outcome::Unavailable {
                             reason: "acquisition source not supplied",
                         },
                         |inputs| inputs.outcome(),
@@ -2122,18 +2122,18 @@ fn run_with_memory(
         Job::Intel(request) => {
             let cached = request.countries.roster_view(memory);
             let divisions = Some(if let Some(reason) = request.input_failure {
-                engine::unit_viewer_entry::DivisionSources {
+                engine_visibility::unit_viewer_entry::DivisionSources {
                     entries: &[],
-                    outcome: engine::walk::Outcome::Unavailable { reason },
+                    outcome: engine_native::walk::Outcome::Unavailable { reason },
                 }
             } else {
                 request
                     .inputs
                     .as_ref()
                     .map(|inputs| inputs.intel_sources())
-                    .unwrap_or(engine::unit_viewer_entry::DivisionSources {
+                    .unwrap_or(engine_visibility::unit_viewer_entry::DivisionSources {
                         entries: &[],
-                        outcome: engine::walk::Outcome::Unavailable {
+                        outcome: engine_native::walk::Outcome::Unavailable {
                             reason: "division input acquisition not supplied",
                         },
                     })
@@ -2567,17 +2567,21 @@ mod tests {
     use super::*;
     use crate::read_accounting::{self, Capture};
     use characters::CharactersCopyContext;
-    use engine::memory::ReadCounts;
-    use replay::rows::TableId;
+    use engine_native::memory::ReadCounts;
+    use replay_data::rows::TableId;
 
     fn accounted_read(owner: TableId, len: usize) {
         read_accounting::with_table(owner, || {
             let source = [7; 8];
-            let memory = CountedMemory::new(engine::memory::SliceMemory {
+            let memory = CountedMemory::new(engine_native::memory::SliceMemory {
                 base: 0x1000,
                 bytes: &source,
             });
-            assert!(engine::Memory::copy(&memory, 0x1000, &mut [0; 8][..len]));
+            assert!(engine_native::Memory::copy(
+                &memory,
+                0x1000,
+                &mut [0; 8][..len]
+            ));
         });
     }
 
@@ -2591,17 +2595,18 @@ mod tests {
     }
 
     fn country_snapshot(
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
         cells: usize,
-    ) -> Arc<engine::country_memory::Cache> {
+    ) -> Arc<engine_native::country_memory::Cache> {
         let mut storage =
-            Arc::new(engine::country_memory::Cache::try_with_capacity(cells).unwrap());
-        engine::country_memory::Cache::prepare_shared(&mut storage, memory, 0, 0x1000).unwrap()
+            Arc::new(engine_native::country_memory::Cache::try_with_capacity(cells).unwrap());
+        engine_native::country_memory::Cache::prepare_shared(&mut storage, memory, 0, 0x1000)
+            .unwrap()
     }
 
-    fn empty_country_snapshot() -> Arc<engine::country_memory::Cache> {
+    fn empty_country_snapshot() -> Arc<engine_native::country_memory::Cache> {
         country_snapshot(
-            &engine::memory::SliceMemory {
+            &engine_native::memory::SliceMemory {
                 base: 0,
                 bytes: &empty_memory(),
             },
@@ -2612,9 +2617,9 @@ mod tests {
     fn empty_memory() -> Vec<u8> {
         let mut bytes = vec![0; 0x3000];
         for (offset, pointer) in [
-            (engine::cgame_state::COUNTRIES, 0x2000_u64),
-            (engine::cgame_state::COUNTRY_LINKS, 0x2100),
-            (engine::cgame_state::PROVINCES, 0x2200),
+            (engine_native::cgame_state::COUNTRIES, 0x2000_u64),
+            (engine_native::cgame_state::COUNTRY_LINKS, 0x2100),
+            (engine_native::cgame_state::PROVINCES, 0x2200),
         ] {
             let at = 0x1000 + offset;
             bytes[at..at + 8].copy_from_slice(&pointer.to_le_bytes());
@@ -2713,7 +2718,7 @@ mod tests {
             crate::extended::Captured::with_capacities(&crate::extended::Capacities::default());
         let countries = empty_country_snapshot();
         let bytes = empty_memory();
-        let memory = CountedMemory::new(engine::memory::SliceMemory {
+        let memory = CountedMemory::new(engine_native::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         });
@@ -2768,7 +2773,7 @@ mod tests {
             crate::extended::Captured::with_capacities(&crate::extended::Capacities::default());
         let countries = empty_country_snapshot();
         let bytes = empty_memory();
-        let memory = CountedMemory::new(engine::memory::SliceMemory {
+        let memory = CountedMemory::new(engine_native::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         });
@@ -2808,7 +2813,7 @@ mod tests {
             crate::extended::Captured::with_capacities(&crate::extended::Capacities::default());
         let countries = empty_country_snapshot();
         let bytes = empty_memory();
-        let memory = CountedMemory::new(engine::memory::SliceMemory {
+        let memory = CountedMemory::new(engine_native::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         });
@@ -2834,7 +2839,7 @@ mod tests {
     /// Runs `job` on `memory`: its report and the reads each table made.
     fn run_counted(
         job: &mut Job,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
     ) -> (Report, read_accounting::TableCounts) {
         let reads = Capture::new();
         let report = run_for_test(job, memory);
@@ -2842,14 +2847,14 @@ mod tests {
     }
 
     fn snapshot_at(
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
         cells: usize,
         base: usize,
         game_state: usize,
-    ) -> Arc<engine::country_memory::Cache> {
+    ) -> Arc<engine_native::country_memory::Cache> {
         let mut storage =
-            Arc::new(engine::country_memory::Cache::try_with_capacity(cells).unwrap());
-        engine::country_memory::Cache::prepare_shared(&mut storage, memory, base, game_state)
+            Arc::new(engine_native::country_memory::Cache::try_with_capacity(cells).unwrap());
+        engine_native::country_memory::Cache::prepare_shared(&mut storage, memory, base, game_state)
             .unwrap()
     }
 
@@ -2892,10 +2897,11 @@ mod tests {
 
     #[test]
     fn the_score_walk_resolves_countries_through_the_hours_snapshot() {
-        use engine::{
+        use engine_native::{
             ccountry, cgame_state, cstrategic_air, cstrategic_air_manager, cstrategic_region,
-            memory::SliceMemory, raid_air_scores::COMBAT_DELAY_RVA,
+            memory::SliceMemory,
         };
+        use engine_raid_inputs::raid_air_scores::COMBAT_DELAY_RVA;
         const MEMORY: usize = 0x1000_0000;
         const BASE: usize = MEMORY + 0x100 - COMBAT_DELAY_RVA;
         const GAME: usize = MEMORY + 0x1000;
@@ -2991,7 +2997,7 @@ mod tests {
             // An unready snapshot serves nothing: the walk reads as on the game.
             let (native, native_reads) = run(0);
             let (loaned, loaned_reads) = run(1 << 12);
-            assert_eq!(native, engine::walk::Outcome::Unavailable { reason });
+            assert_eq!(native, engine_native::walk::Outcome::Unavailable { reason });
             assert_eq!(loaned, native, "alias {alias}");
             assert!(
                 loaned_reads.copy_calls < native_reads.copy_calls,
@@ -3011,7 +3017,7 @@ mod tests {
         assert_eq!(Role::Economy.read_anchor(), TableId::ProvinceSupply);
         assert_eq!(Role::World.read_anchor(), TableId::ProvinceSupply);
         let bytes = empty_memory();
-        let memory = CountedMemory::new(engine::memory::SliceMemory {
+        let memory = CountedMemory::new(engine_native::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         });
@@ -3051,7 +3057,7 @@ mod tests {
 
     #[test]
     fn country_cache_calibration_distinguishes_each_seed_and_retains_fallback_counts() {
-        use engine::country_memory::SeedStatus;
+        use engine_native::country_memory::SeedStatus;
         let mut calibration = CountryCacheCalibration::default();
         assert!(calibration.latest.is_none());
         calibration.observe(SeedStatus::Ready, 10);
@@ -3087,12 +3093,13 @@ mod tests {
 
     #[test]
     fn intel_roster_view_preserves_aliases_native_reads_and_first_faults() {
-        use engine::{Memory, ccountry, cgame_state, cunit, unit_viewer_entry, walk::Outcome};
+        use engine_native::{Memory, ccountry, cgame_state, cunit, walk::Outcome};
+        use engine_visibility::unit_viewer_entry;
         use fog::intel_test_kit as kit;
         use std::cell::RefCell;
 
         struct Traced<'a> {
-            source: engine::memory::SliceMemory<'a>,
+            source: engine_native::memory::SliceMemory<'a>,
             reads: &'a RefCell<Vec<(usize, usize)>>,
             faults: &'a [usize],
         }
@@ -3109,7 +3116,7 @@ mod tests {
                 self.source.copy(address, destination)
             }
         }
-        fn decoded(job: &fog::IntelJob) -> (Outcome, replay::frame::TableView) {
+        fn decoded(job: &fog::IntelJob) -> (Outcome, replay_frame::frame::TableView) {
             let mut captured = fog::Captured::with_capacities(&fog::Capacities {
                 rows: [0, 0, 0, 0, 4, 0, 0],
                 radar_provinces: 0,
@@ -3125,7 +3132,7 @@ mod tests {
         // authenticated by the census, while UnitIntel only calls Reader::at.
         bytes[kit::C0 + ccountry::ID..kit::C0 + ccountry::ID + 4]
             .copy_from_slice(&2_u32.to_le_bytes());
-        let links = engine::read::<u64>(
+        let links = engine_native::read::<u64>(
             &kit::memory(&bytes),
             kit::GAME_STATE + cgame_state::COUNTRY_LINKS,
         )
@@ -3146,8 +3153,8 @@ mod tests {
                 faults: &[],
             };
             let mut storage =
-                Arc::new(engine::country_memory::Cache::try_with_capacity(cells).unwrap());
-            let countries = engine::country_memory::Cache::prepare_shared(
+                Arc::new(engine_native::country_memory::Cache::try_with_capacity(cells).unwrap());
+            let countries = engine_native::country_memory::Cache::prepare_shared(
                 &mut storage,
                 &seed,
                 kit::BASE,
@@ -3170,7 +3177,7 @@ mod tests {
             for shared in [false, true] {
                 let inputs = shared.then(|| {
                     Arc::new(crate::division_census::UnitInputs::fixture(
-                        vec![engine::carmy::DivisionSeed {
+                        vec![engine_native::carmy::DivisionSeed {
                             pointer: kit::DIVISION,
                             roster_owner: Some(1),
                             ..Default::default()
@@ -3257,7 +3264,7 @@ mod tests {
                         assert_eq!(outcome, Outcome::Unavailable { reason });
                         assert_eq!(
                             table,
-                            replay::frame::TableView::Unavailable {
+                            replay_frame::frame::TableView::Unavailable {
                                 reason: reason.to_owned(),
                             }
                         );
@@ -3268,11 +3275,12 @@ mod tests {
                     match faults.first() {
                         None => {
                             assert_eq!(outcome, Outcome::Rows { len: 2 });
-                            let replay::frame::TableView::Complete(rows) = table else {
+                            let replay_frame::frame::TableView::Complete(rows) = table else {
                                 unreachable!();
                             };
                             assert_eq!(
-                                rows.rows::<replay::rows::tables::UnitIntel>().unwrap()[0].level,
+                                rows.rows::<replay_data::rows::tables::UnitIntel>().unwrap()[0]
+                                    .level,
                                 -7
                             );
                             assert!(
@@ -3298,7 +3306,7 @@ mod tests {
     #[test]
     fn world_single_payload_matches_direct_copy_and_returns_storage() {
         let bytes = empty_memory();
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         };
@@ -3311,7 +3319,7 @@ mod tests {
         let pool = acquisition::Pool::start(1, 1, move |request: &mut WorldRequest| {
             run_world_shared(
                 request,
-                &engine::memory::SliceMemory {
+                &engine_native::memory::SliceMemory {
                     base: 0,
                     bytes: &bytes,
                 },
@@ -3365,7 +3373,7 @@ mod tests {
         for workers in [0, 1] {
             let bytes = empty_memory();
             let mut direct = economy_request();
-            let memory = CountedMemory::new(engine::memory::SliceMemory {
+            let memory = CountedMemory::new(engine_native::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             });
@@ -3379,7 +3387,7 @@ mod tests {
             let pool = acquisition::Pool::start(workers, 1, move |request: &mut EconomyRequest| {
                 run_economy_shared(
                     request,
-                    &CountedMemory::new(engine::memory::SliceMemory {
+                    &CountedMemory::new(engine_native::memory::SliceMemory {
                         base: 0,
                         bytes: &bytes,
                     }),
@@ -3413,7 +3421,7 @@ mod tests {
             let pool = acquisition::Pool::start(workers, 1, move |request: &mut WorldRequest| {
                 run_world_shared(
                     request,
-                    &CountedMemory::new(engine::memory::SliceMemory {
+                    &CountedMemory::new(engine_native::memory::SliceMemory {
                         base: 0,
                         bytes: &bytes,
                     }),
@@ -3510,7 +3518,7 @@ mod tests {
         for workers in [0, 1] {
             // This immutable fixture outlives every accepted read.
             // Its empty header stops the walk before any pointer can be followed.
-            let source = vec![0_u8; engine::cgame_state::PROVINCES + 16];
+            let source = vec![0_u8; engine_native::cgame_state::PROVINCES + 16];
             for (game_state, reason, reads) in [
                 (
                     usize::MAX,
@@ -3530,7 +3538,8 @@ mod tests {
                     Job::Provinces(ProvincesRequest {
                         base: 0,
                         game_state,
-                        payload: engine::cprovince::Capture::try_with_capacity(2, 0, 0).unwrap(),
+                        payload: engine_native::cprovince::Capture::try_with_capacity(2, 0, 0)
+                            .unwrap(),
                     })
                 };
                 let mut retained = Some(make());
@@ -3570,7 +3579,10 @@ mod tests {
                     let Ok(Report::Provinces(report)) = completed.report else {
                         panic!("province report routing changed");
                     };
-                    assert_eq!(report.result, engine::walk::Outcome::Unavailable { reason });
+                    assert_eq!(
+                        report.result,
+                        engine_native::walk::Outcome::Unavailable { reason }
+                    );
                     expected[TableId::Provinces.index()] += reads;
                 }
                 let calibration = pool.calibration();
@@ -3680,7 +3692,7 @@ mod tests {
             for index in [13, 14] {
                 assert_eq!(
                     pack.outcomes()[index],
-                    engine::walk::Outcome::Unavailable { reason }
+                    engine_native::walk::Outcome::Unavailable { reason }
                 );
             }
             assert_eq!(read_accounting::snapshot(), read_accounting::ZERO);

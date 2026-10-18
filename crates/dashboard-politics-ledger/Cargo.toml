@@ -16,12 +16,16 @@ slow-tests = []
 test-support = ["dashboard-base/test-support"]
 
 [dependencies]
+replay.workspace = true
+engine-native.workspace = true
+installed-content-core.workspace = true
+installed-content-country-names.workspace = true
+installed-content-localisation.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
 dashboard-base.workspace = true
 dashboard-core.workspace = true
 dashboard-text.workspace = true
-engine.workspace = true
-installed-content.workspace = true
-replay.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
 store = { path = "../store" }
@@ -29,10 +33,17 @@ ts-rs = "11.1"
 zstd = "0.13"
 
 [dev-dependencies]
+engine-executable.workspace = true
+installed-content-settings.workspace = true
+installed-content-abilities = { workspace = true, features = ["test-support"] }
+installed-content-core = { workspace = true, features = ["test-support"] }
+installed-content-country-names = { workspace = true, features = ["test-support"] }
+installed-content-focus = { workspace = true, features = ["test-support"] }
+installed-content-image = { workspace = true, features = ["test-support"] }
+installed-content-localisation = { workspace = true, features = ["test-support"] }
 dashboard-base = { workspace = true, features = ["test-support"] }
 dashboard-text = { workspace = true, features = ["test-support"] }
 # Folder layers, so tests load localisation files as the game content does.
-installed-content = { workspace = true, features = ["test-support"] }
 png.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 # Prepared files publish without disk flushes, which no test can observe.

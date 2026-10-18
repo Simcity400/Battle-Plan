@@ -5,18 +5,18 @@ use crate::{
     spooling::table,
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
-use engine::allocation::{copy_vec, owned_vec};
-use engine::{
-    Memory, ccountry, cfront, cfront_section, corder_instance, corders_group,
-    invasion_preparations, modifier_definition::DefinitionMemo, order_execution, walk::Outcome,
+use engine_allocation::{copy_vec, owned_vec};
+use engine_land_inputs::{cfront, cfront_section};
+use engine_native::{
+    Memory, ccountry, corder_instance, corders_group, invasion_preparations,
+    modifier_definition::DefinitionMemo, order_execution, walk::Outcome,
 };
-use replay::{
-    frame::TableView,
-    rows::{
-        ArmyOrderPlanRow, FrontRow, InvasionPreparationRow, OrderChildFront, OrderChildFrontInputs,
-        OrdersGroupPlanRow, Recorded, TableId, tables,
-    },
+use replay_data::{
+    rows::ArmyOrderPlanRow, rows::FrontRow, rows::InvasionPreparationRow, rows::OrderChildFront,
+    rows::OrderChildFrontInputs, rows::OrdersGroupPlanRow, rows::Recorded, rows::TableId,
+    rows::tables,
 };
+use replay_frame::frame::TableView;
 use std::mem::size_of;
 
 pub const N: usize = 4;
@@ -30,16 +30,16 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 fn project_execution(
     inputs: order_execution::OrderExecutionInputs,
-) -> replay::rows::OrderExecutionInputs {
-    replay::rows::OrderExecutionInputs {
+) -> replay_data::rows::OrderExecutionInputs {
+    replay_data::rows::OrderExecutionInputs {
         route_is_ok: inputs.route_is_ok,
         paradrop: inputs
             .paradrop
-            .map(|prep| replay::rows::ParadropPreparationInputs {
+            .map(|prep| replay_data::rows::ParadropPreparationInputs {
                 progress: prep.progress,
                 terms: prep
                     .terms
-                    .map(|terms| replay::rows::ParadropPreparationTerms {
+                    .map(|terms| replay_data::rows::ParadropPreparationTerms {
                         target: terms.target,
                         country_term: terms.country_term,
                         relation_term: terms.relation_term,
@@ -131,7 +131,7 @@ impl Fronts {
             rows: CaptureRows::new(c.fronts),
             sections: Arena::new(c.sections),
             pairs: Arena::new(c.pairs),
-            handles: owned_vec(engine::allocation::filled(c.handles, 0)),
+            handles: owned_vec(engine_allocation::filled(c.handles, 0)),
             required_handles: 0,
             bound: None,
             failed: false,
@@ -808,7 +808,7 @@ impl Captured {
             && len > self.colors.rows.len()
         {
             let additional = len - self.colors.rows.len();
-            engine::allocation::reserve(&mut self.colors.rows, additional)
+            engine_allocation::reserve(&mut self.colors.rows, additional)
                 .map(|()| self.colors.rows.resize(len, Default::default()))
         } else {
             Ok(())
@@ -1104,7 +1104,7 @@ impl Captured {
             group_child_count: inputs.group_child_count,
             sections: inputs.sections.map(|(start, len)| {
                 let source = &self.child_sections.first[start..start + len];
-                let mut sections = owned_vec(engine::allocation::vec(source.len()));
+                let mut sections = owned_vec(engine_allocation::vec(source.len()));
                 sections.extend(source.iter().map(|section| OrderChildFront {
                     group: section.group,
                     segment_start: section.segment_start,
@@ -1194,10 +1194,10 @@ impl Captured {
                         count.checked_add(section.pair_len)
                     })
                     .unwrap_or(usize::MAX);
-                if engine::allocation::reserve_exact(&mut row.section_ids, sections.len()).is_err()
-                    || engine::allocation::reserve_exact(&mut row.section_ends, sections.len())
+                if engine_allocation::reserve_exact(&mut row.section_ids, sections.len()).is_err()
+                    || engine_allocation::reserve_exact(&mut row.section_ends, sections.len())
                         .is_err()
-                    || engine::allocation::reserve_exact(&mut row.province_pairs, pairs).is_err()
+                    || engine_allocation::reserve_exact(&mut row.province_pairs, pairs).is_err()
                 {
                     return row;
                 }
@@ -1239,7 +1239,7 @@ mod orders_parts_fixture;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{creference_registry as registry, reference_bucket as bucket};
+    use engine_native::{creference_registry as registry, reference_bucket as bucket};
     use std::collections::BTreeMap;
 
     /// The invasion walk (the Orders job) and the fronts (the Fronts job)
@@ -1285,7 +1285,7 @@ mod tests {
         let root = registry::LOW_ROOTS_RVA + cfront::REFERENCE_TYPE as usize * 8;
         image.u64(root, 0);
         // An empty province table: the invasion walk's first own read.
-        let provinces = engine::cgame_state::PROVINCES;
+        let provinces = engine_native::cgame_state::PROVINCES;
         image.u64(provinces, 0);
         image.u32(provinces + 8, 0);
         image.u32(provinces + 12, 0);
@@ -1341,7 +1341,7 @@ mod tests {
                     ..Default::default()
                 }
             });
-        let TableView::Complete(replay::rows::TableRows::InvasionPreparations(published)) =
+        let TableView::Complete(replay_data::rows::TableRows::InvasionPreparations(published)) =
             table::<tables::InvasionPreparations, _>(Outcome::Rows { len: 3 }, &walked, |r| {
                 InvasionPreparationRow {
                     owner_group: r.owner_group,
@@ -1767,7 +1767,8 @@ mod tests {
                 planes: 1,
                 ships: 0,
             });
-        world.bytes[engine::cgame_state::SINGLETON_RVA..engine::cgame_state::SINGLETON_RVA + 8]
+        world.bytes[engine_native::cgame_state::SINGLETON_RVA
+            ..engine_native::cgame_state::SINGLETON_RVA + 8]
             .copy_from_slice(&(world.state as u64).to_le_bytes());
         let mut image = execution_image();
         image.u64(GROUP, (world.base + corders_group::VTABLE_RVA) as u64);
@@ -1837,8 +1838,8 @@ mod tests {
                 calls: Cell::new(0),
             };
             let mut storage =
-                Arc::new(engine::country_memory::Cache::try_with_capacity(64).unwrap());
-            let countries = engine::country_memory::Cache::prepare_shared(
+                Arc::new(engine_native::country_memory::Cache::try_with_capacity(64).unwrap());
+            let countries = engine_native::country_memory::Cache::prepare_shared(
                 &mut storage,
                 &memory,
                 kit::BASE,
@@ -1908,7 +1909,7 @@ mod tests {
                 ),
                 None => pass(&image, &mut capture),
             }
-            let TableView::Complete(replay::rows::TableRows::ArmyOrderPlans(rows)) =
+            let TableView::Complete(replay_data::rows::TableRows::ArmyOrderPlans(rows)) =
                 capture.tables()[0].clone()
             else {
                 panic!("optional scalar faults must preserve the plan prefix");
@@ -1953,7 +1954,7 @@ mod tests {
         }
         let row = |capture: &Captured| {
             let [
-                TableView::Complete(replay::rows::TableRows::ArmyOrderPlans(mut rows)),
+                TableView::Complete(replay_data::rows::TableRows::ArmyOrderPlans(mut rows)),
                 _,
                 _,
                 _,
@@ -1983,11 +1984,11 @@ mod tests {
         for (offset, expected) in [
             (
                 corder_instance::CONDITION_CACHE,
-                replay::rows::OrderExecutionInputs::default(),
+                replay_data::rows::OrderExecutionInputs::default(),
             ),
             (
                 corder_instance::ACCUMULATED_PREPARATION,
-                replay::rows::OrderExecutionInputs {
+                replay_data::rows::OrderExecutionInputs {
                     route_is_ok: Some(7),
                     paradrop: None,
                 },
@@ -2028,7 +2029,8 @@ mod tests {
             orders.walk(&image, 0);
             let orders_outcome = orders.rows.outcome;
             let order_storage = orders.geometry.as_ptr();
-            let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+            let countries =
+                Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
             let bytes = captured.allocated_bytes() + orders.allocated_bytes();
             let pool = crate::acquisition::Pool::start(0, 1, move |job: &mut Job| {
                 let Job::Late(request) = job else {
@@ -2125,7 +2127,7 @@ mod tests {
         let complete = c.tables();
         assert!(matches!(
             &complete[0],
-            TableView::Complete(replay::rows::TableRows::ArmyOrderPlans(rows)) if rows.len() == 1
+            TableView::Complete(replay_data::rows::TableRows::ArmyOrderPlans(rows)) if rows.len() == 1
         ));
         // A group phase without this pass's area phase reads nothing.
         assert!(!c.child_fronts_allocate());
@@ -2164,10 +2166,10 @@ mod tests {
         pass(&m, &mut c);
         c.capture();
         assert!(
-            matches!(&c.tables()[0], TableView::Complete(replay::rows::TableRows::ArmyOrderPlans(rows)) if rows[0].blitz == 255)
+            matches!(&c.tables()[0], TableView::Complete(replay_data::rows::TableRows::ArmyOrderPlans(rows)) if rows[0].blitz == 255)
         );
         assert!(
-            matches!(&c.tables()[1], TableView::Complete(replay::rows::TableRows::OrdersGroupPlans(rows)) if rows[0].red == 0x7fc01234)
+            matches!(&c.tables()[1], TableView::Complete(replay_data::rows::TableRows::OrdersGroupPlans(rows)) if rows[0].red == 0x7fc01234)
         );
         assert_eq!(c.outcomes()[2], Outcome::Rows { len: 0 });
     }
@@ -2328,8 +2330,8 @@ mod tests {
         };
         let rows = |c: &Captured| {
             let [
-                TableView::Complete(replay::rows::TableRows::ArmyOrderPlans(plans)),
-                TableView::Complete(replay::rows::TableRows::OrdersGroupPlans(groups)),
+                TableView::Complete(replay_data::rows::TableRows::ArmyOrderPlans(plans)),
+                TableView::Complete(replay_data::rows::TableRows::OrdersGroupPlans(groups)),
                 _,
                 _,
             ] = c.tables()
@@ -2433,8 +2435,8 @@ mod tests {
         m.put(GROUP_NAME, &[0xa5; 64]);
         let names = |c: &Captured| {
             let [
-                TableView::Complete(replay::rows::TableRows::ArmyOrderPlans(plans)),
-                TableView::Complete(replay::rows::TableRows::OrdersGroupPlans(groups)),
+                TableView::Complete(replay_data::rows::TableRows::ArmyOrderPlans(plans)),
+                TableView::Complete(replay_data::rows::TableRows::OrdersGroupPlans(groups)),
                 _,
                 _,
             ] = c.tables()

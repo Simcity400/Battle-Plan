@@ -7,8 +7,9 @@
 //! Attach/live hints prepare the physical slot count; worker storage grows
 //! from the original header before the same sample is published.
 use crate::table_capture::Arena;
-use engine::{Memory, ccountry, country_naval_movement_inputs as native};
-use replay::rows::PacketHour;
+use engine_native::{Memory, ccountry};
+use engine_naval_history::country_naval_movement_inputs as native;
+use replay_data::rows::PacketHour;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
@@ -100,13 +101,13 @@ impl Launch {
     pub fn projection_launch(
         &self,
         owned_states: Option<Vec<u32>>,
-    ) -> std::io::Result<Option<replay::rows::ReservedLaunchSources>> {
+    ) -> std::io::Result<Option<replay_data::rows::ReservedLaunchSources>> {
         if self.sample_hour.is_none() {
             return Ok(None);
         }
         let naval_bases = match self.launch_result {
             Ok(ccountry::launch_sources::NavalProvider::NativeNull) => {
-                replay::rows::LaunchNavalBases::NativeNull
+                replay_data::rows::LaunchNavalBases::NativeNull
             }
             Ok(ccountry::launch_sources::NavalProvider::Bases(len)) => {
                 let values = self
@@ -115,16 +116,18 @@ impl Launch {
                     .get(..self.launch_bases.len)
                     .and_then(|values| values.get(..len))
                     .ok_or_else(|| std::io::Error::other("reserved launch base arena invalid"))?;
-                replay::rows::LaunchNavalBases::Bases(engine::allocation::collect_vec(
-                    values.iter().map(|value| replay::rows::LaunchNavalBase {
-                        base_province: value.base_province,
-                        country: value.country,
-                    }),
+                replay_data::rows::LaunchNavalBases::Bases(engine_allocation::collect_vec(
+                    values
+                        .iter()
+                        .map(|value| replay_data::rows::LaunchNavalBase {
+                            base_province: value.base_province,
+                            country: value.country,
+                        }),
                 )?)
             }
-            Err(_) => replay::rows::LaunchNavalBases::Unavailable,
+            Err(_) => replay_data::rows::LaunchNavalBases::Unavailable,
         };
-        Ok(Some(replay::rows::ReservedLaunchSources {
+        Ok(Some(replay_data::rows::ReservedLaunchSources {
             sample_hour: PacketHour::Host,
             naval_bases,
             owned_states,
@@ -230,7 +233,8 @@ impl Captured {
         self.physical_count = reader.bounds().navy_slots;
         if let Ok(count) = self.physical_count {
             self.navies.required = count;
-            if let Err(reason) = engine::walk::Buffer::Growing(&mut self.navies.first).ensure(count)
+            if let Err(reason) =
+                engine_native::walk::Buffer::Growing(&mut self.navies.first).ensure(count)
             {
                 self.physical_count = Err(reason);
                 return reader;
@@ -342,7 +346,7 @@ impl Work {
             let index = match self.refusals.binary_search_by_key(&reason, |entry| entry.0) {
                 Ok(index) => index,
                 Err(index) => {
-                    engine::allocation::reserve(&mut self.refusals, 1)?;
+                    engine_allocation::reserve(&mut self.refusals, 1)?;
                     self.refusals.insert(index, (reason, 0));
                     index
                 }

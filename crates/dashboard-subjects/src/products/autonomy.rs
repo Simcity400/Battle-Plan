@@ -12,7 +12,7 @@
 //! - `Subjects` names the overlord (overlord to subject relations), and its
 //!   fixed5 `autonomy_ratio` is carried as recorded. Its role in the game is
 //!   not established, so it is not interpreted.
-//! - Levels are ordered by the content's autonomy states (`installed_content::autonomy`,
+//! - Levels are ordered by the content's autonomy states (`installed_content_core::autonomy`,
 //!   by `min_freedom_level`) and named by their localisation. Without the game
 //!   folders, or for a level the content does not define, the order falls back
 //!   to the lowest move-down score recorded at that level, and the name is null.
@@ -38,11 +38,11 @@ use dashboard_text::metadata::link_slots;
 #[cfg(test)]
 use dashboard_text::metadata::validate_campaign;
 #[cfg(test)]
-use replay::{container::Replay, frame::FrameDecoder};
-use replay::{
-    frame::DecodedFrame,
-    rows::{TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
+#[cfg(test)]
+use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::{collections::VecDeque, sync::atomic::Ordering};
@@ -90,7 +90,7 @@ impl Holders {
         // its exact duplicate/tag rules without revisiting the recorded table.
         let countries: Vec<_> = countries
             .iter()
-            .map(|(id, canonical_slot, tag)| replay::rows::CountryRow {
+            .map(|(id, canonical_slot, tag)| replay_data::rows::CountryRow {
                 id,
                 canonical_slot,
                 tag: tag.to_vec(),
@@ -515,7 +515,7 @@ impl ScannedAutonomy {
         frame: &DecodedFrame,
         observe: bool,
     ) -> io::Result<dashboard_base::prepared::query::progressive::Samples> {
-        let _cpu = replay::cpu::scope_phase("autonomy:query_native_sample");
+        let _cpu = replay_frame::cpu::scope_phase("autonomy:query_native_sample");
         let (holders, inputs) = query_inputs(frame);
         let values = sample_inputs(holders.as_deref(), inputs.as_ref(), None)?;
         if observe {
@@ -674,7 +674,7 @@ impl ScannedAutonomy {
         let changes = self
             .test_changes
             .get_or_insert_with(dashboard_base::prepared::frame_changes::FrameChangeTracker::new)
-            .observe(frame, replay::format::FormatVersion::CURRENT);
+            .observe(frame, replay_data::format::FormatVersion::CURRENT);
         self.prepare_changed(frame, &changes)
     }
     pub fn prepare_changed(
@@ -1063,7 +1063,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
 /// among them.
 pub fn order_levels(
     scanned: &ScannedAutonomy,
-    states: Option<&installed_content::autonomy::AutonomyStates>,
+    states: Option<&installed_content_core::autonomy::AutonomyStates>,
     name: impl Fn(&str) -> Option<String>,
 ) -> (Vec<AutonomyLevel>, Vec<u32>) {
     let order: HashMap<&str, usize> = states
@@ -1110,7 +1110,7 @@ pub(crate) fn level_name(catalogue: &Catalogue, id: &str) -> Option<String> {
 
 /// Authored levels only: offline preparation has no scores to rank unplaced levels.
 pub fn content_levels(
-    states: &installed_content::autonomy::AutonomyStates,
+    states: &installed_content_core::autonomy::AutonomyStates,
     catalogue: &Catalogue,
 ) -> Vec<AutonomyLevel> {
     states
@@ -1132,8 +1132,8 @@ struct Cache {
 
 /// The content's autonomy states and the notes reading them left.
 type States = (
-    installed_content::autonomy::AutonomyStates,
-    Vec<installed_content::Diagnostic>,
+    installed_content_core::autonomy::AutonomyStates,
+    Vec<installed_content_core::Diagnostic>,
 );
 /// The states read for a catalogue, read once per catalogue (held, so a new one is
 /// never mistaken for it).
@@ -1148,7 +1148,7 @@ fn content_states(source: &Source, catalogue: &Arc<Catalogue>) -> io::Result<Arc
     {
         return Ok(Arc::clone(states));
     }
-    let states = Arc::new(installed_content::autonomy::read(&catalogue.content.layers)?);
+    let states = Arc::new(installed_content_core::autonomy::read(&catalogue.content.layers)?);
     *cache = Some((Arc::clone(catalogue), Arc::clone(&states)));
     Ok(states)
 }

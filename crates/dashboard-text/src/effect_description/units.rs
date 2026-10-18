@@ -1,6 +1,6 @@
 use super::*;
-use installed_content::parser;
-use replay::rows::{VariantDefinitionRow, tables};
+use installed_content_core::parser;
+use replay_data::{rows::VariantDefinitionRow, rows::tables};
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
@@ -23,8 +23,8 @@ fn integer_field(items: &[Item], name: &str, default: i32) -> i32 {
         .iter()
         .filter(|item| item.keyword_is(name))
         .filter_map(
-            |item| match installed_content::crt::scan_i32(item.value.scalar()?) {
-                installed_content::crt::Scanned::Stored(value) => Some(value),
+            |item| match installed_content_core::crt::scan_i32(item.value.scalar()?) {
+                installed_content_core::crt::Scanned::Stored(value) => Some(value),
                 _ => None,
             },
         )
@@ -147,7 +147,7 @@ impl Renderer<'_, '_, '_> {
         ) // Raw type-9 value, without clamping, expansion or LF.
     }
 
-    fn units_equipment(&self) -> Result<&installed_content::equipment::Database, String> {
+    fn units_equipment(&self) -> Result<&installed_content_core::equipment::Database, String> {
         self.context
             .content
             .equipment
@@ -176,7 +176,7 @@ impl Renderer<'_, '_, '_> {
                 parser::c_string(field.value.scalar().ok_or(
                     "equipment-type block operand is unsupported by the direct token reader",
                 )?);
-            if !installed_content::tokens::Token::c_str(value).is_rejected() {
+            if !installed_content_core::tokens::Token::c_str(value).is_rejected() {
                 cached = database.get(value);
             }
             if cached.is_none() {
@@ -300,7 +300,7 @@ impl Renderer<'_, '_, '_> {
         } else {
             field(fields, "count")
                 .and_then(|field| field.value.scalar())
-                .map(installed_content::fixed5::decimal_i32)
+                .map(installed_content_core::fixed5::decimal_i32)
                 .unwrap_or(0)
         };
         let count_text = if count < 0 {
@@ -987,7 +987,7 @@ impl Renderer<'_, '_, '_> {
                 let mut modules = BTreeMap::new();
                 for body in fields.iter().filter(|field| field.keyword_is("modules")) {
                     for module in children(body) {
-                        let slot = installed_content::tokens::Token::c_str(
+                        let slot = installed_content_core::tokens::Token::c_str(
                             module.key.as_deref().unwrap_or_default(),
                         );
                         if module.value_keyword().as_deref() == Some("empty") {
@@ -1002,7 +1002,7 @@ impl Renderer<'_, '_, '_> {
                 for mask in modules.values() {
                     category |= *mask;
                 }
-                category = installed_content::equipment::normalize_category(category);
+                category = installed_content_core::equipment::normalize_category(category);
             } // Own vector only; do not merge/remove native default module categories.
             let archetype = family.archetype.map_or(b"".as_slice(), |index| {
                 database.equipment[index].name.as_slice()
@@ -1561,7 +1561,7 @@ impl Renderer<'_, '_, '_> {
                 .any(|row| {
                     world.slot(row.country) == Some(controller)
                         && row.target_index == owner
-                        && row.links & replay::rows::RelationLinkRow::MILITARY_ACCESS != 0
+                        && row.links & replay_data::rows::RelationLinkRow::MILITARY_ACCESS != 0
                 });
             if access {
                 return Ok(true);
@@ -1584,7 +1584,7 @@ impl Renderer<'_, '_, '_> {
             Ok(false) // Direct installed subjects, without a date or cancellation filter.
         };
         let mut admitted =
-            |province: &replay::rows::ProvinceRow, ignore_occupants| -> Result<bool, String> {
+            |province: &replay_data::rows::ProvinceRow, ignore_occupants| -> Result<bool, String> {
                 if !world.state_provinces().contains_key(&province.state) {
                     return Err(format!(
                         "province {} state {} is not defined by the recorded content stack",
@@ -1722,13 +1722,13 @@ impl Renderer<'_, '_, '_> {
             .and_then(|names| names.sub_units.as_ref())
             .ok_or_else(|| self.content_gap("effect key names"))?;
         let index = match units.get(name) {
-            installed_content::unit_leader::SubUnit::Index(index) => index,
-            installed_content::unit_leader::SubUnit::Unknown => {
+            installed_content_core::unit_leader::SubUnit::Index(index) => index,
+            installed_content_core::unit_leader::SubUnit::Unknown => {
                 return Err(format!(
                     "sub-unit {name} is not defined by the recorded content stack"
                 ));
             }
-            installed_content::unit_leader::SubUnit::Uncertain(why) => {
+            installed_content_core::unit_leader::SubUnit::Uncertain(why) => {
                 return Err(format!("sub-unit {name}: {why}"));
             }
         };
@@ -1754,9 +1754,9 @@ impl Renderer<'_, '_, '_> {
                 field(fields, "division_template").and_then(|item| item.value.read_string())
             })
             .unwrap_or_default();
-        let label = std::str::from_utf8(installed_content::parser::c_string(value))
+        let label = std::str::from_utf8(installed_content_core::parser::c_string(value))
             .map_err(|_| "template name is not UTF-8")?;
-        let disband = installed_content::parser::read_bool_field(fields, "disband", false);
+        let disband = installed_content_core::parser::read_bool_field(fields, "disband", false);
         self.line(
             if disband {
                 b"EFFECT_DISBAND_UNIT_TEMPLATE_AND_UNITS"
@@ -1794,14 +1794,14 @@ impl Renderer<'_, '_, '_> {
                     }
                     let Some(index) = stat
                         .keyword()
-                        .and_then(|key| installed_content::equipment::stat_index(&key.folded()))
+                        .and_then(|key| installed_content_core::equipment::stat_index(&key.folded()))
                     else {
                         continue; // Native unexpected-token skip; no stored stat.
                     };
                     let value = stat
                         .value
                         .scalar()
-                        .and_then(installed_content::fixed5::script_fixed5)
+                        .and_then(installed_content_core::fixed5::script_fixed5)
                         .unwrap_or(0);
                     match stats.iter_mut().find(|(stored, _)| *stored == index) {
                         Some((_, previous)) => *previous = previous.wrapping_add(value),
@@ -1811,7 +1811,7 @@ impl Renderer<'_, '_, '_> {
                 let mut lines = Vec::new();
                 for (index, value) in stats {
                     let (_, label_key, positive_good) =
-                        installed_content::equipment::stat_metadata()[index];
+                        installed_content_core::equipment::stat_metadata()[index];
                     let key = label_key.as_bytes();
                     let label = self.localised(key, &[], scopes, false)?;
                     let difference = format!(

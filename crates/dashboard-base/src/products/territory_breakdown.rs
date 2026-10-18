@@ -12,8 +12,9 @@ use crate::{
     Source,
     catalogue::{self, Catalogue},
 };
-use installed_content::province_area::ProvinceAreas;
-use replay::{frame::DecodedFrame, rows::tables};
+use installed_content_province_area::province_area::ProvinceAreas;
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -121,7 +122,7 @@ fn state_parts(
 }
 impl Regions {
     fn read(cat: &Catalogue) -> io::Result<Self> {
-        let content = installed_content::regions::read(&cat.content.layers)?;
+        let content = installed_content_regions::regions::read(&cat.content.layers)?;
         let mut result = Self {
             warnings: content.notes,
             ..Default::default()
@@ -224,7 +225,7 @@ pub struct Scan {
     /// The recording's format, which dates its daily tables
     /// ([`crate::metadata::slot_read`]).
     #[serde(skip)]
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
     /// One series per key, in key order once the scan ends.
     series: Vec<TerritoryRegionSeries>,
     tags: BTreeSet<String>,
@@ -504,7 +505,7 @@ fn observe(
         let reads = builder.lineage.as_ref().filter(|_| {
             contiguous
                 && changes.is_some_and(|changes| {
-                    !changes.rows_changed[replay::rows::TableId::CountryLinks.index()]
+                    !changes.rows_changed[replay_data::rows::TableId::CountryLinks.index()]
                 })
         });
         let reads = match reads {
@@ -552,17 +553,17 @@ fn observe(
     let reads = builder.reads.update_changes(states, provinces, changes);
     #[cfg(any(test, feature = "test-support"))]
     {
-        let touched = |table: replay::rows::TableId| {
+        let touched = |table: replay_data::rows::TableId| {
             changes.is_none_or(|changes| {
                 changes.rows_changed[table.index()] || changes.table_read[table.index()]
             })
         };
-        builder.work.row_visits += usize::from(touched(replay::rows::TableId::Countries))
+        builder.work.row_visits += usize::from(touched(replay_data::rows::TableId::Countries))
             * countries.len()
-            + usize::from(touched(replay::rows::TableId::States))
-                * states.map_or(0, <[replay::rows::StateRow]>::len)
-            + usize::from(touched(replay::rows::TableId::Provinces))
-                * provinces.map_or(0, <[replay::rows::ProvinceRow]>::len);
+            + usize::from(touched(replay_data::rows::TableId::States))
+                * states.map_or(0, <[replay_data::rows::StateRow]>::len)
+            + usize::from(touched(replay_data::rows::TableId::Provinces))
+                * provinces.map_or(0, <[replay_data::rows::ProvinceRow]>::len);
     }
     let refresh = reads.map(|same| !same || old_available.is_none());
     if old_available != Some(available) {
@@ -927,7 +928,7 @@ fn read_frame(
 /// The stateless regional step over one frame, or none at a gap.
 fn sample_reply(
     frame: Option<&DecodedFrame>,
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
     regions: &Regions,
     areas: Option<&ProvinceAreas>,
     totals: super::territory::TerritoryReply,
@@ -983,7 +984,7 @@ impl Prepared {
     pub fn observe(
         &mut self,
         frame: &DecodedFrame,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         areas: Option<&ProvinceAreas>,
         changes: &crate::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
@@ -997,7 +998,7 @@ impl Prepared {
         areas: Option<&ProvinceAreas>,
         changes: Option<&crate::prepared::frame_changes::FrameChanges>,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("territory:breakdown");
+        let _cpu = ::replay_frame::cpu::scope_phase("territory:breakdown");
         self.facts.advance(frame.hour)?;
         self.observed.advance(frame.hour)?;
         // A restored builder keeps no freshness; publication sealed the span of

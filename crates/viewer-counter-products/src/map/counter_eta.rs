@@ -18,12 +18,12 @@
 //! retained duration cache and route option are local presentation state the viewer does not
 //! read or capture.
 //!
-//! Both sites use [`engine::cunit::eta_hours`], narrowed to i32.
+//! Both sites use [`engine_native::cunit::eta_hours`], narrowed to i32.
 //! The division view's legacy `arrival` test helper omits nonpositive hours. The map
 //! counter's [`map_arrival`] formats every reached duration: signed days<1
 //! uses total hours, otherwise days and the hours remainder.
 
-use engine::cunit::eta_hours;
+use engine_native::cunit::eta_hours;
 use viewer_foundation::tooltip_text::tooltip_keys;
 
 /// One counter's arrival, in the parts the game's sentence names.
@@ -72,11 +72,11 @@ pub(crate) fn map_arrival(remaining: i64) -> Arrival {
 /// needed, `DAYS`. Missing keys retain their bytes. The shared text reader validates
 /// colour controls and inline artwork.
 pub fn sentence(
-    localisation: &installed_content::localisation::Localisation,
+    localisation: &installed_content_localisation::localisation::Localisation,
     arrival: &Arrival,
     ours: bool,
 ) -> Result<String, String> {
-    use installed_content::localisation::Argument;
+    use installed_content_localisation::localisation::Argument;
     let key = match (arrival.days == 0, ours) {
         (true, true) => UNIT_MOVING_HOURS,
         (false, true) => UNIT_MOVING_DAYS_HOURS,
@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn the_wording_follows_the_viewing_country_and_the_content_text() {
-        let localisation: installed_content::localisation::Localisation = [
+        let localisation: installed_content_localisation::localisation::Localisation = [
             (
                 "UNIT_MOVING_HOURS",
                 "Arrives at its destination in $HOURS|Y$ §Yhour(s)§!.",
@@ -185,7 +185,7 @@ mod tests {
             sentence(&localisation, &one, false).as_deref(),
             Ok("UNIT_MOVING_HOURS_NONPLAYER")
         );
-        let icon: installed_content::localisation::Localisation = [(
+        let icon: installed_content_localisation::localisation::Localisation = [(
             "UNIT_MOVING_DAYS_HOURS".to_owned(),
             "£time $DAYS$".to_owned(),
         )]

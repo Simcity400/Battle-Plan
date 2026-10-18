@@ -3,7 +3,8 @@ use super::{
     super::{RaidDefines, unit_inputs::SpeedDefines},
     intel,
 };
-use installed_content::{defines::Defines, states::StateDefinition};
+use installed_content_core::defines::Defines;
+use installed_content_states::states::StateDefinition;
 use std::collections::BTreeMap;
 
 #[derive(Debug)]
@@ -18,8 +19,8 @@ pub struct Content {
     /// be followed.
     pub state_names: BTreeMap<u32, Result<String, String>>,
     pub terrain_names: Result<Vec<String>, String>,
-    pub unit_names: Result<installed_content::raids::names::Groups, String>,
-    pub projects: Result<installed_content::special_projects::Catalog, String>,
+    pub unit_names: Result<installed_content_raids::raids::names::Groups, String>,
+    pub projects: Result<installed_content_core::special_projects::Catalog, String>,
 }
 impl Default for Content {
     fn default() -> Self {
@@ -41,7 +42,7 @@ impl Content {
     pub fn read(
         d: &Defines,
         states: &BTreeMap<u32, StateDefinition>,
-        layers: &installed_content::ResolvedLayers,
+        layers: &installed_content_core::ResolvedLayers,
     ) -> Self {
         let speed = (|| {
             let r = RaidDefines::read(d).map_err(|e| e.to_string())?;
@@ -61,8 +62,10 @@ impl Content {
         Self {
             intel: intel::Defines::read(d),
             speed,
-            unit_names: installed_content::raids::names::Groups::read(layers).map_err(|e| e.to_string()),
-            projects: installed_content::special_projects::Catalog::read(layers).map_err(|e| e.to_string()),
+            unit_names: installed_content_raids::raids::names::Groups::read(layers)
+                .map_err(|e| e.to_string()),
+            projects: installed_content_core::special_projects::Catalog::read(layers)
+                .map_err(|e| e.to_string()),
             prepare_days: d
                 .int32("NRaids", "BASE_DAYS_TO_PREPARE")
                 .map_err(|e| e.to_string()),
@@ -89,7 +92,7 @@ impl Content {
                 .iter()
                 .map(|(&id, s)| (id, s.name_key.clone()))
                 .collect(),
-            terrain_names: installed_content::terrain::read_definitions(layers)
+            terrain_names: installed_content_core::terrain::read_definitions(layers)
                 .map_err(|e| e.to_string())
                 .and_then(|d| {
                     d.categories

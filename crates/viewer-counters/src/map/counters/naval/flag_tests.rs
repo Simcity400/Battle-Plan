@@ -1,5 +1,5 @@
 use super::*;
-use replay::rows::TaskForceRow;
+use replay_data::rows::TaskForceRow;
 
 fn unit(force: &TaskForceRow, slot: u32, strength: i64) -> NavalUnit<'_> {
     NavalUnit {

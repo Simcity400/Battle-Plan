@@ -1,5 +1,5 @@
 use super::*;
-use engine::{carmy, cequipment_variant as variant, cequipment_variant_pool as pool};
+use engine_native::{carmy, cequipment_variant as variant, cequipment_variant_pool as pool};
 use std::{hint::black_box, time::Instant};
 #[cfg(feature = "tap-foreign-probe")]
 mod foreign_unwind;
@@ -49,7 +49,7 @@ impl World {
         };
         world.word(0, carmy::VTABLE_RVA as u64);
         world.word(carmy::SECONDARY_BASE, carmy::SECONDARY_VTABLE_RVA as u64);
-        world.word(engine::cunit::HANDLE, 0xe00100004b01);
+        world.word(engine_native::cunit::HANDLE, 0xe00100004b01);
         world.owner(1);
         let p = world.army() + carmy::EQUIPMENT_POOL;
         world.word(carmy::EQUIPMENT_POOL, pool::VTABLE_RVA as u64);
@@ -105,7 +105,7 @@ impl World {
         }
     }
     fn owner(&mut self, country: u32) {
-        self.dword(engine::cunit::ROSTER_OWNER, country);
+        self.dword(engine_native::cunit::ROSTER_OWNER, country);
     }
     fn amount(&mut self, d: usize, amount: i64) {
         self.word(0x600 + d * 16 + 8, amount as u64);
@@ -133,7 +133,7 @@ struct ReserveWorld {
 }
 impl ReserveWorld {
     fn new(designs: usize, owner: u32) -> Self {
-        use engine::{ccountry, cproduction_status};
+        use engine_native::{ccountry, cproduction_status};
         let world = World::new(designs);
         let mut manager = vec![0u64; 0x300 / 8];
         let mut country = vec![0u64; (ccountry::PRODUCTION_STATUS + 8) / 8];
@@ -155,9 +155,9 @@ impl ReserveWorld {
     fn for_source(source: &World, base: usize, owner: u32, initial: i64) -> Self {
         let mut reserves = Self::new(source.designs, owner);
         reserves.world.rebase(base);
-        reserves.manager[0] = (base + engine::cproduction_status::VTABLE_RVA) as u64;
-        reserves._country[0] = (base + engine::ccountry::VTABLE_RVA) as u64;
-        reserves.manager[engine::cproduction_status::STOCKPILE_POOL / 8] =
+        reserves.manager[0] = (base + engine_native::cproduction_status::VTABLE_RVA) as u64;
+        reserves._country[0] = (base + engine_native::ccountry::VTABLE_RVA) as u64;
+        reserves.manager[engine_native::cproduction_status::STOCKPILE_POOL / 8] =
             (base + pool::VTABLE_RVA) as u64;
         for index in 0..source.designs {
             reserves.world.word(
@@ -169,7 +169,7 @@ impl ReserveWorld {
         reserves
     }
     fn pool(&self) -> usize {
-        self.manager.as_ptr() as usize + engine::cproduction_status::STOCKPILE_POOL
+        self.manager.as_ptr() as usize + engine_native::cproduction_status::STOCKPILE_POOL
     }
 }
 
@@ -193,8 +193,9 @@ impl StateMemory {
             armies: Vec::new(),
             reserve: Vec::new(),
         };
-        memory.state[engine::cgame_state::EQUIPMENT_VARIANTS / 8] = memory.state.as_ptr() as u64;
-        memory.state[engine::cgame_state::EQUIPMENT_VARIANTS_CAPACITY / 8] =
+        memory.state[engine_native::cgame_state::EQUIPMENT_VARIANTS / 8] =
+            memory.state.as_ptr() as u64;
+        memory.state[engine_native::cgame_state::EQUIPMENT_VARIANTS_CAPACITY / 8] =
             u64::from(designs) | (u64::from(designs) << 32);
         memory.population(&[0]);
         memory
@@ -206,7 +207,7 @@ impl StateMemory {
         self.roster
             .resize(counts.iter().map(|&n| n as usize).sum(), 0);
         self.armies.resize(self.roster.len() * 0x500 / 8, 0);
-        let designs = self.state[engine::cgame_state::EQUIPMENT_VARIANTS_CAPACITY / 8];
+        let designs = self.state[engine_native::cgame_state::EQUIPMENT_VARIANTS_CAPACITY / 8];
         for (index, pointer) in self.roster.iter_mut().enumerate() {
             let army = &mut self.armies[index * 0x500 / 8..][..0x500 / 8];
             *pointer = army.as_ptr() as u64;
@@ -218,28 +219,28 @@ impl StateMemory {
         let mut roster_slot = 0;
         for (index, &count) in counts.iter().enumerate() {
             let country = &mut self.country[index * 0x1000 / 8..][..0x1000 / 8];
-            country[0] = engine::ccountry::VTABLE_RVA as u64;
-            country[engine::ccountry::ID / 8] = index as u64 + 1;
-            country[engine::ccountry::DIVISIONS / 8] =
+            country[0] = engine_native::ccountry::VTABLE_RVA as u64;
+            country[engine_native::ccountry::ID / 8] = index as u64 + 1;
+            country[engine_native::ccountry::DIVISIONS / 8] =
                 (self.roster.as_ptr() as usize + roster_slot * 8) as u64;
-            country[engine::ccountry::DIVISIONS_CAPACITY / 8] =
+            country[engine_native::ccountry::DIVISIONS_CAPACITY / 8] =
                 u64::from(count) | (u64::from(count) << 32);
             self.countries[index + 1] = country.as_ptr() as u64;
             roster_slot += count as usize;
         }
         let slots = self.countries.len() as u64;
-        self.state[engine::cgame_state::COUNTRIES / 8] = self.countries.as_ptr() as u64;
-        self.state[engine::cgame_state::COUNTRIES_CAPACITY / 8] = slots | (slots << 32);
-        self.state[engine::cgame_state::COUNTRY_LINKS / 8] = self.links.as_ptr() as u64;
-        self.state[engine::cgame_state::COUNTRY_LINKS_CAPACITY / 8] = slots | (slots << 32);
+        self.state[engine_native::cgame_state::COUNTRIES / 8] = self.countries.as_ptr() as u64;
+        self.state[engine_native::cgame_state::COUNTRIES_CAPACITY / 8] = slots | (slots << 32);
+        self.state[engine_native::cgame_state::COUNTRY_LINKS / 8] = self.links.as_ptr() as u64;
+        self.state[engine_native::cgame_state::COUNTRY_LINKS_CAPACITY / 8] = slots | (slots << 32);
     }
     fn stockpile(&mut self, count: u32) {
         self.reserve.resize(0x300 / 8, 0);
-        let pool = &mut self.reserve[engine::cproduction_status::STOCKPILE_POOL / 8..];
+        let pool = &mut self.reserve[engine_native::cproduction_status::STOCKPILE_POOL / 8..];
         pool[0] = pool::VTABLE_RVA as u64;
         pool[pool::ITEMS / 8] = pool.as_ptr() as u64;
         pool[pool::CAPACITY / 8] = u64::from(count) | (u64::from(count) << 32);
-        self.country[engine::ccountry::PRODUCTION_STATUS / 8] = self.reserve.as_ptr() as u64;
+        self.country[engine_native::ccountry::PRODUCTION_STATUS / 8] = self.reserve.as_ptr() as u64;
     }
     fn resetting(&mut self, value: bool) {
         let index = native::RESETTING / 8;
@@ -250,17 +251,17 @@ impl StateMemory {
         let state = self.state.as_ptr() as usize;
         self.state[0] = state as u64;
         state
-            .checked_sub(engine::cgame_state::SINGLETON_RVA)
+            .checked_sub(engine_native::cgame_state::SINGLETON_RVA)
             .unwrap()
     }
 }
 impl Memory for StateMemory {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-        if address == engine::cgame_state::SINGLETON_RVA && destination.len() == 8 {
+        if address == engine_native::cgame_state::SINGLETON_RVA && destination.len() == 8 {
             destination.copy_from_slice(&(self.state.as_ptr() as u64).to_le_bytes());
             true
         } else {
-            unsafe { engine::memory::LiveMemory::new() }.copy(address, destination)
+            unsafe { engine_native::memory::LiveMemory::new() }.copy(address, destination)
         }
     }
 }
@@ -330,24 +331,26 @@ unsafe extern "system-unwind" fn cleanup_delete(
     *OBSERVED_DELETION.lock().unwrap() = DELETION.get();
     assert!(crate::runtime::observers_active());
     assert_eq!(state, unsafe {
-        *((BASE.load(Ordering::Relaxed) + engine::cgame_state::SINGLETON_RVA) as *const usize)
+        *((BASE.load(Ordering::Relaxed) + engine_native::cgame_state::SINGLETON_RVA)
+            as *const usize)
     });
     let bank = army + carmy::EQUIPMENT_POOL;
     let items = unsafe { *((bank + pool::ITEMS) as *const usize) };
     let design = unsafe { *(items as *const usize) };
     if return_equipment != 0 {
-        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let design_count = unsafe { *((bank + pool::COUNT) as *const i32) } as usize;
         let mut reserve = ReserveWorld::new(design_count, 1);
         let base = BASE.load(Ordering::Relaxed);
         reserve.world.rebase(base);
-        reserve.manager[0] = (base + engine::cproduction_status::VTABLE_RVA) as u64;
-        reserve._country[0] = (base + engine::ccountry::VTABLE_RVA) as u64;
-        reserve.manager[engine::cproduction_status::STOCKPILE_POOL / 8] =
+        reserve.manager[0] = (base + engine_native::cproduction_status::VTABLE_RVA) as u64;
+        reserve._country[0] = (base + engine_native::ccountry::VTABLE_RVA) as u64;
+        reserve.manager[engine_native::cproduction_status::STOCKPILE_POOL / 8] =
             (base + pool::VTABLE_RVA) as u64;
         for index in 0..design_count {
             let source =
-                engine::read::<u64>(&memory, items + index * equipment_entry::STRIDE).unwrap();
+                engine_native::read::<u64>(&memory, items + index * equipment_entry::STRIDE)
+                    .unwrap();
             reserve
                 .world
                 .word(0x600 + index * equipment_entry::STRIDE, source);
@@ -356,7 +359,7 @@ unsafe extern "system-unwind" fn cleanup_delete(
         unsafe { returned(reserve.manager.as_ptr() as usize, bank) };
     }
     unsafe {
-        *((army + engine::cunit::EXPEDITIONARY_OWNER) as *mut u32) = 0;
+        *((army + engine_native::cunit::EXPEDITIONARY_OWNER) as *mut u32) = 0;
         land(
             army,
             design,
@@ -381,7 +384,7 @@ unsafe extern "system-unwind" fn queue_metadata_during_delete(
     record_queue(
         &mut STORE.lock().unwrap(),
         army,
-        unsafe { *((army + engine::cunit::HANDLE) as *const u64) },
+        unsafe { *((army + engine_native::cunit::HANDLE) as *const u64) },
         native::QueuedContext::Transfer(native::Disposition::HqTransferred),
     )
     .unwrap();
@@ -504,7 +507,7 @@ unsafe extern "system-unwind" fn land_scale_and_ceiling(
 unsafe extern "system-unwind" fn air_request(wing: usize, request: usize, source: usize) {
     assert!(STORE.try_lock().is_ok());
     *FORWARDED.lock().unwrap() = [wing, request, source, 0, 0, 0, 0, 0];
-    let bank = wing + engine::cair_wing::EQUIPMENT_POOL;
+    let bank = wing + engine_native::cair_wing::EQUIPMENT_POOL;
     let items = unsafe { *((bank + pool::ITEMS) as *const usize) };
     let design = unsafe { *(items as *const usize) };
     // Airplane losses negate the signed request before the add.
@@ -513,14 +516,16 @@ unsafe extern "system-unwind" fn air_request(wing: usize, request: usize, source
 }
 
 fn assert_signed_row(amount_raw: i64, cause: native::Cause, variant: u64) {
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let mut captured = crate::extended::equipment_destruction::Captured::with_capacities(&8);
     captured.capture(&memory, 0, 0);
     let [
-        replay::frame::TableView::Complete(replay::rows::TableRows::EquipmentDestruction(rows)),
-        replay::frame::TableView::Complete(replay::rows::TableRows::DivisionEquipmentDeletions(
-            deleted,
-        )),
+        replay_frame::frame::TableView::Complete(
+            replay_data::rows::TableRows::EquipmentDestruction(rows),
+        ),
+        replay_frame::frame::TableView::Complete(
+            replay_data::rows::TableRows::DivisionEquipmentDeletions(deleted),
+        ),
     ] = captured.tables()
     else {
         panic!("native correction must publish both complete tables");
@@ -623,7 +628,7 @@ fn negative_air_request_records_signed_gain_without_poison() {
     let mut world = World::new(1);
     world.amount(0, 1000000);
     let mut wing = vec![0u64; 0xa00 / 8];
-    let pool_offset = engine::cair_wing::EQUIPMENT_POOL;
+    let pool_offset = engine_native::cair_wing::EQUIPMENT_POOL;
     wing[pool_offset / 8] = pool::VTABLE_RVA as u64;
     wing[(pool_offset + pool::ITEMS) / 8] = (world.army() + 0x600) as u64;
     wing[(pool_offset + pool::CAPACITY) / 8] = (1u64 << 32) | 1;
@@ -704,7 +709,7 @@ fn record_queue(
     // These provenance fixtures model an earlier fully credited HQ return.
     // Actual refused/partial-credit callbacks are exercised separately below.
     if disposition == native::Disposition::HqTransferred && !store.credits.contains(handle) {
-        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
         if native::army_identity(&memory, BASE.load(Ordering::Relaxed), army) == Ok(handle)
             && let Ok(len) = native::snapshot(
                 &memory,
@@ -757,7 +762,7 @@ fn setup(capacity: usize, designs: usize) {
         queued_limit: capacity,
         before: vec![Default::default(); pool_bound],
         after: vec![Default::default(); pool_bound],
-        raw: vec![0; pool_bound * engine::equipment_entry::STRIDE],
+        raw: vec![0; pool_bound * engine_native::equipment_entry::STRIDE],
         net: vec![Net::default(); pool_bound * 3],
         armies: vec![0; capacity + 1],
         held: vec![HeldRow::default(); pool_bound],
@@ -1168,7 +1173,7 @@ fn interval_recovery_preserves_skipped_source_refusal_and_admits_other_sources()
         let mut other = World::new(1);
         other.rebase(base);
         other.owner(4999);
-        other.word(engine::cunit::HANDLE, 0xe00200004b01);
+        other.word(engine_native::cunit::HANDLE, 0xe00200004b01);
         unsafe {
             attrition(
                 other.army() + carmy::EQUIPMENT_POOL,
@@ -1188,7 +1193,7 @@ fn interval_recovery_preserves_skipped_source_refusal_and_admits_other_sources()
 #[test]
 fn actual_events_every_country_fail_closed_and_detach() {
     let _serial = serial();
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let mut world = World::new(3);
     setup(5000, 3);
     boundary(clock(1, 1));
@@ -1352,7 +1357,7 @@ fn failed_prepare_observations_skip_growth_without_losing_the_branch() {
 
     // The design census is unreadable: retain the existing buffers and event.
     prepare(
-        &engine::memory::SliceMemory {
+        &engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         },
@@ -1384,10 +1389,8 @@ fn failed_prepare_observations_skip_growth_without_losing_the_branch() {
 
 #[test]
 fn enabled_land_shim_passes_caller_pc_and_records_stable_causes() {
-    use replay::{
-        frame::TableView,
-        rows::{EquipmentDestructionCause, TableRows},
-    };
+    use replay_data::{rows::EquipmentDestructionCause, rows::TableRows};
+    use replay_frame::frame::TableView;
 
     let _serial = serial();
     let caller = destruction_land_test_return as *const () as usize;
@@ -1449,7 +1452,7 @@ fn enabled_land_shim_passes_caller_pc_and_records_stable_causes() {
         );
         let mut captured = crate::extended::equipment_destruction::Captured::with_capacities(&1);
         captured.capture(
-            &engine::memory::SliceMemory {
+            &engine_native::memory::SliceMemory {
                 base: 0,
                 bytes: &[],
             },
@@ -1611,15 +1614,16 @@ fn context(world: &World, cause: native::Cause) -> Deletion {
     context_rebased(world, 0, cause)
 }
 fn context_rebased(world: &World, base: usize, cause: native::Cause) -> Deletion {
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     Deletion {
         army: world.army(),
         handle: native::army_identity(&memory, base, world.army()).unwrap(),
         country: native::army_owner(&memory, world.army()).unwrap(),
         cause,
         disposition: native::Disposition::Loss,
-        expeditionary_owner: (world.storage[engine::cunit::EXPEDITIONARY_OWNER / 8]
-            >> ((engine::cunit::EXPEDITIONARY_OWNER % 8) * 8)) as u32,
+        expeditionary_owner: (world.storage[engine_native::cunit::EXPEDITIONARY_OWNER / 8]
+            >> ((engine_native::cunit::EXPEDITIONARY_OWNER % 8) * 8))
+            as u32,
         returned: false,
         observed: false,
         ignored: false,
@@ -1709,7 +1713,7 @@ fn deletion_paths_snapshot_before_free_and_ignore_actual_returns_and_cleanup() {
         boundary(clock(2, 1));
         memory.resetting(reset);
         let mut world = World::new(1);
-        world.word(engine::cunit::HANDLE, 0);
+        world.word(engine_native::cunit::HANDLE, 0);
         world.word(carmy::EQUIPMENT_POOL, 0);
         let ctx = deletion_context(
             &memory,
@@ -1925,7 +1929,7 @@ fn transferred_provenance_survives_conflicting_requests_and_direct_deletion() {
     )
     .unwrap();
     let new_handle = old_handle + (1 << 32);
-    world.word(engine::cunit::HANDLE, new_handle);
+    world.word(engine_native::cunit::HANDLE, new_handle);
     record_queue(
         &mut STORE.lock().unwrap(),
         world.army(),
@@ -2042,7 +2046,7 @@ fn pending_transfers_exclude_each_army_writer_and_direct_free_but_not_reused_han
         // An ignored entry for the recycled address has another full handle.
         // Every ordinary writer must resume its exact actual removal capture.
         let new_handle = handle + (1 << 32);
-        world.word(engine::cunit::HANDLE, new_handle);
+        world.word(engine_native::cunit::HANDLE, new_handle);
         record_queue(
             &mut STORE.lock().unwrap(),
             world.army(),
@@ -2173,12 +2177,12 @@ fn residual_follows_damage_flush_attrition_and_owner_cleanup_without_double_coun
         boundary(clock(2, 1));
         let mut world = World::new(1);
         world.owner(4999);
-        world.dword(engine::cunit::EXPEDITIONARY_OWNER, 1500);
+        world.dword(engine_native::cunit::EXPEDITIONARY_OWNER, 1500);
         let ctx = context(&world, residual);
         assert_eq!(ctx.country, 1500);
         // Unit deletion clears expeditionary ownership before its nested combat
         // flush; every observation retains the scope's entry owner instead.
-        world.dword(engine::cunit::EXPEDITIONARY_OWNER, 0);
+        world.dword(engine_native::cunit::EXPEDITIONARY_OWNER, 0);
         let _scope = DeletionScope::enter(Some(ctx));
         if residual == native::Cause::DivisionDeleted {
             unsafe {
@@ -2246,7 +2250,7 @@ fn recovered_deletion_scope_retains_owner_and_allows_native_nested_flushes() {
         let mut world = World::new(1);
         world.rebase(base);
         world.owner(4999);
-        world.dword(engine::cunit::EXPEDITIONARY_OWNER, 1500);
+        world.dword(engine_native::cunit::EXPEDITIONARY_OWNER, 1500);
         ORIGINAL[SiteId::Land as usize]
             .store(land_removal as *const () as usize, Ordering::Release);
         ORIGINAL[SiteId::Delete as usize]
@@ -2289,7 +2293,7 @@ fn recovered_deletion_scope_retains_owner_and_allows_native_nested_flushes() {
         let _scope = DeletionScope::enter(Some(ctx));
         let mut inner = World::new(1);
         inner.rebase(base);
-        inner.word(engine::cunit::HANDLE, 0xe00200004b01);
+        inner.word(engine_native::cunit::HANDLE, 0xe00200004b01);
         unsafe { division_free(inner.army(), 1) };
         assert_eq!(DELETION.get().unwrap().army, outer.army());
         assert_eq!(drain(&mut out).unwrap(), 2);
@@ -2360,14 +2364,14 @@ fn expeditionary_scope_owns_each_nested_army_writer_but_not_a_reused_handle() {
         boundary(clock(2, 1));
         let mut world = World::new(1);
         world.owner(4999);
-        world.dword(engine::cunit::EXPEDITIONARY_OWNER, 1500);
+        world.dword(engine_native::cunit::EXPEDITIONARY_OWNER, 1500);
         let ctx = context(&world, native::Cause::DivisionDestroyed);
-        world.dword(engine::cunit::EXPEDITIONARY_OWNER, 0);
+        world.dword(engine_native::cunit::EXPEDITIONARY_OWNER, 0);
         let _scope = DeletionScope::enter(Some(ctx));
         ORIGINAL[SiteId::Land as usize]
             .store(land_removal as *const () as usize, Ordering::Release);
         for (handle, expected_country) in [(ctx.handle, 1500), (ctx.handle + (1 << 32), 4999)] {
-            world.word(engine::cunit::HANDLE, handle);
+            world.word(engine_native::cunit::HANDLE, handle);
             world.amount(0, 900000);
             unsafe {
                 match writer {
@@ -2508,10 +2512,11 @@ fn live_division_counts_size_both_queue_indexes_and_deletion_allowances() {
         memory.countries.push(memory.countries[1]);
         memory.links.push(1);
         let slots = memory.countries.len() as u64;
-        memory.state[engine::cgame_state::COUNTRIES / 8] = memory.countries.as_ptr() as u64;
-        memory.state[engine::cgame_state::COUNTRIES_CAPACITY / 8] = slots | (slots << 32);
-        memory.state[engine::cgame_state::COUNTRY_LINKS / 8] = memory.links.as_ptr() as u64;
-        memory.state[engine::cgame_state::COUNTRY_LINKS_CAPACITY / 8] = slots | (slots << 32);
+        memory.state[engine_native::cgame_state::COUNTRIES / 8] = memory.countries.as_ptr() as u64;
+        memory.state[engine_native::cgame_state::COUNTRIES_CAPACITY / 8] = slots | (slots << 32);
+        memory.state[engine_native::cgame_state::COUNTRY_LINKS / 8] = memory.links.as_ptr() as u64;
+        memory.state[engine_native::cgame_state::COUNTRY_LINKS_CAPACITY / 8] =
+            slots | (slots << 32);
         assert_eq!(
             native::population(&memory, 0).map(|p| p.divisions),
             Some(countries * 3)
@@ -2686,7 +2691,7 @@ fn hundred_division_burst_and_log_growth_preserve_pending_events_and_provenance(
             let mut world = World::new(64);
             world.owner((division * (countries - 1) / 99) as u32);
             world.word(
-                engine::cunit::HANDLE,
+                engine_native::cunit::HANDLE,
                 ((division as u64 + 1) << 32) | 0x4b01,
             );
             let _scope =
@@ -2762,7 +2767,7 @@ fn fake_intel_queue_entry_and_direct_free_record_no_witness_or_loss() {
     let mut world = World::new(1);
     world.rebase(base);
     let mut template = vec![0u64; 0x240 / 8];
-    let flag = engine::creferenced_division_template::REVEAL_SKIP;
+    let flag = engine_native::creferenced_division_template::REVEAL_SKIP;
     template[flag / 8] = 1 << ((flag % 8) * 8);
     world.word(carmy::STANDARD_TEMPLATE, template.as_ptr() as u64);
     // Fake pools can be nonempty; disposal still has no real force loss.
@@ -2777,10 +2782,8 @@ fn fake_intel_queue_entry_and_direct_free_record_no_witness_or_loss() {
 
 #[test]
 fn supplemental_install_refusal_keeps_real_original_hooks_and_incomplete_net_capture_available() {
-    use replay::{
-        frame::TableView,
-        rows::{EquipmentDestructionCoverage, TableRows},
-    };
+    use replay_data::{rows::EquipmentDestructionCoverage, rows::TableRows};
+    use replay_frame::frame::TableView;
     use windows_sys::Win32::System::Memory::{
         MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE, VirtualAlloc, VirtualFree,
     };
@@ -2835,7 +2838,7 @@ fn supplemental_install_refusal_keeps_real_original_hooks_and_incomplete_net_cap
     }
     // The real constructors patch only this synthetic module. No trampoline
     // or copied native instructions execute; attrition uses the fixture stub.
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let mut hooks = unsafe { Hooks::new(&memory, base) };
     assert_eq!(hooks.original.len(), 4);
     assert!(hooks.supplemental.is_empty());
@@ -2898,7 +2901,7 @@ fn supplemental_install_refusal_keeps_real_original_hooks_and_incomplete_net_cap
             assert_eq!(rows[1].country, 1);
             assert_eq!(
                 rows[1].cause,
-                replay::rows::EquipmentDestructionCause::Attrition
+                replay_data::rows::EquipmentDestructionCause::Attrition
             );
             assert_eq!(
                 rows[1].coverage,
@@ -2978,7 +2981,7 @@ fn sentinel_install_refusal_withholds_both_tables() {
         captured
             .tables()
             .iter()
-            .all(|table| matches!(table, replay::frame::TableView::Unavailable { .. }))
+            .all(|table| matches!(table, replay_frame::frame::TableView::Unavailable { .. }))
     );
 }
 
@@ -3070,7 +3073,10 @@ fn destruction_scale_bench() {
                             if transfer {
                                 world.rebase(base);
                             }
-                            world.word(engine::cunit::HANDLE, ((id as u64 + 1) << 32) | 0x4b01);
+                            world.word(
+                                engine_native::cunit::HANDLE,
+                                ((id as u64 + 1) << 32) | 0x4b01,
+                            );
                         }
                         let contexts: Vec<_> = worlds[..divisions]
                             .iter()
@@ -3270,7 +3276,7 @@ fn rejected_original_pool_headers_prepare_every_scratch_arena_without_country_gr
     memory.population(&[1]);
     for (hour, count) in [(3, 5000), (4, 10003)] {
         let world = World::new(count);
-        let live = unsafe { engine::memory::LiveMemory::new() };
+        let live = unsafe { engine_native::memory::LiveMemory::new() };
         let mut short = [equipment_entry::Row::default(); 1];
         crate::test_support::with_allocations_denied(|| {
             assert_eq!(
@@ -3449,7 +3455,7 @@ unsafe extern "system-unwind" fn roster_remove(country: usize, army: usize) -> u
     if country as u8 != 0 {
         unsafe {
             *(army as *mut u64) = 0;
-            *((army + engine::cunit::HANDLE) as *mut u64) = 0;
+            *((army + engine_native::cunit::HANDLE) as *mut u64) = 0;
         }
     }
     // The high bits prove the wrapper preserves the entire native result.
@@ -3476,7 +3482,7 @@ fn roster_transfers_witness_only_actual_removal_and_keep_owned_pre_call_identity
         let mut world = World::new(1);
         world.rebase(base);
         world.owner(4999);
-        world.dword(engine::cunit::EXPEDITIONARY_OWNER, 1500);
+        world.dword(engine_native::cunit::EXPEDITIONARY_OWNER, 1500);
         let callback: unsafe extern "system-unwind" fn(usize, usize) -> usize =
             unsafe { std::mem::transmute(callback(site)) };
         for result in [0x100usize, 0x101] {
@@ -3573,7 +3579,7 @@ fn signed_pool_difference_is_shared_by_every_writer_independently_of_cause() {
     let _serial = serial();
     setup(8, 1);
     let mut world = World::new(1);
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let diagnostics = refusal_diagnostics();
     let mut store = STORE.lock().unwrap();
     observe_pool(
@@ -3642,7 +3648,7 @@ fn supplemental_enable_byte_mismatch_rolls_back_published_members_and_keeps_orig
             );
         }
     }
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let mut hooks = unsafe { Hooks::new(&memory, base) };
     assert_eq!(hooks.original.len(), 4);
     assert_eq!(hooks.supplemental.len(), native::SITES.len() - 4);
@@ -3661,7 +3667,7 @@ fn supplemental_enable_byte_mismatch_rolls_back_published_members_and_keeps_orig
         assert!(!SITE_ENABLED[site.id as usize].load(Ordering::SeqCst));
         if site.id != SiteId::DivisionFree {
             assert_eq!(
-                engine::read::<[u8; 16]>(&memory, base + site.rva),
+                engine_native::read::<[u8; 16]>(&memory, base + site.rva),
                 Some(site.sentinel)
             );
         }
@@ -3673,7 +3679,7 @@ fn supplemental_enable_byte_mismatch_rolls_back_published_members_and_keeps_orig
         .filter(|site| !site.id.is_supplemental())
     {
         assert_eq!(
-            engine::read::<[u8; 16]>(&memory, base + site.rva),
+            engine_native::read::<[u8; 16]>(&memory, base + site.rva),
             Some(site.sentinel)
         );
     }
@@ -3710,7 +3716,7 @@ fn scripted_reserve_fraction_captures_authentic_owner_and_all_designs() {
     );
     assert!(!POISONED.load(Ordering::SeqCst));
     assert_eq!(refusal_diagnostics(), diagnostics);
-    reserve._country[engine::ccountry::PRODUCTION_STATUS / 8] = 0;
+    reserve._country[engine_native::ccountry::PRODUCTION_STATUS / 8] = 0;
     unsafe { scripted_reserve_equipment_fraction(reserve.pool(), 50000) };
     assert!(
         drain(&mut out)
@@ -4402,10 +4408,10 @@ fn return_credits_require_actual_witness_and_do_not_cross_full_handle_or_load() 
     }
     let old = context_rebased(&world, base, native::Cause::Unknown).handle;
     assert!(STORE.lock().unwrap().credits.contains(old));
-    world.word(engine::cunit::HANDLE, old + (1 << 32));
+    world.word(engine_native::cunit::HANDLE, old + (1 << 32));
     let mut ctx = context_rebased(&world, base, native::Cause::Unknown);
     ctx.disposition = native::Disposition::HqTransferred;
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     assert!(
         observe_deleted(&mut STORE.lock().unwrap(), &memory, base, ctx)
             .unwrap_err()
@@ -4435,7 +4441,10 @@ fn five_thousand_native_country_return_proofs_remain_deferred_and_recycle_withou
         world.rebase(base);
         world.owner(index as u32 + 1);
         world.amount(0, 100001);
-        world.word(engine::cunit::HANDLE, ((index as u64 + 1) << 32) | 0x4b01);
+        world.word(
+            engine_native::cunit::HANDLE,
+            ((index as u64 + 1) << 32) | 0x4b01,
+        );
         let reserve = ReserveWorld::for_source(world, base, index as u32 + 1, 0x53e2d620fb40);
         unsafe {
             hq_returned(
@@ -4473,7 +4482,7 @@ fn five_thousand_native_country_return_proofs_remain_deferred_and_recycle_withou
         world.rebase(base);
         world.amount(0, 100001);
         world.word(
-            engine::cunit::HANDLE,
+            engine_native::cunit::HANDLE,
             ((index as u64 + countries as u64 + 1) << 32) | 0x4b01,
         );
         let reserve = ReserveWorld::for_source(world, base, index as u32 + 1, 0x53e2d620fb40);
@@ -4634,7 +4643,7 @@ unsafe extern "system-unwind" fn merge_native_fixture(argument: usize) {
         cancel_native_requests(survivor, plan.reserve_manager, false);
     }
     let base = BASE.load(Ordering::Relaxed);
-    let state = unsafe { *((base + engine::cgame_state::SINGLETON_RVA) as *const usize) };
+    let state = unsafe { *((base + engine_native::cgame_state::SINGLETON_RVA) as *const usize) };
     unsafe {
         delete(
             state,
@@ -4691,7 +4700,7 @@ fn whole_native_merge_captures_retained_saturation_signed_discard_and_rounding_o
         let mut source = World::new(2);
         source.rebase(base);
         source.word(0x1f0, 0x123456);
-        source.word(engine::cunit::HANDLE, 0xe00200004b01);
+        source.word(engine_native::cunit::HANDLE, 0xe00200004b01);
         for index in 0..2 {
             source.word(
                 0x600 + index * equipment_entry::STRIDE,
@@ -4782,7 +4791,7 @@ fn whole_merge_includes_only_canceled_held_pools_and_all_bulk_designs() {
         source.rebase(base);
         source.amount(0, 0);
         source.amount(1, 0);
-        source.word(engine::cunit::HANDLE, 0xe00200004b01);
+        source.word(engine_native::cunit::HANDLE, 0xe00200004b01);
         for index in 0..2 {
             source.word(
                 0x600 + index * equipment_entry::STRIDE,
@@ -4806,10 +4815,10 @@ fn whole_merge_includes_only_canceled_held_pools_and_all_bulk_designs() {
         let mut reserve = ReserveWorld::for_source(&survivor, base, 1, reserve_amount);
         state.roster[0] = survivor.army() as u64;
         state.roster[1] = source.army() as u64;
-        reserve._country[engine::ccountry::DIVISIONS / 8] = state.roster.as_ptr() as u64;
-        reserve._country[engine::ccountry::DIVISIONS_CAPACITY / 8] = 2 | (2 << 32);
+        reserve._country[engine_native::ccountry::DIVISIONS / 8] = state.roster.as_ptr() as u64;
+        reserve._country[engine_native::ccountry::DIVISIONS_CAPACITY / 8] = 2 | (2 << 32);
         state.countries[1] = reserve._country.as_ptr() as u64;
-        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
         assert_eq!(
             native::population(&memory, base).unwrap(),
             native::Population {
@@ -4867,7 +4876,7 @@ fn whole_merge_includes_only_canceled_held_pools_and_all_bulk_designs() {
             777777
         );
         // Live census accounts both families; preparation remains off-thread.
-        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let mut pools = 0;
         native::canceled_delivery_pools(&memory, base, survivor.army(), true, |_| {
             pools += 1;
@@ -4899,7 +4908,10 @@ fn canceled_deliveries_conserve_their_own_native_country_destination() {
                     let mut army = World::new(2);
                     army.rebase(base);
                     army.owner(index as u32 + 1);
-                    army.word(engine::cunit::HANDLE, ((index as u64 + 1) << 32) | 0x4b01);
+                    army.word(
+                        engine_native::cunit::HANDLE,
+                        ((index as u64 + 1) << 32) | 0x4b01,
+                    );
                     army.amount(0, 0);
                     army.amount(1, 0);
                     army
@@ -4923,16 +4935,16 @@ fn canceled_deliveries_conserve_their_own_native_country_destination() {
                 .collect();
             for (index, (army, reserve)) in armies.iter().zip(&mut reserves).enumerate() {
                 state.roster[index] = army.army() as u64;
-                reserve._country[engine::ccountry::DIVISIONS / 8] =
+                reserve._country[engine_native::ccountry::DIVISIONS / 8] =
                     unsafe { state.roster.as_ptr().add(index) } as u64;
-                reserve._country[engine::ccountry::DIVISIONS_CAPACITY / 8] = 1 | (1 << 32);
+                reserve._country[engine_native::ccountry::DIVISIONS_CAPACITY / 8] = 1 | (1 << 32);
                 state.countries[index + 1] = reserve._country.as_ptr() as u64;
             }
             let mut requests: Vec<_> = armies
                 .iter_mut()
                 .map(|army| RequestsWorld::new(army, base, &[200000], &[]))
                 .collect();
-            let memory = unsafe { engine::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native::memory::LiveMemory::new() };
             let demand = native::population(&memory, base).unwrap();
             assert_eq!(requests.len(), countries);
             assert_eq!(
@@ -5049,7 +5061,7 @@ fn pending_hq_source_settles_saved_deficit_during_whole_merge_without_scratch_re
     survivor.amount(1, 0);
     let mut source = World::new(2);
     source.rebase(base);
-    source.word(engine::cunit::HANDLE, 0xe00200004b01);
+    source.word(engine_native::cunit::HANDLE, 0xe00200004b01);
     for index in 0..2 {
         source.word(
             0x600 + index * equipment_entry::STRIDE,
@@ -5066,7 +5078,7 @@ fn pending_hq_source_settles_saved_deficit_during_whole_merge_without_scratch_re
             source.army() + carmy::EQUIPMENT_POOL,
         );
     }
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let handle = native::army_identity(&memory, base, source.army()).unwrap();
     super::record_queue(
         &mut STORE.lock().unwrap(),
@@ -5151,7 +5163,7 @@ fn credited_survivor_reallocation_restores_live_damage_and_return_accounting() {
         survivor.amount(1, 0);
         let mut source = World::new(2);
         source.rebase(base);
-        source.word(engine::cunit::HANDLE, 0xe00200004b01);
+        source.word(engine_native::cunit::HANDLE, 0xe00200004b01);
         for index in 0..2 {
             source.word(
                 0x600 + index * equipment_entry::STRIDE,
@@ -5162,7 +5174,7 @@ fn credited_survivor_reallocation_restores_live_damage_and_return_accounting() {
         source.amount(1, 0);
         let reserve = ReserveWorld::for_source(&survivor, base, 1, 0);
         state.countries[1] = reserve._country.as_ptr() as u64;
-        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let handle = native::army_identity(&memory, base, survivor.army()).unwrap();
         unsafe {
             hq_returned(
@@ -5401,7 +5413,7 @@ fn refused_pool_writers_and_unrelated_destructor_keep_outer_basis_unavailable() 
         let mut other = World::new(1);
         other.rebase(base);
         other.amount(0, 100000);
-        other.word(engine::cunit::HANDLE, 0xe00200004b01);
+        other.word(engine_native::cunit::HANDLE, 0xe00200004b01);
         other.word(0x600, outer.design(0) as u64);
         let requests = RequestsWorld::new(&mut other, base, &[200000], &[]);
         let reserve = ReserveWorld::for_source(&outer, base, 1, 0);
@@ -5620,10 +5632,10 @@ fn live_credited_survivor_can_later_merge_as_a_queued_hq_source() {
     survivor.amount(1, 0);
     let mut donor = World::new(2);
     donor.rebase(base);
-    donor.word(engine::cunit::HANDLE, 0xe00200004b01);
+    donor.word(engine_native::cunit::HANDLE, 0xe00200004b01);
     let mut recipient = World::new(2);
     recipient.rebase(base);
-    recipient.word(engine::cunit::HANDLE, 0xe00300004b01);
+    recipient.word(engine_native::cunit::HANDLE, 0xe00300004b01);
     for index in 0..2 {
         donor.word(
             0x600 + index * equipment_entry::STRIDE,
@@ -5640,7 +5652,7 @@ fn live_credited_survivor_can_later_merge_as_a_queued_hq_source() {
     recipient.amount(1, 0);
     let reserve = ReserveWorld::for_source(&survivor, base, 1, 0);
     state.countries[1] = reserve._country.as_ptr() as u64;
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let handle = native::army_identity(&memory, base, survivor.army()).unwrap();
     unsafe {
         hq_returned(
@@ -5751,7 +5763,7 @@ fn conservation_wide_duplicates_cancel_before_serialized_width_check() {
 #[test]
 fn native_merge_selection_and_reserve_reads_stay_with_reached_designs() {
     let _serial = serial();
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let mut survivor = World::new(2);
     survivor.word(0x1f0, 17);
     let mut selected = World::new(2);
@@ -5856,7 +5868,7 @@ fn skipped_whole_merge_revokes_survivor_and_donor_proofs_before_unwind() {
     let mut donor = World::new(1);
     donor.rebase(base);
     donor.amount(0, 100000);
-    donor.word(engine::cunit::HANDLE, 0xe00200004b01);
+    donor.word(engine_native::cunit::HANDLE, 0xe00200004b01);
     let survivor_reserve = ReserveWorld::for_source(&survivor, base, 1, 0);
     let donor_reserve = ReserveWorld::for_source(&donor, base, 1, 0);
     unsafe {
@@ -5869,7 +5881,7 @@ fn skipped_whole_merge_revokes_survivor_and_donor_proofs_before_unwind() {
             donor.army() + carmy::EQUIPMENT_POOL,
         );
     }
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let survivor_handle = native::army_identity(&memory, base, survivor.army()).unwrap();
     let donor_handle = native::army_identity(&memory, base, donor.army()).unwrap();
     poison();
@@ -5938,7 +5950,7 @@ fn native_merge_unwind_keeps_original_once_and_poisoned_observation_quiet() {
             world.army() + carmy::EQUIPMENT_POOL,
         );
     }
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let handle = native::army_identity(&memory, base, world.army()).unwrap();
     let argument = [world.army() as u64, 0, 0, 0];
     ORIGINAL[SiteId::Merge as usize]

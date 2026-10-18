@@ -13,7 +13,7 @@
 //! exact unknown total. A gap, nonzero initial baseline, reset, disagreement, or
 //! loss of all spanning relations leaves it unknown thereafter. New zero counters
 //! cover only their new relations: losses between old and new relations may be missing.
-//! WarRelations cadence comes from replay::cadence; reads use metadata::slot_read. Ended and
+//! WarRelations cadence comes from replay_data::cadence; reads use metadata::slot_read. Ended and
 //! disappeared relations retain their counters inside the shared scan.
 //! If a relation present at the last read before a gap is absent afterwards,
 //! both endpoint totals become partial recorded subtotals from that sample onwards.
@@ -51,16 +51,11 @@ use dashboard_base::{
     products::country_groups::HourSpan, products::validate_tag,
 };
 use dashboard_text::metadata::{link_slot, mapped_slot, slot_read, validate_campaign};
-use installed_content::{
-    country_names::{CountryNames, Operands},
-    localisation::Localisation,
-};
-use replay::{
-    cadence::{self, Cadence},
-    container::Replay,
-    frame::{FrameDecoder, SharedView, TableView, ViewIdentity},
-    rows::{TableId, tables},
-};
+use installed_content_country_names::{country_names::CountryNames, country_names::Operands};
+use installed_content_localisation::localisation::Localisation;
+use replay::container::Replay;
+use replay_data::{cadence, cadence::Cadence, rows::TableId, rows::tables};
+use replay_frame::{frame::FrameDecoder, frame::SharedView, frame::TableView, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
@@ -1789,7 +1784,7 @@ const NAME_INPUTS: [TableId; 4] = [
 /// Whether two views of `table` agree on every field `CountryNames::read`
 /// reads: complete tables by those fields, other views whole.
 pub fn same_name_rows(table: TableId, a: &SharedView, b: &SharedView) -> bool {
-    fn rows<T: replay::rows::TableSchema>(
+    fn rows<T: replay_data::rows::TableSchema>(
         a: &SharedView,
         b: &SharedView,
         equal: impl Fn(&T::Row, &T::Row) -> bool,
@@ -1840,12 +1835,12 @@ pub fn same_name_rows(table: TableId, a: &SharedView, b: &SharedView) -> bool {
 /// it: equal digests mean continued observation would not name again. The
 /// census's Countries fields and whole CountryLinks view, then each naming
 /// input's compared fields when complete, else its whole view.
-fn name_digest(frame: &replay::frame::DecodedFrame) -> [u8; 16] {
+fn name_digest(frame: &replay_frame::frame::DecodedFrame) -> [u8; 16] {
     fn put(hasher: &mut blake3::Hasher, text: &str) {
         hasher.update(&(text.len() as u64).to_le_bytes());
         hasher.update(text.as_bytes());
     }
-    fn rows<T: replay::rows::TableSchema>(
+    fn rows<T: replay_data::rows::TableSchema>(
         hasher: &mut blake3::Hasher,
         view: &SharedView,
         fields: impl Fn(&T::Row) -> String,
@@ -1903,8 +1898,8 @@ fn name_digest(frame: &replay::frame::DecodedFrame) -> [u8; 16] {
 }
 /// `seen` names the last compared hour's views, which already agreed with `a`.
 fn same_name_inputs(
-    a: &replay::frame::DecodedFrame,
-    b: &replay::frame::DecodedFrame,
+    a: &replay_frame::frame::DecodedFrame,
+    b: &replay_frame::frame::DecodedFrame,
     seen: &[ViewIdentity],
 ) -> bool {
     NAME_INPUTS.iter().enumerate().all(|(index, table)| {
@@ -1934,7 +1929,7 @@ fn check_cadence(cadence: Cadence) -> io::Result<()> {
     }
     Ok(())
 }
-type Census = (Vec<(u32, u32, Vec<u8>)>, replay::frame::SharedView);
+type Census = (Vec<(u32, u32, Vec<u8>)>, replay_frame::frame::SharedView);
 const SCAN_TABLES: [TableId; 8] = [
     TableId::Campaign,
     TableId::Countries,
@@ -1981,7 +1976,7 @@ struct ScanFrames {
     work: dashboard_base::prepared::observer_tests::Work,
     /// The newest naming snapshot, and each tag's latest entry in `scan.names`.
     #[serde(skip)]
-    name_snapshot: Option<replay::frame::DecodedFrame>,
+    name_snapshot: Option<replay_frame::frame::DecodedFrame>,
     #[serde(skip)]
     name_entries: HashMap<String, usize>,
     /// The last compared hour's NAME_INPUTS views, agreeing with the newest snapshot.
@@ -2037,7 +2032,7 @@ impl ScanFrames {
     }
     /// Appends each tag whose naming operands differ from its latest entry. The
     /// operands read no localisation; labels resolve them with the content's.
-    fn names(&mut self, snapshot: &replay::frame::DecodedFrame) {
+    fn names(&mut self, snapshot: &replay_frame::frame::DecodedFrame) {
         let localisation = Localisation::default();
         let names = CountryNames::read(snapshot, &localisation);
         let Ok(countries) = snapshot.complete::<tables::Countries>() else {
@@ -2104,17 +2099,17 @@ impl ScanFrames {
     /// Name again from `snapshot` (the naming tables of an hour whose
     /// naming inputs differ from the newest snapshot), as that hour's frame
     /// does: a block's fold, at an hour its extract named again.
-    fn rename(&mut self, snapshot: replay::frame::DecodedFrame) {
+    fn rename(&mut self, snapshot: replay_frame::frame::DecodedFrame) {
         self.names(&snapshot);
         self.name_digest = Some(name_digest(&snapshot));
         self.name_snapshot = Some(snapshot);
     }
-    fn frame(&mut self, decoded: &replay::frame::DecodedFrame, replay: &Replay) {
+    fn frame(&mut self, decoded: &replay_frame::frame::DecodedFrame, replay: &Replay) {
         self.frame_inputs(decoded, replay, None);
     }
     fn frame_changes(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
+        decoded: &replay_frame::frame::DecodedFrame,
         replay: &Replay,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
     ) {
@@ -2122,7 +2117,7 @@ impl ScanFrames {
     }
     fn frame_inputs(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
+        decoded: &replay_frame::frame::DecodedFrame,
         replay: &Replay,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
     ) {
@@ -2235,7 +2230,7 @@ impl ScanFrames {
             let mut snapshot = decoded.clone();
             for table in TableId::ALL {
                 if !NAME_TABLES.contains(&table) {
-                    snapshot.tables[table.index()] = replay::frame::TableView::Unavailable {
+                    snapshot.tables[table.index()] = replay_frame::frame::TableView::Unavailable {
                         reason: "outside name snapshot".into(),
                     }
                     .into();
@@ -2256,7 +2251,7 @@ impl ScanFrames {
             .collect();
         // Counters change hourly; endpoint joins and duplicate checks change
         // only with a relation key or the country/link census.
-        let relation_key = |row: &replay::rows::WarRelationRow| {
+        let relation_key = |row: &replay_data::rows::WarRelationRow| {
             (row.first_country, row.second_country, row.start_hour)
         };
         if changed

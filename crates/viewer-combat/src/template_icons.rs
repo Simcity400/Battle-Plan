@@ -4,10 +4,11 @@
 //! Frame 14 shows when an opposing committed owner occupies the exile
 //! country. Frame 15 shows when the division stands in a state the exile
 //! country cores. These frames are derived, not recorded.
-use replay::{
-    frame::DecodedFrame,
-    rows::{DivisionRow, LandCombatDetailsRow, LandCombatDivisionRow, TableSchema, tables},
+use replay_data::{
+    rows::DivisionRow, rows::LandCombatDetailsRow, rows::LandCombatDivisionRow, rows::TableSchema,
+    rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, fmt, io};
 use viewer_foundation::table_access::{Available, rows};
 

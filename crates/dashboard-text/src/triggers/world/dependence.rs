@@ -14,7 +14,7 @@
 //! the tests read each declared query on frames that differ only outside
 //! its declaration.
 
-use replay::rows::TableId;
+use replay_data::rows::TableId;
 
 use super::{super::inputs::TableRead, Query, Store};
 

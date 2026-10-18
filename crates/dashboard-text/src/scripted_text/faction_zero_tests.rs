@@ -1,5 +1,7 @@
 use super::*;
-use replay::rows::{FactionMemberRow, FactionRow, Recorded, ReservedCountryNamingRow};
+use replay_data::{
+    rows::FactionMemberRow, rows::FactionRow, rows::Recorded, rows::ReservedCountryNamingRow,
+};
 
 fn faction_frame() -> DecodedFrame {
     let mut frame = frame();
@@ -41,7 +43,7 @@ fn faction_frame() -> DecodedFrame {
 
 #[test]
 fn actual_zero_text_leader_and_null_faction_remain_distinct() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = catalogue(SCRIPTED, " NO_FACTION:0 \"No faction\"\n");
     let content = catalogue.scripted_content().unwrap();
@@ -103,7 +105,7 @@ fn actual_zero_text_leader_and_null_faction_remain_distinct() {
 
 #[test]
 fn fresh_entry_binding_of_actual_zero_obeys_each_trigger_mask_and_keeps_prev() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         ("localisation/mod_l_english.yml", LOCALISATION),
@@ -133,7 +135,7 @@ fn fresh_entry_binding_of_actual_zero_obeys_each_trigger_mask_and_keeps_prev() {
         ),
     ]);
     let content = catalogue.scripted_content().unwrap();
-    let mut scripted = installed_content::scripted_triggers::read(&content.layers.layers).unwrap();
+    let mut scripted = installed_content_core::scripted_triggers::read(&content.layers.layers).unwrap();
     scripted
         .templates
         .get_mut(b"masked".as_slice())
@@ -145,7 +147,7 @@ fn fresh_entry_binding_of_actual_zero_obeys_each_trigger_mask_and_keeps_prev() {
             .unwrap()
             .inputs
             .set(Ok(entries::EnvironmentInputs::synthetic().with_triggers(
-                installed_content::trigger_keys::TriggerNames {
+                installed_content_core::trigger_keys::TriggerNames {
                     scripted,
                     ..Default::default()
                 }

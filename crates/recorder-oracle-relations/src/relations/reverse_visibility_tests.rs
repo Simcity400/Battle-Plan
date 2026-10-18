@@ -1,11 +1,9 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{
-        Recorded, ReservedCountryNamingRow, ReservedReverseVisibilityInputs,
-        ReverseZeroVisibilityInputs, TableRows, ZeroSubjectInputs,
-    },
+use replay_data::{
+    rows::Recorded, rows::ReservedCountryNamingRow, rows::ReservedReverseVisibilityInputs,
+    rows::ReverseZeroVisibilityInputs, rows::TableRows, rows::ZeroSubjectInputs,
 };
+use replay_frame::frame::TableView;
 
 fn fixture(value: Recorded<Option<ReservedReverseVisibilityInputs>>) -> DecodedFrame {
     let (mut frame, _, _, _) = super::super::super::fixtures::fixture();
@@ -55,7 +53,7 @@ fn historical_refused_and_known_empty_reverse_matrix_remain_distinct() {
         unreachable!()
     };
     rows[0].reverse_visibility = Recorded::Value(Some(ReservedReverseVisibilityInputs {
-        sample_hour: replay::rows::PacketHour::Host,
+        sample_hour: replay_data::rows::PacketHour::Host,
         cells: Vec::new(),
     }));
     let mut report = Report::default();
@@ -86,7 +84,7 @@ fn reverse_cells_preserve_missing_raw_zero_alias_and_retired_subject_inputs() {
         unreachable!()
     };
     rows[0].reverse_visibility = Recorded::Value(Some(ReservedReverseVisibilityInputs {
-        sample_hour: replay::rows::PacketHour::Host,
+        sample_hour: replay_data::rows::PacketHour::Host,
         cells: vec![
             Some(ReverseZeroVisibilityInputs {
                 target: Some(0),
@@ -126,7 +124,7 @@ fn reverse_cells_preserve_missing_raw_zero_alias_and_retired_subject_inputs() {
 #[test]
 fn reverse_packet_requires_complete_naming_prefix() {
     let mut frame = fixture(Recorded::Value(Some(ReservedReverseVisibilityInputs {
-        sample_hour: replay::rows::PacketHour::Host,
+        sample_hour: replay_data::rows::PacketHour::Host,
         cells: Vec::new(),
     })));
     *frame.tables[TableId::ReservedCountryNaming.index()] = TableView::Unavailable {
@@ -145,7 +143,7 @@ fn reverse_military_presence_preserves_null_refusal_and_invalid_admission() {
             unreachable!()
         };
         rows[0].reverse_visibility = Recorded::Value(Some(ReservedReverseVisibilityInputs {
-            sample_hour: replay::rows::PacketHour::Host,
+            sample_hour: replay_data::rows::PacketHour::Host,
             cells: vec![Some(ReverseZeroVisibilityInputs {
                 target: Some(0),
                 war: Some([0, 0]),

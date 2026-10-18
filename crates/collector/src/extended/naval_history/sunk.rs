@@ -87,7 +87,7 @@ fn sunk_pool_u64(log: &RawLog<SUNK_N>, start: usize) -> u64 {
 /// nothing because the typed walk fails locally without reads.
 fn kspan(
     log: &mut RawLog<SUNK_N>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     addr: Option<usize>,
     len: usize,
     mask: u32,
@@ -100,7 +100,7 @@ fn kspan(
 /// class read fails.
 fn copy_sunk_class(
     log: &mut RawLog<SUNK_N>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     pointer: u64,
 ) -> bool {
@@ -146,7 +146,7 @@ fn copy_sunk_class(
 /// bytes. Returns false exactly when the typed text read fails.
 fn copy_sunk_string(
     log: &mut RawLog<SUNK_N>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     address: usize,
     head: usize,
 ) -> bool {
@@ -207,7 +207,7 @@ fn copy_sunk_string(
 /// fails at or before this record.
 fn copy_sunk_record(
     log: &mut RawLog<SUNK_N>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     current_hour: i32,
     pointer: usize,
@@ -305,7 +305,7 @@ fn copy_sunk_record(
 #[cfg(test)]
 fn copy_sunk_pass(
     job: &mut SunkJob,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
     current_hour: i32,
@@ -316,7 +316,7 @@ fn copy_sunk_pass(
 
 fn copy_sunk_pass_growing(
     job: &mut SunkJob,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
     current_hour: i32,
@@ -327,7 +327,7 @@ fn copy_sunk_pass_growing(
 
 fn copy_sunk_pass_mode(
     job: &mut SunkJob,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
     current_hour: i32,
@@ -349,7 +349,7 @@ fn copy_sunk_pass_mode(
 
 fn copy_sunk_tables(
     job: &mut SunkJob,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
     current_hour: i32,
@@ -404,7 +404,7 @@ pub(crate) fn copy_sunk_refresh_growing(
     ctx: SunkCopyContext,
     job: &mut SunkJob,
 ) -> SunkCopyReport {
-    if !replay::cadence::should_walk(TableId::SunkShips, ctx.hour, ctx.force_full) {
+    if !replay_data::cadence::should_walk(TableId::SunkShips, ctx.hour, ctx.force_full) {
         job.clear();
         return SunkCopyReport::default();
     }
@@ -423,7 +423,7 @@ pub(crate) fn copy_sunk_refresh(
     ctx: SunkCopyContext,
     job: &mut SunkJob,
 ) -> SunkCopyReport {
-    if !replay::cadence::should_walk(TableId::SunkShips, ctx.hour, ctx.force_full) {
+    if !replay_data::cadence::should_walk(TableId::SunkShips, ctx.hour, ctx.force_full) {
         job.clear();
         return SunkCopyReport::default();
     }
@@ -456,7 +456,7 @@ impl Captured {
     ) {
         self.active[13] = job.active;
         if !job.active {
-            self.fail_sunk_capture(replay::cadence::SKIPPED_REASON);
+            self.fail_sunk_capture(replay_data::cadence::SKIPPED_REASON);
             return;
         }
         let recorded = crate::raw::Recorded::build(&job.log);

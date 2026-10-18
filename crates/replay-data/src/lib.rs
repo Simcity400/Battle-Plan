@@ -22,6 +22,7 @@ pub mod temperature;
 pub mod test_support;
 #[doc(hidden)]
 pub mod value;
+pub mod witness;
 
 pub type Hour = i32;
 pub type SessionId = u64;

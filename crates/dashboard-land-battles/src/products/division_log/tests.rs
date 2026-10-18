@@ -1,11 +1,9 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{
-        CountryLinkRow, CountryRow, DestroyedDivisionsRow, DivisionStatusRow, LandEventCoverageRow,
-        NameOperands, Recorded, TableRows,
-    },
+use replay_data::{
+    rows::CountryLinkRow, rows::CountryRow, rows::DestroyedDivisionsRow, rows::DivisionStatusRow,
+    rows::LandEventCoverageRow, rows::NameOperands, rows::Recorded, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 
 #[path = "tests/speed.rs"]
 mod speed;

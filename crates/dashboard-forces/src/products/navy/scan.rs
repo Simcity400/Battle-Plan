@@ -5,14 +5,12 @@ use dashboard_base::products::{
     force_census::{Countries, changed_ids},
 };
 use dashboard_text::metadata::validate_campaign;
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder, ViewIdentity},
-    rows::{ShipRow, TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{rows::ShipRow, rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::FrameDecoder, frame::ViewIdentity};
 
 #[cfg(test)]
-use replay::frame::Frame;
+use replay_frame::frame::Frame;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Ship {
@@ -257,7 +255,7 @@ impl Census {
     fn update(
         &mut self,
         decoded: &DecodedFrame,
-        frame: &(impl replay::frame::FrameSource + ?Sized),
+        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
         countries: &Countries,
         countries_changed: bool,
         result: &mut ScannedNavy,
@@ -479,7 +477,7 @@ pub struct Scan {
 impl Scan {
     pub(super) fn rejoin(
         &mut self,
-        frame: &(impl replay::frame::FrameSource + ?Sized),
+        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
@@ -507,7 +505,7 @@ impl Scan {
     }
     pub(super) fn step_changes(
         &mut self,
-        frame: &(impl replay::frame::FrameSource + ?Sized),
+        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
         cancelled: &AtomicBool,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
@@ -560,8 +558,8 @@ impl Scan {
             if let Some(changes) = changes {
                 self.work.row_visits += <super::prepared::Navy as crate::products::parts_race_prepared::Family>::SAMPLE_TABLES.iter()
                     .filter(|id| changes.rows_changed[id.index()])
-                    .map(|id| match &*decoded.tables[id.index()] { replay::frame::TableView::Complete(rows)
-                        | replay::frame::TableView::Truncated { rows, .. } => rows.len(), _ => 0 }).sum::<usize>();
+                    .map(|id| match &*decoded.tables[id.index()] { replay_frame::frame::TableView::Complete(rows)
+                        | replay_frame::frame::TableView::Truncated { rows, .. } => rows.len(), _ => 0 }).sum::<usize>();
             }
         }
         self.step(frame, decoded, cancelled)?;
@@ -582,7 +580,7 @@ impl Scan {
     }
     pub(super) fn step(
         &mut self,
-        frame: &(impl replay::frame::FrameSource + ?Sized),
+        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
@@ -1522,8 +1520,8 @@ mod numbering_tests {
 #[cfg(test)]
 mod prepared_continuation_tests {
     use super::*;
-    use replay::frame::{TableUpdate, TableView};
-    use replay::rows::{LexicalTokenRow, TableRows, TaskForceRow};
+    use replay_data::{rows::LexicalTokenRow, rows::TableRows, rows::TaskForceRow};
+    use replay_frame::{frame::TableUpdate, frame::TableView};
     #[test]
     fn prepared_navy_restores_class_identity_when_a_branch_returns_without_a_decoder_rejoin() {
         let mut decoded = dashboard_base::test_fixtures::scale_frame(1, 100, 1);

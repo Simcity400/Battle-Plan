@@ -307,17 +307,19 @@ mod tests {
                 .collect(),
             ..Default::default()
         };
-        let mut catalog = Catalog::default();
-        catalog.definitions = vec![
-            definition("base", "", &[("roads", 4)]),
-            // Inherits the base's entry after its own.
-            definition("child", "BASE", &[("rails", 1)]),
-            // Its parent comes later, so it takes that parent's authored entries only.
-            definition("early", "late", &[]),
-            definition("late", "child", &[("ports", 2)]),
-            definition("own", "OWN", &[("roads", 1)]),
-            definition("orphan", "missing", &[("rails", 3)]),
-        ];
+        let catalog = Catalog {
+            definitions: vec![
+                definition("base", "", &[("roads", 4)]),
+                // Inherits the base's entry after its own.
+                definition("child", "BASE", &[("rails", 1)]),
+                // Its parent comes later, so it takes that parent's authored entries only.
+                definition("early", "late", &[]),
+                definition("late", "child", &[("ports", 2)]),
+                definition("own", "OWN", &[("roads", 1)]),
+                definition("orphan", "missing", &[("rails", 3)]),
+            ],
+            ..Default::default()
+        };
         let names = |list: &Vec<(Vec<u8>, i32)>| {
             list.iter()
                 .map(|(name, level)| (String::from_utf8(name.clone()).unwrap(), *level))

@@ -3,7 +3,7 @@
 //! digest of what it returned.
 
 use crate::triggers::inputs::{Key, digest, digest_debug, query, query_debug};
-use installed_content::country_names::{CountryNames, Operands};
+use installed_content_country_names::{country_names::CountryNames, country_names::Operands};
 
 pub(crate) struct RecordedNames<'a>(pub(super) CountryNames<'a>);
 

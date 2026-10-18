@@ -3,7 +3,7 @@
 use super::refuse;
 use crate::tooltip_text::ensure_newlines;
 use crate::tooltip_text::{TextIcons, Tooltip, displayable, localise};
-use installed_content::localisation::Localisation;
+use installed_content_localisation::localisation::Localisation;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthoredKey {
@@ -24,8 +24,8 @@ pub struct Authored {
 impl Authored {
     /// The game checks occupied bound text before the ordinary hash probe.
     /// The disabled selector chooses each disabled hash independently.
-    pub fn read(element: &installed_content::gui::native::Element, disabled: bool) -> Option<Self> {
-        use installed_content::gui::native::{FormattedLocalization, tooltip_hash};
+    pub fn read(element: &installed_content_core::gui::native::Element, disabled: bool) -> Option<Self> {
+        use installed_content_core::{gui::native::FormattedLocalization, gui::native::tooltip_hash};
         let common = &element.common;
         let mut out = Self {
             path: element.path.clone(),
@@ -93,13 +93,13 @@ impl Authored {
         for (body, key) in [(false, &self.title), (true, &self.body)] {
             let Some(key) = key else { continue };
             let text = (|| {
-                if installed_content::gui::native::tooltip_hash(&key.bytes) != key.hash {
+                if installed_content_core::gui::native::tooltip_hash(&key.bytes) != key.hash {
                     return Err(format!(
                         "{} stored tooltip hash does not match its key",
                         self.path
                     ));
                 }
-                let text_key = std::str::from_utf8(installed_content::parser::c_string(&key.bytes))
+                let text_key = std::str::from_utf8(installed_content_core::parser::c_string(&key.bytes))
                     .map_err(|_| format!("{} tooltip key is not UTF-8", self.path))?;
                 if key.bound {
                     localise(loc, text_key, &[]).map(Some)
@@ -107,7 +107,7 @@ impl Authored {
                     // Return stored bytes or nullptr;
                     // the caller scans to NUL, without expanding localisation.
                     Ok(loc.get(text_key).map(|text| {
-                        std::str::from_utf8(installed_content::parser::c_string(text.as_bytes()))
+                        std::str::from_utf8(installed_content_core::parser::c_string(text.as_bytes()))
                             .expect("a UTF-8 string split at NUL remains UTF-8")
                             .to_owned()
                     }))
@@ -133,7 +133,7 @@ impl Authored {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content::gui::native;
+    use installed_content_core::gui::native;
 
     fn element(body: &str) -> native::Element {
         native::read(format!("guiTypes = {{ guiButtonType = {{ name = w {body} }} }}").as_bytes())
@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn authored_disabled_hashes_fall_back_independently_to_each_normal_field() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let parsed = element(
             "pdx_tooltip = TITLE pdx_tooltip_delayed = BODY pdx_disabled_tooltip = DISABLED",
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn empty_context_tree_keeps_callback_and_occupied_bound_text_overrides_normal_keys() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let empty = element("context_aware_tooltip = { } ");
         assert!(empty.common.bound_tooltip.is_empty());

@@ -2,7 +2,7 @@ use super::*;
 use dashboard_text::modifier_text::{
     BOOLEAN, NEUTRAL, NO_PLUS, PERCENT, PERCENT_TIMES_HUNDRED, POSITIVE_IS_GOOD,
 };
-use installed_content::modifiers::TooltipTable;
+use installed_content_core::modifiers::TooltipTable;
 use std::sync::Arc;
 use std::time::Instant;
 use viewer_foundation::tooltip_text::NoIcons;
@@ -167,20 +167,20 @@ fn weather_icon_requires_a_nonzero_effective_category_one_entry() {
 }
 
 /// One modifier entry `key = value` as the file's reader returns it.
-fn entry(key: &str, value: &str) -> installed_content::parser::Item {
-    installed_content::parser::Item {
+fn entry(key: &str, value: &str) -> installed_content_core::parser::Item {
+    installed_content_core::parser::Item {
         key: Some(key.as_bytes().to_vec()),
         key_quoted: false,
-        operator: installed_content::parser::Operator::Equals,
-        value: installed_content::parser::Value::Scalar(value.as_bytes().to_vec()),
-        kind: installed_content::parser::Kind::Bare,
+        operator: installed_content_core::parser::Operator::Equals,
+        value: installed_content_core::parser::Value::Scalar(value.as_bytes().to_vec()),
+        kind: installed_content_core::parser::Kind::Bare,
     }
 }
 
 /// `custom_modifier_tooltip` keys read in order by the shared modifier
 /// reader, in its table's slot order.
 fn keys(keys: &[&str]) -> TooltipTable {
-    let mut modifiers = installed_content::modifiers::Modifiers::default();
+    let mut modifiers = installed_content_core::modifiers::Modifiers::default();
     for key in keys {
         modifiers.read(&entry("custom_modifier_tooltip", key));
     }
@@ -196,8 +196,8 @@ fn listed(table: &TooltipTable) -> Vec<&str> {
 /// admitted, its name index points at index 3, and index 3 formats.
 #[test]
 fn sparse_definition_tables_are_admitted_and_format_by_index() {
-    use replay::frame::{SharedView, TableView};
-    use replay::rows::{LexicalTokenRow, TableId, TableRows};
+    use replay_data::{rows::LexicalTokenRow, rows::TableId, rows::TableRows};
+    use replay_frame::{frame::SharedView, frame::TableView};
     let mut frame = frame(0, 0);
     frame.tables[TableId::ModifierDefinitions.index()] =
         SharedView::from(TableView::Complete(TableRows::ModifierDefinitions(
@@ -229,7 +229,7 @@ fn sparse_definition_tables_are_admitted_and_format_by_index() {
     // The lexer folds a bare token before looking it up, so
     // an authored `KEY_3` is the recorded `key_3`.
     assert_eq!(definitions.index("KEY_3"), Ok(Some(3)));
-    let authored = installed_content::modifiers::values(&[entry("Key_3", "0.1")]);
+    let authored = installed_content_core::modifiers::values(&[entry("Key_3", "0.1")]);
     let (built, dropped) = Block::build(&definitions, &authored).unwrap();
     assert!(dropped.is_empty());
     assert_eq!(built.values, BTreeMap::from([(3, 10_000)]));
@@ -294,11 +294,12 @@ fn a_block_keeps_the_readers_last_value_in_source_order() {
         ..Default::default()
     }];
     let definitions = Definitions::from_parts(&rows, &[(b"a", 0)], Some(0));
-    let hidden = installed_content::parser::Item {
-        value: installed_content::parser::Value::Block(vec![entry("A", "0.2")]),
+    let hidden = installed_content_core::parser::Item {
+        value: installed_content_core::parser::Value::Block(vec![entry("A", "0.2")]),
         ..entry("hidden_modifier", "")
     };
-    let authored = installed_content::modifiers::values(&[entry("a", "0.1"), hidden, entry("a", "0.3")]);
+    let authored =
+        installed_content_core::modifiers::values(&[entry("a", "0.1"), hidden, entry("a", "0.3")]);
     let (block, dropped) = Block::build(&definitions, &authored).unwrap();
     assert!(dropped.is_empty());
     assert_eq!(block.values, BTreeMap::from([(0, 30_000)]));
@@ -307,11 +308,9 @@ fn a_block_keeps_the_readers_last_value_in_source_order() {
 
 /// A frame with `definitions` modifier rows and `tokens` dictionary rows.
 fn frame(definitions: usize, tokens: usize) -> DecodedFrame {
-    use replay::{
-        frame::{Metrics, SharedView, TableView},
-        rows::{LexicalTokenRow, TableId, TableRows},
-    };
-    let mut tables: [SharedView; replay::frame::TABLE_COUNT] = std::array::from_fn(|_| {
+    use replay_data::{rows::LexicalTokenRow, rows::TableId, rows::TableRows};
+    use replay_frame::{frame::Metrics, frame::SharedView, frame::TableView};
+    let mut tables: [SharedView; replay_data::rows::TABLE_COUNT] = std::array::from_fn(|_| {
         SharedView::from(TableView::Unavailable {
             reason: "not recorded".into(),
         })
@@ -347,10 +346,8 @@ fn frame(definitions: usize, tokens: usize) -> DecodedFrame {
 /// Tokens whose names differ only in case are inconsistent and refused by name.
 #[test]
 fn rows_sharing_a_token_keep_the_last_registration() {
-    use replay::{
-        frame::{SharedView, TableView},
-        rows::{LexicalTokenRow, TableId, TableRows},
-    };
+    use replay_data::{rows::LexicalTokenRow, rows::TableId, rows::TableRows};
+    use replay_frame::{frame::SharedView, frame::TableView};
     let mut frame = frame(0, 0);
     let row = |index, token| ModifierDefinitionRow {
         index,

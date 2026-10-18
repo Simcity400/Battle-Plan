@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, io, slice};
 
-use installed_content::parser::{self, Document, Item, Value};
+use installed_content_core::{parser, parser::Document, parser::Item, parser::Value};
 
 use super::{GameDate, Save, block, field, invalid, required_block, required_bytes};
 

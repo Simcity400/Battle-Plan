@@ -8,7 +8,7 @@
 //! # Colour codes
 //!
 //! Localisation stores an authored `§` as the control byte 0x11
-//! (`installed_content::localisation`), and the engine's text layout
+//! (`installed_content_localisation::localisation`), and the engine's text layout
 //! reads 0x11 and the code after it as a colour change, drawing neither.
 //! [`strip_color_codes`] removes them and keeps the text. The per-code colours
 //! in the `textcolors` blocks are not applied: every map label the viewer
@@ -25,14 +25,10 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::{collections::BTreeSet, io};
 
-use installed_content::{
-    ResolvedLayers,
-    gui::native::{
-        fonts::{self, GlyphSet},
-        resources,
-    },
-    image::dds,
+use installed_content_core::{
+    ResolvedLayers, gui::native::fonts, gui::native::fonts::GlyphSet, gui::native::resources,
 };
+use installed_content_image::dds;
 
 /// One glyph's box in a bitmap font, in the font's own pixels at its native size.
 ///
@@ -610,7 +606,7 @@ pub fn strip_color_codes(text: &str) -> String {
 /// The first control in stored `text` that map text does not draw, named for
 /// a refusal: every control but a colour code and the glyph-less 0x14.
 pub fn unsupported_control(text: &str) -> Option<String> {
-    use installed_content::localisation::{Piece, pieces};
+    use installed_content_localisation::{localisation::Piece, localisation::pieces};
     pieces(text)
         .into_iter()
         .find(|piece| !matches!(piece, Piece::Text(_) | Piece::Colour(_) | Piece::Control14))
@@ -708,7 +704,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content::gui::native::fonts::Glyph;
+    use installed_content_core::gui::native::fonts::Glyph;
     use std::collections::BTreeMap;
 
     /// A synthetic three-character font: `A` and `B` 10 wide, space 4 wide.
@@ -799,11 +795,11 @@ mod tests {
             std::fs::write(&file, bytes).unwrap();
         }
         let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-        let registry = installed_content::gui::native::resources::Registry::load(&layers).unwrap();
+        let registry = installed_content_core::gui::native::resources::Registry::load(&layers).unwrap();
         let interface = super::super::sprites::Interface {
-            sprites: installed_content::gfx::SpriteSet::new(&registry.files),
+            sprites: installed_content_gfx::gfx::SpriteSet::new(&registry.files),
             registry,
-            decode: installed_content::image::native::Decode::default(),
+            decode: installed_content_image::native::Decode::default(),
         };
         (root, layers, interface)
     }
@@ -822,7 +818,7 @@ mod tests {
 
     #[test]
     fn map_name_font_uses_native_fallback_and_refuses_missing_glyphs_locally() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let dds = dxt5_8x7();
         let (root, layers, interface) = stack(
@@ -882,7 +878,7 @@ mod tests {
     /// `gfx/fonts` is covered and verified; a font a mod declares elsewhere is named unverified.
     #[test]
     fn only_a_font_outside_the_covered_root_is_named_unverified() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let dds = dxt5_8x7();
         for (name, directory, unverified) in [
@@ -932,7 +928,7 @@ mod tests {
     /// loader draws the recorded ones; the recording alone draws no text and loads.
     #[test]
     fn visual_mods_that_hide_every_bitmapfont_refuse_their_fonts() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_text_hidden_fonts_{}",
@@ -960,27 +956,29 @@ path=\"{art}\"
             .as_bytes(),
         );
         std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
-        let options = installed_content::ResolveOptions {
+        let options = installed_content_core::ResolveOptions {
             game_dir: root.join("steamapps/common/Game"),
             user_dir: root.join("user"),
             cache_dir: root.join("cache"),
         };
         let base = root.join("base");
         let mut layers = ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
-        let selected = [installed_content::content::visual::Choice {
+        let selected = [installed_content_core::content::visual::Choice {
             id: "mod/art.mod".into(),
             name: "Art".into(),
         }];
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        installed_content::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
+        installed_content_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel)
+            .unwrap();
         let presentation = layers.presentation().clone();
         assert!(presentation.shows_visual_mods());
-        let registry = installed_content::gui::native::resources::Registry::load(&presentation).unwrap();
+        let registry =
+            installed_content_core::gui::native::resources::Registry::load(&presentation).unwrap();
         assert!(registry.fonts.get_or_fallback(b"").is_none());
         let interface = super::super::sprites::Interface {
-            sprites: installed_content::gfx::SpriteSet::new(&registry.files),
+            sprites: installed_content_gfx::gfx::SpriteSet::new(&registry.files),
             registry,
-            decode: installed_content::image::native::Decode::default(),
+            decode: installed_content_image::native::Decode::default(),
         };
         let load = |layers: &ResolvedLayers| {
             Fonts::load(
@@ -1005,7 +1003,7 @@ path=\"{art}\"
 
     #[test]
     fn a_refused_map_font_also_names_battle_plan_label_refusal() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (root, layers, interface) = stack(
             "map_arrow_refused",
@@ -1044,7 +1042,7 @@ path=\"{art}\"
     /// Absent family files are named and skipped while later files still load.
     #[test]
     fn a_missing_family_file_is_skipped_and_named() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let dds = dxt5_8x7();
         let (root, layers, interface) = stack(
@@ -1075,7 +1073,7 @@ path=\"{art}\"
     /// loaded extent rather than authored height.
     #[test]
     fn a_page_divides_its_glyphs_by_the_extent_the_game_decodes() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let dds = dxt5_8x7();
         let (root, layers, interface) = stack(
@@ -1105,7 +1103,7 @@ path=\"{art}\"
     /// Refuse a declaration with an unsupported text colour code byte, preserving its reason.
     #[test]
     fn a_refused_font_does_not_load() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (root, layers, interface) = stack(
             "refused",
@@ -1172,7 +1170,7 @@ path=\"{art}\"
     fn colour_codes_are_stripped_and_the_text_between_them_kept() {
         // Values as the loader stores them.
         let stored = |authored: &str| {
-            let loc: installed_content::localisation::Localisation =
+            let loc: installed_content_localisation::localisation::Localisation =
                 [("K".to_owned(), authored.to_owned())]
                     .into_iter()
                     .collect();

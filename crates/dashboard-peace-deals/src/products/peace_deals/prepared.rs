@@ -50,9 +50,9 @@ impl Prepared {
         self.observe_changed(
             frame,
             &FrameChanges {
-                rows_changed: [true; replay::frame::TABLE_COUNT],
-                table_read: [true; replay::frame::TABLE_COUNT],
-                slot_read: [true; replay::frame::TABLE_COUNT],
+                rows_changed: [true; replay_data::rows::TABLE_COUNT],
+                table_read: [true; replay_data::rows::TABLE_COUNT],
+                slot_read: [true; replay_data::rows::TABLE_COUNT],
                 updates: None,
             },
         )

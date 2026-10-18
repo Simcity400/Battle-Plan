@@ -177,7 +177,7 @@ pub fn four_buttons(document: &Document) -> bool {
         .ok()
         .and_then(|frame| {
             frame
-                .complete::<replay::rows::tables::SimulationFeatures>()
+                .complete::<replay_data::rows::tables::SimulationFeatures>()
                 .ok()
                 .and_then(|rows| rows.first().map(|row| row.dlc_mask))
         })

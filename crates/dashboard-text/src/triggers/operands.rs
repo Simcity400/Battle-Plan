@@ -1,8 +1,8 @@
 //! How the triggers' value readers read an operand token.
 
-use installed_content::{
-    fixed5::{IntOperand, decimal_fixed5, decimal_i32, int_operand, script_fixed5},
-    parser::{Item, Operator, Value, read_bool},
+use installed_content_core::{
+    fixed5::IntOperand, fixed5::decimal_fixed5, fixed5::decimal_i32, fixed5::int_operand,
+    fixed5::script_fixed5, parser::Item, parser::Operator, parser::Value, parser::read_bool,
 };
 
 use super::{Scopes, eval::Evaluator};
@@ -130,7 +130,7 @@ impl Evaluator<'_, '_> {
     /// A comparison trigger's operand, fixed5, in `scopes`. Integer comparison
     /// reads a number token through `%i` and any other, a quoted
     /// one included, as a scoped variable (a constant through
-    /// installed_content::fixed5::int_operand);
+    /// installed_content_core::fixed5::int_operand);
     /// it compares the scoped value as
     /// `(int)(value / 100000)`. Fixed comparison
     /// takes every token as a scoped variable and compares the

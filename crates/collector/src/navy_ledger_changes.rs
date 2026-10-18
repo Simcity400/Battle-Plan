@@ -1,6 +1,6 @@
 //! Navies whose mission ledgers need no read. A strategic navy files each
 //! naval mission in the ledger of every region it serves and, once, in its
-//! registered-mission set ([`engine::cstrategic_navy::REGISTERED_MISSIONS`]).
+//! registered-mission set ([`engine_native::cstrategic_navy::REGISTERED_MISSIONS`]).
 //! Registration, removal and reset write the set and ledger in the same
 //! call; construction builds both empty. A navy whose set is empty has
 //! no ledger entries. NavalMissionLedgers reads such a navy's set header

@@ -1,14 +1,14 @@
 //! The content stack's GUI resources as the game loads them, for [`super::native_gui`]: every
-//! sprite, texture, font and effect uses [`installed_content::gui::native::resources`].
+//! sprite, texture, font and effect uses [`installed_content_core::gui::native::resources`].
 //!
 //! - Sprites: [`Registry::create`] selects the latest byte-preserving declaration of a name.
 //!   [`resources::stack_texture`] tries `.dds`, `.tga`, then the supplied name, with the
 //!   texture loader's 16 MiB limit. Failed textures stay null ([`NO_TEXTURE`]), sampling black.
 //! - Effects: [`Effect::load`] uses the shared shader-pipeline library, with the sprite's
 //!   `MASKING` define when its `masking_texture` loads.
-//! - Fonts: [`installed_content::gui::native::fonts::Fonts::get_or_fallback`] searches the registry,
+//! - Fonts: [`installed_content_core::gui::native::fonts::Fonts::get_or_fallback`] searches the registry,
 //!   selects the language's family, and loads files in order through
-//!   [`installed_content::gui::native::fonts::load_glyphs`]. Page names append `.tga` and use the
+//!   [`installed_content_core::gui::native::fonts::load_glyphs`]. Page names append `.tga` and use the
 //!   texture resolver.
 //!
 //! Callers acquire template assets ([`super::native_gui::assets_in`]) and bound text's inline
@@ -23,15 +23,13 @@ use std::{
     io,
 };
 
-use installed_content::{
-    ResolvedLayers,
-    gui::native::{
-        fonts::{self, TextColors},
-        resources::{self, Lookup, NoTexture, Registry},
-        sprites::{Plain, SpriteFacts, SpriteKind as Declared},
-    },
-    image::{dds, native::Decode},
+use installed_content_core::{
+    ResolvedLayers, gui::native::fonts, gui::native::fonts::TextColors, gui::native::resources,
+    gui::native::resources::Lookup, gui::native::resources::NoTexture,
+    gui::native::resources::Registry, gui::native::sprites::Plain,
+    gui::native::sprites::SpriteFacts, gui::native::sprites::SpriteKind as Declared,
 };
+use installed_content_image::{dds, native::Decode};
 
 use super::{
     native_effects::Effect,
@@ -279,7 +277,7 @@ impl GuiResources {
             .entry((file.to_vec(), masked))
             .or_insert_with(|| {
                 // The name to its C string's end, opened by its bytes.
-                let file = installed_content::parser::c_string(file);
+                let file = installed_content_core::parser::c_string(file);
                 Effect::load(
                     library,
                     file,

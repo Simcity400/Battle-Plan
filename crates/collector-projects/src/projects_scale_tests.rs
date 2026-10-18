@@ -8,11 +8,12 @@
 
 use super::projects_test_kit as kit;
 use super::*;
-use engine::{
-    ccountry, msvc_string, nproject_breakthrough_node as node, nproject_cprogram_status as status,
-    nproject_cproject_pool, nproject_cproject_state_machine as machine,
-    nproject_cprototype_project_state as prototype, nproject_csimple_project_state as simple,
-    nproject_sproject_context as context, nproject_sproject_history as history,
+use engine_native::{ccountry, msvc_string};
+use engine_projects::{
+    nproject_breakthrough_node as node, nproject_cprogram_status as status, nproject_cproject_pool,
+    nproject_cproject_state_machine as machine, nproject_cprototype_project_state as prototype,
+    nproject_csimple_project_state as simple, nproject_sproject_context as context,
+    nproject_sproject_history as history,
 };
 
 const GAME: usize = 0x400;
@@ -51,8 +52,8 @@ pub struct Space {
 }
 
 impl Space {
-    pub fn memory(&self) -> engine::memory::SliceMemory<'_> {
-        engine::memory::SliceMemory {
+    pub fn memory(&self) -> engine_native::memory::SliceMemory<'_> {
+        engine_native::memory::SliceMemory {
             base: self.bytes.as_ptr() as usize,
             bytes: &self.bytes,
         }
@@ -224,12 +225,12 @@ pub fn space(countries: u32, projects: u32) -> Space {
     writer.bytes[..used].fill(0);
     writer.machines = writer.alloc(machine_count * MACHINE);
     writer.array(
-        game_state + engine::cgame_state::COUNTRIES,
+        game_state + engine_native::cgame_state::COUNTRIES,
         table,
         slots.len() as u32,
     );
     writer.array(
-        game_state + engine::cgame_state::COUNTRY_LINKS,
+        game_state + engine_native::cgame_state::COUNTRY_LINKS,
         links,
         links_count,
     );
@@ -740,7 +741,7 @@ fn cold_typed_project_fallback_keeps_five_thousand_countries_and_later_pool_grow
 }
 
 struct Fault<'a> {
-    memory: engine::memory::SliceMemory<'a>,
+    memory: engine_native::memory::SliceMemory<'a>,
     fault: std::ops::Range<usize>,
 }
 
@@ -766,10 +767,10 @@ struct Site {
 /// Addresses inside slot 201's objects, in walk order, then sites elsewhere.
 fn fault_sites(space: &Space) -> Vec<Site> {
     let memory = space.memory();
-    let read = |address: usize| engine::read::<u64>(&memory, address).unwrap() as usize;
-    let read32 = |address: usize| engine::read::<u32>(&memory, address).unwrap();
-    let table = read(space.game_state + engine::cgame_state::COUNTRIES);
-    let links = read(space.game_state + engine::cgame_state::COUNTRY_LINKS);
+    let read = |address: usize| engine_native::read::<u64>(&memory, address).unwrap() as usize;
+    let read32 = |address: usize| engine_native::read::<u32>(&memory, address).unwrap();
+    let table = read(space.game_state + engine_native::cgame_state::COUNTRIES);
+    let links = read(space.game_state + engine_native::cgame_state::COUNTRY_LINKS);
     let status_of = |slot: usize| read(read(table + slot * 8) + ccountry::PROGRAM_STATUS);
     let object = read(table + 201 * 8);
     let state = read(object + ccountry::PROGRAM_STATUS);
@@ -896,8 +897,9 @@ fn projects_copy_bench() {
     for countries in [440, 1_500, 5_000] {
         let space = space(countries, 50);
         // SAFETY: the space is immutable synthetic storage for this loop.
-        let memory =
-            engine::memory::CountedMemory::new(unsafe { engine::memory::LiveMemory::new() });
+        let memory = engine_native::memory::CountedMemory::new(unsafe {
+            engine_native::memory::LiveMemory::new()
+        });
         let context = ProjectsCopyContext {
             base: kit::BASE,
             game_state: space.game_state,

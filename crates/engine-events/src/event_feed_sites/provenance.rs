@@ -3,7 +3,7 @@
 //! them and the sites other families own (the diplomatic action dispatch, civil
 //! war start and state owner assignment), each named by the route the replay
 //! records ([`Caller::route`] is a variant name of
-//! `replay::event_feed_rows::EventFeedRoute`).
+//! `replay_data::event_feed_rows::EventFeedRoute`).
 //!
 //! Every caller list is the complete set of direct calls to its target; a
 //! return address outside it is refused by name, never guessed. The diplomatic

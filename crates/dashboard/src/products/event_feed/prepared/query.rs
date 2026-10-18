@@ -83,7 +83,7 @@ struct Metadata {
     groups: country_groups::changes::Metadata,
     subjects: (bool, Vec<String>, LateIndex),
     ideas: idea_history::ChangeMetadata,
-    definitions: Option<BTreeMap<String, replay::rows::ModifierDefinitionRow>>,
+    definitions: Option<BTreeMap<String, replay_data::rows::ModifierDefinitionRow>>,
     focus: FocusMetadata,
     facts: (Builder, BTreeSet<String>, LateIndex),
     nukes: country_nukes::prepared::IncreaseCatalogue,

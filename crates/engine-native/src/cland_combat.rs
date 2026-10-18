@@ -352,7 +352,15 @@ pub fn walk(
     participants: &mut [u64],
     classes: &mut [u32],
 ) -> Walk {
-    walk_with(memory, base, game_state, output, participants, classes, |_| {})
+    walk_with(
+        memory,
+        base,
+        game_state,
+        output,
+        participants,
+        classes,
+        |_| {},
+    )
 }
 
 /// Visits only complete authenticated rows. A visitor owns its independent
@@ -491,6 +499,10 @@ pub fn walk_members_growing(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Fixed and growing entry points share the same walker and caller-owned buffers."
+)]
 fn walk_members_buffer(
     memory: &impl Memory,
     base: usize,

@@ -64,7 +64,7 @@ impl ScannedAgencies {
     #[allow(clippy::type_complexity)]
     pub(super) fn observe_frame(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         replay: &Replay,
     ) -> io::Result<(BTreeMap<String, Identity>, usize, BTreeMap<u8, usize>)> {
         let mut countries = std::mem::take(&mut self.native_countries);

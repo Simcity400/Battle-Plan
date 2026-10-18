@@ -29,13 +29,10 @@ use std::{
     },
 };
 
-use installed_content::image::{Rgba8Image, dds};
+use installed_content_image::{Rgba8Image, dds};
 
 use super::atlas_pages::{CellPages, page_limit};
-use installed_content::{
-    ResolvedLayers,
-    flags::{self, FlagSet},
-};
+use installed_content_core::{ResolvedLayers, flags, flags::FlagSet};
 
 /// The first lazy texture id; static icon pages sit below it.
 pub const DYNAMIC_BASE: usize = 1 << 40;
@@ -732,7 +729,7 @@ pub fn flag_set(
     layers: &Arc<ResolvedLayers>,
     set: FlagSet,
     cell: [u32; 2],
-    finish: impl Fn(&mut installed_content::image::Rgba8Image) + Send + Sync + 'static,
+    finish: impl Fn(&mut installed_content_image::Rgba8Image) + Send + Sync + 'static,
     textures: &Arc<LazyTextures>,
 ) -> io::Result<Arc<LazyFlags>> {
     let directory = set.directory();

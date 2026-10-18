@@ -3,12 +3,9 @@
 use std::{io, sync::Arc};
 
 use crate::blocks::BlockReader;
-use replay::{
-    BranchId, Hour, SessionId,
-    container::Replay,
-    frame::{DecodedFrame, Frame, FrameDecoder, TableView},
-    rows::{TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{BranchId, Hour, SessionId, rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::Frame, frame::FrameDecoder, frame::TableView};
 
 pub use dashboard_base::prepared_map::Current;
 
@@ -464,20 +461,21 @@ fn unknown_branch(branch: BranchId) -> io::Error {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use replay::{
-        branches::{BranchReason, BranchStart, Gap, Parentage},
-        container::SeekResult,
-        frame::{FrameEncoder, Metrics, TableUpdate},
-        identity::{Identity, Roster, SessionStart, Verification},
-        rows::{
-            AirWingRow, ArmyOrderRow, CampaignRow, ClockRow, ConvoyClientRow, CountryOilFactorRow,
-            CountryRow, DivisionRow, FactionMemberRow, FactionRow, FleetRow, HumanControllerRow,
-            LandCombatRow, NavalCombatParticipantRow, NavalCombatRow, PlayerRow, ProvinceRow,
-            RegionalConvoyEfficiencyRow, ResourceExchangeRow, ResourceOriginRow, ResourceRightRow,
-            ShipRow, StateRow, StateTemporaryResourceRow, TableRows, TaskForceRow, TradeRouteRow,
-            WarRelationRow,
-        },
-        spool::Record,
+    use replay::{container::SeekResult, spool::Record};
+    use replay_data::{
+        identity::Identity, identity::Roster, identity::SessionStart, identity::Verification,
+        rows::AirWingRow, rows::ArmyOrderRow, rows::CampaignRow, rows::ClockRow,
+        rows::ConvoyClientRow, rows::CountryOilFactorRow, rows::CountryRow, rows::DivisionRow,
+        rows::FactionMemberRow, rows::FactionRow, rows::FleetRow, rows::HumanControllerRow,
+        rows::LandCombatRow, rows::NavalCombatParticipantRow, rows::NavalCombatRow,
+        rows::PlayerRow, rows::ProvinceRow, rows::RegionalConvoyEfficiencyRow,
+        rows::ResourceExchangeRow, rows::ResourceOriginRow, rows::ResourceRightRow, rows::ShipRow,
+        rows::StateRow, rows::StateTemporaryResourceRow, rows::TableRows, rows::TaskForceRow,
+        rows::TradeRouteRow, rows::WarRelationRow,
+    };
+    use replay_frame::{
+        branches::BranchReason, branches::BranchStart, branches::Gap, branches::Parentage,
+        frame::FrameEncoder, frame::Metrics, frame::TableUpdate,
     };
 
     fn session(id: SessionId) -> SessionStart {
@@ -486,7 +484,7 @@ pub(crate) mod tests {
             process_id: id as u32,
             process_start_time: id,
             qpc_frequency: 10_000_000,
-            sample_boundary: replay::identity::SampleBoundary::EndOfHour,
+            sample_boundary: replay_data::identity::SampleBoundary::EndOfHour,
             identity: Identity {
                 game_version: "synthetic".into(),
                 exe_hash: [1; 32],
@@ -531,7 +529,7 @@ pub(crate) mod tests {
                         convoys_raw: None,
                         peace_conference_participant: 0,
                         manpower_residual: 0,
-                        border_land_doctrine_level: replay::rows::Recorded::Value(None),
+                        border_land_doctrine_level: replay_data::rows::Recorded::Value(None),
                     }])),
                     TableView::Complete(TableRows::CountryLinks(Vec::new())),
                     TableView::Complete(TableRows::Provinces(vec![ProvinceRow {
@@ -546,7 +544,7 @@ pub(crate) mod tests {
                         id: 1,
                         owner: 1,
                         controller: 1,
-                        continent: replay::rows::Recorded::Value(Some(0)),
+                        continent: replay_data::rows::Recorded::Value(Some(0)),
                         ..Default::default()
                     }])),
                     TableView::Complete(TableRows::Divisions(vec![DivisionRow {
@@ -556,7 +554,7 @@ pub(crate) mod tests {
                         expeditionary_owner: 0,
                         province: 1,
                         template: (2_u64 << 32) | 52,
-                        // Whole display steps (replay::display), as recorded.
+                        // Whole display steps (replay_data::display), as recorded.
                         hit_points: 26_420_000,
                         organisation: 6_000_000,
                         orders_group: (57_u64 << 32) | 53,
@@ -609,8 +607,8 @@ pub(crate) mod tests {
                         id: (1_u64 << 32) | 61,
                         owner: 1,
                         home_base: 1,
-                        name: replay::rows::Recorded::Value(Some(Vec::new())),
-                        leader: replay::rows::Recorded::Value(Some(0)),
+                        name: replay_data::rows::Recorded::Value(Some(Vec::new())),
+                        leader: replay_data::rows::Recorded::Value(Some(0)),
                     }])),
                     TableView::Complete(TableRows::TaskForces(vec![TaskForceRow {
                         id: (2_u64 << 32) | 51,
@@ -650,7 +648,7 @@ pub(crate) mod tests {
                         base_override: (5_u64 << 32) | 65,
                         planes: hour,
                         mission_region: Some(u32::MAX),
-                        name: replay::rows::Recorded::Value(Some(Vec::new())),
+                        name: replay_data::rows::Recorded::Value(Some(Vec::new())),
                         ..Default::default()
                     }])),
                     TableView::Complete(TableRows::ArmyOrders(vec![ArmyOrderRow {
@@ -673,7 +671,7 @@ pub(crate) mod tests {
                         reason: match table.last_change().retired {
                             Some(retired) => format!(
                                 "{table:?} retired at format {retired}; this recording is format {}",
-                                replay::FORMAT_VERSION
+                                replay_data::FORMAT_VERSION
                             ),
                             None => "outside the map playback fixture".into(),
                         },
@@ -685,7 +683,7 @@ pub(crate) mod tests {
                 // Hourly nuclear impacts: one strike at hour 105, none otherwise.
                 tables[TableId::NuclearStrikes.index()] =
                     TableView::Complete(TableRows::NuclearStrikes(if hour == 105 {
-                        vec![replay::rows::NuclearStrikeRow {
+                        vec![replay_data::rows::NuclearStrikeRow {
                             id: 7,
                             hour,
                             province: 1,

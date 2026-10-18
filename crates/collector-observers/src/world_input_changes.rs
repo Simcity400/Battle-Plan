@@ -1,5 +1,5 @@
 //! Allocation-free notifications from the native writers of the tables read
-//! every hour and carried between hours ([`engine::world_input_mutations`]):
+//! every hour and carried between hours ([`engine_mutations::world_input_mutations`]):
 //! ProvinceNames, NavalRegionAccess, the world tension tables (WorldTension,
 //! ThreatSources, ThreatCountryAggregates) and DynamicModifiers. A detour only
 //! notifies its domain, counts its site and calls the original; it never
@@ -25,11 +25,9 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-pub use engine::world_input_mutations::Domain;
-use engine::{
-    Memory,
-    world_input_mutations::{DOMAINS, MUTATIONS},
-};
+pub use engine_mutations::world_input_mutations::Domain;
+use engine_mutations::{world_input_mutations::DOMAINS, world_input_mutations::MUTATIONS};
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -230,7 +228,7 @@ fn record(domain: Domain, compared: bool, mismatch: bool) {
 /// Replace `held` with `fresh`, worker-only; false when storage could not grow.
 pub fn assign<T: Copy>(held: &mut Vec<T>, fresh: &[T]) -> bool {
     held.clear();
-    if engine::allocation::reserve(held, fresh.len()).is_err() {
+    if engine_allocation::reserve(held, fresh.len()).is_err() {
         return false;
     }
     held.extend_from_slice(fresh);
@@ -316,7 +314,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "world_input_changes")
             && MUTATIONS.iter().all(|(site, _)| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [
@@ -383,7 +381,7 @@ fn notify(site: usize, first: usize) -> Notification<'static> {
         // state's names none). Only its constructor writes the link.
         Domain::DynamicModifiers => unsafe {
             std::ptr::read_volatile(
-                first.wrapping_add(engine::world_input_mutations::CONTAINER_COUNTRY)
+                first.wrapping_add(engine_mutations::world_input_mutations::CONTAINER_COUNTRY)
                     as *const usize,
             )
         },

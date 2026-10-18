@@ -1,14 +1,14 @@
 use super::*;
-use installed_content::movement::{Neighbour, ProvinceTerrain};
-use replay::{
-    eta_derive::SpeedTerms,
-    frame::{Metrics, TableView},
-    rows::{
-        CountryCounterInputRow, CountryLinkRow, CountryMovementModifiers, DivisionMovementRow,
-        DivisionMovementStats, DivisionRow, DivisionStatusRow, MovementDefines as RecordedDefines,
-        ProvinceRow, Recorded, SimulationFeatureRow, StateRow, TableRows, WarRelationRow,
-    },
+use installed_content_core::{movement::Neighbour, movement::ProvinceTerrain};
+use replay_data::{
+    rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryMovementModifiers,
+    rows::DivisionMovementRow, rows::DivisionMovementStats, rows::DivisionRow,
+    rows::DivisionStatusRow, rows::MovementDefines as RecordedDefines, rows::ProvinceRow,
+    rows::Recorded, rows::SimulationFeatureRow, rows::StateRow, rows::TableRows,
+    rows::WarRelationRow,
 };
+use replay_derive::eta_derive::SpeedTerms;
+use replay_frame::{frame::Metrics, frame::TableView};
 use std::cell::Cell;
 
 const DIVISION: u64 = 7;
@@ -334,7 +334,7 @@ fn missing_location_content_or_geometry_refuse_by_name() {
 fn the_cache_holds_the_hours_in_flight_and_evicts_the_oldest() {
     let cache = EtaCache::default();
     let built = Cell::new(0);
-    let fill = |hour: replay::Hour| {
+    let fill = |hour: replay_data::Hour| {
         cache
             .get_or_insert_with((1, hour), || {
                 built.set(built.get() + 1);
@@ -671,7 +671,7 @@ fn enemy_air_superiority_slows_an_owner_at_war() {
     // Three quarters enemy superiority at impact -0.4, scaled by 0.5: -0.15.
     put(
         &mut frame,
-        TableRows::RaidAirScores(vec![replay::rows::RaidAirScoreRow {
+        TableRows::RaidAirScores(vec![replay_data::rows::RaidAirScoreRow {
             country: 1,
             region: 70,
             friendly: 1,
@@ -812,11 +812,11 @@ fn location_weather_is_scaled_by_acclimatization() {
     let mut frame = hour(Some(SPEED).into());
     put(
         &mut frame,
-        TableRows::WeatherProvinces(vec![replay::rows::WeatherProvinceRow {
+        TableRows::WeatherProvinces(vec![replay_data::rows::WeatherProvinceRow {
             id: 1,
-            modifiers: Recorded::Value(Some(replay::rows::ProvinceWeatherModifiers {
-                entries: vec![replay::rows::ProvinceModifierEntry {
-                    key: engine::modifier_keys::ARMY_SPEED_FACTOR,
+            modifiers: Recorded::Value(Some(replay_data::rows::ProvinceWeatherModifiers {
+                entries: vec![replay_data::rows::ProvinceModifierEntry {
+                    key: engine_executable::modifier_keys::ARMY_SPEED_FACTOR,
                     value: -20_000,
                 }],
             })),
@@ -851,11 +851,11 @@ fn commanded(frame: &mut DecodedFrame, terrain: Vec<i64>, modifiers: [Option<i64
     );
     put(
         frame,
-        TableRows::OrdersGroupCounterInputs(vec![replay::rows::OrdersGroupCounterInputRow {
+        TableRows::OrdersGroupCounterInputs(vec![replay_data::rows::OrdersGroupCounterInputRow {
             group: 5,
-            commander_movement: Recorded::Value(Some(Some(replay::rows::CommanderMovementStats {
-                terrain,
-            }))),
+            commander_movement: Recorded::Value(Some(Some(
+                replay_data::rows::CommanderMovementStats { terrain },
+            ))),
             ..Default::default()
         }]),
     );
@@ -997,9 +997,10 @@ fn a_zero_supply_days_define_refuses_by_name() {
 /// whose redeployment inputs were withheld refuses by name.
 #[test]
 fn a_strategic_redeployment_moves_at_the_road_or_rail_speed() {
-    use replay::rows::{
-        RailCooldownRow, RailEdgeRow, RailwayBuildingHealth, RailwayBuildingState, StrategicAction,
-        StrategicActionFailure, StrategicRedeploymentInputs,
+    use replay_data::{
+        rows::RailCooldownRow, rows::RailEdgeRow, rows::RailwayBuildingHealth,
+        rows::RailwayBuildingState, rows::StrategicAction, rows::StrategicActionFailure,
+        rows::StrategicRedeploymentInputs,
     };
     let mut map = content(two_leg_map());
     map.defines.rail = Some(eta_derive::RailDefines {
@@ -1089,14 +1090,14 @@ fn a_strategic_redeployment_moves_at_the_road_or_rail_speed() {
 }
 
 /// The estimate on `frame` with every table but the mover's own and those the speed terms
-/// read ([`replay::eta_derive::frame_terms::TABLES`]) unavailable, as the derivation
+/// read ([`replay_derive::eta_derive::frame_terms::TABLES`]) unavailable, as the derivation
 /// checker's selected decoder leaves them.
 fn restricted_estimate(frame: &DecodedFrame, map: &MovementContent) -> Result<(i64, i64), String> {
-    use replay::rows::TableId;
+    use replay_data::rows::TableId;
     let mut restricted = frame.clone();
     for table in TableId::ALL {
         if !matches!(table, TableId::Divisions | TableId::DivisionMovement)
-            && !replay::eta_derive::frame_terms::TABLES.contains(&table)
+            && !replay_derive::eta_derive::frame_terms::TABLES.contains(&table)
         {
             *restricted.tables[table.index()] = TableView::Unavailable {
                 reason: "not selected".into(),
@@ -1110,10 +1111,10 @@ fn restricted_estimate(frame: &DecodedFrame, map: &MovementContent) -> Result<(i
 }
 
 /// Sub-units `light_armor` (type `armor`), `marine` (special forces) and `infantry`.
-fn sub_unit_database() -> std::sync::Arc<installed_content::unit_leader::SubUnits> {
-    engine::executable_tables::initialize_for_tests()
+fn sub_unit_database() -> std::sync::Arc<installed_content_core::unit_leader::SubUnits> {
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
-    let mut units = installed_content::unit_leader::SubUnits::default();
+    let mut units = installed_content_core::unit_leader::SubUnits::default();
     units.read(
         b"sub_units={ light_armor={type=armor} marine={special_forces=yes type=infantry} infantry={type=infantry} }",
         "common/units/test.txt",
@@ -1133,12 +1134,12 @@ const INFANTRY: u32 = 900_003;
 fn template(frame: &mut DecodedFrame, priority: &[u8], units: &[(u32, i32)]) {
     put(
         frame,
-        TableRows::DivisionTemplateIcons(vec![replay::rows::DivisionTemplateIconRow {
+        TableRows::DivisionTemplateIcons(vec![replay_data::rows::DivisionTemplateIconRow {
             template: 0x42,
             priority_unit_name: priority.to_vec(),
             subunits: units
                 .iter()
-                .map(|&(token, count)| replay::rows::TemplateSubunit {
+                .map(|&(token, count)| replay_data::rows::TemplateSubunit {
                     token,
                     local: 0,
                     count,
@@ -1148,7 +1149,7 @@ fn template(frame: &mut DecodedFrame, priority: &[u8], units: &[(u32, i32)]) {
         }]),
     );
     let mut tokens = frame
-        .complete::<replay::rows::tables::LexicalTokens>()
+        .complete::<replay_data::rows::tables::LexicalTokens>()
         .map(<[_]>::to_vec)
         .unwrap_or_default();
     tokens.retain(|row| row.token < ARMOUR);
@@ -1159,7 +1160,7 @@ fn template(frame: &mut DecodedFrame, priority: &[u8], units: &[(u32, i32)]) {
             (INFANTRY, b"infantry"),
         ]
         .into_iter()
-        .map(|(token, literal)| replay::rows::LexicalTokenRow {
+        .map(|(token, literal)| replay_data::rows::LexicalTokenRow {
             token,
             literal: literal.to_vec(),
         }),
@@ -1232,7 +1233,7 @@ fn the_special_forces_factor_applies_at_the_template_share() {
     // A composition unreadable when recorded refuses the estimate by name.
     let unreadable = |frame: &mut DecodedFrame| {
         let mut rows = frame
-            .complete::<replay::rows::tables::DivisionTemplateIcons>()
+            .complete::<replay_data::rows::tables::DivisionTemplateIcons>()
             .unwrap()
             .to_vec();
         rows[0].model_unreadable = 1;

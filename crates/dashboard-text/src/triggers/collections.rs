@@ -1,10 +1,10 @@
 //! Collection representative selection uses the shared evaluator.
 use super::{Evaluator, Scope, Scopes};
-use installed_content::{
-    collections::{Collection, Input, Operator},
+use installed_content_core::{
+    collections::Collection, collections::Input, collections::Operator,
     script_constants::CollectionConstant,
 };
-use replay::rows::tables;
+use replay_data::rows::tables;
 
 impl Evaluator<'_, '_> {
     /// A collection effect's representative is the first terminal
@@ -53,9 +53,9 @@ impl Evaluator<'_, '_> {
                     .script_constants()?
                     .collection(&text.split('.').collect::<Vec<_>>())?
                 {
-                    world.table_status(replay::rows::TableId::Countries)?;
+                    world.table_status(replay_data::rows::TableId::Countries)?;
                     let country = |tag: &[u8]| {
-                        std::str::from_utf8(installed_content::parser::c_string(tag))
+                        std::str::from_utf8(installed_content_core::parser::c_string(tag))
                             .ok()
                             .and_then(|tag| world.recorded().country(tag))
                             .unwrap_or(0)

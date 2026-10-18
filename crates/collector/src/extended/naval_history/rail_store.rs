@@ -36,12 +36,11 @@ use crate::{
     rail_changes::{COUNTDOWN, Changes, Counts},
     sampled_verify::Check,
 };
-use engine::{
-    allocation, cprovince_railway_info as info,
-    crailway_manager::{
-        HeldBatch, InfoOutputs, PROVINCE_BATCH, RailCarry, RailHeader, RailLocation,
-        fresh_inputs::RailwayBuildingRow,
-    },
+use engine_allocation as allocation;
+use engine_railways::{
+    cprovince_railway_info as info, crailway_manager::HeldBatch, crailway_manager::InfoOutputs,
+    crailway_manager::PROVINCE_BATCH, crailway_manager::RailCarry, crailway_manager::RailHeader,
+    crailway_manager::RailLocation, crailway_manager::fresh_inputs::RailwayBuildingRow,
     rail_neighbor,
 };
 

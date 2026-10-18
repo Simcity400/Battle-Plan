@@ -37,15 +37,12 @@ use viewer_foundation::map::{
 mod motion;
 mod native;
 use eframe::wgpu;
-use installed_content::{
-    ResolvedLayers,
-    image::{dds, native::Decode},
-    parser::{self, Item, Value},
-    particles::Catalog,
-};
+use installed_content_core::{ResolvedLayers, parser, parser::Item, parser::Value, particles::Catalog};
+use installed_content_image::{dds, native::Decode};
 pub(crate) use native::EntitySimulations;
 pub use native::Inputs as NativeInputs;
-use replay::{frame::DecodedFrame, rows::tables};
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io, sync::Arc};
 
 fn invalid(s: impl Into<String>) -> io::Error {
@@ -205,7 +202,7 @@ pub struct Emitter {
     turbulence: f32,
     noise_division: usize,
     local_space: bool,
-    render: installed_content::particles::RenderDescriptor,
+    render: installed_content_core::particles::RenderDescriptor,
     system_local_space: bool,
 }
 /// Which of several particle blocks of one name a loader takes.
@@ -278,7 +275,7 @@ pub fn read_emitters(
         if parser::read_bool_field(s, "hide", false) {
             continue;
         }
-        let render = installed_content::particles::RenderDescriptor::read(s)?;
+        let render = installed_content_core::particles::RenderDescriptor::read(s)?;
         let file = render.texture.as_str();
         let page = if let Some(&p) = pages.get(file) {
             p
@@ -375,7 +372,7 @@ struct WeatherPair {
     members: [Vec<Emitter>; 2],
     radii: [Option<f32>; 2],
     /// Each member entity's sound events.
-    sounds: [Vec<installed_content::weather::WeatherSound>; 2],
+    sounds: [Vec<installed_content_weather::weather::WeatherSound>; 2],
 }
 type LocalSystem = ((usize, bool), WeatherPair, Vec<(String, dds::Texture)>);
 
@@ -419,7 +416,7 @@ pub struct CameraDefines {
 }
 
 impl CameraDefines {
-    pub fn load(defines: &installed_content::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
         let number = |key: &str| -> io::Result<f32> {
             let value = defines.number("NGraphics", key)? as f32;
             if value.is_finite() {
@@ -463,7 +460,7 @@ pub struct Assets {
 impl Assets {
     pub fn load(
         layers: &ResolvedLayers,
-        defines: &installed_content::defines::Defines,
+        defines: &installed_content_core::defines::Defines,
         map: [u32; 2],
         decode: Decode,
     ) -> io::Result<Arc<Self>> {
@@ -501,7 +498,7 @@ impl Assets {
         {
             return Err(invalid("non-finite weather anchor"));
         }
-        let descriptors = installed_content::weather::effects(layers, &catalog)?;
+        let descriptors = installed_content_weather::weather::effects(layers, &catalog)?;
         let keys: Vec<_> = descriptors
             .iter()
             .flat_map(|(&key, pairs)| pairs.iter().map(move |pair| (key, pair)))
@@ -589,7 +586,7 @@ impl Assets {
         // Every declared pdxparticle object, grouped by its particle file so
         // each file parses once; files decode on scoped threads and merge in
         // path order.
-        let mut by_file: BTreeMap<String, Vec<(String, installed_content::particles::Particle)>> =
+        let mut by_file: BTreeMap<String, Vec<(String, installed_content_core::particles::Particle)>> =
             BTreeMap::new();
         for object in catalog.objects() {
             match catalog.resolve(object) {
@@ -651,7 +648,7 @@ impl Assets {
 /// has no country/intel predicate, so every recorded perspective uses it.
 #[derive(Default, PartialEq)]
 pub struct Field {
-    branch: replay::BranchId,
+    branch: replay_data::BranchId,
     hour: i32,
     kinds: BTreeMap<u32, usize>,
 }
@@ -1448,9 +1445,9 @@ fn weather_packets(
                 e.local_space,
                 e.system_local_space,
                 e.scale,
-                installed_content::mesh::Transform {
+                installed_content_core::mesh::Transform {
                     translation: sim.anchor,
-                    ..installed_content::mesh::Transform::IDENTITY
+                    ..installed_content_core::mesh::Transform::IDENTITY
                 },
             )),
         );

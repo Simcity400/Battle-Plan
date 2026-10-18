@@ -1,7 +1,8 @@
 //! Direct-war cells come from the hour's WarRelations, which the war oracle
 //! compares with the save. The counter's packet position is empty.
 use super::Report;
-use replay::{frame::DecodedFrame, rows::tables};
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 use std::io;
 
 pub(super) fn compare(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {

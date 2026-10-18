@@ -1,10 +1,11 @@
 use super::*;
 use crate::effect_description::tests::{Fixture, fresh};
-use replay::{frame::TableView, rows::*};
+use replay_data::rows::*;
+use replay_frame::frame::TableView;
 
 #[test]
 fn format99_country_rosters_preserve_stored_order_at_scale() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let countries = crate::effect_description::tests::synthetic_countries(5_000);
@@ -35,7 +36,7 @@ fn format99_country_rosters_preserve_stored_order_at_scale() {
             occupied: Recorded::Value(Some(references)),
             ..Default::default()
         }]));
-    let item = installed_content::parser::parse(b"every_neighbor_country={}")
+    let item = installed_content_core::parser::parse(b"every_neighbor_country={}")
         .unwrap()
         .items
         .remove(0);
@@ -112,7 +113,7 @@ fn format99_country_rosters_preserve_stored_order_at_scale() {
 
 #[test]
 fn state_divisions_follow_native_province_and_mixed_unit_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::triggers::ContentFacts;
     let mut fixture = Fixture::new();
@@ -198,7 +199,7 @@ fn state_divisions_follow_native_province_and_mixed_unit_order() {
             out: Description::default(),
             scripted_stack: Vec::new(),
         };
-        let item = installed_content::parser::parse(b"every_state_division={}")
+        let item = installed_content_core::parser::parse(b"every_state_division={}")
             .unwrap()
             .items
             .remove(0);
@@ -249,7 +250,7 @@ fn state_divisions_follow_native_province_and_mixed_unit_order() {
 
 #[test]
 fn format99_active_scientists_use_raw_nonzero_byte_and_native_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::Scientists.index()] =
@@ -266,7 +267,7 @@ fn format99_active_scientists_use_raw_nonzero_byte_and_native_order() {
                 .collect(),
         ));
     fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
-        let item = installed_content::parser::parse(b"every_active_scientist={}")
+        let item = installed_content_core::parser::parse(b"every_active_scientist={}")
             .unwrap()
             .items
             .remove(0);
@@ -289,7 +290,7 @@ fn format99_active_scientists_use_raw_nonzero_byte_and_native_order() {
         };
         rows[0].active = unavailable;
         fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
-            let item = installed_content::parser::parse(b"random_active_scientist={}")
+            let item = installed_content_core::parser::parse(b"random_active_scientist={}")
                 .unwrap()
                 .items
                 .remove(0);
@@ -327,7 +328,7 @@ fn format99_active_scientists_use_raw_nonzero_byte_and_native_order() {
 
 #[test]
 fn inactive_scientists_still_consume_limit_variable_randomness() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::Scientists.index()] =
@@ -354,7 +355,7 @@ fn inactive_scientists_still_consume_limit_variable_randomness() {
         let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
         let evaluator = renderer.evaluator().unwrap();
         assert_eq!(evaluator.scoped_value(b"random_seed", scopes), Ok(967));
-        let item = installed_content::parser::parse(
+        let item = installed_content_core::parser::parse(
             b"every_active_scientist={limit={check_variable={random < 1}}}",
         )
         .unwrap()
@@ -382,10 +383,10 @@ fn inactive_scientists_still_consume_limit_variable_randomness() {
 
 #[test]
 fn format99_party_leader_selector_uses_current_ideology_and_refuses_capture_failure() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
-    fixture.triggers.counts = Some(installed_content::trigger_keys::CountTriggerNames {
+    fixture.triggers.counts = Some(installed_content_core::trigger_keys::CountTriggerNames {
         ideology_types: [b"synthetic_type".to_vec()].into(),
         ..Default::default()
     });
@@ -455,7 +456,7 @@ fn format99_party_leader_selector_uses_current_ideology_and_refuses_capture_fail
 
 #[test]
 fn industrial_organisation_iterator_uses_recorded_order_native_scopes_and_visibility() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::IndustrialOrganisations.index()] =
@@ -490,11 +491,11 @@ fn industrial_organisation_iterator_uses_recorded_order_native_scopes_and_visibi
                 literal: b"two".to_vec(),
             },
         ]));
-    let mut database = installed_content::industrial_organisations::Database::default();
+    let mut database = installed_content_core::industrial_organisations::Database::default();
     database
         .read_file(
             b"base={visible={FROM={tag=AAA}}} one={include=base} two={visible={always=no}}",
-            &installed_content::key_names::KeyNames::default(),
+            &installed_content_core::key_names::KeyNames::default(),
         )
         .unwrap();
     let content = Content {
@@ -535,11 +536,11 @@ fn industrial_organisation_iterator_uses_recorded_order_native_scopes_and_visibi
     let out = fixture.render("THIS={army_experience=2}", &mut graph, content);
     assert_eq!(out.text, "AAA \u{12}AAA XP2\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-    database = installed_content::industrial_organisations::Database::default();
+    database = installed_content_core::industrial_organisations::Database::default();
     database
         .read_file(
             b"base={visible={always=no}} one={visible={always=no}} two={delete_included_values={visible} include=base}",
-            &installed_content::key_names::KeyNames::default(),
+            &installed_content_core::key_names::KeyNames::default(),
         )
         .unwrap();
     let out = fixture.render(
@@ -566,7 +567,7 @@ fn industrial_organisation_iterator_uses_recorded_order_native_scopes_and_visibi
 
 #[test]
 fn shared_multiple_iterator_truncates_and_keeps_native_layout_options() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     for (limit, expected) in [("NOT={state=5}", "Four"), ("always=yes", "2 others")] {
@@ -596,7 +597,7 @@ fn shared_multiple_iterator_truncates_and_keeps_native_layout_options() {
 
 #[test]
 fn random_iterator_advances_singletons_and_subset_uses_swap_removal() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let mut graph = fresh();
@@ -647,7 +648,7 @@ fn random_iterator_advances_singletons_and_subset_uses_swap_removal() {
 
 #[test]
 fn random_country_labels_share_native_marked_definite_names() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     for (tag, name) in [("AAA", "Alpha"), ("BBB", "Beta")] {
@@ -666,7 +667,7 @@ fn random_country_labels_share_native_marked_definite_names() {
 
 #[test]
 fn unrecorded_subjects_refuse_the_subject_roster() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let TableView::Complete(TableRows::CountryAppearance(rows)) =
@@ -691,7 +692,7 @@ fn unrecorded_subjects_refuse_the_subject_roster() {
 
 #[test]
 fn subject_roster_preserves_alias_duplicates_after_native_filters() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let TableView::Complete(TableRows::CountryLinks(links)) =
@@ -737,7 +738,7 @@ fn subject_roster_preserves_alias_duplicates_after_native_filters() {
 
 #[test]
 fn subject_roster_reads_existence_before_excluding_caller_alias() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let TableView::Complete(TableRows::CountryAppearance(rows)) =
@@ -784,7 +785,7 @@ fn subject_roster_reads_existence_before_excluding_caller_alias() {
 
 #[test]
 fn recorded_country_subject_and_character_rosters_select_natively() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let out = fixture.render(
@@ -896,7 +897,7 @@ fn recorded_country_subject_and_character_rosters_select_natively() {
 
 #[test]
 fn character_sections_sort_all_roles_and_refuse_missing_command_assignments() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::CountryCharacters.index()] =
@@ -1017,7 +1018,7 @@ fn character_sections_sort_all_roles_and_refuse_missing_command_assignments() {
 
 #[test]
 fn scope_chains_and_character_headers_keep_native_graph_selection() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::scripted_text::{EventObject, EventScope, Link};
     let mut fixture = Fixture::new();
@@ -1053,7 +1054,7 @@ fn scope_chains_and_character_headers_keep_native_graph_selection() {
 
 #[test]
 fn country_iterator_sizes_from_five_thousand_live_rows() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -1104,7 +1105,7 @@ fn country_iterator_sizes_from_five_thousand_live_rows() {
 
 #[test]
 fn operand_gaps_and_zero_reach_are_named_once_by_native_class() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
@@ -1183,7 +1184,7 @@ fn operand_gaps_and_zero_reach_are_named_once_by_native_class() {
             role: Some(1),
             ..Default::default()
         }]));
-    let mut names = installed_content::key_names::KeyNames::default();
+    let mut names = installed_content_core::key_names::KeyNames::default();
     names.counts.ideologies.insert(b"ideology".to_vec());
     if let TableView::Complete(TableRows::Politics(rows)) =
         &mut *fixture.frame.tables[TableId::Politics.index()]
@@ -1236,12 +1237,12 @@ fn operand_gaps_and_zero_reach_are_named_once_by_native_class() {
 
 #[test]
 fn random_selectors_and_character_list_use_native_multiple_virtual() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
-        for &(_, name) in installed_content::effect_keys::REGISTERED_EFFECTS.iter() {
-            let item = installed_content::parser::parse(format!("{name}={{}}").as_bytes())
+        for &(_, name) in installed_content_core::effect_keys::REGISTERED_EFFECTS.iter() {
+            let item = installed_content_core::parser::parse(format!("{name}={{}}").as_bytes())
                 .unwrap()
                 .items
                 .remove(0);
@@ -1262,7 +1263,7 @@ fn random_selectors_and_character_list_use_native_multiple_virtual() {
 
 #[test]
 fn individual_targets_share_one_scope_seed_and_probe_refusals_count_once() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let mut graph = fresh();
@@ -1290,7 +1291,7 @@ fn individual_targets_share_one_scope_seed_and_probe_refusals_count_once() {
 
 #[test]
 fn format98_state_iterators_list_and_select_in_recorded_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
@@ -1354,7 +1355,7 @@ fn format98_state_iterators_list_and_select_in_recorded_order() {
 
 #[test]
 fn format98_leaders_use_army_then_navy_order_and_native_global_repetition() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
@@ -1422,7 +1423,7 @@ fn format98_leaders_use_army_then_navy_order_and_native_global_repetition() {
 
 #[test]
 fn format98_orders_require_recorded_fields_even_for_single_passing_targets() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     for unavailable in [Recorded::NotRecorded, Recorded::Value(None)] {
@@ -1465,7 +1466,7 @@ fn format98_orders_require_recorded_fields_even_for_single_passing_targets() {
 
 #[test]
 fn format98_operative_memberships_supply_native_order_and_full_handles() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
@@ -1567,7 +1568,7 @@ fn unrecorded_operative_fixture(name: &[u8]) -> Fixture {
 
 #[test]
 fn unrecorded_operative_order_allows_pure_empty_and_singleton_selections() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = unrecorded_operative_fixture(b"Leader");
     let out = fixture.render(
@@ -1600,7 +1601,7 @@ fn unrecorded_operative_order_allows_pure_empty_and_singleton_selections() {
 
 #[test]
 fn unrecorded_operative_order_refuses_reached_limit_writes_and_rng_even_for_no_matches() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = unrecorded_operative_fixture(b"");
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
@@ -1622,7 +1623,7 @@ fn unrecorded_operative_order_refuses_reached_limit_writes_and_rng_even_for_no_m
                 .unwrap()
                 .store_description_temp(b"stable".to_vec(), 100_000);
             assert_eq!(renderer.scoped_value(b"random_seed", scopes), Ok(967));
-            let item = installed_content::parser::parse(
+            let item = installed_content_core::parser::parse(
                 format!("random_operative={{limit={{{limit}}}}}").as_bytes(),
             )
             .unwrap()
@@ -1656,7 +1657,7 @@ fn unrecorded_operative_order_refuses_reached_limit_writes_and_rng_even_for_no_m
         let evaluator = renderer.evaluator().unwrap();
         evaluator.store_description_temp(b"stable".to_vec(), 100_000);
         let effects = evaluator.variable_effects();
-        let item = installed_content::parser::parse(
+        let item = installed_content_core::parser::parse(
             b"random_operative={limit={divide_temp_variable={stable=0} always=no}}",
         )
         .unwrap()
@@ -1686,7 +1687,7 @@ fn unrecorded_operative_order_refuses_reached_limit_writes_and_rng_even_for_no_m
 
 #[test]
 fn party_leader_without_mandatory_ideology_is_empty_even_with_two_leaders() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::PoliticalParties.index()] =
@@ -1722,7 +1723,7 @@ fn party_leader_without_mandatory_ideology_is_empty_even_with_two_leaders() {
 
 #[test]
 fn fresh_country_state_environment_does_not_inherit_caller_links() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let mut graph = fresh();
@@ -1754,7 +1755,7 @@ fn fresh_country_state_environment_does_not_inherit_caller_links() {
 
 #[test]
 fn collection_builder_renders_header_in_caller_and_body_in_representative() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::FactionMembers.index()] =
@@ -1782,7 +1783,7 @@ fn collection_builder_renders_header_in_caller_and_body_in_representative() {
 
 #[test]
 fn ability_context_header_uses_country_while_character_getters_keep_leader() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::scripted_text::{EventObject, EventScope, EventScopes};
     let mut fixture = Fixture::new();
@@ -1793,7 +1794,7 @@ fn ability_context_header_uses_country_while_character_getters_keep_leader() {
             reference_type: 3,
             owner: 300,
             character_id: 44,
-            character_type: engine::ccharacter::REFERENCE_TYPE,
+            character_type: engine_native::ccharacter::REFERENCE_TYPE,
             ..Default::default()
         }]));
     *fixture.frame.tables[TableId::Characters.index()] =
@@ -1828,7 +1829,7 @@ fn ability_context_header_uses_country_while_character_getters_keep_leader() {
 
 #[test]
 fn state_event_uses_current_character_role_or_refuses_ambiguous_association() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::scripted_text::{EventObject, EventScope, EventScopes};
     let mut fixture = Fixture::new();
@@ -1839,7 +1840,7 @@ fn state_event_uses_current_character_role_or_refuses_ambiguous_association() {
             reference_type: 3,
             owner: 300,
             character_id: 44,
-            character_type: engine::ccharacter::REFERENCE_TYPE,
+            character_type: engine_native::ccharacter::REFERENCE_TYPE,
             ..Default::default()
         }]));
     *fixture.frame.tables[TableId::Characters.index()] =
@@ -1849,8 +1850,8 @@ fn state_event_uses_current_character_role_or_refuses_ambiguous_association() {
             ..Default::default()
         }]));
     let lookup = |_: &[u8]| {
-        Ok(std::sync::Arc::new(installed_content::events::Event {
-            titles: installed_content::parser::parse(b"title=TIP").unwrap().items,
+        Ok(std::sync::Arc::new(installed_content_events::events::Event {
+            titles: installed_content_core::parser::parse(b"title=TIP").unwrap().items,
             ..Default::default()
         }))
     };
@@ -1879,7 +1880,7 @@ fn state_event_uses_current_character_role_or_refuses_ambiguous_association() {
         reference_type: 3,
         owner: 200,
         character_id: 44,
-        character_type: engine::ccharacter::REFERENCE_TYPE,
+        character_type: engine_native::ccharacter::REFERENCE_TYPE,
         ..Default::default()
     });
     let mut graph = EventScopes::new(vec![EventScope::of(object)]);
@@ -1904,7 +1905,7 @@ fn state_event_uses_current_character_role_or_refuses_ambiguous_association() {
 
 #[test]
 fn original_tag_effect_rosters_keep_native_order_and_skip_nonpositive_raw_before_lookup() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
@@ -1927,10 +1928,11 @@ fn original_tag_effect_rosters_keep_native_order_and_skip_nonpositive_raw_before
                 ..Default::default()
             },
         ]));
-    let item = installed_content::parser::parse(b"every_country_with_original_tag={original_tag=THIS}")
-        .unwrap()
-        .items
-        .remove(0);
+    let item =
+        installed_content_core::parser::parse(b"every_country_with_original_tag={original_tag=THIS}")
+            .unwrap()
+            .items
+            .remove(0);
     let roster = |fixture: &Fixture, slot| {
         fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
             renderer.roster(

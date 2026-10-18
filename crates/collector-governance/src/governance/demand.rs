@@ -46,12 +46,12 @@ pub(super) fn presize(
     let mut focus_bytes = 0_usize;
     let mut slots = 0_usize;
     let mut leaders = 0_usize;
-    let mut ideas = engine::cpolitical_status::IdeaDemand::default();
+    let mut ideas = engine_native::cpolitical_status::IdeaDemand::default();
     let mut decisions = [0_usize; 2];
     let mut tactic_bytes = 0_usize;
     let mut research_rows = [0_usize; 3];
-    let research_context = engine::research_inputs::Context::read(memory, base);
-    let modifier_context = engine::research_modifiers::Context::read(memory, base);
+    let research_context = engine_research::research_inputs::Context::read(memory, base);
+    let modifier_context = engine_research::research_modifiers::Context::read(memory, base);
     let mut research_inputs = Vec::new();
     for slot in 1..countries.count() {
         let country = match FAILURES[0].observe(countries.at(slot)) {
@@ -62,7 +62,7 @@ pub(super) fn presize(
                 continue;
             }
         };
-        let focus = engine::cnational_focus_progress::walk(
+        let focus = engine_focus::cnational_focus_progress::walk(
             memory,
             base,
             country.pointer,
@@ -82,7 +82,7 @@ pub(super) fn presize(
         focus_bytes = focus_bytes
             .checked_add(focus.required_bytes)
             .ok_or("focus sizing byte count overflow")?;
-        let slot_demand = engine::ctechnology_status::walk_slots(
+        let slot_demand = engine_research::ctechnology_status::walk_slots(
             memory,
             base,
             country.pointer,
@@ -92,7 +92,7 @@ pub(super) fn presize(
         if let Err(reason) = FAILURES[5].observe(add_rows(&mut slots, slot_demand)) {
             refusal.get_or_insert(reason);
         }
-        match engine::cpolitical_status::Reader::new(memory, base, country.pointer) {
+        match engine_native::cpolitical_status::Reader::new(memory, base, country.pointer) {
             Ok(reader) => {
                 if let Err(reason) = FAILURES[6].observe(add_rows(
                     &mut leaders,
@@ -124,10 +124,15 @@ pub(super) fn presize(
         decisions[1] = decisions[1]
             .checked_add(decision.required_bytes)
             .ok_or("decision sizing byte count overflow")?;
-        let tactic =
-            engine::ccombat_tactic::preferred(memory, base, country.pointer, country.id, &mut []);
+        let tactic = engine_native::ccombat_tactic::preferred(
+            memory,
+            base,
+            country.pointer,
+            country.id,
+            &mut [],
+        );
         if let Err(reason) = FAILURES[10].observe(match tactic.outcome {
-            engine::walk::Outcome::Unavailable { reason } => Err(reason),
+            engine_native::walk::Outcome::Unavailable { reason } => Err(reason),
             _ => Ok(()),
         }) {
             refusal.get_or_insert(reason);
@@ -142,11 +147,12 @@ pub(super) fn presize(
             research_inputs
                 .try_reserve(local_slots.saturating_sub(research_inputs.len()))
                 .map_err(|_| "research sizing scratch allocation failed")?;
-            research_inputs.resize_with(local_slots, engine::research_inputs::Row::default);
+            research_inputs
+                .resize_with(local_slots, engine_research::research_inputs::Row::default);
             Ok(())
         });
         let (input, bonuses) = match prepared {
-            Ok(()) => engine::research_inputs::walk_country(
+            Ok(()) => engine_research::research_inputs::walk_country(
                 memory,
                 base,
                 country.pointer,
@@ -156,8 +162,8 @@ pub(super) fn presize(
                 &mut [],
             ),
             Err(reason) => (
-                engine::walk::Outcome::Unavailable { reason },
-                engine::walk::Outcome::Unavailable { reason },
+                engine_native::walk::Outcome::Unavailable { reason },
+                engine_native::walk::Outcome::Unavailable { reason },
             ),
         };
         for (index, outcome) in [input, bonuses].into_iter().enumerate() {
@@ -166,8 +172,8 @@ pub(super) fn presize(
                 refusal.get_or_insert(reason);
             }
         }
-        if let engine::walk::Outcome::Rows { len } = input {
-            let modifiers = engine::research_modifiers::walk_country(
+        if let engine_native::walk::Outcome::Rows { len } = input {
+            let modifiers = engine_research::research_modifiers::walk_country(
                 memory,
                 base,
                 &countries,
@@ -244,7 +250,7 @@ pub(super) fn presize(
     ] {
         raise(target, rows(count, 1));
     }
-    match FAILURES[8].observe(engine::cpolitical_status::timed_idea_demand(
+    match FAILURES[8].observe(engine_native::cpolitical_status::timed_idea_demand(
         memory, base, state,
     )) {
         Ok(timed) => {
@@ -255,7 +261,8 @@ pub(super) fn presize(
             refusal.get_or_insert(reason);
         }
     }
-    let sharing = engine::ctechnology_sharing_group::walk(memory, base, state, &mut [], &mut []);
+    let sharing =
+        engine_research::ctechnology_sharing_group::walk(memory, base, state, &mut [], &mut []);
     for (index, outcome) in [(12, sharing.groups), (13, sharing.members)] {
         let mut count = 0;
         if let Err(reason) = FAILURES[11].observe(add_rows(&mut count, outcome)) {
@@ -263,11 +270,11 @@ pub(super) fn presize(
         }
         raise(&mut capacity.rows[index], rows(count, 1));
     }
-    let balances = engine::power_balance_manager::walk(
+    let balances = engine_power_balance::power_balance_manager::walk(
         memory,
         base,
         state,
-        engine::power_balance_manager::Buffers {
+        engine_power_balance::power_balance_manager::Buffers {
             records: &mut [],
             members: &mut [],
             ranges: &mut [],
@@ -306,13 +313,13 @@ pub(super) fn presize(
     refusal.map_or(Ok(()), Err)
 }
 
-fn add_rows(total: &mut usize, outcome: engine::walk::Outcome) -> Result<(), &'static str> {
+fn add_rows(total: &mut usize, outcome: engine_native::walk::Outcome) -> Result<(), &'static str> {
     let count = match outcome {
-        engine::walk::Outcome::Rows { len } => len,
-        engine::walk::Outcome::Truncated { len, unread_rows } => len
+        engine_native::walk::Outcome::Rows { len } => len,
+        engine_native::walk::Outcome::Truncated { len, unread_rows } => len
             .checked_add(unread_rows as usize)
             .ok_or("governance sizing row count overflow")?,
-        engine::walk::Outcome::Unavailable { reason } => return Err(reason),
+        engine_native::walk::Outcome::Unavailable { reason } => return Err(reason),
     };
     *total = total
         .checked_add(count)

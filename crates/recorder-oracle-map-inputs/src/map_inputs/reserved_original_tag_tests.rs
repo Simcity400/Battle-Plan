@@ -1,6 +1,6 @@
 use super::*;
 use installed_content_save::{ActualCountry, CountryEmissionIdentity, SaveDocument};
-use replay::rows::{Recorded, ReservedCountryNamingRow};
+use replay_data::{rows::Recorded, rows::ReservedCountryNamingRow};
 
 fn fixture(
     count: usize,

@@ -86,7 +86,7 @@ fn checkpoint_disk_seek_measurement() {
     }
     let affinity =
         resources::affinity().expect("invalid processor affinity or unsupported platform");
-    engine::executable_tables::initialize_for_tests().expect("set BATTLE_PLAN_GAME_DIR");
+    engine_executable::executable_tables::initialize_for_tests().expect("set BATTLE_PLAN_GAME_DIR");
     let recording = PathBuf::from(
         std::env::var_os("BATTLE_PLAN_MAP_BENCH_REPLAY").or_else(|| std::env::var_os("HOI4_MAP_BENCH_REPLAY")).expect("set BATTLE_PLAN_MAP_BENCH_REPLAY"),
     );
@@ -774,7 +774,10 @@ fn measure_recording(
                     .sum::<u64>())
             ),
         );
-        prefix_report.insert("format".into(), serde_json::json!((replay::FORMAT_VERSION)));
+        prefix_report.insert(
+            "format".into(),
+            serde_json::json!((replay_data::FORMAT_VERSION)),
+        );
         prefix_report.insert("recordedFrames".into(), serde_json::json!((frames)));
         prefix_report.insert("blocks".into(), serde_json::json!((blocks)));
         prefix_report.insert(

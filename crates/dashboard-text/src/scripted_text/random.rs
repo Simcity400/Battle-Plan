@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::triggers::{Evaluator, Temps};
-use installed_content::scripted_localisation::RandomList;
+use installed_content_scripted_localisation::scripted_localisation::RandomList;
 
 /// The seeded event scope stores this second hash lane.
 /// Promoted objects construct their scopes with 424242.
@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn fixed_seed_draw_and_cumulative_pick() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         // Seed 1 gives final draw 683596854; %60 = 54.
         // Subtract 10 then 20 then 30 to choose the final member.
@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn zero_single_negative_and_wrapping_weights() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let never = || Err("seed must not be read".into());
         assert_eq!(pick(0, |_| panic!(), never), Ok(None));

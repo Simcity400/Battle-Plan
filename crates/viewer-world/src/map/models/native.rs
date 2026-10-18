@@ -1,7 +1,7 @@
 //! Compiled mesh passes with retained material state and ordered submission.
 use super::*;
 use crate::map::{mesh_pose, mesh_shader, shader_scene};
-use installed_content::pdxshader::program::Stage;
+use installed_content_core::pdxshader::program::Stage;
 use shader_pipeline::{
     binding,
     gpu::{CONSTANT_BINDINGS, TEXTURE_BINDINGS},
@@ -580,8 +580,8 @@ fn select_alpha(library: &mut Library, part: &Part) -> io::Result<Selection> {
 /// Select whether the material uses a caster texture and the alternate queue.
 /// The shadow-state check runs only when the lit state did not admit a texture.
 fn material_flags(
-    lit: &installed_content::pdxshader::BlendState,
-    shadow: &installed_content::pdxshader::BlendState,
+    lit: &installed_content_core::pdxshader::BlendState,
+    shadow: &installed_content_core::pdxshader::BlendState,
     diffuse: bool,
 ) -> (bool, bool) {
     let mut textured = diffuse && (lit.enable || lit.alpha_test);
@@ -1212,7 +1212,7 @@ mod tests {
 
     #[test]
     fn shadow_alpha_state_can_admit_an_alternate_material() {
-        use installed_content::pdxshader::BlendState;
+        use installed_content_core::pdxshader::BlendState;
         let opaque = BlendState::default();
         let cutout = BlendState {
             enable: false,

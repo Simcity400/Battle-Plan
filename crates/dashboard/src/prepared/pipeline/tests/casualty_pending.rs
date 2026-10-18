@@ -7,7 +7,7 @@ fn war_casualties_answer_their_prepared_prefix_until_retained_totals_are_publish
     independent::with_test_hourly(|| {
         use crate::products::{LoadContext, war_casualties::prepared::Prepared};
         use crate::test_fixtures::scale_tag;
-        use replay::rows::WarRelationRow;
+        use replay_data::rows::WarRelationRow;
         use serde_json::{Value, json};
 
         let sample = |hour| {

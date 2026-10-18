@@ -1,5 +1,5 @@
 use super::{Capacities, Captured, SunkCopyContext, SunkCopyReport, SunkJob};
-use engine::{Memory, memory::SliceMemory, walk::Outcome};
+use engine_native::{Memory, memory::SliceMemory, walk::Outcome};
 
 pub(crate) const BASE: usize = 0;
 pub(crate) const GAME_STATE: usize = 0x100;
@@ -26,10 +26,11 @@ fn short(bytes: &mut [u8], at: usize, value: &[u8]) {
     put(bytes, at + msvc_string::CAPACITY, &15_u64.to_le_bytes());
 }
 
-use engine::msvc_string;
+use engine_native::msvc_string;
 
 pub(crate) fn fixture() -> Vec<u8> {
-    use engine::{cgame_date, cgame_state, cprovince, csub_unit_definition, csunk_ship_info};
+    use engine_native::{cgame_date, cgame_state, cprovince, csub_unit_definition};
+    use engine_naval_history::csunk_ship_info;
     let mut bytes = vec![0_u8; 0x2000];
     put(
         &mut bytes,
@@ -186,12 +187,12 @@ pub(crate) fn mod_fixture(count: usize) -> Vec<u8> {
     bytes.resize(data + count * 8, 0);
     put(
         &mut bytes,
-        GAME_STATE + engine::cgame_state::SUNK_SHIP_HISTORY,
+        GAME_STATE + engine_native::cgame_state::SUNK_SHIP_HISTORY,
         &(data as u64).to_le_bytes(),
     );
     for offset in [
-        engine::cgame_state::SUNK_SHIP_HISTORY_CAPACITY,
-        engine::cgame_state::SUNK_SHIP_HISTORY_COUNT,
+        engine_native::cgame_state::SUNK_SHIP_HISTORY_CAPACITY,
+        engine_native::cgame_state::SUNK_SHIP_HISTORY_COUNT,
     ] {
         put(
             &mut bytes,
@@ -207,13 +208,13 @@ pub(crate) fn mod_fixture(count: usize) -> Vec<u8> {
 
 pub(crate) struct Split {
     pub outcome: Outcome,
-    pub rows: Vec<engine::csunk_ship_info::Record>,
+    pub rows: Vec<engine_naval_history::csunk_ship_info::Record>,
     pub bytes_len: usize,
     pub required: usize,
 }
 
 fn collect_typed(memory: &impl Memory, rows_cap: usize, names_cap: usize) -> Split {
-    use engine::csunk_ship_info;
+    use engine_naval_history::csunk_ship_info;
     let mut capacities = Capacities::fixture();
     capacities.rows[13] = rows_cap;
     capacities.sunk_names = names_cap;

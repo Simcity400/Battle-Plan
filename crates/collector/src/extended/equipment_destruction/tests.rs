@@ -1,19 +1,20 @@
 use super::*;
-use replay::rows::{
-    DivisionDeletionDisposition, EquipmentDestructionCause, EquipmentDestructionCoverage,
+use replay_data::{
+    rows::DivisionDeletionDisposition, rows::EquipmentDestructionCause,
+    rows::EquipmentDestructionCoverage,
 };
 
 #[test]
 fn scripted_division_and_stockpile_reductions_never_aggregate_together() {
     let division = producer::Entry {
         country: 4999,
-        cause: engine::equipment_destruction::Cause::ScriptedEquipmentFraction,
+        cause: engine_events::equipment_destruction::Cause::ScriptedEquipmentFraction,
         variant: 0xf00100000046,
         amount_raw: 11,
         ..Default::default()
     };
     let stockpile = producer::Entry {
-        cause: engine::equipment_destruction::Cause::ScriptedStockpileFraction,
+        cause: engine_events::equipment_destruction::Cause::ScriptedStockpileFraction,
         amount_raw: 17,
         ..division
     };
@@ -36,7 +37,7 @@ fn scripted_division_and_stockpile_reductions_never_aggregate_together() {
 fn hourly_signed_totals_preserve_gains_and_omit_exact_cancellations() {
     let event = producer::Entry {
         country: 4999,
-        cause: engine::equipment_destruction::Cause::LandCombat,
+        cause: engine_events::equipment_destruction::Cause::LandCombat,
         variant: 0xf00100000046,
         amount_raw: 9,
         ..Default::default()
@@ -79,7 +80,7 @@ fn hourly_signed_totals_preserve_gains_and_omit_exact_cancellations() {
 fn hourly_groups_preserve_all_owners_causes_designs_and_deletion_witnesses() {
     let event = producer::Entry {
         country: 4999,
-        cause: engine::equipment_destruction::Cause::Attrition,
+        cause: engine_events::equipment_destruction::Cause::Attrition,
         division_handle: 0,
         variant: 0xf00100000046,
         amount_raw: 9,
@@ -87,7 +88,7 @@ fn hourly_groups_preserve_all_owners_causes_designs_and_deletion_witnesses() {
     };
     let marker = producer::Entry {
         country: 4999,
-        cause: engine::equipment_destruction::Cause::DivisionDeleted,
+        cause: engine_events::equipment_destruction::Cause::DivisionDeleted,
         division_handle: 0xf00200004b01,
         variant: 0,
         amount_raw: 0,
@@ -101,7 +102,7 @@ fn hourly_groups_preserve_all_owners_causes_designs_and_deletion_witnesses() {
         },
         event,
         producer::Entry {
-            cause: engine::equipment_destruction::Cause::Unknown,
+            cause: engine_events::equipment_destruction::Cause::Unknown,
             ..event
         },
         marker,
@@ -153,17 +154,17 @@ fn hourly_groups_preserve_all_owners_causes_designs_and_deletion_witnesses() {
 #[test]
 fn nonloss_deletion_dispositions_publish_witnesses_without_equipment_totals() {
     let events: Vec<_> = [
-        engine::equipment_destruction::Disposition::Returned,
-        engine::equipment_destruction::Disposition::Merged,
-        engine::equipment_destruction::Disposition::HqTransferred,
-        engine::equipment_destruction::Disposition::VolunteerTransferred,
-        engine::equipment_destruction::Disposition::ExileTransferred,
+        engine_events::equipment_destruction::Disposition::Returned,
+        engine_events::equipment_destruction::Disposition::Merged,
+        engine_events::equipment_destruction::Disposition::HqTransferred,
+        engine_events::equipment_destruction::Disposition::VolunteerTransferred,
+        engine_events::equipment_destruction::Disposition::ExileTransferred,
     ]
     .into_iter()
     .enumerate()
     .map(|(index, disposition)| producer::Entry {
         country: 1500,
-        cause: engine::equipment_destruction::Cause::Unknown,
+        cause: engine_events::equipment_destruction::Cause::Unknown,
         disposition,
         expeditionary_owner: 1500,
         division_handle: ((index as u64 + 1) << 32) | 0x4b01,
@@ -210,12 +211,12 @@ fn same_hour_transfer_then_disposal_keeps_the_final_disposition() {
     let transfer = producer::Entry {
         country: 4999,
         division_handle: 0xf00200004b01,
-        disposition: engine::equipment_destruction::Disposition::VolunteerTransferred,
+        disposition: engine_events::equipment_destruction::Disposition::VolunteerTransferred,
         ..Default::default()
     };
     let deletion = producer::Entry {
-        cause: engine::equipment_destruction::Cause::DivisionScripted,
-        disposition: engine::equipment_destruction::Disposition::Loss,
+        cause: engine_events::equipment_destruction::Cause::DivisionScripted,
+        disposition: engine_events::equipment_destruction::Disposition::Loss,
         ..transfer
     };
     let rows = deletion_rows(&[transfer, transfer, deletion]).unwrap();
@@ -236,7 +237,7 @@ fn refused_supplemental_group_marks_observed_signed_totals_incomplete_even_when_
         if len != 0 {
             captured.rows.rows[0] = producer::Entry {
                 country: 4999,
-                cause: engine::equipment_destruction::Cause::LandCombat,
+                cause: engine_events::equipment_destruction::Cause::LandCombat,
                 variant: 0xf00100000046,
                 amount_raw,
                 ..Default::default()

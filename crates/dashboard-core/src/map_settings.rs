@@ -26,8 +26,8 @@ pub fn campaign_key(replay: &replay::container::Replay) -> String {
 
 pub fn try_campaign_key(replay: &replay::container::Replay) -> io::Result<String> {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let length = engine::allocation::mul(replay.campaign_id.len(), 2)?;
-    let mut key = engine::allocation::vec(length)?;
+    let length = engine_allocation::mul(replay.campaign_id.len(), 2)?;
+    let mut key = engine_allocation::vec(length)?;
     for byte in &replay.campaign_id {
         key.push(HEX[(byte >> 4) as usize]);
         key.push(HEX[(byte & 15) as usize]);
@@ -615,7 +615,7 @@ mod tests {
 
     #[test]
     fn imports_real_graphics_and_rejects_invalid_quality() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let settings = parse_game_graphics(b"template_counter=1 graphics={multi_sampling=0 shadows=no} mapRenderingOptions={draw_trees=no draw_shadows=yes texture_quality=2 draw_units=no high_gfx_shaders=no draw_water_reflections=no draw_sky=no draw_map_full_res=no}").unwrap();
         assert_eq!(settings.nato_counters, Some(true));
@@ -646,7 +646,7 @@ mod tests {
 
     #[test]
     fn imports_the_map_mode_choices_and_volumes() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let game = parse_game(
             b"hide_daynight_cycle=yes show_allied_plans=no master_volume=80.000000 \
@@ -698,7 +698,7 @@ mod tests {
     /// one press of its button.
     #[test]
     fn a_fresh_install_imports_as_the_defaults() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let fresh = parse_game(
             b"graphics={ shadows=no multi_sampling=4 }
@@ -723,7 +723,7 @@ mod tests {
 
     #[test]
     fn map_shadow_option_is_independent_of_device_shadow_preference() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         for device in ["yes", "no"] {
             for (map, expected) in [("yes", true), ("no", false)] {

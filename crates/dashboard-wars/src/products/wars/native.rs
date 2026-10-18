@@ -1,5 +1,5 @@
 //! War overview grouping over canonical recorded countries.
-use replay::rows::{WarOverviewCountryRow, WarRelationRow};
+use replay_data::{rows::WarOverviewCountryRow, rows::WarRelationRow};
 use std::collections::{HashMap, HashSet};
 
 pub(super) type Pair = (u32, u32);

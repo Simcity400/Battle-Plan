@@ -1,7 +1,10 @@
 //! Text shared by combat windows and ordinary-map hovers. Call sites own native keys and scopes.
 use dashboard_text::scripted_text::stored_text;
-use installed_content::localisation::{Argument, Argument as Arg, Localisation, Piece, pieces};
-use replay::rows::CountryRow;
+use installed_content_localisation::{
+    localisation::Argument, localisation::Argument as Arg, localisation::Localisation,
+    localisation::Piece, localisation::pieces,
+};
+use replay_data::rows::CountryRow;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -140,7 +143,7 @@ pub fn token_with(
     displayable(icons, text).map_err(|reason| {
         format!(
             "localisation {} holds {reason}",
-            String::from_utf8_lossy(installed_content::parser::c_string(token))
+            String::from_utf8_lossy(installed_content_core::parser::c_string(token))
         )
     })
 }

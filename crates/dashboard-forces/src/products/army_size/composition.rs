@@ -4,7 +4,7 @@
 //! group; the shared database's air/naval inventory does not establish army reach.
 use super::*;
 use dashboard_base::catalogue::{Catalogue, catalogue};
-use installed_content::unit_leader::SubUnits;
+use installed_content_core::unit_leader::SubUnits;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct RawMixRun {
@@ -29,11 +29,11 @@ fn group_info(
     );
     let (key, label, mut warning) = match group {
         Ok(Some(group)) => {
-            let identity = match installed_content::tokens::Token::c_str(group.as_bytes()) {
-                installed_content::tokens::Token::Name(name) => {
+            let identity = match installed_content_core::tokens::Token::c_str(group.as_bytes()) {
+                installed_content_core::tokens::Token::Name(name) => {
                     String::from_utf8(name).unwrap_or_else(|_| group.to_owned())
                 }
-                installed_content::tokens::Token::Rejected => String::new(),
+                installed_content_core::tokens::Token::Rejected => String::new(),
             };
             (format!("group:{identity}"), group, None)
         }
@@ -109,7 +109,7 @@ pub(super) fn composition_reply(
             .as_ref()
             .is_none_or(|(old, _)| !Arc::ptr_eq(old, catalogue))
     {
-        let units = installed_content::unit_leader::sub_units(&catalogue.content.layers)
+        let units = installed_content_core::unit_leader::sub_units(&catalogue.content.layers)
             .map_err(|error| error.to_string());
         groups.content = Some((Arc::clone(catalogue), units));
     }
@@ -215,7 +215,7 @@ pub(super) fn composition_reply(
 
 pub fn check_content(catalogue: &Catalogue) -> io::Result<Vec<dashboard_core::findings::Finding>> {
     use dashboard_core::findings::{Finding, Kind};
-    let units = installed_content::unit_leader::sub_units(&catalogue.content.layers)?;
+    let units = installed_content_core::unit_leader::sub_units(&catalogue.content.layers)?;
     let mut findings: Vec<_> = units
         .warnings()
         .iter()
@@ -244,7 +244,7 @@ mod tests {
     use super::*;
     #[test]
     fn army_size_grouping_uses_authored_groups_and_keeps_unknown_names() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut units = SubUnits::default();
         units.read(
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn army_group_titles_resolve_the_content_key_and_preserve_defined_empty() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[(
             "localisation/groups_l_english.yml",
@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn army_size_content_accepts_native_default_groups_without_claiming_army_reach() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
             (

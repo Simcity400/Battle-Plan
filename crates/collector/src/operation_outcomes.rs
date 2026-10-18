@@ -1,7 +1,8 @@
 //! Every successful native operation completion, copied before its caller can
 //! auto-repeat or destroy the instance. Native paths/sites live in engine.
 use crate::{hook::Hook, shared_lane::SharedLane};
-use engine::{Memory, operation_outcome_sites as native};
+use engine_events::operation_outcome_sites as native;
+use engine_native::Memory;
 use std::{
     cell::{Cell, UnsafeCell},
     ops::Range,
@@ -116,14 +117,14 @@ struct Record {
     byte_demand: u64,
 }
 fn boxed<T>(value: T) -> Result<Box<T>, &'static str> {
-    let mut values = engine::allocation::vec(1)
+    let mut values = engine_allocation::vec(1)
         .map_err(|_| "operation completion description allocation failed")?;
     values.push(value);
     let slice = boxed_slice(values)?;
     Ok(unsafe { Box::from_raw(Box::into_raw(slice).cast::<T>()) })
 }
 fn boxed_slice<T>(values: Vec<T>) -> Result<Box<[T]>, &'static str> {
-    engine::allocation::boxed_slice(values)
+    engine_allocation::boxed_slice(values)
         .map_err(|_| "operation completion description allocation failed")
 }
 struct ByteRing {
@@ -135,7 +136,7 @@ unsafe impl Sync for ByteRing {}
 impl ByteRing {
     fn try_new(bytes: usize) -> Result<Self, &'static str> {
         let mut storage = Vec::new();
-        engine::allocation::reserve_exact(&mut storage, bytes)
+        engine_allocation::reserve_exact(&mut storage, bytes)
             .map_err(|_| "operation completion description allocation failed")?;
         storage.resize_with(bytes, || UnsafeCell::new(0));
         Ok(Self {
@@ -169,17 +170,17 @@ unsafe impl Sync for Lane {}
 impl Lane {
     fn new(entries: usize, bytes: usize) -> Result<Self, &'static str> {
         let entries = entries.max(1).checked_next_power_of_two().ok_or_else(|| {
-            let _ = engine::allocation::oom();
+            let _ = engine_allocation::oom();
             "operation completion description capacity overflow"
         })?;
         let ring = boxed(ByteRing::try_new(bytes.max(1))?)?;
         let pointer = &*ring as *const ByteRing as usize;
         let mut records = Vec::new();
-        engine::allocation::reserve_exact(&mut records, entries)
+        engine_allocation::reserve_exact(&mut records, entries)
             .map_err(|_| "operation completion description allocation failed")?;
         records.resize_with(entries, || UnsafeCell::new(Record::default()));
         let mut byte_rings = Vec::new();
-        engine::allocation::reserve_exact(&mut byte_rings, 1)
+        engine_allocation::reserve_exact(&mut byte_rings, 1)
             .map_err(|_| "operation completion description allocation failed")?;
         byte_rings.push(ring);
         Ok(Self {
@@ -209,7 +210,7 @@ impl Lane {
         let required = self.required_bytes.load(Ordering::Relaxed).max(floor);
         if required > self.ring().bytes.len() {
             let capacity = required.checked_next_power_of_two().ok_or_else(|| {
-                let _ = engine::allocation::oom();
+                let _ = engine_allocation::oom();
                 "operation completion description capacity overflow"
             })?;
             let fresh = boxed(ByteRing::try_new(capacity)?)?;
@@ -218,7 +219,7 @@ impl Lane {
                 .byte_rings
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            engine::allocation::reserve(&mut retained, 1)
+            engine_allocation::reserve(&mut retained, 1)
                 .map_err(|_| "operation completion description allocation failed")?;
             retained.push(fresh);
             self.byte_ring.store(pointer, Ordering::Release);
@@ -262,7 +263,7 @@ impl Log {
         shared: (usize, usize),
     ) -> Result<Self, &'static str> {
         let entries = entries.max(1).checked_next_power_of_two().ok_or_else(|| {
-            let _ = engine::allocation::oom();
+            let _ = engine_allocation::oom();
             "operation completion description capacity overflow"
         })?;
         // One more thread's lane: its records, and one lane's description
@@ -277,7 +278,7 @@ impl Log {
         let shared = SharedLane::new(slots, stride)
             .map_err(|_| "operation completion description allocation failed")?;
         let mut storage = Vec::new();
-        engine::allocation::reserve_exact(&mut storage, lanes)
+        engine_allocation::reserve_exact(&mut storage, lanes)
             .map_err(|_| "operation completion description allocation failed")?;
         for index in 0..lanes {
             storage.push(Lane::new(
@@ -537,7 +538,7 @@ pub fn presize(entries: usize, bytes: usize) {
         return;
     }
     let fresh = (|| {
-        let required = engine::allocation::collect_vec((0..lanes).map(required))
+        let required = engine_allocation::collect_vec((0..lanes).map(required))
             .map_err(|_| "operation completion description allocation failed")?;
         boxed(Log::with_shared(entries, bytes, lanes, &required, shared)?)
     })();
@@ -552,7 +553,7 @@ pub fn presize(entries: usize, bytes: usize) {
     let mut retained = LOGS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if engine::allocation::reserve(&mut retained, 1).is_err() {
+    if engine_allocation::reserve(&mut retained, 1).is_err() {
         failed_reason("operation completion description allocation failed");
         return;
     }
@@ -756,7 +757,7 @@ unsafe extern "system-unwind" fn completion(instance: usize) -> usize {
         COUNTERS[0].fetch_add(1, Ordering::Relaxed);
         if let Some(log) = log() {
             if let Some(lease) = publishing(log) {
-                let memory = unsafe { engine::memory::LiveMemory::new() };
+                let memory = unsafe { engine_native::memory::LiveMemory::new() };
                 observe_return(
                     lease.0,
                     lane(lease.0),
@@ -796,15 +797,18 @@ pub fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'stati
         return Err("operation completion hooks unavailable");
     }
     let log = log().ok_or("operation completion staging unavailable")?;
-    handoff_buffer(seal_offered(log), engine::walk::Buffer::Growing(cursors))
+    handoff_buffer(
+        seal_offered(log),
+        engine_native::walk::Buffer::Growing(cursors),
+    )
 }
 #[cfg(test)]
 fn handoff_from(log: &Log, cursors: &mut [LaneCursor]) -> Result<Handoff, &'static str> {
-    handoff_buffer(log, engine::walk::Buffer::Fixed(cursors))
+    handoff_buffer(log, engine_native::walk::Buffer::Fixed(cursors))
 }
 fn handoff_buffer(
     log: &Log,
-    mut cursors: engine::walk::Buffer<'_, LaneCursor>,
+    mut cursors: engine_native::walk::Buffer<'_, LaneCursor>,
 ) -> Result<Handoff, &'static str> {
     let lanes = log.registered.load(Ordering::Acquire).min(log.lanes.len());
     cursors
@@ -853,14 +857,13 @@ impl Handoff {
                         .event
                         .description_len
                 };
-                bytes = engine::allocation::add(bytes, length)
+                bytes = engine_allocation::add(bytes, length)
                     .map_err(|_| "operation completion description demand overflow")?;
             }
         }
         for (_, index) in self.shared(log)? {
-            bytes =
-                engine::allocation::add(bytes, log.shared.record(index).0.event.description_len)
-                    .map_err(|_| "operation completion description demand overflow")?;
+            bytes = engine_allocation::add(bytes, log.shared.record(index).0.event.description_len)
+                .map_err(|_| "operation completion description demand overflow")?;
         }
         Ok(bytes)
     }
@@ -976,7 +979,7 @@ impl Handoff {
             lost_drain();
             return Err("operation completion drain staging short");
         }
-        let mut tails = engine::allocation::collect_vec(
+        let mut tails = engine_allocation::collect_vec(
             log.lanes
                 .iter()
                 .take(self.lanes)
@@ -1135,12 +1138,12 @@ impl Hooks {
         })
     }
     unsafe fn install(memory: &impl Memory, base: usize) -> Result<Self, String> {
-        if engine::read::<[u8; 16]>(memory, base + native::COMPLETION_RVA)
+        if engine_native::read::<[u8; 16]>(memory, base + native::COMPLETION_RVA)
             != Some(native::COMPLETION_SENTINEL)
         {
             COUNTERS[3].fetch_add(1, Ordering::Relaxed);
             return Err(
-                engine::allocation::string("operation completion entry sentinel differs")
+                engine_allocation::string("operation completion entry sentinel differs")
                     .unwrap_or_default(),
             );
         }
@@ -1179,7 +1182,7 @@ impl Hooks {
         Ok(true)
     }
     pub fn executable_ranges(&self) -> Vec<Range<usize>> {
-        engine::allocation::owned_vec(engine::allocation::collect_vec(
+        engine_allocation::owned_vec(engine_allocation::collect_vec(
             self.entry.iter().flat_map(Hook::executable_ranges),
         ))
     }
@@ -1188,7 +1191,7 @@ impl Hooks {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{ccountry, cgame_state, coperation, coperation_instance as operation};
+    use engine_native::{ccountry, cgame_state, coperation, coperation_instance as operation};
     use std::cell::RefCell;
 
     static TEST: Mutex<()> = Mutex::new(());
@@ -1342,10 +1345,8 @@ mod tests {
     #[test]
     fn completion_publication_releases_records_only_after_successful_write() {
         use crate::extended::operation_outcomes::{Captured, Ledger};
-        use replay::{
-            frame::{TableInput, TableView},
-            rows::{TableId, TableRows},
-        };
+        use replay_data::{rows::TableId, rows::TableRows};
+        use replay_frame::{frame::TableInput, frame::TableView};
         let _serial = TEST.lock().unwrap();
         let log = new_log(4, 32);
         prime(&log);
@@ -1598,7 +1599,7 @@ mod tests {
             }
             let epoch = EPOCH.load(Ordering::Acquire);
             let handoff =
-                handoff_buffer(&log, engine::walk::Buffer::Growing(&mut cursors)).unwrap();
+                handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
             assert_eq!(handoff.lanes, count);
             assert_eq!(handoff.epoch, epoch);
             assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
@@ -1646,10 +1647,8 @@ mod tests {
     #[test]
     fn operation_completion_idle_stale_handoff_after_later_drain_and_capacity_change() {
         use crate::extended::operation_outcomes::{Capacities, Captured, Ledger};
-        use replay::{
-            frame::{TableInput, TableView},
-            rows::{TableId, TableRows},
-        };
+        use replay_data::{rows::TableId, rows::TableRows};
+        use replay_frame::{frame::TableInput, frame::TableView};
         let _serial = TEST.lock().unwrap();
         let log = new_log(4, 32);
         prime(&log);

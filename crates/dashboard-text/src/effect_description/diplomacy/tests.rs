@@ -2,11 +2,12 @@ use super::*;
 use crate::effect_description::tests::{Fixture, synthetic_countries};
 use crate::scripted_text::{EventObject, EventScope};
 use EventObject::{Country as C, State as S};
-use replay::{frame::TableView, rows::*};
+use replay_data::rows::*;
+use replay_frame::frame::TableView;
 
 #[test]
 fn faction_preview_keeps_known_empty_names_in_named_removal_and_join_branches() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
@@ -89,7 +90,7 @@ fn faction_preview_keeps_known_empty_names_in_named_removal_and_join_branches() 
 
 #[test]
 fn same_faction_nonleader_preview_reads_only_subject_operands() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::FactionMembers.index()] =
@@ -131,7 +132,7 @@ fn same_faction_nonleader_preview_reads_only_subject_operands() {
 
 #[test]
 fn reached_faction_subject_loops_keep_order_aliases_and_refusals() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let TableView::Complete(TableRows::CountryAppearance(rows)) =
@@ -217,7 +218,7 @@ fn reached_faction_subject_loops_keep_order_aliases_and_refusals() {
 /// recording's table held. The earlier native exits still give no line.
 #[test]
 fn create_wargoal_refuses_at_the_unrecorded_owned_goal_test() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
@@ -239,8 +240,9 @@ fn create_wargoal_refuses_at_the_unrecorded_owned_goal_test() {
         .scripted_content()
         .unwrap()
         .set_synthetic_environment(Default::default());
-    let names = installed_content::key_names::KeyNames::default();
-    let database = installed_content::wargoals::parse(b"wargoal_types={SynGoal={}}", &names).unwrap();
+    let names = installed_content_core::key_names::KeyNames::default();
+    let database =
+        installed_content_wargoals::wargoals::parse(b"wargoal_types={SynGoal={}}", &names).unwrap();
     let content = Content {
         key_names: Some(&names),
         wargoals: Some(&database),
@@ -282,7 +284,7 @@ fn create_wargoal_refuses_at_the_unrecorded_owned_goal_test() {
 
 #[test]
 fn purchase_contract_uses_seller_roster_and_quantity_pool() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
@@ -308,7 +310,7 @@ fn purchase_contract_uses_seller_roster_and_quantity_pool() {
         .scripted_content()
         .unwrap()
         .set_synthetic_environment(Default::default());
-    let equipment = installed_content::equipment::fixture::load(&[(
+    let equipment = installed_content_core::equipment::fixture::load(&[(
         "common/units/equipment/synthetic.txt",
         "equipments={syn_a={is_archetype=yes type=infantry} syn_one={archetype=syn_a} syn_two={parent=syn_one archetype=syn_a} syn_b={is_archetype=yes type=artillery} syn_other={archetype=syn_b}}",
     )])
@@ -564,7 +566,7 @@ fn purchase_contract_uses_seller_roster_and_quantity_pool() {
 
 #[test]
 fn civil_war_heading_and_selected_party_follow_separate_operands() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
@@ -593,7 +595,7 @@ fn civil_war_heading_and_selected_party_follow_separate_operands() {
     fixture.catalogue = catalogue;
     let scripted = fixture.catalogue.scripted_content().unwrap();
     scripted.set_synthetic_environment(Default::default());
-    let mut names = installed_content::key_names::KeyNames::default();
+    let mut names = installed_content_core::key_names::KeyNames::default();
     names
         .counts
         .ideologies
@@ -722,7 +724,7 @@ fn civil_war_heading_and_selected_party_follow_separate_operands() {
 
 #[test]
 fn faction_influence_environment_keeps_links_and_scales_to_5000_countries() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let count = 5_000;
     let mut fixture = Fixture::new();
@@ -835,7 +837,7 @@ fn faction_influence_environment_keeps_links_and_scales_to_5000_countries() {
 
 #[test]
 fn diplomacy_output_branches() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
@@ -921,10 +923,10 @@ fn diplomacy_output_branches() {
         .scripted_content()
         .unwrap()
         .set_synthetic_environment(Default::default());
-    let mut autonomy_states = installed_content::autonomy::AutonomyStates {
+    let mut autonomy_states = installed_content_core::autonomy::AutonomyStates {
         states: ["synthetic", "synthetic_other"]
             .into_iter()
-            .map(|id| installed_content::autonomy::AutonomyState {
+            .map(|id| installed_content_core::autonomy::AutonomyState {
                 id: id.into(),
                 min_freedom_level: None,
             })
@@ -955,7 +957,7 @@ fn diplomacy_output_branches() {
                 })
                 .collect(),
         ));
-    let leader_type = engine::cunit_leader::REFERENCE_TYPE;
+    let leader_type = engine_native::cunit_leader::REFERENCE_TYPE;
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
         TableView::Complete(TableRows::UnitLeaders(
             [(7, 11, 200), (8, 12, 0), (9, 13, -1)]
@@ -1001,7 +1003,7 @@ fn diplomacy_output_branches() {
         ]));
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
-            seed: replay::rows::Recorded::Value(None),
+            seed: replay_data::rows::Recorded::Value(None),
             scope_kind: 1,
             scope_id: 100,
             entries: vec![
@@ -2087,7 +2089,7 @@ fn diplomacy_output_branches() {
     }
     autonomy_states
         .states
-        .push(installed_content::autonomy::AutonomyState {
+        .push(installed_content_core::autonomy::AutonomyState {
             id: "autonomy_free".into(),
             min_freedom_level: None,
         });
@@ -2221,7 +2223,7 @@ fn diplomacy_output_branches() {
 
 #[test]
 fn diplomacy_ordered_subjects_at_5000_countries() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let countries = synthetic_countries(5_000);

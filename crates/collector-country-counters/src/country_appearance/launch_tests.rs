@@ -1,5 +1,5 @@
 use super::*;
-use engine::{cgame_state, cstrategic_navy, cstrategic_navy_manager, memory::SliceMemory};
+use engine_native::{cgame_state, cstrategic_navy, cstrategic_navy_manager, memory::SliceMemory};
 
 fn empty_navy(capture: &mut Captured, hour: Option<i32>) {
     let mut bytes = vec![0; 0x4000];
@@ -24,7 +24,7 @@ fn empty_navy(capture: &mut Captured, hour: Option<i32>) {
     );
     pointer(
         &mut bytes,
-        0x3000 + engine::country_naval_movement_inputs::MANAGER,
+        0x3000 + engine_naval_history::country_naval_movement_inputs::MANAGER,
         0x2000,
     );
     let memory = SliceMemory {
@@ -43,25 +43,28 @@ fn packet_projection_keeps_independent_vectors_and_refuses_without_hour() {
     capture.reserved.outcome = Outcome::Rows { len: 1 };
     capture.launch_state_result = Err("test state roster refusal");
     empty_navy(&mut capture, Some(71));
-    let TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)) =
+    let TableView::Complete(replay_data::rows::TableRows::ReservedCountryNaming(rows)) =
         capture.reserved_table(None)
     else {
         panic!("healthy naming prefix");
     };
-    let replay::rows::Recorded::Value(Some(packet)) = &rows[0].launch_sources else {
+    let replay_data::rows::Recorded::Value(Some(packet)) = &rows[0].launch_sources else {
         panic!("current packet");
     };
-    assert_eq!(packet.sample_hour, replay::rows::PacketHour::Host);
+    assert_eq!(packet.sample_hour, replay_data::rows::PacketHour::Host);
     assert_eq!(
         packet.naval_bases,
-        replay::rows::LaunchNavalBases::Bases(vec![])
+        replay_data::rows::LaunchNavalBases::Bases(vec![])
     );
     assert!(packet.owned_states.is_none());
     capture.launch_state_result = Ok(0);
     let packet = capture.launch_projection().unwrap().unwrap();
     assert_eq!(
         (packet.naval_bases, packet.owned_states),
-        (replay::rows::LaunchNavalBases::Bases(vec![]), Some(vec![]))
+        (
+            replay_data::rows::LaunchNavalBases::Bases(vec![]),
+            Some(vec![])
+        )
     );
     empty_navy(&mut capture, None);
     assert!(capture.launch_projection().unwrap().is_none());

@@ -203,7 +203,7 @@ mod tests {
         with_allocations_denied(|| value.serialize(&mut serde_json::Serializer::new(&mut count)))
             .unwrap();
         let mut bytes = Vec::new();
-        engine::allocation::reserve_exact(&mut bytes, count.0).unwrap();
+        engine_allocation::reserve_exact(&mut bytes, count.0).unwrap();
         with_allocations_denied(|| serde_json::to_writer(&mut bytes, &value)).unwrap();
         let status: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(

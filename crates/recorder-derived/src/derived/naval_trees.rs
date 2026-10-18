@@ -4,17 +4,17 @@
 //! NavalModifierTrees, one NavalModifierTreeSamples row per source occurrence
 //! a live combat reached: the native tree read afresh at that hour through
 //! the occurrence's own accumulator. Playback joins each occurrence to its
-//! trees by recorded identities ([`replay::naval_trees`]); this check makes
+//! trees by recorded identities ([`replay_data::naval_trees`]); this check makes
 //! that join from NavalCombatDetails and NavalCombatShips, as the viewer
 //! does, and requires the identity the capture filed and the trees the
 //! recording holds for it (carried or read) to equal the fresh read.
 //! Recordings without samples report that no oracle was captured.
 
-use replay::{
-    frame::DecodedFrame,
-    naval_trees::{self, Owner, SideSource, Trees},
-    rows::{NavalModifierTreeSampleRow, tables},
+use replay_data::{
+    naval_trees, naval_trees::Owner, naval_trees::SideSource, naval_trees::Trees,
+    rows::NavalModifierTreeSampleRow, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 /// Mismatches listed by name; all of them are counted.
 const LISTED: usize = 40;
@@ -156,8 +156,8 @@ impl Checker {
 /// The identity playback joins for one sampled occurrence.
 fn join(
     sample: &NavalModifierTreeSampleRow,
-    details: &[replay::rows::NavalCombatDetailsRow],
-    ships: &[replay::rows::NavalCombatShipRow],
+    details: &[replay_data::rows::NavalCombatDetailsRow],
+    ships: &[replay_data::rows::NavalCombatShipRow],
 ) -> Option<Owner> {
     let side = usize::from(sample.side);
     if sample.battle_slot == u32::MAX {
@@ -187,14 +187,12 @@ fn join(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TableView},
-        naval_trees::Kind,
-        rows::{
-            ModifierBreakdownNode, NavalCombatDetailsRow, NavalCombatShipRow, NavalModifierKeyTree,
-            NavalModifierTreeRow, NavalShipModifierSource, TableId, TableRows,
-        },
+    use replay_data::{
+        naval_trees::Kind, rows::ModifierBreakdownNode, rows::NavalCombatDetailsRow,
+        rows::NavalCombatShipRow, rows::NavalModifierKeyTree, rows::NavalModifierTreeRow,
+        rows::NavalShipModifierSource, rows::TableId, rows::TableRows,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     fn trees(value: i64) -> Vec<NavalModifierKeyTree> {
         vec![NavalModifierKeyTree {
@@ -226,7 +224,7 @@ mod tests {
             side: 0,
             battle_slot: 3,
             ship: 41,
-            weapon_context: replay::rows::NavalShipWeaponContext {
+            weapon_context: replay_data::rows::NavalShipWeaponContext {
                 country: 7,
                 sources: vec![NavalShipModifierSource {
                     scope: 0,

@@ -7,7 +7,7 @@ pub struct Defines {
 }
 
 impl Defines {
-    pub fn read(defines: &installed_content::defines::Defines) -> Result<Self, String> {
+    pub fn read(defines: &installed_content_core::defines::Defines) -> Result<Self, String> {
         // Cipher-level defines read by the threshold below.
         let read = |name| {
             defines

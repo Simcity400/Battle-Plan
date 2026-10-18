@@ -5,7 +5,7 @@ use viewer_foundation::map::camera::Placement;
 use viewer_foundation::map::province_admission::edge_boxes;
 #[test]
 fn only_states_the_building_producer_cannot_select_are_refused() {
-    let descriptors = installed_content::mesh::parse_descriptors(br#"
+    let descriptors = installed_content_core::mesh::parse_descriptors(br#"
             entity = { name = ruin state = { name = destroyed event = { particle = smoke light = alarm } } }
             entity = { name = default_ruin clone = ruin default_state = destroyed }
             entity = { name = linked_ruin clone = ruin state = { name = idle next_state = destroyed } }
@@ -21,15 +21,12 @@ fn only_states_the_building_producer_cannot_select_are_refused() {
 }
 
 use super::*;
-use installed_content::buildings;
-use replay::{
-    Hour,
-    frame::{DecodedFrame, Metrics, TableView},
-    rows::{
-        BuildingRow, CountryLinkRow, LexicalTokenRow, LocalPlayerRow, RaidScope,
-        RaidTargetStatusRow, TableId, TableRows,
-    },
+use installed_content_core::buildings;
+use replay_data::{
+    Hour, rows::BuildingRow, rows::CountryLinkRow, rows::LexicalTokenRow, rows::LocalPlayerRow,
+    rows::RaidScope, rows::RaidTargetStatusRow, rows::TableId, rows::TableRows,
 };
+use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::TableView};
 use viewer_foundation::map::perspective::{Choice, Country, Vision};
 
 const SAMPLE: &[u8] = br#"
@@ -44,7 +41,7 @@ buildings = {
 "#;
 
 fn types() -> Buildings {
-    buildings::parse(SAMPLE, &installed_content::key_names::KeyNames::default()).unwrap()
+    buildings::parse(SAMPLE, &installed_content_core::key_names::KeyNames::default()).unwrap()
 }
 
 fn defines() -> Defines {
@@ -824,10 +821,10 @@ fn one_row_frame(row: BuildingRow, byte: Option<u8>) -> (DecodedFrame, Vision) {
 
 #[test]
 fn a_ruin_with_its_own_mesh_keeps_variant_selector_zero_across_levels() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let types = buildings::parse(
-            b"buildings={ arms_factory={ show_on_map=1 show_on_map_meshes=2 has_destroyed_mesh=yes level_cap={ state_max=20 } } }", &installed_content::key_names::KeyNames::default(),
+            b"buildings={ arms_factory={ show_on_map=1 show_on_map_meshes=2 has_destroyed_mesh=yes level_cap={ state_max=20 } } }", &installed_content_core::key_names::KeyNames::default(),
         )
         .unwrap();
     let assets = one_slot_assets(
@@ -860,7 +857,7 @@ fn a_ruin_with_its_own_mesh_keeps_variant_selector_zero_across_levels() {
 
 #[test]
 fn the_fog_loop_hides_below_fifty_and_keeps_the_undecided() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = one_slot_assets(
         &types(),
@@ -904,7 +901,7 @@ fn the_fog_loop_hides_below_fifty_and_keeps_the_undecided() {
 
 #[test]
 fn the_level_uses_the_content_denominator() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let types = types();
     let factory = &types.types["arms_factory"];
@@ -1035,7 +1032,7 @@ fn assets_of(ordered: Vec<BuildingType>) -> MapBuildingAssets {
 
 #[test]
 fn province_sites_are_indexed_and_ambiguous_facility_tokens_are_refused() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut types = types();
     let factory = types.types.get_mut("arms_factory").unwrap();
@@ -1134,7 +1131,7 @@ fn buildings_frame(tokens: TableView, types: &[u32]) -> (DecodedFrame, Vision) {
 /// Type 0 is none, so it is neither drawn nor refused.
 #[test]
 fn building_rows_refuse_their_unnamed_type_tokens_by_reason() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = MapBuildingAssets::assemble(
         ModelLibrary::default(),

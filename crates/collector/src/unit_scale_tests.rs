@@ -1,7 +1,7 @@
 #[path = "../../engine/tests/support/unit_world.rs"]
 pub(crate) mod fixture;
 use crate::{division_census::Census, division_detail::OwnedDetails};
-use engine::{carmy, cprovince, memory::ReadCounts, walk::Outcome};
+use engine_native::{carmy, cprovince, memory::ReadCounts, walk::Outcome};
 use fixture::Shape;
 
 #[test]
@@ -17,7 +17,7 @@ fn stored_air_wing_names_presize_and_handoff_at_5000_countries() {
         planes: 5000,
         ships: 0,
     });
-    let singleton = engine::cgame_state::SINGLETON_RVA;
+    let singleton = engine_native::cgame_state::SINGLETON_RVA;
     world.bytes[singleton..singleton + 8].copy_from_slice(&(world.state as u64).to_le_bytes());
     let memory = world.live();
     let demand = crate::country_scale::observe_air_wing_names(&memory, world.base)
@@ -29,7 +29,7 @@ fn stored_air_wing_names_presize_and_handoff_at_5000_countries() {
     let mut map = MapCaptured::with_capacities(&capacities);
     map.air_wings
         .rows
-        .resize(5000, engine::cair_wing::Row::default());
+        .resize(5000, engine_native::cair_wing::Row::default());
     let mut job = air::AirWingJob::new();
     job.names.resize(demand, 0);
     let report = air::copy_air_refresh_growing(
@@ -59,7 +59,7 @@ fn stored_air_wing_names_presize_and_handoff_at_5000_countries() {
 
 fn measure(name: &str, shape: Shape, retained: usize, mut work: impl FnMut()) {
     let accounting = crate::read_accounting::Capture::new();
-    use replay::rows::TableId;
+    use replay_data::rows::TableId;
     let anchor = match name {
         "DivisionInputsCallback" | "DivisionCensusAndCore" => TableId::Divisions,
         "DivisionMovementIdle" | "DivisionMovement25Percent" => TableId::DivisionMovement,
@@ -119,14 +119,15 @@ fn unit_scale_moving() {
             }
         }
         let inputs = census.unit_inputs().unwrap();
-        let mut intel = vec![engine::unit_viewer_entry::Row::default(); shape.divisions * 3];
+        let mut intel =
+            vec![engine_visibility::unit_viewer_entry::Row::default(); shape.divisions * 3];
         measure(
             "UnitIntelThreeViewers",
             shape,
             std::mem::size_of_val(intel.as_slice()),
             || {
                 assert_eq!(
-                    engine::unit_viewer_entry::walk_with_divisions(
+                    engine_visibility::unit_viewer_entry::walk_with_divisions(
                         &memory,
                         world.base,
                         world.state,
@@ -432,12 +433,15 @@ fn unit_scale_capture() {
         assert_eq!(captured.outcomes()[2], Outcome::Rows { len: shape.wings });
         let ordinary_hour = (0..24)
             .find(|&hour| {
-                !replay::cadence::should_walk(replay::rows::TableId::WingCumulative, hour, false)
-                    && !replay::cadence::should_walk(
-                        replay::rows::TableId::AirTheatreMembers,
-                        hour,
-                        false,
-                    )
+                !replay_data::cadence::should_walk(
+                    replay_data::rows::TableId::WingCumulative,
+                    hour,
+                    false,
+                ) && !replay_data::cadence::should_walk(
+                    replay_data::rows::TableId::AirTheatreMembers,
+                    hour,
+                    false,
+                )
             })
             .unwrap();
         let ordinary = air::AirWingCopyContext {
@@ -520,7 +524,7 @@ fn division_input_parts_scale() {
                 for (census, &slots) in censuses.iter_mut().zip(&ranges) {
                     scope.spawn(move || {
                         // SAFETY: the fixture outlives the scope and is only read.
-                        let memory = unsafe { engine::memory::LiveMemory::new() };
+                        let memory = unsafe { engine_native::memory::LiveMemory::new() };
                         census.capture_inputs_part(&memory, base, state, slots);
                     });
                 }

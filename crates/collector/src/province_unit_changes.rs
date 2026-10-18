@@ -1,5 +1,5 @@
 //! Allocation-free notifications from the native writers of every province's ordered occupant
-//! lists, which ProvinceUnitOrder records ([`engine::province_unit_mutations`]). A detour only
+//! lists, which ProvinceUnitOrder records ([`engine_mutations::province_unit_mutations`]). A detour only
 //! marks the province its first argument names in the family's [`DirtySet`] (by its guarded id
 //! `cprovince::ID`), counts its site and calls the original; it never changes game behaviour. Both
 //! writers run on the game thread. A receiver whose id does not read marks no id and moves the
@@ -13,7 +13,8 @@ use crate::{
     dirty_set::{Dirty, DirtySet},
     hook::Hook,
 };
-use engine::{Memory, province_unit_mutations::MUTATIONS};
+use engine_mutations::province_unit_mutations::MUTATIONS;
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -125,10 +126,10 @@ pub(crate) const VERIFY: bool = cfg!(feature = "province_unit_verify");
 /// has, names none.
 fn province_id(province: usize) -> Option<usize> {
     // SAFETY: a guarded read of live memory on the calling thread.
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     province
-        .checked_add(engine::cprovince::ID)
-        .and_then(|address| engine::read::<u32>(&memory, address))
+        .checked_add(engine_native::cprovince::ID)
+        .and_then(|address| engine_native::read::<u32>(&memory, address))
         .filter(|&id| id != 0)
         .map(|id| id as usize)
 }
@@ -232,7 +233,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if CARRY
             && MUTATIONS.iter().all(|site| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [
@@ -318,7 +319,7 @@ mod tests {
     fn a_receiver_names_its_province_through_the_live_object() {
         let mut province = vec![0_u8; 0x200];
         assert_eq!(province_id(province.as_ptr() as usize), None);
-        province[engine::cprovince::ID..][..4].copy_from_slice(&517_u32.to_le_bytes());
+        province[engine_native::cprovince::ID..][..4].copy_from_slice(&517_u32.to_le_bytes());
         assert_eq!(province_id(province.as_ptr() as usize), Some(517));
         assert_eq!(province_id(0), None);
     }

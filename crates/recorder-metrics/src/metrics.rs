@@ -1,15 +1,9 @@
 //! Exact recorded hook-acquisition metrics for a requested inclusive interval.
 
-use engine::allocation;
-use replay::{
-    BranchId, Hour,
-    cadence::refresh_text,
-    codec::invalid,
-    container::Replay,
-    frame::{FrameDecoder, TableView},
-    rows::TableId,
-    spool::ControlRecord,
-};
+use engine_allocation as allocation;
+use replay::{container::Replay, spool::ControlRecord};
+use replay_data::{BranchId, Hour, cadence::refresh_text, codec::invalid, rows::TableId};
+use replay_frame::{frame::FrameDecoder, frame::TableView};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, ffi::OsString, fs, io, path::Path};
 
@@ -60,7 +54,7 @@ pub fn percentiles_ns(values: &mut [u64]) -> Option<[u64; 3]> {
 }
 
 fn capture_counted(table: TableId) -> bool {
-    replay::format::FormatVersion::CURRENT
+    replay_data::format::FormatVersion::CURRENT
         .table_refusal(table)
         .is_none()
 }
@@ -158,7 +152,7 @@ fn report(replay: &Replay, branch: BranchId, first: Hour, last: Hour) -> io::Res
     let [p50, p95, max] = percentiles_ns(&mut samples)
         .ok_or_else(|| invalid("metrics interval has no recorded timing samples"))?;
     Ok(json!({
-        "reader_format": replay::FORMAT_VERSION,
+        "reader_format": replay_data::FORMAT_VERSION,
         "recorded_format": replay.format.version(),
         "branch": branch,
         "hours": samples.len(),
@@ -179,7 +173,9 @@ fn report(replay: &Replay, branch: BranchId, first: Hour, last: Hour) -> io::Res
 mod tests {
     use super::*;
     use crate::test_support::replay;
-    use replay::{branches::Gap, frame::TableUpdate, rows::TableRows, spool::Record};
+    use replay::spool::Record;
+    use replay_data::rows::TableRows;
+    use replay_frame::{branches::Gap, frame::TableUpdate};
 
     fn records() -> Vec<Record> {
         crate::test_support::allocation_records()
@@ -272,7 +268,7 @@ mod tests {
         duplicate.index.insert(1, duplicate.index[0].clone());
         assert!(report(&duplicate, 9, 2, 4).is_err());
         let mut bytes = good.bytes().to_vec();
-        bytes[4..6].copy_from_slice(&(replay::FORMAT_VERSION + 1).to_le_bytes());
+        bytes[4..6].copy_from_slice(&(replay_data::FORMAT_VERSION + 1).to_le_bytes());
         assert!(Replay::open(bytes).is_err());
         let mut bytes = good.bytes().to_vec();
         bytes[good.index[0].offset as usize] ^= 1;

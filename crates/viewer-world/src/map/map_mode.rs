@@ -46,12 +46,12 @@ use std::{
     sync::Arc,
 };
 
-use installed_content::{
-    defines::Defines,
-    map::{MapData, ProvinceKind},
-    scripted_map_modes::{GameLayer, LayerType, MapModes, MapText},
+use installed_content_core::{
+    defines::Defines, map::MapData, map::ProvinceKind, scripted_map_modes::GameLayer,
+    scripted_map_modes::LayerType, scripted_map_modes::MapModes, scripted_map_modes::MapText,
 };
-use replay::{frame::DecodedFrame, rows::tables};
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 use viewer_foundation::map::{
     color_inheritance::{active_subject, slot_of},
     directed_wars,
@@ -569,12 +569,12 @@ pub fn pack(color: [f32; 4]) -> [u8; 4] {
 /// Immutable inputs of every mode for one content stack.
 pub struct Content {
     pub defines: ModeDefines,
-    ideologies: Arc<installed_content::ideologies::Ideologies>,
+    ideologies: Arc<installed_content_core::ideologies::Ideologies>,
     /// Each declared category's colour by folded name: `Ok(None)` for one without a colour.
     category_colors: BTreeMap<Vec<u8>, Result<Option<[f32; 4]>, String>>,
     pub scripted: MapModes,
     /// The content's faction templates, which name a faction without a literal name.
-    faction_templates: Result<Arc<installed_content::faction_templates::Catalog>, String>,
+    faction_templates: Result<Arc<installed_content_core::faction_templates::Catalog>, String>,
     /// The recording's language, which a faction's stored literal name is written in.
     recorded_language: String,
     /// The terrain mode's layer, built once, or why the content cannot build it.
@@ -585,10 +585,10 @@ pub struct Content {
 impl Content {
     pub fn new(
         defines: &Defines,
-        ideologies: Arc<installed_content::ideologies::Ideologies>,
-        categories: &installed_content::state_categories::Database,
+        ideologies: Arc<installed_content_core::ideologies::Ideologies>,
+        categories: &installed_content_state_categories::state_categories::Database,
         scripted: MapModes,
-        faction_templates: Result<Arc<installed_content::faction_templates::Catalog>, String>,
+        faction_templates: Result<Arc<installed_content_core::faction_templates::Catalog>, String>,
         recorded_language: String,
         terrain: Result<terrain::Sources, String>,
         infrastructure: infrastructure::Content,
@@ -701,14 +701,14 @@ pub struct GroupLabels {
 pub fn faction_labels(
     content: &Content,
     frame: &DecodedFrame,
-    localisation: &installed_content::localisation::Localisation,
+    localisation: &installed_content_localisation::localisation::Localisation,
 ) -> Result<GroupLabels, String> {
     use dashboard_text::faction_names;
     let factions = complete::<tables::Factions>(frame, "factions")?;
     let members = complete::<tables::FactionMembers>(frame, "factions")?;
     let countries = Countries::read(frame).map_err(|error| error.to_string())?;
     let lexical = faction_names::LexicalNames::new(
-        frame.tables[replay::rows::TableId::LexicalTokens.index()].clone(),
+        frame.tables[replay_data::rows::TableId::LexicalTokens.index()].clone(),
     );
     let templates = content.faction_templates.as_deref().map_err(Clone::clone);
     let names: BTreeMap<u64, Result<String, String>> = factions
@@ -750,7 +750,7 @@ pub fn faction_labels(
 pub fn player_labels(frame: &DecodedFrame) -> Result<GroupLabels, String> {
     let players = complete::<tables::Players>(frame, "players")?;
     let countries = Countries::read(frame).map_err(|error| error.to_string())?;
-    let mut held: BTreeMap<u32, Vec<&replay::rows::PlayerRow>> = BTreeMap::new();
+    let mut held: BTreeMap<u32, Vec<&replay_data::rows::PlayerRow>> = BTreeMap::new();
     for player in players {
         if let Some(slot) = countries.slot(player.country) {
             held.entry(slot).or_default().push(player);
@@ -889,7 +889,7 @@ fn with_alpha(mut color: [f32; 4], alpha: f32) -> [f32; 4] {
 }
 
 /// The table a mode needs, or why the hour cannot draw it.
-fn complete<'a, T: replay::rows::TableSchema>(
+fn complete<'a, T: replay_data::rows::TableSchema>(
     frame: &'a DecodedFrame,
     mode: &str,
 ) -> Result<&'a [T::Row], String> {
@@ -1284,12 +1284,12 @@ fn states(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<Mode
     let (mut unread, mut unnamed, mut uncoloured) = (0, 0, 0);
     for state in states {
         let token = match state.category {
-            replay::rows::Recorded::Value(Some(token)) => token,
-            replay::rows::Recorded::Value(None) => {
+            replay_data::rows::Recorded::Value(Some(token)) => token,
+            replay_data::rows::Recorded::Value(None) => {
                 unread += 1;
                 continue;
             }
-            replay::rows::Recorded::NotRecorded => {
+            replay_data::rows::Recorded::NotRecorded => {
                 warnings.push(
                     "The states map mode needs each state's live category, which this recording does not hold".to_owned(),
                 );
@@ -1399,11 +1399,11 @@ fn war_goal_slots(
         .find(|row| row.country == selected_raw)
         .ok_or_else(|| "the selected country has no Capitulation row".to_owned())?;
     let recipients = match &row.war_goal_recipients {
-        replay::rows::Recorded::Value(Some(recipients)) => recipients,
-        replay::rows::Recorded::Value(None) => {
+        replay_data::rows::Recorded::Value(Some(recipients)) => recipients,
+        replay_data::rows::Recorded::Value(None) => {
             return Err("a war goal of the selected country did not read".to_owned());
         }
-        replay::rows::Recorded::NotRecorded => return Err(WAR_GOALS_UNRECORDED.to_owned()),
+        replay_data::rows::Recorded::NotRecorded => return Err(WAR_GOALS_UNRECORDED.to_owned()),
     };
     let subjects = complete::<tables::Subjects>(frame, "diplomacy")?;
     let mut marked = BTreeSet::new();
@@ -1547,10 +1547,10 @@ fn manpower(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<Mo
     let mut styles = BTreeMap::new();
     for state in states {
         match state.population {
-            replay::rows::Recorded::Value(population) => {
+            replay_data::rows::Recorded::Value(population) => {
                 styles.insert(state.id + 1, style(manpower_color(defines, population)));
             }
-            replay::rows::Recorded::NotRecorded => {
+            replay_data::rows::Recorded::NotRecorded => {
                 warnings.push(
                     "The manpower map mode needs each state's population, which this recording does not hold".to_owned(),
                 );

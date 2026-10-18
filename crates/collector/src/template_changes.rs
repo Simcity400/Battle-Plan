@@ -1,5 +1,5 @@
 //! Allocation-free notifications from the native writers of a division
-//! template's fallback name key ([`engine::template_mutations`]). A detour
+//! template's fallback name key ([`engine_mutations::template_mutations`]). A detour
 //! only notifies the shared watch registry ([`WatchRegistry`]) for the
 //! `CReferencedDivisionTemplate` its first argument names, counts its site
 //! and calls the original; it never changes game behaviour. Receivers are the
@@ -11,10 +11,10 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{
-    Memory,
-    template_mutations::{DATA, MUTATIONS, Receiver},
+use engine_mutations::{
+    template_mutations::DATA, template_mutations::MUTATIONS, template_mutations::Receiver,
 };
+use engine_native::Memory;
 use std::{
     mem::ManuallyDrop,
     ops::Range,
@@ -214,7 +214,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "template_changes")
             && MUTATIONS.iter().all(|(site, _)| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [

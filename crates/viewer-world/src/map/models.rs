@@ -23,11 +23,8 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
-use installed_content::{
-    ResolvedLayers,
-    image::{Rgba8Image, dds, native::Decode},
-    mesh::{self, Descriptors},
-};
+use installed_content_core::{ResolvedLayers, mesh, mesh::Descriptors};
+use installed_content_image::{Rgba8Image, dds, native::Decode};
 
 use {
     super::shadow::DEPTH_MAP_FORMAT,
@@ -402,7 +399,7 @@ impl ModelLibrary {
         decode: Decode,
         descriptors: &Descriptors,
         names: &[String],
-        warnings: &mut Vec<installed_content::Diagnostic>,
+        warnings: &mut Vec<installed_content_core::Diagnostic>,
     ) -> io::Result<Self> {
         Self::load_with(layers, decode, descriptors, names, warnings, |_, _| None)
     }
@@ -414,7 +411,7 @@ impl ModelLibrary {
         decode: Decode,
         descriptors: &Descriptors,
         names: &[String],
-        warnings: &mut Vec<installed_content::Diagnostic>,
+        warnings: &mut Vec<installed_content_core::Diagnostic>,
         refused: fn(&mesh::Roster, &str) -> Option<String>,
     ) -> io::Result<Self> {
         // Stable de-duplication first: the serial loop skipped later
@@ -516,7 +513,7 @@ impl ModelLibrary {
         }
         if !library.animation_refusals.is_empty() {
             warnings.push((
-                installed_content::DiagnosticKind::Refused,
+                installed_content_core::DiagnosticKind::Refused,
                 format!(
                     "Model animations that do not read, so their entities stand in their bind \
                      pose: {}.",
@@ -531,7 +528,7 @@ impl ModelLibrary {
         }
         if !library.attachment_refusals.is_empty() {
             warnings.push((
-                installed_content::DiagnosticKind::Refused,
+                installed_content_core::DiagnosticKind::Refused,
                 format!(
                     "Attached entities refused: {}.",
                     library
@@ -550,7 +547,7 @@ impl ModelLibrary {
                 .collect();
             missing.sort();
             warnings.push((
-                installed_content::DiagnosticKind::Refused,
+                installed_content_core::DiagnosticKind::Refused,
                 format!(
                     "No mesh resolved for {}; those objects are not drawn.",
                     missing.join(", ")
@@ -567,7 +564,7 @@ impl ModelLibrary {
         }
         if !meshless.is_empty() {
             warnings.push((
-                installed_content::DiagnosticKind::Warning,
+                installed_content_core::DiagnosticKind::Warning,
                 format!(
                     "{} geometry-less entities ({}); states and map events run without geometry.",
                     meshless.len(),
@@ -590,7 +587,7 @@ impl ModelLibrary {
             }
         }
         if !unjointed.is_empty() {
-            warnings.push((installed_content::DiagnosticKind::Warning, format!(
+            warnings.push((installed_content_core::DiagnosticKind::Warning, format!(
                 "These entity locators name a parent_joint the mesh lacks and stay in entity space, as the engine keeps them: {}.",
                 unjointed.into_iter().collect::<Vec<_>>().join(", ")
             )));
@@ -1362,7 +1359,7 @@ impl ModelLibrary {
     }
 
     /// A material's texture at the one path the engine requests
-    /// ([`installed_content::mesh::TextureIndex`]); the texture constructor adopts
+    /// ([`installed_content_core::mesh::TextureIndex`]); the texture constructor adopts
     /// the `.dds` spelling of a `.tga` path when it exists. A texture that
     /// resolves nowhere refuses the mesh. An empty name is a blank texel.
     fn texture(

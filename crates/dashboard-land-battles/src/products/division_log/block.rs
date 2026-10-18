@@ -46,7 +46,8 @@ use dashboard_base::prepared::{
     prepass::{Extract, Family, Folded, Held as Holds, HeldBytes},
     series,
 };
-use replay::{container::BlockIndex, format::FormatVersion};
+use replay::container::BlockIndex;
+use replay_data::format::FormatVersion;
 use std::{any::Any, ops::Range};
 
 /// The family the division log is prepared as: its refusal, progress and
@@ -364,9 +365,9 @@ pub fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let facts = {
-        let _cpu = ::replay::cpu::scope("fold facts", None);
+        let _cpu = ::replay_frame::cpu::scope("fold facts", None);
         facts
             .downcast::<BlockFacts>()
             .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -380,7 +381,7 @@ pub fn fold(
     let hour = first.frame.hour;
     dashboard_base::prepared::prepass::note(OBSERVED);
     {
-        let _cpu = ::replay::cpu::scope("fold observe", None);
+        let _cpu = ::replay_frame::cpu::scope("fold observe", None);
         scan.observe_with_changes(&first.frame, Some(&first.changes));
     }
     if !observed(hour, Ok(()))? {
@@ -395,7 +396,7 @@ pub fn fold(
     }
     check()?;
     {
-        let _cpu = ::replay::cpu::scope("fold observe", None);
+        let _cpu = ::replay_frame::cpu::scope("fold observe", None);
         carry(scan, *own, &first);
     }
     observed(last, Ok(()))?;
@@ -413,7 +414,7 @@ pub fn observe_block(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let mut tracker = FrameChangeTracker::new();
     let mut reached = None;
     let mut stopped = false;
@@ -422,7 +423,7 @@ pub fn observe_block(
         index,
         &TABLES,
         |raw, frame| {
-            let _cpu = ::replay::cpu::scope("fold driver", None);
+            let _cpu = ::replay_frame::cpu::scope("fold driver", None);
             let changes = tracker.observe_updates(frame, Arc::new(raw), replay.format);
             if stopped || after.is_some_and(|after| frame.hour <= after) {
                 return Ok(());
@@ -430,7 +431,7 @@ pub fn observe_block(
             reached = Some(frame.hour);
             dashboard_base::prepared::prepass::note(OBSERVED);
             {
-                let _cpu = ::replay::cpu::scope("fold observe", None);
+                let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                 scan.observe_with_changes(frame, Some(&changes));
             }
             match observed(frame.hour, Ok(())) {

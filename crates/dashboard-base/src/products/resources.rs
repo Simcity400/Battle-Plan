@@ -11,8 +11,10 @@ use crate::{
     Source,
     catalogue::{self, Catalogue},
 };
-use installed_content::{ResolvedLayers, gfx::SpriteSet, localisation::Localisation};
-use replay::rows::{LexicalTokenRow, ResourceDefinitionRow};
+use installed_content_core::ResolvedLayers;
+use installed_content_gfx::gfx::SpriteSet;
+use installed_content_localisation::localisation::Localisation;
+use replay_data::{rows::LexicalTokenRow, rows::ResourceDefinitionRow};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -153,8 +155,8 @@ pub struct ContentView<'a> {
     pub sprites: &'a SpriteSet,
     pub localisation: &'a Localisation,
     /// The GUI registry or its named read failure; resource names are independent.
-    pub guis: Result<&'a installed_content::gui::native::Guis, String>,
-    pub gui_decode: &'a Result<installed_content::image::native::Decode, String>,
+    pub guis: Result<&'a installed_content_core::gui::native::Guis, String>,
+    pub gui_decode: &'a Result<installed_content_image::native::Decode, String>,
 }
 
 impl<'a> ContentView<'a> {
@@ -179,7 +181,7 @@ struct Icons {
 
 fn icons(view: &ContentView) -> io::Result<(Icons, Vec<String>)> {
     let mut warnings = Vec::new();
-    let name = installed_content::gui::native::window_button_sprite(
+    let name = installed_content_core::gui::native::window_button_sprite(
         view.guis.as_ref().map_err(crate::invalid)?,
         RESOURCE_ROW,
         RESOURCE_ICON,
@@ -190,7 +192,7 @@ fn icons(view: &ContentView) -> io::Result<(Icons, Vec<String>)> {
         .texture
         .clone()
         .ok_or_else(|| crate::invalid(format!("{name} has no texture")))?;
-    let (resources, notes) = installed_content::resources::read(view.layers)?;
+    let (resources, notes) = installed_content_core::resources::read(view.layers)?;
     warnings.extend(notes.into_iter().map(|(_, message)| message));
     let mut icon_frames: BTreeMap<String, Vec<Option<u32>>> = BTreeMap::new();
     for resource in resources {
@@ -219,7 +221,7 @@ fn resource_name(
     warnings: &mut Vec<String>,
     findings: &mut Vec<dashboard_core::findings::Finding>,
 ) -> Option<String> {
-    let upper = installed_content::localisation::crt_case_text(token, true, false);
+    let upper = installed_content_localisation::localisation::crt_case_text(token, true, false);
     let key = format!("PRODUCTION_MATERIALS_{upper}");
     // Recovery and text share the walk; missing keys are byte copies.
     let (name, notes) = catalogue::localised_details(
@@ -568,13 +570,13 @@ mod tests {
     }
 
     fn declared(layers: &ResolvedLayers) -> (Vec<Declared>, Vec<String>) {
-        let sprites = installed_content::gfx::read(layers).unwrap();
+        let sprites = installed_content_gfx::gfx::read(layers).unwrap();
         let localisation = crate::catalogue::tests::loaded(concat!(
             "l_english:\n",
             " PRODUCTION_MATERIALS_OIL:0 \"Fixture fuel\"\n",
             " PRODUCTION_MATERIALS_UNOBTAINIUM:0 \"Unobtainium\"\n",
         ));
-        let guis = installed_content::gui::native::read_layers(layers).unwrap();
+        let guis = installed_content_core::gui::native::read_layers(layers).unwrap();
         let view = ContentView {
             layers,
             sprites: &sprites,
@@ -603,7 +605,7 @@ mod tests {
 
     #[test]
     fn a_mod_resource_takes_its_name_and_icon_from_the_mod_s_own_trade_view() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "hoi4_dashboard_modded_resources_{}",
@@ -642,10 +644,10 @@ mod tests {
 
     #[test]
     fn a_mod_resource_icon_uses_the_padded_fractional_png_frame() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::catalogue::texture_tests::{from_url, png_bytes, texture_catalogue};
-        let image = installed_content::image::Rgba8Image {
+        let image = installed_content_image::Rgba8Image {
             width: 6,
             height: 3,
             pixels: (0..18).flat_map(|x| [x, 20, 30, 200]).collect(),
@@ -667,7 +669,7 @@ mod tests {
             ],
             &[("gfx/mod/sheet.png", png_bytes(&image))],
         );
-        catalogue.gui_decode = Ok(installed_content::image::native::Decode {
+        catalogue.gui_decode = Ok(installed_content_image::native::Decode {
             force_pow2_textures: true,
         });
         let mut cached = Default::default();
@@ -689,7 +691,7 @@ mod tests {
 
     #[test]
     fn shared_texture_failures_keep_resource_names_and_report_one_cause() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
             (

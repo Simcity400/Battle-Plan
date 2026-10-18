@@ -5,7 +5,8 @@
 //! cannot distinguish a seek from playback that outran the builders. Keep this
 //! contract when supply trains become entirely viewer-side animation.
 
-use replay::{BranchId, branches::Gap};
+use replay_data::BranchId;
+use replay_frame::branches::Gap;
 
 /// Whether the animation runtimes on screen carry into the next hour shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

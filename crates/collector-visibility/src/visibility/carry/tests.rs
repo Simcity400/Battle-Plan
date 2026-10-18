@@ -1,7 +1,7 @@
 #![cfg(feature = "visibility_changes")]
 use super::*;
 use crate::country_input_changes::Domain;
-use engine::{ccountry, cgame_state, modifier_definition as definition};
+use engine_native::{ccountry, cgame_state, modifier_definition as definition};
 use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,

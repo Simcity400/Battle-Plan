@@ -1,7 +1,8 @@
 use std::{collections::BTreeMap, io};
 
 use installed_content_save::naval_history as saved;
-use replay::{frame::DecodedFrame, rows::tables};
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 
 use super::{Report, complete, equal, invalid};
 
@@ -40,7 +41,7 @@ pub fn compare_railway_buildings(
         // The game selects the database's railway template.
         // Resolve its token through the recording, never a vanilla name.
         let name = *names
-            .get(&engine::cbuilding_template::RAIL_WAY_TOKEN)
+            .get(&engine_native::cbuilding_template::RAIL_WAY_TOKEN)
             .ok_or_else(|| invalid("railway building token has no recorded spelling"))?;
         let Some(expected) = saved.province_buildings.get(&(row.province, name.to_vec())) else {
             report.difference(&label, health, "absent from saved province buildings");
@@ -67,12 +68,12 @@ pub fn compare_railway_buildings(
 
 fn compare_selected_building(
     hour: i32,
-    row: &replay::rows::RailCooldownRow,
+    row: &replay_data::rows::RailCooldownRow,
     saved: &installed_content_save::construction::Pack,
     names: &BTreeMap<u32, &[u8]>,
     report: &mut Report,
 ) -> io::Result<()> {
-    let replay::rows::Recorded::Value(Some(inputs)) = &row.selection else {
+    let replay_data::rows::Recorded::Value(Some(inputs)) = &row.selection else {
         return Ok(());
     };
     if row.selection_hour != Some(hour).into() {
@@ -98,7 +99,7 @@ fn compare_selected_building(
         return Ok(());
     };
     let name = *names
-        .get(&engine::cbuilding_template::RAIL_WAY_TOKEN)
+        .get(&engine_native::cbuilding_template::RAIL_WAY_TOKEN)
         .ok_or_else(|| invalid("railway building token has no recorded spelling"))?;
     report.compared("RailCooldowns.selection.building_level", 1);
     if let Some(expected) = saved.province_buildings.get(&(row.province, name.to_vec())) {

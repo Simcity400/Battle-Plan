@@ -60,11 +60,11 @@ impl Lane {
             .checked_next_power_of_two()
             .ok_or("map event lane size overflow")?;
         let mut storage = Vec::new();
-        engine::allocation::reserve_exact(&mut storage, bytes)
+        engine_allocation::reserve_exact(&mut storage, bytes)
             .map_err(|_| "map event lane allocation failed")?;
         storage.resize_with(bytes, || UnsafeCell::new(0));
         Ok(Self {
-            bytes: engine::allocation::boxed_slice(storage)
+            bytes: engine_allocation::boxed_slice(storage)
                 .map_err(|_| "map event lane allocation failed")?,
             write: UnsafeCell::new(0),
             published: AtomicU64::new(0),
@@ -116,14 +116,14 @@ struct Log {
 impl Log {
     fn new(lanes: usize, lane_bytes: usize, shared: (usize, usize)) -> Result<Self, &'static str> {
         let mut storage = Vec::new();
-        engine::allocation::reserve_exact(&mut storage, lanes.max(1))
+        engine_allocation::reserve_exact(&mut storage, lanes.max(1))
             .map_err(|_| "map event lane allocation failed")?;
         for _ in 0..lanes.max(1) {
             storage.push(Lane::new(lane_bytes)?);
         }
         Ok(Self {
             serial: SERIAL.fetch_add(1, Ordering::Relaxed),
-            lanes: engine::allocation::boxed_slice(storage)
+            lanes: engine_allocation::boxed_slice(storage)
                 .map_err(|_| "map event lane allocation failed")?,
             shared: SharedLane::new(shared.0.max(1), shared.1.max(HEADER))
                 .map_err(|_| "map event lane allocation failed")?,
@@ -426,11 +426,11 @@ pub fn assemble(seal: Seal, output: &mut Assembled) -> Result<(), &'static str> 
                     break;
                 }
                 let start = output.bytes.len();
-                engine::allocation::reserve(&mut output.bytes, len)
+                engine_allocation::reserve(&mut output.bytes, len)
                     .map_err(|_| "map event assembly allocation failed")?;
                 output.bytes.resize(start + len, 0);
                 lane.copy_out(position + HEADER as u64, &mut output.bytes[start..]);
-                engine::allocation::reserve(&mut output.frames, 1)
+                engine_allocation::reserve(&mut output.frames, 1)
                     .map_err(|_| "map event assembly allocation failed")?;
                 output.frames.push(Frame {
                     sequence,
@@ -442,7 +442,7 @@ pub fn assemble(seal: Seal, output: &mut Assembled) -> Result<(), &'static str> 
                 });
                 position += (HEADER + len) as u64;
             }
-            engine::allocation::reserve(&mut output.lanes, 1)
+            engine_allocation::reserve(&mut output.lanes, 1)
                 .map_err(|_| "map event assembly allocation failed")?;
             output.lanes.push((generation, index, position));
         }
@@ -458,10 +458,10 @@ pub fn assemble(seal: Seal, output: &mut Assembled) -> Result<(), &'static str> 
             let (record, bytes) = log.shared.record(slot);
             let start = output.bytes.len();
             let len = record.len as usize;
-            engine::allocation::reserve(&mut output.bytes, len)
+            engine_allocation::reserve(&mut output.bytes, len)
                 .map_err(|_| "map event assembly allocation failed")?;
             output.bytes.extend_from_slice(&bytes[..len]);
-            engine::allocation::reserve(&mut output.frames, 1)
+            engine_allocation::reserve(&mut output.frames, 1)
                 .map_err(|_| "map event assembly allocation failed")?;
             output.frames.push(Frame {
                 sequence,
@@ -471,11 +471,11 @@ pub fn assemble(seal: Seal, output: &mut Assembled) -> Result<(), &'static str> 
                 start,
                 len,
             });
-            engine::allocation::reserve(&mut output.shared, 1)
+            engine_allocation::reserve(&mut output.shared, 1)
                 .map_err(|_| "map event assembly allocation failed")?;
             output.shared.push((generation, slot));
         }
-        engine::allocation::reserve(&mut output.rejected, 1)
+        engine_allocation::reserve(&mut output.rejected, 1)
             .map_err(|_| "map event assembly allocation failed")?;
         output.rejected.push((generation, rejected));
     }
@@ -563,8 +563,7 @@ pub fn grow(lanes: usize, lane_bytes: usize) -> Result<bool, &'static str> {
     let mut retained = LOGS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    engine::allocation::reserve(&mut retained, 1)
-        .map_err(|_| "map event lane allocation failed")?;
+    engine_allocation::reserve(&mut retained, 1).map_err(|_| "map event lane allocation failed")?;
     retained.push(fresh);
     unsafe { (*pointer).previous.store(current, Ordering::SeqCst) };
     CURRENT.store(pointer, Ordering::SeqCst);

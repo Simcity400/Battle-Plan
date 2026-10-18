@@ -7,7 +7,7 @@
 //! idle Days  or adding assigned technology progress. The progress adder's other callers run inside
 //! hooked writes (assignment, console), reach hooked writes later in the same call (the technology
 //! tree sets the level and completes), or are effects its own detour marks
-//! (`engine::country_input_mutations::EFFECT_PROGRESS_SOURCE`), so a carried roster reads the
+//! (`engine_mutations::country_input_mutations::EFFECT_PROGRESS_SOURCE`), so a carried roster reads the
 //! progress of the technologies assigned to its slots, and nothing else. A slot's assignment is
 //! itself certified (`technology assignment` and `research slot synchronization` mark their
 //! country), so the assigned rows are held with the roster, taken from the same pass's
@@ -25,9 +25,9 @@
 //! only from a complete read. Storage is advisory and completely fallible:
 //! an entry that cannot be held whole is dropped, and the country is read
 //! whole at its next slice.
-use engine::{
-    Memory, cpdx_array::Array, cresearch_slot, ctechnology, ctechnology_status, read,
-    research_inputs, research_modifiers,
+use engine_native::{Memory, cpdx_array::Array, read};
+use engine_research::{
+    cresearch_slot, ctechnology, ctechnology_status, research_inputs, research_modifiers,
 };
 use std::collections::HashMap;
 
@@ -113,11 +113,11 @@ impl Store {
         slots: Option<&[cresearch_slot::Row]>,
     ) {
         let technologies = &mut self.technologies;
-        let held = engine::allocation::advisory(|| {
+        let held = engine_allocation::advisory(|| {
             let slots = slots?;
             let status = status(memory, base, country).ok()?;
             let mut assigned = Vec::new();
-            engine::allocation::reserve(&mut assigned, slots.len()).ok()?;
+            engine_allocation::reserve(&mut assigned, slots.len()).ok()?;
             for slot in slots.iter().filter(|slot| slot.technology_present != 0) {
                 assigned.push(
                     rows.iter()
@@ -129,7 +129,7 @@ impl Store {
             assigned.sort_unstable();
             assigned.dedup();
             let mut assigned_pointers = Vec::new();
-            engine::allocation::reserve_exact(&mut assigned_pointers, assigned.len()).ok()?;
+            engine_allocation::reserve_exact(&mut assigned_pointers, assigned.len()).ok()?;
             assigned_pointers.extend(assigned.iter().map(|&row| pointers[row]));
             let held = Technologies {
                 country,
@@ -141,7 +141,7 @@ impl Store {
                 assigned_pointers,
             };
             (technologies.contains_key(&owner)
-                || engine::allocation::reserve_map(technologies, 1).is_ok())
+                || engine_allocation::reserve_map(technologies, 1).is_ok())
             .then_some(held)
         });
         match held {
@@ -193,8 +193,8 @@ impl Store {
             return Carried::Failed("technology row count overflow");
         };
         if end > rows.len() {
-            if engine::allocation::reserve(rows, end - rows.len()).is_err()
-                || engine::allocation::reserve(pointers, end - pointers.len()).is_err()
+            if engine_allocation::reserve(rows, end - rows.len()).is_err()
+                || engine_allocation::reserve(pointers, end - pointers.len()).is_err()
             {
                 return Carried::Failed("technology row allocation failed");
             }
@@ -211,8 +211,8 @@ impl Store {
                 return Carried::Rows(len);
             }
             Drift::Failed => {
-                engine::batch_fallback::record(
-                    engine::batch_fallback::Batch::GovernanceTechnologyDrift,
+                engine_native::batch_fallback::record(
+                    engine_native::batch_fallback::Batch::GovernanceTechnologyDrift,
                 );
             }
             Drift::Serial => {}
@@ -247,7 +247,7 @@ impl Store {
     ) {
         let (inputs, bonuses, modifiers) = rows;
         let research = &mut self.research;
-        let held = engine::allocation::advisory(|| {
+        let held = engine_allocation::advisory(|| {
             let status = status(memory, base, country).ok()?;
             let slots = slots(memory, status)?;
             // `research_inputs::walk_country_buffer` visits the slots in roster order and sorts its
@@ -256,7 +256,7 @@ impl Store {
                 return None;
             }
             let mut slots_to_rows = Vec::new();
-            engine::allocation::reserve(&mut slots_to_rows, inputs.len()).ok()?;
+            engine_allocation::reserve(&mut slots_to_rows, inputs.len()).ok()?;
             for position in 0..slots.count {
                 let slot = read::<u64>(memory, slots.element(position, 8)?)?;
                 let slot = usize::try_from(slot).ok().filter(|&slot| slot != 0)?;
@@ -265,10 +265,10 @@ impl Store {
                 slots_to_rows.push((slot, row));
             }
             let mut slot_pointers = Vec::new();
-            engine::allocation::reserve_exact(&mut slot_pointers, slots_to_rows.len()).ok()?;
+            engine_allocation::reserve_exact(&mut slot_pointers, slots_to_rows.len()).ok()?;
             slot_pointers.extend(slots_to_rows.iter().map(|&(slot, _)| slot));
             let mut assigned_pointers = Vec::new();
-            engine::allocation::reserve_exact(&mut assigned_pointers, slots_to_rows.len()).ok()?;
+            engine_allocation::reserve_exact(&mut assigned_pointers, slots_to_rows.len()).ok()?;
             assigned_pointers.extend(
                 slots_to_rows
                     .iter()
@@ -286,7 +286,7 @@ impl Store {
                 bonuses: copied(bonuses)?,
                 modifiers: copied(modifiers)?,
             };
-            (research.contains_key(&owner) || engine::allocation::reserve_map(research, 1).is_ok())
+            (research.contains_key(&owner) || engine_allocation::reserve_map(research, 1).is_ok())
                 .then_some(held)
         });
         match held {
@@ -309,9 +309,9 @@ impl Store {
         base: usize,
         owner: u32,
         country: usize,
-        mut inputs: engine::walk::Buffer<'_, research_inputs::Row>,
-        mut bonuses: engine::walk::Buffer<'_, research_inputs::BonusRow>,
-        mut modifiers: engine::walk::Buffer<'_, research_modifiers::Row>,
+        mut inputs: engine_native::walk::Buffer<'_, research_inputs::Row>,
+        mut bonuses: engine_native::walk::Buffer<'_, research_inputs::BonusRow>,
+        mut modifiers: engine_native::walk::Buffer<'_, research_modifiers::Row>,
     ) -> Carried<[usize; 3]> {
         let Some(held) = self
             .research
@@ -365,7 +365,9 @@ impl Store {
             return Carried::Rows([held.inputs.len(), held.bonuses.len(), held.modifiers.len()]);
         }
         if matches!(banked, Drift::Failed) || matches!(progress, Drift::Failed) {
-            engine::batch_fallback::record(engine::batch_fallback::Batch::GovernanceResearchDrift);
+            engine_native::batch_fallback::record(
+                engine_native::batch_fallback::Batch::GovernanceResearchDrift,
+            );
         }
         // One original serial pass locates persistent failures in slot order.
         // Under the owner's relaxed read-order rule, publish a successful
@@ -422,12 +424,12 @@ fn slots(memory: &impl Memory, status: usize) -> Option<Array> {
 }
 
 /// A held copy of `rows`, or `None` when storage cannot be had. Called
-/// inside [`engine::allocation::advisory`], where a failed text clone yields
+/// inside [`engine_allocation::advisory`], where a failed text clone yields
 /// an empty payload instead of stopping the capture: a copy that does not
 /// equal its source is dropped.
 fn copied<T: Clone + PartialEq>(rows: &[T]) -> Option<Vec<T>> {
     let mut held = Vec::new();
-    engine::allocation::reserve(&mut held, rows.len()).ok()?;
+    engine_allocation::reserve(&mut held, rows.len()).ok()?;
     held.extend(rows.iter().cloned());
     (held == rows).then_some(held)
 }
@@ -443,13 +445,13 @@ fn drift(memory: &impl Memory, pointers: &[usize], offset: usize) -> Drift {
     if pointers.is_empty() {
         return Drift::Copied(Vec::new());
     }
-    let storage = engine::allocation::advisory(|| {
+    let storage = engine_allocation::advisory(|| {
         let len = pointers.len().checked_mul(8)?;
         let mut bytes = Vec::new();
-        engine::allocation::reserve_exact(&mut bytes, len).ok()?;
+        engine_allocation::reserve_exact(&mut bytes, len).ok()?;
         bytes.resize(len, 0);
         let mut values = Vec::new();
-        engine::allocation::reserve_exact(&mut values, pointers.len()).ok()?;
+        engine_allocation::reserve_exact(&mut values, pointers.len()).ok()?;
         Some((bytes, values))
     });
     let Some((mut bytes, mut values)) = storage else {
@@ -458,14 +460,14 @@ fn drift(memory: &impl Memory, pointers: &[usize], offset: usize) -> Drift {
     // Daily research slot progress banks into the slot; the technology progress adder technology
     // research progress adder writes the technology's progress. One record contains just that
     // object's qword. Certificates prove these pointers' lifetimes, not readability.
-    let fields = [engine::memory::RecordField {
+    let fields = [engine_native::memory::RecordField {
         source_offset: offset,
         destination_offset: 0,
         len: 8,
     }];
-    let layout = engine::memory::RecordLayout::new(&fields, 8).unwrap();
+    let layout = engine_native::memory::RecordLayout::new(&fields, 8).unwrap();
     if memory.copy_records(
-        engine::memory::RecordSources::Pointers(pointers),
+        engine_native::memory::RecordSources::Pointers(pointers),
         &layout,
         &mut bytes,
     ) != pointers.len()

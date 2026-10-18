@@ -7,16 +7,15 @@ use crate::{
     table_capture::{Arena, CaptureRows, grow_capacity},
     table_conversion::{table, unavailable},
 };
-use engine::allocation::{collect_vec, copy_vec, owned_vec};
-use engine::{Memory, cfleet, ctask_force, cunit::FirstCombatMemo, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{
-        FleetCounterInputRow, FreshTaskForceCounterEta, NavalEngagementTarget,
-        NavalPortMissionInputs, NavalSearcher, Recorded, TableId, TaskForceCounterInputRow,
-        TaskForceMapMotionRow, TaskForceMissionRow, tables,
-    },
+use engine_allocation::{collect_vec, copy_vec, owned_vec};
+use engine_native::{Memory, cfleet, ctask_force, cunit::FirstCombatMemo, walk::Outcome};
+use replay_data::{
+    rows::FleetCounterInputRow, rows::FreshTaskForceCounterEta, rows::NavalEngagementTarget,
+    rows::NavalPortMissionInputs, rows::NavalSearcher, rows::Recorded, rows::TableId,
+    rows::TaskForceCounterInputRow, rows::TaskForceMapMotionRow, rows::TaskForceMissionRow,
+    rows::tables,
 };
+use replay_frame::frame::TableView;
 
 pub const N: usize = 4;
 pub const TABLES: [TableId; N] = [
@@ -75,9 +74,9 @@ pub fn phase_data() -> impl serde::Serialize {
         "walk_ns": ns(load(2)),
         "missions_ns": ns(load(3)),
         "motion_ns": ns(load(4)),
-        "fresh_eta_task_forces": engine::ctask_force::FRESH_ETA[0]
+        "fresh_eta_task_forces": engine_native::ctask_force::FRESH_ETA[0]
             .load(std::sync::atomic::Ordering::Relaxed),
-        "fresh_eta_ns": ns(engine::ctask_force::FRESH_ETA[1]
+        "fresh_eta_ns": ns(engine_native::ctask_force::FRESH_ETA[1]
             .load(std::sync::atomic::Ordering::Relaxed)),
         "scope": "cumulative since attach: the counter walk's captures, task forces visited, and the whole walk's time with the part spent in the mission reader and the motion reader, of which fresh_eta_ns is the fresh ETA graph (every motion capture since attach, counted in fresh_eta_task_forces); the rest is the fleet and task-force census, counter, cached-name, supply and port-mission reads",
     })
@@ -133,7 +132,7 @@ impl Capacities {
         base: usize,
         state: usize,
     ) -> Result<(), &'static str> {
-        let countries = engine::ccountry::Reader::new(memory, base, state)?;
+        let countries = engine_native::ccountry::Reader::new(memory, base, state)?;
         let mut demand = *self;
         let mut fleets = 0_usize;
         let mut tasks = 0_usize;
@@ -155,13 +154,13 @@ impl Capacities {
                 cfleet::Visit::TaskForce(task, _) => {
                     add(&mut tasks, 1)?;
                     for offset in [
-                        engine::cunit::ORDINARY_ROUTE_DATA,
-                        engine::cunit::ALTERNATE_ROUTE_DATA,
+                        engine_native::cunit::ORDINARY_ROUTE_DATA,
+                        engine_native::cunit::ALTERNATE_ROUTE_DATA,
                     ] {
                         let array = task
                             .task
                             .checked_add(offset)
-                            .and_then(|at| engine::cpdx_array::Array::read(memory, at, 4))
+                            .and_then(|at| engine_native::cpdx_array::Array::read(memory, at, 4))
                             .ok_or("task-force route sizing header unreadable or invalid")?;
                         add(&mut paths, array.count as usize)?;
                     }
@@ -169,9 +168,9 @@ impl Capacities {
                         .task
                         .checked_add(ctask_force::NAVAL_MISSION)
                         .and_then(|root| {
-                            root.checked_add(engine::cnaval_mission::ACCESSIBLE_REGIONS)
+                            root.checked_add(engine_native::cnaval_mission::ACCESSIBLE_REGIONS)
                         })
-                        .and_then(|at| engine::cpdx_array::Array::read(memory, at, 8))
+                        .and_then(|at| engine_native::cpdx_array::Array::read(memory, at, 8))
                         .ok_or("task-force region sizing header unreadable or invalid")?;
                     add(&mut regions, array.count as usize)?;
                     let observed =
@@ -186,7 +185,7 @@ impl Capacities {
                     for result in [
                         ctask_force::cached_name_demand(memory, base, task.task, task.id)
                             .and_then(|count| add(&mut names, count)),
-                        engine::cunit_supply_inputs::origin_demand(memory, task.task)
+                        engine_native::cunit_supply_inputs::origin_demand(memory, task.task)
                             .map_err(|failure| failure.reason())
                             .and_then(|count| add(&mut origins, count)),
                     ] {
@@ -223,12 +222,12 @@ impl Capacities {
 
     pub fn raise_for_port(
         &mut self,
-        demand: engine::ctask_force::port_mission::Demand,
+        demand: engine_native::ctask_force::port_mission::Demand,
     ) -> Result<(), &'static str> {
         self.port_searchers = self.port_searchers.max(demand.searchers);
         self.port_avoided = self.port_avoided.max(demand.avoided);
         self.port_bytes = self.port_bytes.max(demand.bytes);
-        let answers = engine::ctask_force::port_mission::reference_slots(demand.references)
+        let answers = engine_native::ctask_force::port_mission::reference_slots(demand.references)
             .ok_or("port reference sizing overflow")?;
         self.port_answers = self.port_answers.max(answers);
         Ok(())
@@ -247,9 +246,9 @@ pub struct Captured {
     missions: CaptureRows<ctask_force::MissionRow>,
     regions: Arena<u32>,
     names: Arena<u8>,
-    supply_origins: Arena<engine::cunit_supply_inputs::Origin>,
+    supply_origins: Arena<engine_native::cunit_supply_inputs::Origin>,
     port_searchers: Arena<ctask_force::port_mission::Searcher>,
-    port_avoided: Arena<Option<engine::cname_group_member::Span>>,
+    port_avoided: Arena<Option<engine_native::cname_group_member::Span>>,
     /// A separate instance of the existing Names arena: port growth and
     /// faults never consume the earlier cached-name field's capacity.
     port_bytes: Arena<u8>,
@@ -307,8 +306,8 @@ impl CensusStore {
         std::mem::swap(&mut self.held, &mut self.previous);
         self.serve.clear();
         self.log.clear();
-        if engine::allocation::advisory(|| {
-            engine::allocation::reserve(&mut self.serve, self.previous.len())
+        if engine_allocation::advisory(|| {
+            engine_allocation::reserve(&mut self.serve, self.previous.len())
         })
         .is_err()
         {
@@ -338,8 +337,8 @@ impl CensusStore {
         self.log.dedup_by_key(|census| census.identity());
         self.held.clear();
         if complete
-            && engine::allocation::advisory(|| {
-                engine::allocation::reserve(&mut self.held, self.log.len())
+            && engine_allocation::advisory(|| {
+                engine_allocation::reserve(&mut self.held, self.log.len())
             })
             .is_ok()
         {
@@ -539,7 +538,7 @@ impl Captured {
         self.combats.clear();
         // Each task force's fixed fields in one guarded call, selected as the
         // walk reaches it and served to every reader below.
-        let tasks = engine::cship::SwitchedObject::new(memory, ctask_force::TASK_FIELDS);
+        let tasks = engine_native::cship::SwitchedObject::new(memory, ctask_force::TASK_FIELDS);
         let memory = &tasks;
         // The walk's task forces and the time its mission and motion readers
         // took, for status.
@@ -571,13 +570,13 @@ impl Captured {
             &mut self.missions.rows,
             &mut self.regions.first,
         );
-        let mut names = engine::cname_group_member::NameArena {
-            bytes: engine::walk::Buffer::Growing(&mut self.names.first),
+        let mut names = engine_native::cname_group_member::NameArena {
+            bytes: engine_native::walk::Buffer::Growing(&mut self.names.first),
             len: 0,
             required: 0,
         };
         let mut supply = ctask_force::SupplyOrigins {
-            origins: engine::walk::Buffer::Growing(&mut self.supply_origins.first),
+            origins: engine_native::walk::Buffer::Growing(&mut self.supply_origins.first),
             len: 0,
             required: 0,
         };
@@ -721,7 +720,7 @@ impl Captured {
     fn supply_origins(
         &self,
         row: &ctask_force::CounterRow,
-    ) -> Option<&[engine::cunit_supply_inputs::Origin]> {
+    ) -> Option<&[engine_native::cunit_supply_inputs::Origin]> {
         let len = row.supply?.origins_len.ok()?;
         let end = row.supply_origins_start.checked_add(len)?;
         self.supply_origins
@@ -734,7 +733,7 @@ impl Captured {
     /// nullable slots preserve independent faults and source ordering.
     fn port_inputs(&self, row: &ctask_force::CounterRow) -> Option<NavalPortMissionInputs> {
         let input = row.port_mission?;
-        let span = |(start, len): engine::cname_group_member::Span| {
+        let span = |(start, len): engine_native::cname_group_member::Span| {
             start.checked_add(len).map(|end| start..end)
         };
         let searching = input.searching.and_then(|range| {
@@ -768,7 +767,7 @@ impl Captured {
         });
         // The frame's reset capture holds only this hour's port operands.
         Some(NavalPortMissionInputs {
-            sample_hour: replay::rows::PacketHour::Host,
+            sample_hour: replay_data::rows::PacketHour::Host,
             searching,
             engagement_target: input.engagement_target.map(|target| NavalEngagementTarget {
                 reference: target.reference,
@@ -804,7 +803,8 @@ impl Captured {
     #[cfg(any(test, feature = "test-support"))]
     pub fn fresh_owner_demands(
         &self,
-    ) -> impl Iterator<Item = (u32, Result<engine::ccountry::Country, &'static str>)> + '_ {
+    ) -> impl Iterator<Item = (u32, Result<engine_native::ccountry::Country, &'static str>)> + '_
+    {
         self.motion.rows[..self.motion.outcome.len().min(self.motion.rows.len())]
             .iter()
             .filter_map(|row| row.fresh_owner.map(|owner| (row.logical_owner, owner)))
@@ -931,7 +931,7 @@ impl Captured {
                 naval_transfer: Recorded::Value(r.naval_transfer),
                 combat_links: Recorded::Value(r.combat_links),
                 fresh: Recorded::Value(r.fresh.map(|fresh| FreshTaskForceCounterEta {
-                    sample_hour: replay::rows::PacketHour::Host,
+                    sample_hour: replay_data::rows::PacketHour::Host,
                     base_speed: fresh.base_speed.ok(),
                     speed_modifier: fresh.speed_modifier.ok(),
                     terrain_class: fresh.terrain_class.ok(),
@@ -947,7 +947,7 @@ impl Captured {
 fn task(
     r: &ctask_force::CounterRow,
     names: Option<&[u8]>,
-    origins: Option<&[engine::cunit_supply_inputs::Origin]>,
+    origins: Option<&[engine_native::cunit_supply_inputs::Origin]>,
     port_mission: Option<NavalPortMissionInputs>,
 ) -> TaskForceCounterInputRow {
     TaskForceCounterInputRow {
@@ -975,8 +975,8 @@ fn task(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::SliceMemory;
-    use replay::rows::TableRows;
+    use engine_native::memory::SliceMemory;
+    use replay_data::rows::TableRows;
 
     /// A source recording every single (unbatched) copy.
     struct Singles<'a> {
@@ -995,8 +995,8 @@ mod tests {
 
         fn copy_records(
             &self,
-            sources: engine::memory::RecordSources<'_>,
-            layout: &engine::memory::RecordLayout<'_>,
+            sources: engine_native::memory::RecordSources<'_>,
+            layout: &engine_native::memory::RecordLayout<'_>,
             destination: &mut [u8],
         ) -> usize {
             self.calls.set(self.calls.get() + 1);
@@ -1025,7 +1025,7 @@ mod tests {
 
     #[test]
     fn default_cold_storage_captures_original_headers_and_live_hints() {
-        use engine::{ccountry, cgame_state, cnaval_mission, cstrategic_region, cunit};
+        use engine_native::{ccountry, cgame_state, cnaval_mission, cstrategic_region, cunit};
         fn p32(bytes: &mut [u8], at: usize, value: u32) {
             bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
         }
@@ -1102,7 +1102,7 @@ mod tests {
         p64(&mut bytes, name + 24, 15);
         array(
             &mut bytes,
-            TASK + engine::cunit_supply_inputs::ORIGINS,
+            TASK + engine_native::cunit_supply_inputs::ORIGINS,
             0x7100,
             1,
         );
@@ -1128,7 +1128,10 @@ mod tests {
         // The counter, cached-name and supply readers' task-force fields come
         // from one gather: none is read alone.
         let singles = memory.singles.borrow();
-        for (offset, len) in [(0x258, 32), (engine::cunit_supply_inputs::ORIGINS, 16)] {
+        for (offset, len) in [
+            (0x258, 32),
+            (engine_native::cunit_supply_inputs::ORIGINS, 16),
+        ] {
             assert!(
                 !singles.contains(&(TASK + offset, len)),
                 "{offset:#x} read alone"
@@ -1406,7 +1409,7 @@ mod tests {
             ..Capacities::default()
         };
         let mut capture = Captured::with_capacities(&capacity);
-        let owner = engine::ccountry::Country {
+        let owner = engine_native::ccountry::Country {
             pointer: 0x1234,
             id: 19,
             canonical_slot: 3,
@@ -1438,7 +1441,7 @@ mod tests {
         assert_eq!(
             rows[0].fresh,
             Recorded::Value(Some(FreshTaskForceCounterEta {
-                sample_hour: replay::rows::PacketHour::Host,
+                sample_hour: replay_data::rows::PacketHour::Host,
                 base_speed: None,
                 speed_modifier: Some(i64::MIN),
                 terrain_class: Some(-1),
@@ -1531,7 +1534,10 @@ mod tests {
 
     #[test]
     fn supply_nodes_fail_independently_and_owned_ship_demand_keeps_names_and_prefixes() {
-        use engine::cunit_supply_inputs::{Demand, Failure, Inputs, Origin};
+        use engine_native::{
+            cunit_supply_inputs::Demand, cunit_supply_inputs::Failure, cunit_supply_inputs::Inputs,
+            cunit_supply_inputs::Origin,
+        };
         let mut capacity = Capacities {
             task_forces: 1,
             names: 4,
@@ -1655,7 +1661,7 @@ mod tests {
 
     #[test]
     fn invalid_supply_origin_span_withholds_only_nodes_and_name_fault_keeps_supply() {
-        use engine::cunit_supply_inputs::Inputs;
+        use engine_native::cunit_supply_inputs::Inputs;
         let mut capture = Captured::with_capacities(&Capacities {
             task_forces: 1,
             ..Default::default()
@@ -1750,7 +1756,7 @@ mod tests {
             .unwrap()
             .as_ref()
             .unwrap();
-        assert_eq!(packet.sample_hour, replay::rows::PacketHour::Host);
+        assert_eq!(packet.sample_hour, replay_data::rows::PacketHour::Host);
         assert_eq!(packet.searching.as_ref().unwrap()[1].roster_owner, Some(0));
         assert_eq!(packet.searching.as_ref().unwrap()[2].reference, None);
         assert_eq!(
@@ -1858,7 +1864,7 @@ mod tests {
             ..Default::default()
         };
         census.keys[0] = 7;
-        census.values[0] = engine::modifier_accumulator::Value { raw, present: true };
+        census.values[0] = engine_native::modifier_accumulator::Value { raw, present: true };
         census
     }
 

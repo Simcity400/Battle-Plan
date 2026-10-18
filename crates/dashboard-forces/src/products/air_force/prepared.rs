@@ -1,11 +1,8 @@
 //! Native air shape/projection supplied to the shared prepared parts-race flow.
 use super::*;
 use crate::products::parts_race_prepared as shared;
-use replay::{
-    format::FormatVersion,
-    frame::{DecodedFrame, FrameSource},
-    rows::TableId,
-};
+use replay_data::{format::FormatVersion, rows::TableId};
+use replay_frame::{frame::DecodedFrame, frame::FrameSource};
 use serde_json::Value;
 
 pub struct Air;

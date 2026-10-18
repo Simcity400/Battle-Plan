@@ -11,11 +11,9 @@ use std::{
     sync::Arc,
 };
 
-use replay::{
-    BranchId, Hour,
-    codec::Decoder,
-    frame::{DecodedFrame, FrameDecoder, FrameSource, TableView},
-    rows::TableId,
+use replay_data::{BranchId, Hour, codec::Decoder, rows::TableId};
+use replay_frame::{
+    frame::DecodedFrame, frame::FrameDecoder, frame::FrameSource, frame::TableView,
 };
 use store::{SourceKey, Store, Writer};
 
@@ -442,9 +440,9 @@ impl Builder {
     pub fn save_gaps(
         &mut self,
         writer: &mut Writer,
-        gaps: &[replay::branches::Gap],
+        gaps: &[replay_frame::branches::Gap],
     ) -> io::Result<()> {
-        let mut branches = BTreeMap::<BranchId, Vec<&replay::branches::Gap>>::new();
+        let mut branches = BTreeMap::<BranchId, Vec<&replay_frame::branches::Gap>>::new();
         for gap in gaps {
             branches.entry(gap.branch).or_default().push(gap);
         }
@@ -479,7 +477,7 @@ impl Builder {
     }
 }
 
-fn gap_intervals(gaps: &[&replay::branches::Gap]) -> io::Result<Vec<(Hour, Hour, String)>> {
+fn gap_intervals(gaps: &[&replay_frame::branches::Gap]) -> io::Result<Vec<(Hour, Hour, String)>> {
     let mut edges = BTreeMap::<i64, Vec<(usize, bool)>>::new();
     for (ordinal, gap) in gaps.iter().enumerate() {
         if gap.first_hour > gap.last_hour {
@@ -611,7 +609,7 @@ fn inflate(mut file: impl Read) -> io::Result<Vec<u8>> {
     {
         return Err(invalid("map page contains trailing compressed bytes"));
     }
-    let mut bytes = engine::allocation::vec(length)?;
+    let mut bytes = engine_allocation::vec(length)?;
     bytes.resize(length, 0);
     if zstd::bulk::decompress_to_buffer(&compressed, &mut bytes)? != length {
         return Err(invalid("map page decoded length differs"));
@@ -657,7 +655,7 @@ fn encode_checkpoint(
     out.extend_from_slice(&frame.hour.to_le_bytes());
     out.extend_from_slice(&(position.block as u64).to_le_bytes());
     out.extend_from_slice(&(position.next_frame as u64).to_le_bytes());
-    out.extend_from_slice(&replay::FORMAT_VERSION.to_le_bytes());
+    out.extend_from_slice(&replay_data::FORMAT_VERSION.to_le_bytes());
     for table in TableId::ALL {
         out.push(u8::from(selected.contains(&table)));
     }
@@ -709,7 +707,7 @@ fn decode_selected_checkpoint(
         next_frame: usize::try_from(input.u64()?)
             .map_err(|_| invalid("map frame ordinal exceeds address space"))?,
     };
-    if input.u16()? != replay::FORMAT_VERSION {
+    if input.u16()? != replay_data::FORMAT_VERSION {
         return Err(invalid("map checkpoint row contract differs"));
     }
     let mut selected = [false; TableId::ALL.len()];

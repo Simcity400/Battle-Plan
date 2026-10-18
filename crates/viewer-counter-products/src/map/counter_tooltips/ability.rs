@@ -1,7 +1,7 @@
 //! Active-ability icon tooltips, independent of the counter body.
 
 use super::*;
-use replay::rows::{ActiveAbilityRow, UnitLeaderRow};
+use replay_data::{rows::ActiveAbilityRow, rows::UnitLeaderRow};
 use std::collections::BTreeSet;
 use viewer_foundation::tooltip_text::ensure_newlines;
 
@@ -22,12 +22,17 @@ pub(super) fn append(
             return;
         }
     };
-    let definition: Result<(&ActiveAbilityRow, &installed_content::abilities::Definition), String> =
-        (|| {
-            let row = active_row(context, country, ordinal)?;
-            let content = context.content.ok_or("ability content is unavailable")?;
-            Ok((row, content.ability_definition(&row.token)?))
-        })();
+    let definition: Result<
+        (
+            &ActiveAbilityRow,
+            &installed_content_abilities::abilities::Definition,
+        ),
+        String,
+    > = (|| {
+        let row = active_row(context, country, ordinal)?;
+        let content = context.content.ok_or("ability content is unavailable")?;
+        Ok((row, content.ability_definition(&row.token)?))
+    })();
     let (row, definition) = match definition {
         Ok(definition) => definition,
         Err(why) => {
@@ -118,7 +123,7 @@ fn scoped_description(
     context: &Context<'_>,
     reference: u64,
     leader: &UnitLeaderRow,
-    definition: &installed_content::abilities::Definition,
+    definition: &installed_content_abilities::abilities::Definition,
 ) -> Result<dashboard_text::effect_description::Description, String> {
     use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, ScriptedText};
 
@@ -240,7 +245,7 @@ fn communications(context: &Context<'_>, leader: &UnitLeaderRow) -> Result<Strin
     let features = features
         .first()
         .ok_or("SimulationFeatures singleton is absent")?;
-    if features.dlc_mask & engine::dlc_feature_state::THUNDER_AT_OUR_GATES == 0 {
+    if features.dlc_mask & engine_dlc::dlc_feature_state::THUNDER_AT_OUR_GATES == 0 {
         return Ok(String::new());
     }
     let reference = formation_reference(leader)?;
@@ -312,7 +317,7 @@ fn communication_leader<'a>(
 }
 
 fn communication_distance(
-    input: &replay::rows::OrdersGroupCounterInputRow,
+    input: &replay_data::rows::OrdersGroupCounterInputRow,
     kind: i32,
 ) -> Result<i32, String> {
     let (distance, field) = if kind == 2 {

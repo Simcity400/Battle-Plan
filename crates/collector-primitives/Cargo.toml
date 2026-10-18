@@ -13,7 +13,8 @@ doctest = false
 test-support = []
 
 [dependencies]
-engine.workspace = true
+engine-allocation.workspace = true
+engine-native.workspace = true
 serde = { workspace = true, features = ["derive"] }
 collector-status.workspace = true
 windows-sys = { workspace = true, features = ["Win32_System_Performance"] }

@@ -1,8 +1,10 @@
 use super::*;
-use engine::{
-    ccountry_leader, cdecision, cdynamic_modifier, cgame_state, cidea, cideology_group,
-    cpolitical_status, dynamic_modifier_entry, memory::SliceMemory, walk::Outcome,
+use engine_decisions::cdecision;
+use engine_native::{
+    ccountry_leader, cdynamic_modifier, cgame_state, cidea, cideology_group, cpolitical_status,
+    memory::SliceMemory, walk::Outcome,
 };
+use engine_stability::dynamic_modifier_entry;
 
 const BASE: usize = 0x1_4000_0000;
 const STATE: usize = 0x1000;

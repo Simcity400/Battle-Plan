@@ -1,13 +1,12 @@
 //! Neutral recorded speed terms for estimate tests: rows under which a division's edge
 //! speed is its base speed times the movement scale.
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{
-        CountryCounterInputRow, CountryLinkRow, CountryMovementModifiers, CountryRow,
-        DivisionMovementStats, DivisionStatusRow, LexicalTokenRow, ModifierDefinitionRow,
-        MovementDefines, Recorded, SimulationFeatureRow, TableRows, tables,
-    },
+use replay_data::{
+    rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryMovementModifiers,
+    rows::CountryRow, rows::DivisionMovementStats, rows::DivisionStatusRow, rows::LexicalTokenRow,
+    rows::ModifierDefinitionRow, rows::MovementDefines, rows::Recorded, rows::SimulationFeatureRow,
+    rows::TableRows, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 fn put(frame: &mut DecodedFrame, rows: TableRows) {
     let id = rows.table();
@@ -87,9 +86,9 @@ pub fn neutral_world(frame: &mut DecodedFrame, country: u32) {
     );
     put(frame, TableRows::WeatherProvinces(vec![]));
     put(frame, TableRows::WeatherRegions(vec![]));
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
-    let mut keys = engine::modifier_keys::all().collect::<Vec<_>>();
+    let mut keys = engine_executable::modifier_keys::all().collect::<Vec<_>>();
     keys.sort_unstable_by_key(|key| key.index);
     put(
         frame,

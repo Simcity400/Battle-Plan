@@ -1,10 +1,8 @@
 //! Native pool values shared by the observer and progressive selected-table reads.
 use super::{PoolOperand, resource_values};
 use dashboard_base::prepared::query::progressive::Samples;
-use replay::{
-    frame::DecodedFrame,
-    rows::{TableId, tables},
-};
+use replay_data::{rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,

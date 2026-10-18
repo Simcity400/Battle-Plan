@@ -1,5 +1,5 @@
 //! What caused the event feed's events: the native operations running on a
-//! thread when one happens ([`engine::event_feed_sites::provenance`]).
+//! thread when one happens ([`engine_events::event_feed_sites::provenance`]).
 //!
 //! Each operation sets a thread-local [`Context`] for as long as its original
 //! runs and restores the enclosing one when it returns or unwinds, so the
@@ -24,15 +24,15 @@ use crate::{
     event_feed_observer::{self, Fact},
     hook::Hook,
 };
-use engine::{
-    Memory,
-    event_feed_sites::{
-        CountryIdentity,
-        provenance::{self as native, Caller},
-    },
-    memory::LiveMemory,
+use engine_events::{
+    event_feed_sites::CountryIdentity, event_feed_sites::provenance as native,
+    event_feed_sites::provenance::Caller,
 };
-use replay::event_feed_rows::{EventFeedCause, EventFeedCountry, EventFeedRoute, EventFeedSource};
+use engine_native::{Memory, memory::LiveMemory};
+use replay_data::{
+    event_feed_rows::EventFeedCause, event_feed_rows::EventFeedCountry,
+    event_feed_rows::EventFeedRoute, event_feed_rows::EventFeedSource,
+};
 use std::{
     cell::Cell,
     sync::{

@@ -28,7 +28,7 @@ fn forward_land_and_carrier_air_share_the_native_group_rule() {
         source: 0,
         group_index: 2,
         variant: 31,
-        efficiency: replay::rows::NavalCombatAirEfficiency {
+        efficiency: replay_data::rows::NavalCombatAirEfficiency {
             source,
             ..Default::default()
         },
@@ -60,22 +60,22 @@ fn forward_land_and_carrier_air_share_the_native_group_rule() {
 fn only_a_linked_carrier_below_full_sortie_efficiency_reaches_its_member_sources() {
     let mut plane = NavalCombatPlane {
         wings: [vec![], vec![7]],
-        efficiency: replay::rows::NavalCombatAirEfficiency {
+        efficiency: replay_data::rows::NavalCombatAirEfficiency {
             source: 3,
             ..Default::default()
         },
         ..Default::default()
     };
-    let detail = replay::rows::NavalCombatDetailsRow::default();
+    let detail = replay_data::rows::NavalCombatDetailsRow::default();
     let joins = super::super::naval_air_groups::CarrierJoins::new(None, None, None, None);
-    let rows: [replay::rows::NavalModifierTreeRow; 0] = [];
+    let rows: [replay_data::rows::NavalModifierTreeRow; 0] = [];
     let trees = super::super::naval_trees::Sources::from_parts(
         Ok(&rows),
         &[],
         crate::naval_labels::english(),
     );
     let content = super::super::naval_air_groups::Content::default();
-    let loc = installed_content::localisation::Localisation::default();
+    let loc = installed_content_localisation::localisation::Localisation::default();
     let breakdown = |plane: &NavalCombatPlane, efficiency| {
         sortie_member_breakdown(
             plane, efficiency, &detail, 0, &joins, &trees, &content, &NoIcons, &loc,
@@ -219,7 +219,7 @@ fn air_entries_bind_before_carrier_ships_on_both_grids() {
 
 #[test]
 fn recorded_air_hover_reaches_the_air_icon_binding() {
-    let mut loc: installed_content::localisation::Localisation = [(
+    let mut loc: installed_content_localisation::localisation::Localisation = [(
         "NAVAL_COMBAT_AIRWING_TOOLTIP_HEADER".to_owned(),
         "$MOD$ from $FROM$".to_owned(),
     )]
@@ -258,9 +258,9 @@ fn recorded_air_hover_reaches_the_air_icon_binding() {
 }
 #[test]
 fn organisation_uses_default_leader_and_recorded_hq_terms() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{NavalShipModifierSource, NavalShipModifierTerm};
+    use replay_data::{rows::NavalShipModifierSource, rows::NavalShipModifierTerm};
     let mut row = NavalCombatShipRow {
         live_ship: 1,
         base_organisation: 3_000_000,
@@ -359,7 +359,7 @@ fn grouping_normalizes_state_but_preserves_damage() {
 
 #[test]
 fn carrier_equipment_flags_select_the_carrier_group_before_screen_flags() {
-    use replay::rows::{ShipCounterInputs, ShipModelRow};
+    use replay_data::{rows::ShipCounterInputs, rows::ShipModelRow};
     let mut row = NavalCombatShipRow {
         state: 2,
         live_ship: 1,

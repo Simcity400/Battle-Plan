@@ -33,11 +33,11 @@ use dashboard_text::metadata::branch_bounds;
 use dashboard_text::metadata::validate_campaign;
 use native::{Pair, World, pair};
 #[cfg(any(test, feature = "test-support"))]
-use replay::{container::Replay, frame::FrameDecoder};
-use replay::{
-    frame::{DecodedFrame, TableView, ViewIdentity},
-    rows::{self, TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{rows, rows::TableId, rows::tables};
+#[cfg(any(test, feature = "test-support"))]
+use replay_frame::frame::FrameDecoder;
+use replay_frame::{frame::DecodedFrame, frame::TableView, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::{Arc, atomic::Ordering};

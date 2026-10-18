@@ -1,8 +1,8 @@
 //! Naval, country and orders-group counter operands and leader
 //! picture-directory inputs.
 use super::*;
-use installed_content::parser::c_string;
-use replay::rows::Recorded;
+use installed_content_core::parser::c_string;
+use replay_data::rows::Recorded;
 
 mod directed_wars;
 mod forward_visibility;
@@ -280,9 +280,9 @@ fn task_forces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<
 /// Compare only genuine capture demand; searching is unconditional, while
 /// the strike packet's late domains follow stored simulation operands.
 fn task_force_port(
-    hour: replay::Hour,
-    row: &replay::rows::TaskForceCounterInputRow,
-    force: &replay::rows::TaskForceRow,
+    hour: replay_data::Hour,
+    row: &replay_data::rows::TaskForceCounterInputRow,
+    force: &replay_data::rows::TaskForceRow,
     saved: &installed_content_save::counter_inputs::TaskForce,
     r: &mut Report,
 ) {
@@ -386,7 +386,7 @@ fn task_force_port(
                 let field = format!("{label}.avoided_ship_types[{at}]");
                 match kind {
                     Some(kind) => {
-                        let comparable = installed_content::parser::c_string(kind);
+                        let comparable = installed_content_core::parser::c_string(kind);
                         if comparable.len() < kind.len() {
                             r.limitation("native text serialization ends at the first NUL; captured trailing ship-type bytes are not save-comparable", &field);
                         }

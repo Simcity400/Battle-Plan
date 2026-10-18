@@ -780,7 +780,7 @@ impl BaseResources {
     /// ordered, repeated blocks appended, decimal i32 amounts.
     pub fn add_state_history(
         &mut self,
-        state: &installed_content::states::StateDefinition,
+        state: &installed_content_states::states::StateDefinition,
     ) -> io::Result<()> {
         let state_id = state.id;
         if !self.states.insert(state_id) {
@@ -816,7 +816,7 @@ pub struct PartialBaseResources {
 
 impl PartialBaseResources {
     pub(super) fn from_states(
-        states: &installed_content::states::States,
+        states: &installed_content_states::states::States,
         membership: &super::PartialMapMembership,
     ) -> io::Result<Self> {
         let mut known = BaseResources::default();

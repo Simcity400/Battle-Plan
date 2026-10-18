@@ -1,13 +1,11 @@
 use super::*;
 use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::TableRows,
-};
+use replay_data::rows::TableRows;
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 pub(super) fn base() -> i32 {
-    let replay::cadence::Cadence::Daily(slot) =
-        replay::cadence::cadence(TableId::OperativeMemberships)
+    let replay_data::cadence::Cadence::Daily(slot) =
+        replay_data::cadence::cadence(TableId::OperativeMemberships)
     else {
         panic!("daily membership");
     };
@@ -23,7 +21,7 @@ pub(super) fn row(id: u64) -> OperativeMembershipRow {
         name: b"Literal operative".to_vec().into(),
         skill: Some(2),
         experience_raw: 123_456,
-        captured_hour: engine::cgame_date::NULL_RAW_HOUR,
+        captured_hour: engine_native::cgame_date::NULL_RAW_HOUR,
         ..Default::default()
     }
 }
@@ -68,7 +66,7 @@ pub(super) fn frame(hour: i32, read: bool, rows: Vec<OperativeMembershipRow>) ->
     }
     *frame.tables[TableId::SimulationFeatures.index()] =
         TableView::Complete(TableRows::SimulationFeatures(vec![
-            replay::rows::SimulationFeatureRow {
+            replay_data::rows::SimulationFeatureRow {
                 dlc_mask: 1 << 5,
                 ..Default::default()
             },
@@ -623,7 +621,7 @@ fn operatives_roster_alias_duplicates_include_terminal_and_conflicting_membershi
 
 #[test]
 fn operatives_roster_ambiguous_character_links_never_choose_a_portrait() {
-    use replay::rows::CharacterOperativeRow;
+    use replay_data::rows::CharacterOperativeRow;
     let mut frame = frame(0, true, vec![row(1)]);
     *frame.tables[TableId::CharacterOperatives.index()] =
         TableView::Complete(TableRows::CharacterOperatives(vec![
@@ -661,7 +659,7 @@ fn operatives_roster_ambiguous_character_links_never_choose_a_portrait() {
 
 #[test]
 fn operatives_roster_operation_metadata_has_its_own_read_and_gap_recovery() {
-    use replay::rows::{LexicalTokenRow, OperationRow};
+    use replay_data::{rows::LexicalTokenRow, rows::OperationRow};
     let (content, _folder) = super::super::operative_content::test_content(&[(
         "common/operations/fixture.txt",
         "operation_fixture = { name = Authored_operation }",
@@ -725,7 +723,7 @@ fn operatives_roster_operation_metadata_has_its_own_read_and_gap_recovery() {
 
 #[test]
 fn operatives_roster_captured_status_projects_current_country_name_with_read_provenance() {
-    use replay::rows::{CountryAppearanceRow, PoliticsRow};
+    use replay_data::{rows::CountryAppearanceRow, rows::PoliticsRow};
     let (content, _folder) = super::super::operative_content::test_content(&[(
         "localisation/english/fixture_l_english.yml",
         "\u{feff}l_english:\n OPERATIVE_CAPTURED_BY:0 \"Captured by $CAPTURER$\"\n CAPTOR_OLD:0 \"Ordinary old name\"\n CAPTOR_NEW:0 \"Ordinary new name\"\n CAPTOR_OLD_DEF:0 \"old capturer\"\n CAPTOR_NEW_DEF:0 \"renamed capturer\"\n",
@@ -1153,11 +1151,11 @@ fn operatives_roster_five_thousand_countries_have_sparse_complete_histories_and_
     ignore = "slow: runs in the full suite (--features slow-tests)"
 )]
 fn operatives_roster_cross_block_content_artwork_is_interned_and_equal_daily_reads_merge() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{
-        CharacterOperativeRow, CharacterPortrait, CharacterPortraitRow, LexicalTokenRow,
-        OperationRow, PORTRAIT_LARGE,
+    use replay_data::{
+        rows::CharacterOperativeRow, rows::CharacterPortrait, rows::CharacterPortraitRow,
+        rows::LexicalTokenRow, rows::OperationRow, rows::PORTRAIT_LARGE,
     };
     // Synthetic content reaches both native portrait and operation artwork;
     // the second layer changes the authored title without touching installed content.
@@ -1198,7 +1196,7 @@ fn operatives_roster_cross_block_content_artwork_is_interned_and_equal_daily_rea
         image.extend_from_slice(&[random as u8, (random >> 8) as u8, (random >> 16) as u8, 255]);
     }
     std::fs::write(base_folder.0.join("gfx/interface/synthetic.tga"), image).unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[
         (&base_folder.0, &[][..]),
         (&mod_folder.0, &[][..]),
     ])
@@ -1256,7 +1254,7 @@ fn operatives_roster_cross_block_content_artwork_is_interned_and_equal_daily_rea
             literal: b"synthetic_operation".to_vec(),
         }]));
     // Cross the next encoded keyframe/block while retaining daily held reads.
-    let days = i32::try_from(replay::KEYFRAME_INTERVAL / 24 + 1).unwrap();
+    let days = i32::try_from(replay_frame::KEYFRAME_INTERVAL / 24 + 1).unwrap();
     // Stream the frames to the real encoder, retaining shared table storage.
     let frames = (0..days * 24)
         .map(|hour| {
@@ -1305,7 +1303,7 @@ fn operatives_roster_absent_agency_is_reported_and_stops_holds() {
     let mut absent = frame(1, false, vec![row(1)]);
     *absent.tables[TableId::SimulationFeatures.index()] =
         TableView::Complete(TableRows::SimulationFeatures(vec![
-            replay::rows::SimulationFeatureRow::default(),
+            replay_data::rows::SimulationFeatureRow::default(),
         ]));
     *absent.tables[TableId::OperativeMemberships.index()] = TableView::Unavailable {
         reason: "feature absent".into(),
@@ -1328,7 +1326,7 @@ fn operatives_roster_absent_agency_is_reported_and_stops_holds() {
 
 #[test]
 fn operatives_roster_captured_native_day_status_uses_current_hour_and_preserves_read_date() {
-    use replay::rows::{CountryAppearanceRow, PoliticsRow};
+    use replay_data::{rows::CountryAppearanceRow, rows::PoliticsRow};
     let (content, _folder) = super::super::operative_content::test_content(&[
         (
             "common/defines/zz_capture.lua",
@@ -1339,7 +1337,7 @@ fn operatives_roster_captured_native_day_status_uses_current_hour_and_preserves_
             "\u{feff}l_english:\n OPERATIVE_CAPTURED_BY:0 \"Held by $CAPTURER$\"\n DURATION_DAYS:0 \"$NUM|.0$ remaining days\"\n",
         ),
     ]);
-    let captured = engine::cdate::HOUR_EPOCH + 23;
+    let captured = engine_native::cdate::HOUR_EPOCH + 23;
     let frames = (0..=2)
         .map(|hour| {
             let mut frame = frame(
@@ -1522,7 +1520,7 @@ fn operative_portrait_join_requires_full_reference_and_native_category() {
 
 #[test]
 fn captured_roster_resolves_five_thousand_distinct_captors() {
-    use replay::rows::{CountryAppearanceRow, PoliticsRow};
+    use replay_data::{rows::CountryAppearanceRow, rows::PoliticsRow};
     let count = 5000;
     let mut localisation = String::from(
         "\u{feff}l_english:\n OPERATIVE_CAPTURED_BY:0 \"Captured by $CAPTURER$\"\n DURATION_DAYS:0 \"Remaining span: $NUM|.0$ days\"\n",
@@ -1618,7 +1616,7 @@ fn captured_roster_resolves_five_thousand_distinct_captors() {
 
 #[test]
 fn captured_status_names_reserved_zero_without_inventing_a_country_or_flag() {
-    use replay::rows::ReservedCountryNamingRow;
+    use replay_data::rows::ReservedCountryNamingRow;
     let (content, _folder) = super::super::operative_content::test_content(&[
         (
             "localisation/english/fixture_l_english.yml",

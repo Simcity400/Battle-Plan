@@ -1,9 +1,9 @@
 use super::*;
-use replay::{
-    event_feed_rows::{EventFeedCounts, EventFeedEvent},
-    frame::{Metrics, TableView},
-    rows::{CountryLinkRow, TableRows},
+use replay_data::{
+    event_feed_rows::EventFeedCounts, event_feed_rows::EventFeedEvent, rows::CountryLinkRow,
+    rows::TableRows,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 
 fn identity(index: u32) -> EventFeedCountry {
     EventFeedCountry {
@@ -485,7 +485,8 @@ fn complete_empty_history_is_distinct_from_an_unobserved_empty_interval() {
 #[test]
 fn registered_history_loads_later_publication_without_using_the_later_country_instance() {
     use crate::test_fixtures::{CAMPAIGN, records};
-    use replay::{container::Replay, rows::CampaignRow};
+    use replay::container::Replay;
+    use replay_data::rows::CampaignRow;
     let mut frames = Vec::new();
     for hour in 105..=120 {
         let mut sample = frame(hour, 2);

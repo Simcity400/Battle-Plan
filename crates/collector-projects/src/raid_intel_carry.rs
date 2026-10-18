@@ -1,6 +1,6 @@
 //! Each country's RaidIntelInputs modifier answers (its accumulator's `CRYPTO_STRENGTH` and
 //! `INTELLIGENCE_AGENCY_DEFENSE` raw values), held between the Projects job's hourly walks
-//! ([`engine::raid_intel_inputs::Carry`]). The walk still reads each country's accumulator header;
+//! ([`engine_raid_inputs::raid_intel_inputs::Carry`]). The walk still reads each country's accumulator header;
 //! a country whose header is the held one, whose CCountry and id are the held ones and whose
 //! certificate is the one taken before the held read skips its entries copy and answers from the
 //! held values. The certificate is the naval tree family's
@@ -17,10 +17,8 @@
 //! tree certificate for the attachment ([`crate::naval_tree_changes::missed_write`]),
 //! and every country is read from then on.
 use crate::sampled_verify::Check;
-use engine::{
-    ccountry::Country,
-    raid_intel_inputs::{Carry, RawAnswer},
-};
+use engine_native::ccountry::Country;
+use engine_raid_inputs::{raid_intel_inputs::Carry, raid_intel_inputs::RawAnswer};
 use std::sync::{
     Mutex, MutexGuard, TryLockError,
     atomic::{AtomicU64, Ordering::Relaxed},
@@ -174,7 +172,7 @@ impl<'a, C: Certificates> Walk<'a, C> {
         let stored = &mut self.store.held;
         if slot >= stored.len() {
             let additional = slot + 1 - stored.len();
-            if held.is_none() || engine::allocation::reserve(stored, additional).is_err() {
+            if held.is_none() || engine_allocation::reserve(stored, additional).is_err() {
                 return;
             }
             stored.resize(slot + 1, None);

@@ -1,7 +1,6 @@
 use super::*;
-use engine::{research_inputs, research_modifiers};
-#[path = "../../../engine/src/governance_batch/test_kit.rs"]
-mod kit;
+use engine_governance_tests as kit;
+use engine_research::{research_inputs, research_modifiers};
 #[allow(dead_code)]
 #[path = "drift_serial.rs"]
 mod serial;
@@ -121,9 +120,9 @@ fn research(store: &drift::Store, memory: &Trace<'_, World>, id: u32) -> Researc
         0,
         id,
         World::country(id),
-        engine::walk::Buffer::Growing(&mut inputs),
-        engine::walk::Buffer::Growing(&mut bonuses),
-        engine::walk::Buffer::Growing(&mut modifiers),
+        engine_native::walk::Buffer::Growing(&mut inputs),
+        engine_native::walk::Buffer::Growing(&mut bonuses),
+        engine_native::walk::Buffer::Growing(&mut modifiers),
     );
     let outcomes = match outcome {
         drift::Carried::Rows(lens) => lens.map(|len| Outcome::Rows { len }),
@@ -149,9 +148,9 @@ fn serial_research(store: &serial::Store, memory: &Trace<'_, World>, id: u32) ->
         0,
         id,
         World::country(id),
-        engine::walk::Buffer::Growing(&mut inputs),
-        engine::walk::Buffer::Growing(&mut bonuses),
-        engine::walk::Buffer::Growing(&mut modifiers),
+        engine_native::walk::Buffer::Growing(&mut inputs),
+        engine_native::walk::Buffer::Growing(&mut bonuses),
+        engine_native::walk::Buffer::Growing(&mut modifiers),
     );
     let outcomes = match outcome {
         serial::Carried::Rows(lens) => lens.map(|len| Outcome::Rows { len }),
@@ -471,9 +470,9 @@ fn governance_batch_carried_multiple_persistent_faults_keep_serial_first_reason(
         0,
         1,
         country,
-        engine::walk::Buffer::Growing(&mut inputs),
-        engine::walk::Buffer::Growing(&mut bonuses),
-        engine::walk::Buffer::Growing(&mut modifiers),
+        engine_native::walk::Buffer::Growing(&mut inputs),
+        engine_native::walk::Buffer::Growing(&mut bonuses),
+        engine_native::walk::Buffer::Growing(&mut modifiers),
     );
     assert!(matches!(
         outcome,
@@ -485,9 +484,9 @@ fn governance_batch_carried_multiple_persistent_faults_keep_serial_first_reason(
         0,
         1,
         country,
-        engine::walk::Buffer::Growing(&mut inputs),
-        engine::walk::Buffer::Growing(&mut bonuses),
-        engine::walk::Buffer::Growing(&mut modifiers),
+        engine_native::walk::Buffer::Growing(&mut inputs),
+        engine_native::walk::Buffer::Growing(&mut bonuses),
+        engine_native::walk::Buffer::Growing(&mut modifiers),
     );
     assert!(matches!(
         original,

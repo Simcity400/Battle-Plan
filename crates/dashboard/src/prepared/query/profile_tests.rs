@@ -11,7 +11,7 @@ use std::{collections::BTreeMap, path::PathBuf, time::Instant};
 fn readiness_prepared_queries_time_and_store_work() {
     let required =
         |name: &str| PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("Set {name}")));
-    engine::executable_tables::initialize_for_tests().unwrap();
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
     let recording = std::fs::canonicalize(required("BATTLE_PLAN_QUERY_PROFILE_RECORDING")).unwrap();
     let only = std::env::var("BATTLE_PLAN_QUERY_PROFILE_ONLY").or_else(|_| std::env::var("HOI4_QUERY_PROFILE_ONLY")).ok();
     let cancelled = AtomicBool::new(false);

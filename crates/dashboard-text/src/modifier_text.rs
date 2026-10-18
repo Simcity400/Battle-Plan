@@ -1,6 +1,6 @@
 //! Modifier value and cached breakdown text.
-use installed_content::fixed5::{fixed5_percent, fixed5_to_string};
-use replay::rows::{ModifierBreakdownNode, ModifierDefinitionRow, check_tree};
+use installed_content_core::{fixed5::fixed5_percent, fixed5::fixed5_to_string};
+use replay_data::{rows::ModifierBreakdownNode, rows::ModifierDefinitionRow, rows::check_tree};
 
 pub const PERCENT_TIMES_HUNDRED: u32 = 1 << 0;
 pub const POSITIVE_IS_GOOD: u32 = 1 << 1;

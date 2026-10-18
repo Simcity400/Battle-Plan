@@ -1,12 +1,8 @@
 //! Combat window operands from recorded simulation state and matching content.
-use installed_content::{
-    division_names::{Database, Unresolved},
-    localisation::{Argument, Localisation},
-};
-use replay::{
-    frame::DecodedFrame,
-    rows::{LandCombatDivisionRow, TableSchema, tables},
-};
+use installed_content_division_names::{division_names::Database, division_names::Unresolved};
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use replay_data::{rows::LandCombatDivisionRow, rows::TableSchema, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 use viewer_foundation::tooltip_text::tooltip_keys;
 use {
@@ -273,7 +269,7 @@ fn shown_name(
 /// Only an explicitly unrecorded cache uses the old combat naming projection.
 fn shown_recorded_name(
     row: &LandCombatDivisionRow,
-    status: Option<&replay::rows::DivisionStatusRow>,
+    status: Option<&replay_data::rows::DivisionStatusRow>,
     status_gap: &str,
     names: &Database,
     icons: &impl TextIcons,
@@ -286,7 +282,7 @@ fn shown_recorded_name(
             row.division
         ))
     })?;
-    if matches!(status.name, replay::rows::Recorded::NotRecorded) {
+    if matches!(status.name, replay_data::rows::Recorded::NotRecorded) {
         return shown_name(row, names, icons, localisation, recorded_language);
     }
     dashboard_text::unit_names::army_name(status, localisation, recorded_language, || Ok(names))
@@ -432,7 +428,7 @@ fn entry(
                 text(
                     &mut values,
                     key,
-                    installed_content::fixed5::fixed5_to_string(raw, 0),
+                    installed_content_core::fixed5::fixed5_to_string(raw, 0),
                 );
             } else {
                 values.entry(key.into()).or_default().text = None;
@@ -620,7 +616,7 @@ fn role_rosters<'a>(
 /// True once two units in the side's full ordered LandCombats roster have
 /// different direction keys. Border-war sides always return false.
 fn several_directions(
-    combat: &replay::rows::LandCombatRow,
+    combat: &replay_data::rows::LandCombatRow,
     border_war: bool,
     divisions: &BTreeMap<(u8, u64), &LandCombatDivisionRow>,
     movement: &BTreeMap<u64, u32>,
@@ -645,9 +641,9 @@ fn several_directions(
 /// division a side lists twice keeps its first row, as the side's member list
 /// was searched before.
 pub(super) fn division_modifiers(
-    rows: &[replay::rows::LandCombatDivisionModifierRow],
+    rows: &[replay_data::rows::LandCombatDivisionModifierRow],
     id: u64,
-) -> BTreeMap<(u8, u64), &replay::rows::LandCombatDivisionModifierRow> {
+) -> BTreeMap<(u8, u64), &replay_data::rows::LandCombatDivisionModifierRow> {
     let mut members = BTreeMap::new();
     for row in rows.iter().filter(|row| row.combat == id) {
         members.entry((row.side, row.division)).or_insert(row);
@@ -659,7 +655,10 @@ pub(super) fn division_modifiers(
 /// selects both the window title and the combatant
 /// class above. Only a border war records border values on its modifier
 /// rows, so without any row for the combat the class stays undecided.
-pub(super) fn border_war(rows: &[replay::rows::LandCombatModifierRow], id: u64) -> Option<bool> {
+pub(super) fn border_war(
+    rows: &[replay_data::rows::LandCombatModifierRow],
+    id: u64,
+) -> Option<bool> {
     rows.iter()
         .find(|row| row.combat == id)
         .map(|row| row.border_values.is_some())
@@ -1194,15 +1193,16 @@ fn naval(
         // The recomputations read fixed modifier keys from the recorded
         // accumulators; a recording whose definitions spell them differently
         // is refused by name, and the affected values are omitted.
-        let mut admitted = |family| match replay::fixed_layout::validate_recording(frame, family) {
-            Ok(()) => true,
-            Err(reason) => {
-                out.warnings.push(reason);
-                false
-            }
-        };
-        let positioning_admitted = admitted(replay::fixed_layout::NAVAL_POSITIONING);
-        let anti_air_admitted = admitted(replay::fixed_layout::NAVAL_ANTI_AIR);
+        let mut admitted =
+            |family| match replay_derive::fixed_layout::validate_recording(frame, family) {
+                Ok(()) => true,
+                Err(reason) => {
+                    out.warnings.push(reason);
+                    false
+                }
+            };
+        let positioning_admitted = admitted(replay_derive::fixed_layout::NAVAL_POSITIONING);
+        let anti_air_admitted = admitted(replay_derive::fixed_layout::NAVAL_ANTI_AIR);
         let positioning = if positioning_admitted {
             super::naval_positioning::positioning_values(
                 detail,
@@ -1249,7 +1249,7 @@ fn naval(
                         text(
                             &mut out.values,
                             key,
-                            installed_content::fixed5::fixed5_percent(raw, 0, true),
+                            installed_content_core::fixed5::fixed5_percent(raw, 0, true),
                         );
                     }
                 }
@@ -1264,7 +1264,7 @@ fn naval(
                 &format!("header_container/{wnd}_wnd/stat_positioning"),
                 TEXT,
                 positioning[side]
-                    .map(|raw| installed_content::fixed5::fixed5_percent(raw, 0, true))
+                    .map(|raw| installed_content_core::fixed5::fixed5_percent(raw, 0, true))
                     .ok_or_else(|| {
                         format!(
                             "Naval combat {id} {label} positioning is hidden: the positioning modifier keys are refused or a required combat, ship or carrier-air operand is unavailable."
@@ -1287,7 +1287,7 @@ fn naval(
                             .map(|counter| counter.anti_air_base)
                     },
                 )
-                .map(|raw| installed_content::fixed5::fixed5_to_string(raw, 1))
+                .map(|raw| installed_content_core::fixed5::fixed5_to_string(raw, 1))
                 .map_err(|reason| {
                     format!("Naval combat {id} {label} anti-air is hidden: {reason}.")
                 })
@@ -1376,7 +1376,7 @@ fn naval(
 /// Allied vision does not admit the retreat button. Enable it unless the
 /// matched side is already retreating; hide it when neither side matches.
 fn naval_disengage_state(
-    detail: &replay::rows::NavalCombatDetailsRow,
+    detail: &replay_data::rows::NavalCombatDetailsRow,
     aliases: &BTreeMap<u32, u32>,
     viewing_slot: u32,
 ) -> Result<Option<bool>, String> {
@@ -1422,7 +1422,7 @@ fn bind_naval_disengage(out: &mut Bindings, id: u64, state: Result<Option<bool>,
 /// country is in the defender primary list. Raw links resolve to canonical
 /// slots before comparison (`tactics::viewing_side`).
 fn naval_progress_skin(
-    detail: &replay::rows::NavalCombatDetailsRow,
+    detail: &replay_data::rows::NavalCombatDetailsRow,
     aliases: &BTreeMap<u32, u32>,
     viewer: u32,
 ) -> Result<&'static str, String> {

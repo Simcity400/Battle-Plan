@@ -1,12 +1,10 @@
 //! Retained naval-result lists and hit details.
-use installed_content::localisation::{Argument, Localisation};
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        NavalCombatAirHit, NavalCombatHit, NavalResultPlane, NavalResultRow, NavalResultShip,
-        NavalResultSideDetails, VariantDefinitionRow, tables,
-    },
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use replay_data::{
+    rows::NavalCombatAirHit, rows::NavalCombatHit, rows::NavalResultPlane, rows::NavalResultRow,
+    rows::NavalResultShip, rows::NavalResultSideDetails, rows::VariantDefinitionRow, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 use viewer_foundation::map::gradient_math::hsv_to_rgb;
 use viewer_foundation::tooltip_text::country_localised;
@@ -429,7 +427,7 @@ struct Content<'a> {
     tokens: Result<TokenNames<'a>, String>,
     variants: BTreeMap<u64, &'a VariantDefinitionRow>,
     names: super::naval_variants::Names<'a>,
-    country_names: installed_content::country_names::CountryNames<'a>,
+    country_names: installed_content_country_names::country_names::CountryNames<'a>,
     viewer_tag: Result<&'a str, String>,
 }
 impl Content<'_> {
@@ -621,7 +619,7 @@ fn ship_sprite(
         .ok_or_else(|| format!("stacked content lacks retained ship sprite {name}"))
 }
 
-pub(super) fn pride_color(defines: &installed_content::defines::Defines) -> Result<[f32; 4], String> {
+pub(super) fn pride_color(defines: &installed_content_core::defines::Defines) -> Result<[f32; 4], String> {
     // Read at most four Lua colour values: three are HSV, four are RGBA.
     // Convert RGB with power 2.2 in sRGB mode; alpha stays unchanged.
     let values = defines
@@ -803,7 +801,7 @@ fn air_text(
         |country| {
             // Include the small flag and capitalised definite country name before
             // AIR_COUNT_ORIGIN applies its colour.
-            let name = installed_content::localisation::crt_case_text(
+            let name = installed_content_localisation::localisation::crt_case_text(
                 &content
                     .country_names
                     .name_with(order.slot(country)?, "_DEF")?,
@@ -1123,7 +1121,7 @@ pub(super) fn bind(
         tokens: TokenNames::new(frame).map_err(|error| error.to_string()),
         variants: variants.rows().iter().map(|row| (row.id, row)).collect(),
         names: super::naval_variants::Names::new(static_content, frame),
-        country_names: installed_content::country_names::CountryNames::read(
+        country_names: installed_content_country_names::country_names::CountryNames::read(
             frame,
             &static_content.localisation,
         ),

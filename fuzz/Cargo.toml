@@ -13,10 +13,19 @@ libfuzzer-sys = "0.4"
 crc32fast = "1"
 zstd = "0.13"
 replay = { path = "../crates/replay" }
+replay-data = { path = "../crates/replay-data" }
+replay-frame = { path = "../crates/replay-frame" }
 dashboard = { path = "../crates/dashboard" }
 
 [workspace]
 members = ["."]
+
+# Match the app's fast default artifacts despite this separate workspace.
+[profile.dev]
+debug = 0
+
+[profile.dev.package.zstd-sys]
+opt-level = 3
 
 [[bin]]
 name = "open_recording"

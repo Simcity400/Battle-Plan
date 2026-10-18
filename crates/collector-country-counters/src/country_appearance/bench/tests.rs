@@ -1,11 +1,10 @@
 //! Owned synthetic country/diplomacy layouts; no game process or copied content.
 use super::*;
-use engine::{
-    ccountry_database, cdiplomacy_status, cgame_state,
-    memory::{CountedMemory, LiveMemory, SliceMemory},
-    msvc_string,
+use engine_native::{
+    ccountry_database, cdiplomacy_status, cgame_state, memory::CountedMemory, memory::LiveMemory,
+    memory::SliceMemory, msvc_string,
 };
-use replay::rows::RowCodec;
+use replay_data::rows::RowCodec;
 use std::{hint::black_box, time::Instant};
 
 const STATE: usize = 0x100;
@@ -171,7 +170,7 @@ impl World {
 
 pub(super) fn rows(captured: &Captured) -> Vec<CountryAppearanceRow> {
     let [
-        TableView::Complete(replay::rows::TableRows::CountryAppearance(rows)),
+        TableView::Complete(replay_data::rows::TableRows::CountryAppearance(rows)),
         _,
         ..,
     ] = captured.tables()
@@ -218,7 +217,7 @@ fn border_effect_subject_capture_uses_real_census_and_encodes_only_roster_change
         assert_eq!(before.len(), world.countries);
         assert_eq!(
             before[0].subjects,
-            replay::rows::Recorded::Value(if matches!(hour, Hour::Empty) {
+            replay_data::rows::Recorded::Value(if matches!(hour, Hour::Empty) {
                 vec![]
             } else {
                 vec![1, -1, 1]

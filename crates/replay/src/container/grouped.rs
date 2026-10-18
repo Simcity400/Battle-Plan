@@ -2298,7 +2298,7 @@ impl Directory {
             if replay.is_file_backed() {
                 let bytes = bytes.to_mut();
                 let start = bytes.len();
-                engine::allocation::reserve(bytes, end - start)?;
+                engine_allocation::reserve(bytes, end - start)?;
                 bytes.resize(end, 0);
                 let offset = index
                     .offset
@@ -2655,7 +2655,7 @@ impl Replay {
             index,
             layout: directory.layout,
         };
-        let updates = engine::allocation::collect_vec(TableId::ALL.iter().map(|&table| {
+        let updates = engine_allocation::collect_vec(TableId::ALL.iter().map(|&table| {
             if let Some(update) = keyframe_refusal(&directory, self.format, Some(tables), table)? {
                 return Updates::new(vec![update]);
             }
@@ -2799,7 +2799,7 @@ impl Replay {
                 return Ok(false);
             }
             let keep_reading = frame.hour < through;
-            engine::allocation::reserve(&mut frames, 1)?;
+            engine_allocation::reserve(&mut frames, 1)?;
             frames.push(frame);
             Ok(keep_reading)
         })?;
@@ -2871,14 +2871,14 @@ fn read_recorded_through(
     let decode = |table: &TableId| table_updates(&context, *table);
     let decoded = match parallel {
         Some(parallel) => parallel_map(&TableId::ALL, parallel, decode)?,
-        None => engine::allocation::collect_vec(TableId::ALL.iter().map(decode))?,
+        None => engine_allocation::collect_vec(TableId::ALL.iter().map(decode))?,
     };
     let columns = decoded.into_iter().collect::<io::Result<Vec<_>>>()?;
     let slots = Arc::new(std::array::from_fn(Some));
     let unselected = Arc::new(TableUpdate::Unavailable {
         reason: String::new(),
     });
-    let mut out = engine::allocation::vec(keep)?;
+    let mut out = engine_allocation::vec(keep)?;
     for (position, (hour, metrics)) in hours.iter().zip(metrics).enumerate() {
         out.push(RecordedFrame::from_columns(
             index.branch,
@@ -2968,7 +2968,7 @@ pub(crate) fn read_selected_updates(
         complete: true,
     };
     let mut updates: Vec<Option<Updates>> =
-        engine::allocation::collect_vec(selected.iter().map(|_| None))?;
+        engine_allocation::collect_vec(selected.iter().map(|_| None))?;
     let mut dependent_keyframe = false;
     for table in TableId::ALL {
         check()?;

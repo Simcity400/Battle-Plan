@@ -3,11 +3,11 @@ use super::*;
 use std::sync::{Arc, OnceLock};
 
 pub fn with_world<T>(
-    frame: &replay::frame::DecodedFrame,
+    frame: &replay_frame::frame::DecodedFrame,
     dlcs: &[&str],
     run: impl FnOnce(Limits<'_>) -> T,
 ) -> T {
-    static IDEOLOGIES: OnceLock<installed_content::ideologies::Ideologies> = OnceLock::new();
+    static IDEOLOGIES: OnceLock<installed_content_core::ideologies::Ideologies> = OnceLock::new();
     let ideologies = IDEOLOGIES.get_or_init(|| {
         let root = std::env::temp_dir().join(format!(
             "equipment-graphics-ideologies-{}-{:?}",
@@ -17,15 +17,15 @@ pub fn with_world<T>(
         let file = root.join("common/ideologies/synthetic.txt");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, "ideologies = { government = {} }").unwrap();
-        let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-        let (ideologies, warnings) = installed_content::ideologies::read(&layers).unwrap();
+        let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let (ideologies, warnings) = installed_content_core::ideologies::read(&layers).unwrap();
         std::fs::remove_dir_all(root).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
         ideologies
     });
     let dlcs = dlcs.iter().map(|s| (*s).to_owned()).collect();
     let aliases = Arc::default();
-    let names = installed_content::trigger_keys::TriggerNames {
+    let names = installed_content_core::trigger_keys::TriggerNames {
         counts: Some(Default::default()),
         ..Default::default()
     };
@@ -40,11 +40,9 @@ pub fn with_world<T>(
     run(Limits::new(&LimitValues::default(), &evaluate))
 }
 
-pub fn empty_frame() -> replay::frame::DecodedFrame {
-    use replay::{
-        frame::{DecodedFrame, TableView},
-        rows::{TableId, TableRows},
-    };
+pub fn empty_frame() -> replay_frame::frame::DecodedFrame {
+    use replay_data::{rows::TableId, rows::TableRows};
+    use replay_frame::{frame::DecodedFrame, frame::TableView};
     DecodedFrame {
         branch: 1,
         hour: 1,

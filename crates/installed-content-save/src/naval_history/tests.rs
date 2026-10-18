@@ -1,7 +1,7 @@
 use super::*;
 
 fn parse_text(bytes: &[u8]) -> io::Result<Pack> {
-    parse(&installed_content::parser::parse(bytes)?.items)
+    parse(&installed_content_core::parser::parse(bytes)?.items)
 }
 
 /// One theatre with an army group, its child army, the army's ordered

@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::character_scope::{Tables, UnitLeader};
-use replay::rows::{CharacterRow, TableSchema, UnitLeaderRow, tables};
+use replay_data::{rows::CharacterRow, rows::TableSchema, rows::UnitLeaderRow, rows::tables};
 
 mod content;
 mod military;
@@ -217,7 +217,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             UnitLeader::Referenced(row) => {
                 // Format 98 retains the referenced role's own name bytes;
                 // older recordings may join an exact direct handle.
-                if let replay::rows::Recorded::Value(Some(name)) = &row.name {
+                if let replay_data::rows::Recorded::Value(Some(name)) = &row.name {
                     return crate::scripted_text::stored_text(
                         self.context.localisation,
                         self.context.text.recorded_language(),
@@ -236,7 +236,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                         format!(
                             "character {} referenced unit leader name {}",
                             row.character,
-                            if matches!(row.name, replay::rows::Recorded::NotRecorded) {
+                            if matches!(row.name, replay_data::rows::Recorded::NotRecorded) {
                                 "not recorded"
                             } else {
                                 "capture unavailable"

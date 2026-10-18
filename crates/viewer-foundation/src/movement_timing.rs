@@ -1,19 +1,18 @@
 //! Shared movement content, division timing derivation and the one hourly ETA cache.
 use crate::{map::tables::rows, table_access::TokenKeys};
-use installed_content::{
-    movement::{MovementDefines, MovementMap, RailMovementDefines},
-    regions::StrategicRegion,
+use installed_content_core::{
+    movement::MovementDefines, movement::MovementMap, movement::RailMovementDefines,
     terrain::TerrainDefinitions,
-    unit_path::Fact,
 };
-use replay::{
-    eta_derive::{
-        self, Defines, OrganisationDefines, ProvinceOperands, RailDefines,
-        frame_terms::{Geography, SubUnitContent},
-    },
-    frame::DecodedFrame,
-    rows::{DivisionRow, tables},
+use installed_content_regions::regions::StrategicRegion;
+use installed_content_unit_path::unit_path::Fact;
+use replay_data::{rows::DivisionRow, rows::tables};
+use replay_derive::{
+    eta_derive, eta_derive::Defines, eta_derive::OrganisationDefines, eta_derive::ProvinceOperands,
+    eta_derive::RailDefines, eta_derive::frame_terms::Geography,
+    eta_derive::frame_terms::SubUnitContent,
 };
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, VecDeque},
     fmt::Write as _,
@@ -22,7 +21,7 @@ use std::{
 };
 
 /// The branch and recorded hour one cached derivation is for.
-pub type Key = (replay::BranchId, replay::Hour);
+pub type Key = (replay_data::BranchId, replay_data::Hour);
 
 /// How many hours the cache holds: the two host builds ahead, the
 /// parts that build in parallel, and slack.
@@ -161,7 +160,7 @@ pub struct LandSpeedContent {
     /// Each province's strategic region id.
     pub regions: BTreeMap<u32, u32>,
     /// The sub-unit database: the special-forces share and the armour term read it.
-    pub sub_units: Result<Arc<installed_content::unit_leader::SubUnits>, String>,
+    pub sub_units: Result<Arc<installed_content_core::unit_leader::SubUnits>, String>,
 }
 
 impl Default for LandSpeedContent {
@@ -202,10 +201,10 @@ impl MovementContent {
 
     pub fn set_task_force_terrain(
         &mut self,
-        terrain: Result<Arc<installed_content::terrain::TerrainDefinitions>, String>,
-        regions: &BTreeMap<u32, installed_content::regions::StrategicRegion>,
+        terrain: Result<Arc<installed_content_core::terrain::TerrainDefinitions>, String>,
+        regions: &BTreeMap<u32, installed_content_regions::regions::StrategicRegion>,
         subunits: Result<TokenKeys, String>,
-        sub_units: Result<Arc<installed_content::unit_leader::SubUnits>, String>,
+        sub_units: Result<Arc<installed_content_core::unit_leader::SubUnits>, String>,
     ) {
         self.land = terrain
             .as_ref()
@@ -327,8 +326,8 @@ pub fn operands(map: &MovementMap, province: u32) -> Option<ProvinceOperands> {
     })
 }
 
-/// The hour's recorded speed-term operands ([`replay::eta_derive::frame_terms`]).
-pub use replay::eta_derive::frame_terms::FrameTerms as HourTerms;
+/// The hour's recorded speed-term operands ([`replay_derive::eta_derive::frame_terms`]).
+pub use replay_derive::eta_derive::frame_terms::FrameTerms as HourTerms;
 
 impl SubUnitContent for MovementContent {
     fn special_forces(&self, name: &[u8]) -> Result<bool, String> {

@@ -4,14 +4,11 @@ use std::{
 };
 
 use installed_content_save::Decimal;
-use replay::{
-    BranchId, Hour,
-    container::Replay,
-    display::Step,
-    frame::{DecodedFrame, TableView},
-    identity::SampleBoundary,
-    rows::{TableId, TableRows},
+use replay::container::Replay;
+use replay_data::{
+    BranchId, Hour, display::Step, identity::SampleBoundary, rows::TableId, rows::TableRows,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 use super::{complete_table, invalid};
 
@@ -59,16 +56,16 @@ pub fn group_tables(name: &str) -> Vec<TableId> {
 /// tables' read to ProvinceSupply). CountryIntel's walk can move off its slot
 /// alone, so it is read only where its own walk was timed, and it and the
 /// other tables of its slot are no evidence for each other.
-pub fn daily_read(hour: Hour, metrics: &replay::frame::Metrics, table: TableId) -> bool {
+pub fn daily_read(hour: Hour, metrics: &replay_frame::frame::Metrics, table: TableId) -> bool {
     let timed = |table: TableId| metrics.table_ns[table.index()] != 0;
     if table == TableId::CountryIntel {
         return timed(table);
     }
-    let cadence = replay::cadence::cadence(table);
+    let cadence = replay_data::cadence::cadence(table);
     cadence.is_refresh(hour)
         || TableId::ALL.into_iter().any(|other| {
             other != TableId::CountryIntel
-                && replay::cadence::cadence(other) == cadence
+                && replay_data::cadence::cadence(other) == cadence
                 && timed(other)
         })
 }
@@ -86,8 +83,8 @@ pub fn last_read_hours(
         .into_iter()
         .filter(|&table| {
             matches!(
-                replay::cadence::cadence(table),
-                replay::cadence::Cadence::Daily(_)
+                replay_data::cadence::cadence(table),
+                replay_data::cadence::Cadence::Daily(_)
             )
         })
         .collect::<Vec<_>>();
@@ -119,7 +116,7 @@ pub fn last_read_hours(
 
 /// Tables outside the current recording contract have no acquisition to compare.
 pub fn retired_table(table: TableId) -> bool {
-    replay::format::FormatVersion::CURRENT
+    replay_data::format::FormatVersion::CURRENT
         .table_refusal(table)
         .is_some()
 }
@@ -143,13 +140,13 @@ pub struct Report {
     pub country_emissions: Option<Vec<installed_content_save::SavedCountryEmission>>,
     pub canonical_country_tags: Option<BTreeSet<Vec<u8>>>,
     /// Queried at output time, after all content-dependent comparisons.
-    pub content_reads: Option<installed_content::content::UncoveredReads>,
+    pub content_reads: Option<installed_content_core::content::UncoveredReads>,
     /// Positive game-thread costs identify refresh groups actually walked,
     /// including forced branch/keyframe refreshes outside their usual slot.
     /// A reconstructed snapshot alone is not proof: it may contain cached rows.
     /// CountryIntel's walk is left out: it can move off its slot alone, so it
     /// proves only itself ([`Report::intel_walked`]).
-    pub observed_refresh: Vec<replay::cadence::Cadence>,
+    pub observed_refresh: Vec<replay_data::cadence::Cadence>,
     /// CountryIntel's own walk was measured at the compared hour.
     pub intel_walked: bool,
     /// A daily table other than CountryIntel was walked off its slot: this
@@ -264,8 +261,8 @@ impl Report {
             .and_then(|reads| reads.warning())
     }
 
-    pub fn set_load_hour(&mut self, branch: &replay::branches::BranchStart) {
-        self.load_hour = branch.reason == replay::branches::BranchReason::LoadSignal
+    pub fn set_load_hour(&mut self, branch: &replay_frame::branches::BranchStart) {
+        self.load_hour = branch.reason == replay_frame::branches::BranchReason::LoadSignal
             && branch.loaded_hour == Some(self.hour)
             && branch.first_hour == self.hour;
     }
@@ -316,8 +313,8 @@ impl Report {
         let carried = !tables.is_empty()
             && tables.iter().all(|&table| {
                 matches!(
-                    replay::cadence::cadence(table),
-                    replay::cadence::Cadence::Daily(_)
+                    replay_data::cadence::cadence(table),
+                    replay_data::cadence::Cadence::Daily(_)
                 ) && !self.read_at_hour(table)
             });
         carried.then(|| {
@@ -408,16 +405,17 @@ impl Report {
             table != TableId::CountryIntel
                 && frame.metrics.table_ns[table.index()] != 0
                 && matches!(
-                    replay::cadence::cadence(table),
-                    replay::cadence::Cadence::Daily(_)
+                    replay_data::cadence::cadence(table),
+                    replay_data::cadence::Cadence::Daily(_)
                 )
-                && !replay::cadence::is_refresh(table, frame.hour)
+                && !replay_data::cadence::is_refresh(table, frame.hour)
         });
         self.intel_walked = frame.metrics.table_ns[TableId::CountryIntel.index()] != 0;
         let mut field_gaps = BTreeMap::<String, usize>::new();
         for table in TableId::ALL {
-            if let replay::frame::TableView::Complete(rows)
-            | replay::frame::TableView::Truncated { rows, .. } = &*frame.tables[table.index()]
+            if let replay_frame::frame::TableView::Complete(rows)
+            | replay_frame::frame::TableView::Truncated { rows, .. } =
+                &*frame.tables[table.index()]
             {
                 for (field, count) in rows.field_gaps() {
                     let name = if field.contains('.') {
@@ -431,11 +429,12 @@ impl Report {
             if table != TableId::CountryIntel
                 && frame.metrics.table_ns[table.index()] != 0
                 && matches!(
-                    replay::cadence::cadence(table),
-                    replay::cadence::Cadence::Daily(_) | replay::cadence::Cadence::Static
+                    replay_data::cadence::cadence(table),
+                    replay_data::cadence::Cadence::Daily(_) | replay_data::cadence::Cadence::Static
                 )
             {
-                self.observed_refresh.push(replay::cadence::cadence(table));
+                self.observed_refresh
+                    .push(replay_data::cadence::cadence(table));
             }
         }
         for (name, count) in field_gaps {
@@ -457,8 +456,8 @@ impl Report {
     /// Static tables never go stale; a forced full walk (measured work on any
     /// table of the same cadence family) counts as current.
     pub fn refresh_is_current(&self, table: TableId, hour: Hour) -> bool {
-        let cadence = replay::cadence::cadence(table);
-        matches!(cadence, replay::cadence::Cadence::Static)
+        let cadence = replay_data::cadence::cadence(table);
+        matches!(cadence, replay_data::cadence::Cadence::Static)
             || cadence.is_refresh(hour)
             || self.observed_refresh.contains(&cadence)
     }
@@ -475,7 +474,7 @@ impl Report {
     pub fn packet_fresh(
         &mut self,
         label: &str,
-        sample_hour: replay::rows::PacketHour,
+        sample_hour: replay_data::rows::PacketHour,
         hour: i32,
     ) -> bool {
         self.scalar_checks += 1;
@@ -548,7 +547,7 @@ impl Report {
 
     pub fn recorded<'a, T>(
         &mut self,
-        field: &'a replay::rows::Recorded<T>,
+        field: &'a replay_data::rows::Recorded<T>,
         name: &str,
         subject: impl Into<String>,
     ) -> Option<&'a T> {
@@ -769,7 +768,7 @@ impl Report {
         line
     }
 
-    pub fn format_line(format: replay::format::FormatVersion) -> String {
+    pub fn format_line(format: replay_data::format::FormatVersion) -> String {
         let tables = TableId::ALL
             .into_iter()
             .filter(|&table| !retired_table(table))
@@ -781,7 +780,7 @@ impl Report {
         )
     }
 
-    pub fn print(&self, format: replay::format::FormatVersion) {
+    pub fn print(&self, format: replay_data::format::FormatVersion) {
         if let Some(warning) = self.content_warning() {
             println!("Warning: {warning}");
         }

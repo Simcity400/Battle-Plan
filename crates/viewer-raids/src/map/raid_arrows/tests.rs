@@ -212,11 +212,9 @@ fn the_hours_floor_elapsed_and_ceil_remaining() {
 }
 
 /// A frame holding only `RaidSpeedInputs`, or without it.
-fn speed_frame(rows: Option<Vec<replay::rows::RaidSpeedInputRow>>) -> DecodedFrame {
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{TableId, TableRows},
-    };
+fn speed_frame(rows: Option<Vec<replay_data::rows::RaidSpeedInputRow>>) -> DecodedFrame {
+    use replay_data::{rows::TableId, rows::TableRows};
+    use replay_frame::{frame::Metrics, frame::TableView};
     let mut views = std::array::from_fn(|_| TableView::Unavailable {
         reason: "withheld by the fixed-key contract".into(),
     });
@@ -241,7 +239,7 @@ fn plane_inputs_read_the_travelled_distance_and_the_raids_speed_row() {
         travelled: Some(60_000),
         ..RaidRow::default()
     };
-    let row = replay::rows::RaidSpeedInputRow {
+    let row = replay_data::rows::RaidSpeedInputRow {
         id: 9,
         reference_type: 84,
         phase: 4,
@@ -257,7 +255,7 @@ fn plane_inputs_read_the_travelled_distance_and_the_raids_speed_row() {
     assert_eq!(inputs.wing_max_speed, Some(600_000));
     // A present, dead ace adds nothing; an absent one is `None`.
     assert_eq!(inputs.ace_alive, Some(0));
-    let absent = replay::rows::RaidSpeedInputRow {
+    let absent = replay_data::rows::RaidSpeedInputRow {
         ace_present: 0,
         ..row.clone()
     };
@@ -284,11 +282,9 @@ fn plane_inputs_read_the_travelled_distance_and_the_raids_speed_row() {
 /// its row they are refused, not zero.
 #[test]
 fn a_living_aces_country_terms_join_country_command_power() {
-    use replay::{
-        frame::TableView,
-        rows::{CountryCommandPowerRow, TableId, TableRows},
-    };
-    let row = replay::rows::RaidSpeedInputRow {
+    use replay_data::{rows::CountryCommandPowerRow, rows::TableId, rows::TableRows};
+    use replay_frame::frame::TableView;
+    let row = replay_data::rows::RaidSpeedInputRow {
         id: 9,
         reference_type: 84,
         phase: 4,
@@ -330,7 +326,7 @@ fn a_living_aces_country_terms_join_country_command_power() {
         (20_000, 5_000)
     );
     // A dead ace records no countries and needs no row.
-    let dead = replay::rows::RaidSpeedInputRow {
+    let dead = replay_data::rows::RaidSpeedInputRow {
         ace_alive: 0,
         ace_owner: None,
         wing_country: None,
@@ -485,11 +481,9 @@ fn the_pool_meets_both_lists_in_whole_units_and_nukes() {
 }
 
 /// A frame holding only `RaidEquipment`, or without it.
-fn pool_frame(rows: Option<Vec<replay::rows::RaidEquipmentRow>>) -> DecodedFrame {
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{TableId, TableRows},
-    };
+fn pool_frame(rows: Option<Vec<replay_data::rows::RaidEquipmentRow>>) -> DecodedFrame {
+    use replay_data::{rows::TableId, rows::TableRows};
+    use replay_frame::{frame::Metrics, frame::TableView};
     let mut views = std::array::from_fn(|_| TableView::Unavailable {
         reason: "withheld by the fixed-key contract".into(),
     });
@@ -514,7 +508,7 @@ fn the_pool_is_the_raids_recorded_row_or_refused_by_name() {
     };
     // The variant items, a null one among them, are not what the check
     // reads: the archetype totals are.
-    let row = replay::rows::RaidEquipmentRow {
+    let row = replay_data::rows::RaidEquipmentRow {
         id: 7,
         reference_type: 3,
         phase: 3,
@@ -546,7 +540,7 @@ fn the_pool_is_the_raids_recorded_row_or_refused_by_name() {
             .unwrap_err()
             .contains("withheld")
     );
-    let torn = replay::rows::RaidEquipmentRow {
+    let torn = replay_data::rows::RaidEquipmentRow {
         archetype_amounts: vec![1],
         ..row
     };
@@ -559,9 +553,9 @@ fn the_pool_is_the_raids_recorded_row_or_refused_by_name() {
 
 #[test]
 fn the_unit_entity_follows_the_native_ladder() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use installed_content::raids::RaidUnitModel;
+    use installed_content_raids::raids::RaidUnitModel;
     let declared = |name: &str| {
         [
             "ENG_truck_entity",
@@ -576,7 +570,7 @@ fn the_unit_entity_follows_the_native_ladder() {
             entity: entity.map(str::to_owned),
             default_entity: default.map(str::to_owned),
             equipment: equipment
-                .and_then(installed_content::equipment::category_mask)
+                .and_then(installed_content_core::equipment::category_mask)
                 .unwrap_or(0),
             ..RaidUnitModel::default()
         };
@@ -644,17 +638,17 @@ fn the_unit_entity_follows_the_native_ladder() {
 
 #[test]
 fn the_designer_model_follows_resolve_aircraft_designer_model_with_and_without_the_dlc() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // An empty type sprite is filled from its archetype.
-    let (content, _) = installed_content::equipment::fixture::load(&[(
+    let (content, _) = installed_content_core::equipment::fixture::load(&[(
         "common/units/equipment/planes.txt",
         "equipments = {
             transport_plane_equipment = { is_archetype = yes sprite = transport_plane }
             transport_plane_equipment_1 = { archetype = transport_plane_equipment }
         }",
     )]);
-    let variant = |saved: &str| replay::rows::VariantDefinitionRow {
+    let variant = |saved: &str| replay_data::rows::VariantDefinitionRow {
         id: 5,
         explicit_entity: saved.as_bytes().to_vec(),
         ..Default::default()
@@ -667,7 +661,7 @@ fn the_designer_model_follows_resolve_aircraft_designer_model_with_and_without_t
         ]
         .contains(&name)
     };
-    let resolve = |row: &replay::rows::VariantDefinitionRow,
+    let resolve = |row: &replay_data::rows::VariantDefinitionRow,
                    dlc: u32,
                    pools: &dyn Fn() -> Result<Option<String>, String>| {
         designer_entity(

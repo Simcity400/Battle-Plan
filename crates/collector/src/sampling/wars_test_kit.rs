@@ -1,4 +1,4 @@
-use engine::{
+use engine_native::{
     Memory, ccountry, cdiplomacy_status, cgame_state, crelation, crelation_status, cwar_relation,
     memory::SliceMemory, walk::Outcome,
 };

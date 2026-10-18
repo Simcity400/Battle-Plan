@@ -16,13 +16,15 @@ use crate::{
 };
 #[cfg(any(test, feature = "test-support"))]
 use crate::{content::ContentKey, metadata::validate_campaign};
-use installed_content::province_area::ProvinceAreas;
+use installed_content_province_area::province_area::ProvinceAreas;
 #[cfg(any(test, feature = "test-support"))]
-use replay::{container::Replay, frame::FrameDecoder};
-use replay::{
-    frame::{DecodedFrame, ViewIdentity},
-    rows::{CountryRow, ProvinceRow, StateRow, TableId, tables},
+use replay::container::Replay;
+use replay_data::{
+    rows::CountryRow, rows::ProvinceRow, rows::StateRow, rows::TableId, rows::tables,
 };
+#[cfg(any(test, feature = "test-support"))]
+use replay_frame::frame::FrameDecoder;
+use replay_frame::{frame::DecodedFrame, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
 use std::collections::VecDeque;
@@ -130,7 +132,7 @@ pub struct Scan {
     /// The recording's format, which dates its daily tables
     /// ([`crate::metadata::slot_read`]).
     #[serde(skip)]
-    pub format: replay::format::FormatVersion,
+    pub format: replay_data::format::FormatVersion,
     world_totals: Vec<TerritoryRun>,
     overflowed: usize,
     ambiguous_slots: usize,
@@ -399,7 +401,7 @@ fn keep<R, T: Copy + PartialEq>(
 /// This hour's complete States and Provinces when freshly read; a failed or
 /// unrecorded read supplies none.
 pub fn fresh_tables(
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
     frame: &DecodedFrame,
 ) -> (Option<&[StateRow]>, Option<&[ProvinceRow]>) {
     let fresh = |table| slot_read(format, &frame.metrics, table, frame.hour);
@@ -446,7 +448,7 @@ pub fn sample(
     frame: &DecodedFrame,
     requested: Option<&[(String, String)]>,
     areas: Option<&ProvinceAreas>,
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
 ) -> io::Result<BTreeMap<(String, String), (Option<(u32, u32)>, Option<i128>)>> {
     if requested.is_some_and(|keys| {
         keys.iter().any(|(_, field)| {
@@ -521,7 +523,7 @@ pub fn sample(
 
 /// The same exact province weights serve totals and geographic breakdowns.
 pub fn province_values(
-    province: &replay::rows::ProvinceRow,
+    province: &replay_data::rows::ProvinceRow,
     areas: Option<&ProvinceAreas>,
 ) -> [Option<i64>; 3] {
     [
@@ -533,7 +535,7 @@ pub fn province_values(
 
 #[allow(clippy::too_many_arguments)]
 fn sample_rows(
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
     frame: &DecodedFrame,
     areas: Option<&ProvinceAreas>,
     raw_slots: &HashMap<u32, usize>,
@@ -1305,7 +1307,7 @@ fn selected_series(
 #[cfg(any(test, feature = "test-support"))]
 pub type CachedScan = (u64, Option<ContentKey>, Arc<Scan>);
 type CachedAreas = (
-    Arc<installed_content::ResolvedContent>,
+    Arc<installed_content_core::ResolvedContent>,
     Result<Arc<ProvinceAreas>, String>,
 );
 #[derive(Default)]
@@ -1317,9 +1319,9 @@ pub struct Cache {
 
 fn cached_areas(
     state: &Mutex<Cache>,
-    resolved: Arc<installed_content::ResolvedContent>,
+    resolved: Arc<installed_content_core::ResolvedContent>,
     cancelled: &AtomicBool,
-    read: impl FnOnce(&installed_content::ResolvedLayers) -> io::Result<ProvinceAreas>,
+    read: impl FnOnce(&installed_content_core::ResolvedLayers) -> io::Result<ProvinceAreas>,
 ) -> io::Result<Arc<ProvinceAreas>> {
     check_cancel(cancelled)?;
     let find = |cache: &Cache| {

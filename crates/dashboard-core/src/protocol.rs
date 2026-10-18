@@ -132,7 +132,9 @@ pub enum FlyAircraftState {
     Loading,
     Ready,
     /// It cannot be flown, and why.
-    Refused { reason: String },
+    Refused {
+        reason: String,
+    },
 }
 
 /// The manual map interface scales the viewer accepts. `RangeInclusive::contains`
@@ -197,7 +199,9 @@ pub enum MapAction {
     /// or bare `pdxmesh` its content stack registers, as the aircraft catalogue
     /// lists it. `None` chooses none; there is no default. The viewer answers
     /// with [`NativeEvent::FlyAircraft`].
-    FlyAircraft { aircraft: Option<String> },
+    FlyAircraft {
+        aircraft: Option<String>,
+    },
 }
 
 /// How the full map's camera moves.
@@ -862,21 +866,54 @@ b"
             state: state(x),
         };
         // A newer state of a waiting take stays a take, so the viewer still takes it.
-        assert_eq!(GamepadMessage::merge(Some(take(3, 0.1)), update(3, 0.5)), take(3, 0.5));
-        assert_eq!(GamepadMessage::merge(Some(update(3, 0.1)), update(3, 0.5)), update(3, 0.5));
+        assert_eq!(
+            GamepadMessage::merge(Some(take(3, 0.1)), update(3, 0.5)),
+            take(3, 0.5)
+        );
+        assert_eq!(
+            GamepadMessage::merge(Some(update(3, 0.1)), update(3, 0.5)),
+            update(3, 0.5)
+        );
         // A stale state never replaces a release or another handoff's take.
-        assert_eq!(GamepadMessage::merge(Some(GamepadMessage::Release), update(3, 0.5)), GamepadMessage::Release);
-        assert_eq!(GamepadMessage::merge(Some(take(4, 0.1)), update(3, 0.5)), take(4, 0.1));
+        assert_eq!(
+            GamepadMessage::merge(Some(GamepadMessage::Release), update(3, 0.5)),
+            GamepadMessage::Release
+        );
+        assert_eq!(
+            GamepadMessage::merge(Some(take(4, 0.1)), update(3, 0.5)),
+            take(4, 0.1)
+        );
         // A release or a take replaces whatever waits.
-        assert_eq!(GamepadMessage::merge(Some(take(4, 0.1)), GamepadMessage::Release), GamepadMessage::Release);
-        assert_eq!(GamepadMessage::merge(Some(GamepadMessage::Release), take(5, 0.2)), take(5, 0.2));
+        assert_eq!(
+            GamepadMessage::merge(Some(take(4, 0.1)), GamepadMessage::Release),
+            GamepadMessage::Release
+        );
+        assert_eq!(
+            GamepadMessage::merge(Some(GamepadMessage::Release), take(5, 0.2)),
+            take(5, 0.2)
+        );
         assert_eq!(GamepadMessage::merge(None, update(5, 0.2)), update(5, 0.2));
         let line = serde_json::to_string(&NativeCommand::Gamepad {
             message: take(2, 0.0),
         })
         .unwrap();
-        assert!(line.starts_with(r#"{"command":"gamepad","message":{"kind":"take","owner":{"viewer":1,"handoff":2}"#), "{line}");
-        assert!(GamepadMessage::State { owner: owner(1), state: GamepadState { triggers: [2.0, 0.0], ..GamepadState::default() } }.validate().is_err());
+        assert!(
+            line.starts_with(
+                r#"{"command":"gamepad","message":{"kind":"take","owner":{"viewer":1,"handoff":2}"#
+            ),
+            "{line}"
+        );
+        assert!(
+            GamepadMessage::State {
+                owner: owner(1),
+                state: GamepadState {
+                    triggers: [2.0, 0.0],
+                    ..GamepadState::default()
+                }
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]
@@ -971,8 +1008,12 @@ b"
         let action: MapAction =
             serde_json::from_str(r#"{"kind":"flyAircraft","aircraft":"light_plane_entity"}"#)
                 .unwrap();
-        assert!(matches!(action, MapAction::FlyAircraft { aircraft: Some(name) } if name == "light_plane_entity"));
-        assert!(serde_json::from_str::<MapAction>(r#"{"kind":"flyAircraft","aircraft":null}"#).is_ok());
+        assert!(
+            matches!(action, MapAction::FlyAircraft { aircraft: Some(name) } if name == "light_plane_entity")
+        );
+        assert!(
+            serde_json::from_str::<MapAction>(r#"{"kind":"flyAircraft","aircraft":null}"#).is_ok()
+        );
         let event = NativeEvent::FlyAircraft {
             aircraft: Some("light_plane_entity".into()),
             state: FlyAircraftState::Refused {

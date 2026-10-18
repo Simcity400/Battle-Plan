@@ -1,9 +1,7 @@
 use super::*;
 use dashboard_core::test_fixtures::{replay, slot_hour, stockpile_frame};
-use replay::{
-    frame::TableView,
-    rows::{LogisticsEquipmentRow, TableRows},
-};
+use replay_data::{rows::LogisticsEquipmentRow, rows::TableRows};
+use replay_frame::frame::TableView;
 
 #[test]
 fn numeric_projection_visits_only_keys_whose_interval_changed() {
@@ -52,7 +50,7 @@ fn repeated_numeric_reads_skip_numeric_projection_and_evaluate_groups() {
             token: 1,
             balance_raw: -5,
             stock_raw: 7,
-            available_raw: replay::rows::Recorded::Value(Some(3)),
+            available_raw: replay_data::rows::Recorded::Value(Some(3)),
         }]));
     let format = replay(vec![frame.clone()]).format;
     let mut prepared = Prepared::default();
@@ -145,7 +143,7 @@ fn unchanged_supplying_reads_preserve_dates_and_diagnostics_across_resume_and_ap
             token: 1,
             balance_raw: -5,
             stock_raw: 7,
-            available_raw: replay::rows::Recorded::Value(None),
+            available_raw: replay_data::rows::Recorded::Value(None),
         }]));
     let frames: Vec<_> = (0..=100)
         .map(|offset| {
@@ -274,7 +272,7 @@ fn frames() -> Vec<DecodedFrame> {
                         token: 1,
                         balance_raw: -i64::from(step),
                         stock_raw: 100_000,
-                        available_raw: replay::rows::Recorded::Value(if step == 4 {
+                        available_raw: replay_data::rows::Recorded::Value(if step == 4 {
                             None
                         } else {
                             Some(110_000)
@@ -491,7 +489,7 @@ fn naming_pages_keep_the_incoming_version_without_counting_an_extra_change() {
     // as the product; otherwise all three labels are refused and coalesced.
     let (catalogue, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[]);
     let content = dashboard_core::config::ContentOptions {
-        options: installed_content::ResolveOptions {
+        options: installed_content_core::ResolveOptions {
             game_dir: folder.0.clone(),
             user_dir: folder.0.join("user"),
             cache_dir: folder.0.join("cache"),
@@ -563,7 +561,7 @@ fn native_alias_summary_keeps_explicit_unknown_rows_distinct_from_absent_zero() 
 #[ignore = "lead-owned storage measurement: 5000 countries over one recorded year"]
 fn measured_5000_country_year_stockpile_bytes() {
     use dashboard_core::test_fixtures::{scale_frame, scale_tag};
-    use replay::rows::{ProductionLineRow, StockpileRow};
+    use replay_data::{rows::ProductionLineRow, rows::StockpileRow};
     let fixture = dashboard_base::prepared::series::tests::Fixture::new();
     let flag = AtomicBool::new(false);
     let format = replay(vec![scale_frame(1, 0, 1)]).format;
@@ -591,7 +589,7 @@ fn measured_5000_country_year_stockpile_bytes() {
                         variant: 10,
                         cost_raw: 50_000,
                         speed_raw: 100_000,
-                        kind: engine::cequipment_production_line::KIND_MILITARY,
+                        kind: engine_native::cequipment_production_line::KIND_MILITARY,
                         ..Default::default()
                     })
                     .collect(),
@@ -651,7 +649,7 @@ fn measured_real_recording_stockpile_bytes_and_token_stability() {
         std::fs::create_dir_all(&path).unwrap();
         assert!(path.canonicalize().unwrap().starts_with(&root));
     }
-    engine::executable_tables::initialize_for_tests().unwrap();
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
     let recording = required("BATTLE_PLAN_STOCKPILE_PROFILE_RECORDING");
     let flag = AtomicBool::new(false);
     let source = Source::open(
@@ -664,7 +662,7 @@ fn measured_real_recording_stockpile_bytes_and_token_stability() {
     )
     .unwrap();
     let options = dashboard_core::config::ContentOptions {
-        options: installed_content::ResolveOptions {
+        options: installed_content_core::ResolveOptions {
             game_dir: required("BATTLE_PLAN_GAME_DIR"),
             user_dir: required("BATTLE_PLAN_USER_DIR"),
             cache_dir: root.join("content-cache"),
@@ -779,34 +777,34 @@ fn measured_real_recording_stockpile_bytes_and_token_stability() {
 /// The recording codec: each input hour is encoded and decoded as the
 /// preparation pipeline reads it, with its recorded updates.
 struct Recorded {
-    encoder: replay::frame::FrameEncoder,
-    decoder: replay::frame::FrameDecoder,
+    encoder: replay_frame::frame::FrameEncoder,
+    decoder: replay_frame::frame::FrameDecoder,
 }
 impl Recorded {
     fn new() -> Self {
         Self {
-            encoder: replay::frame::FrameEncoder::new(),
-            decoder: replay::frame::FrameDecoder::new(),
+            encoder: replay_frame::frame::FrameEncoder::new(),
+            decoder: replay_frame::frame::FrameDecoder::new(),
         }
     }
     fn next(
         &mut self,
         input: &DecodedFrame,
         keyframe: bool,
-    ) -> (DecodedFrame, Arc<replay::frame::Frame>) {
+    ) -> (DecodedFrame, Arc<replay_frame::frame::Frame>) {
         let wire = self.encoder.encode(input.clone(), keyframe).unwrap();
         let decoded = self.decoder.advance(&wire).unwrap().clone();
         (decoded, Arc::new(wire))
     }
 }
 
-fn stock_rows(frame: &mut DecodedFrame) -> &mut Vec<replay::rows::StockpileRow> {
+fn stock_rows(frame: &mut DecodedFrame) -> &mut Vec<replay_data::rows::StockpileRow> {
     match &mut *frame.tables[TableId::Stockpiles.index()] {
         TableView::Complete(TableRows::Stockpiles(rows)) => rows,
         _ => unreachable!("fixture stock is complete"),
     }
 }
-fn line_rows(frame: &mut DecodedFrame) -> &mut Vec<replay::rows::ProductionLineRow> {
+fn line_rows(frame: &mut DecodedFrame) -> &mut Vec<replay_data::rows::ProductionLineRow> {
     match &mut *frame.tables[TableId::ProductionLines.index()] {
         TableView::Complete(TableRows::ProductionLines(rows)) => rows,
         _ => unreachable!("fixture lines are complete"),
@@ -822,13 +820,13 @@ fn stock_row(
     frame: &mut DecodedFrame,
     country: u32,
     ordinal: u32,
-) -> &mut replay::rows::StockpileRow {
+) -> &mut replay_data::rows::StockpileRow {
     stock_rows(frame)
         .iter_mut()
         .find(|row| (row.country, row.ordinal) == (country, ordinal))
         .expect("fixture stock row")
 }
-fn line_row(frame: &mut DecodedFrame, handle: u64) -> &mut replay::rows::ProductionLineRow {
+fn line_row(frame: &mut DecodedFrame, handle: u64) -> &mut replay_data::rows::ProductionLineRow {
     line_rows(frame)
         .iter_mut()
         .find(|row| row.handle == handle)
@@ -844,7 +842,7 @@ fn logistics_row(
         .find(|row| (row.country, row.archetype) == (country, archetype))
         .expect("fixture logistics row")
 }
-fn country_row(frame: &mut DecodedFrame, id: u32) -> &mut replay::rows::CountryRow {
+fn country_row(frame: &mut DecodedFrame, id: u32) -> &mut replay_data::rows::CountryRow {
     match &mut *frame.tables[TableId::Countries.index()] {
         TableView::Complete(TableRows::Countries(rows)) => rows
             .iter_mut()
@@ -853,7 +851,7 @@ fn country_row(frame: &mut DecodedFrame, id: u32) -> &mut replay::rows::CountryR
         _ => unreachable!("fixture countries are complete"),
     }
 }
-fn variant_row(frame: &mut DecodedFrame, id: u64) -> &mut replay::rows::VariantDefinitionRow {
+fn variant_row(frame: &mut DecodedFrame, id: u64) -> &mut replay_data::rows::VariantDefinitionRow {
     match &mut *frame.tables[TableId::VariantDefinitions.index()] {
         TableView::Complete(TableRows::VariantDefinitions(rows)) => rows
             .iter_mut()
@@ -875,7 +873,7 @@ fn logistics(
         token,
         balance_raw,
         stock_raw,
-        available_raw: replay::rows::Recorded::Value(Some(stock_raw.max(0))),
+        available_raw: replay_data::rows::Recorded::Value(Some(stock_raw.max(0))),
     }
 }
 
@@ -883,7 +881,7 @@ fn logistics(
 /// variants, making one of them on a line, and with one logistics row; every
 /// hour reads the stockpile and the logistics record.
 fn counted_frame(hour: i32, count: u32) -> DecodedFrame {
-    use replay::rows::{LexicalTokenRow, ProductionLineRow, StockpileRow};
+    use replay_data::{rows::LexicalTokenRow, rows::ProductionLineRow, rows::StockpileRow};
     let mut frame = dashboard_base::test_fixtures::scale_frame(1, hour, count);
     *frame.tables[TableId::Stockpiles.index()] = TableView::Complete(TableRows::Stockpiles(
         (0..count)
@@ -906,7 +904,7 @@ fn counted_frame(hour: i32, count: u32) -> DecodedFrame {
                 .map(|index| ProductionLineRow {
                     handle: u64::from(index) + 1,
                     country: 100_000 + index,
-                    kind: engine::cequipment_production_line::KIND_MILITARY,
+                    kind: engine_native::cequipment_production_line::KIND_MILITARY,
                     variant: 10,
                     speed_raw: 100_000,
                     cost_raw: 50_000,
@@ -934,7 +932,7 @@ fn counted_frame(hour: i32, count: u32) -> DecodedFrame {
 fn holder_catch_up_steps_one_span_and_keeps_hourly_saved_state() {
     let first = slot_hour(TableId::Stockpiles);
     let frame = stockpile_frame(first, true, &[(10, 100), (20, 0)], Some(&[]));
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let input = FrameRows::new(&frame);
     for hours in [10, 1_000] {
         let mut hourly = ScanState::default();
@@ -962,7 +960,7 @@ fn holder_catch_up_steps_one_span_and_keeps_hourly_saved_state() {
 fn holder_catch_up_keeps_identity_changes_absence_returns_and_recording_gaps() {
     let first = slot_hour(TableId::Stockpiles);
     let mut frame = stockpile_frame(first, true, &[(10, 100), (20, 0)], Some(&[]));
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let input = FrameRows::new(&frame);
     let original = input.identities["GER"];
     let replacement = (original.0, original.1 + 1);
@@ -1015,7 +1013,7 @@ fn holder_catch_up_keeps_identity_changes_absence_returns_and_recording_gaps() {
 
 fn assert_changed_rows_observe_only_their_holder(count: u32) {
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests::Work};
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let mut recorded = Recorded::new();
     let mut tracker = FrameChangeTracker::new();
     let mut step = |prepared: &mut Prepared, frame: &DecodedFrame| {
@@ -1124,10 +1122,12 @@ fn stockpile_row_masks_name_every_field_they_read() {
 /// Germany (canonical slot 7) through links 11 and 9001, Italy (21, slot 8),
 /// France (31, slot 9) and Sweden (41, slot 10), each through one link.
 fn holders_frame(hour: i32) -> DecodedFrame {
-    use engine::cequipment_production_line::{KIND_MILITARY, KIND_NAVAL};
-    use replay::rows::{
-        CountryLinkRow, CountryRow, LexicalTokenRow, ProductionLineRow, StockpileRow,
-        VariantDefinitionRow,
+    use engine_native::{
+        cequipment_production_line::KIND_MILITARY, cequipment_production_line::KIND_NAVAL,
+    };
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow, rows::ProductionLineRow,
+        rows::StockpileRow, rows::VariantDefinitionRow,
     };
     let mut frame = dashboard_base::test_fixtures::source(1, hour, Some(1));
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
@@ -1263,7 +1263,7 @@ fn continuation(observer: &Prepared) -> serde_json::Value {
 #[test]
 fn dictionary_change_for_unselected_slot_matches_hourly_preparation() {
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, series::tests::Fixture};
-    use replay::rows::{CountryLinkRow, CountryRow, LexicalTokenRow};
+    use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow};
     let mut frame = dashboard_base::test_fixtures::source(1, 100, Some(1));
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
         (1..=2)
@@ -1290,7 +1290,7 @@ fn dictionary_change_for_unselected_slot_matches_hourly_preparation() {
     *frame.tables[TableId::LogisticsEquipment.index()] = TableView::Complete(
         TableRows::LogisticsEquipment(vec![logistics(2, 1, 7, -5, 7)]),
     );
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let mut observers = [
         Prepared::default(),
         Prepared::default(),
@@ -1354,8 +1354,8 @@ fn dictionary_change_for_unselected_slot_matches_hourly_preparation() {
 #[test]
 fn stockpile_rows_observation_matches_whole_tables_and_legacy_across_keyframe_gap_and_resume() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use engine::cequipment_production_line::KIND_NAVAL;
-    use replay::rows::{ProductionLineRow, StockpileRow};
+    use engine_native::cequipment_production_line::KIND_NAVAL;
+    use replay_data::{rows::ProductionLineRow, rows::StockpileRow};
     const TAGS: [&str; 5] = ["GER", "ITA", "FRA", "SWE", "NOR"];
     const PUBLISHED: [i32; 4] = [108, 121, 135, 150];
     let mut frame = holders_frame(100);
@@ -1435,7 +1435,7 @@ fn stockpile_rows_observation_matches_whole_tables_and_legacy_across_keyframe_ga
             124 => line_rows(&mut frame).retain(|row| row.handle != 2),
             126 => {
                 logistics_row(&mut frame, 9001, 2).available_raw =
-                    replay::rows::Recorded::Value(None);
+                    replay_data::rows::Recorded::Value(None);
             }
             127 => {
                 logistics_rows(&mut frame).push(logistics(21, 1, 1, -9, 2));
@@ -1583,7 +1583,7 @@ fn stockpile_rows_observation_matches_whole_tables_and_legacy_across_keyframe_ga
 #[test]
 fn country_rename_between_variant_reads_survives_balance_only_deltas() -> io::Result<()> {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use replay::frame::{FrameDecoder, FrameEncoder};
+    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
     let mut input = dashboard_core::test_fixtures::named_frame(117, Some(b"mod design"));
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *input.tables[TableId::Countries.index()]
@@ -1630,7 +1630,7 @@ fn country_rename_between_variant_reads_survives_balance_only_deltas() -> io::Re
 
 fn sparse_stockpile_holders(count: u32) {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use replay::rows::{CountryLinkRow, CountryRow, StockpileRow};
+    use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::StockpileRow};
     let mut first = stockpile_frame(100, true, &[], Some(&[]));
     *first.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
         (1..=count)

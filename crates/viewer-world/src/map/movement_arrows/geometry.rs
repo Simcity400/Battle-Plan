@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn sharp_turn_preserves_inserted_corner_controls_and_uv_continuity() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         // Insert each corner a quarter-segment in and push sideways 3*size.
         // This 180-degree turn therefore inserts (7.5,+/-3).

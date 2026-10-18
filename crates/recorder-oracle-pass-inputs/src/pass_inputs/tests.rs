@@ -1,9 +1,10 @@
 use super::*;
 use installed_content_save::counter_inputs;
-use replay::rows::{
-    CountryCounterInputRow, FleetCounterInputRow, FleetRow, FreshTaskForceCounterEta,
-    NavalPortMissionInputs, Recorded, ShipRow, TaskForceCounterInputRow, TaskForceMapMotionRow,
-    TaskForceMissionRow, TaskForceRow, UnitSupplyInputs,
+use replay_data::{
+    rows::CountryCounterInputRow, rows::FleetCounterInputRow, rows::FleetRow,
+    rows::FreshTaskForceCounterEta, rows::NavalPortMissionInputs, rows::Recorded, rows::ShipRow,
+    rows::TaskForceCounterInputRow, rows::TaskForceMapMotionRow, rows::TaskForceMissionRow,
+    rows::TaskForceRow, rows::UnitSupplyInputs,
 };
 
 fn known_supply() -> UnitSupplyInputs {
@@ -16,7 +17,7 @@ fn known_supply() -> UnitSupplyInputs {
 /// Non-strike task forces still capture the current, genuinely empty searching vector.
 fn known_port() -> NavalPortMissionInputs {
     NavalPortMissionInputs {
-        sample_hour: replay::rows::PacketHour::Host,
+        sample_hour: replay_data::rows::PacketHour::Host,
         searching: Some(Vec::new()),
         engagement_target: None,
         avoided_ship_types: None,
@@ -25,12 +26,14 @@ fn known_port() -> NavalPortMissionInputs {
 
 #[test]
 fn port_suffix_oracle_compares_order_raw_dangling_targets_and_each_known_slot() {
-    use replay::rows::{NavalEngagementTarget, NavalPortMissionInputs, NavalSearcher};
+    use replay_data::{
+        rows::NavalEngagementTarget, rows::NavalPortMissionInputs, rows::NavalSearcher,
+    };
     let target = (u64::from(u32::MAX) << 32) | 51;
     let mut row = TaskForceCounterInputRow {
         task_force: 9,
         port_mission: Recorded::Value(Some(NavalPortMissionInputs {
-            sample_hour: replay::rows::PacketHour::Host,
+            sample_hour: replay_data::rows::PacketHour::Host,
             searching: Some(vec![
                 NavalSearcher {
                     reference: Some(0),
@@ -113,7 +116,10 @@ fn port_saved_strings_compare_first_nul_prefix_and_keep_ordered_empty_slots() {
             ..Default::default()
         };
         let mut saved = counter_inputs::TaskForce {
-            target_ship_types: vec![installed_content::parser::c_string(stored).to_vec(), Vec::new()],
+            target_ship_types: vec![
+                installed_content_core::parser::c_string(stored).to_vec(),
+                Vec::new(),
+            ],
             ..Default::default()
         };
         let mut report = Report::default();
@@ -149,7 +155,7 @@ fn port_saved_strings_compare_first_nul_prefix_and_keep_ordered_empty_slots() {
 
 #[test]
 fn port_suffix_oracle_keeps_historical_fault_and_unreached_domains_distinct() {
-    use replay::rows::{NavalEngagementTarget, NavalPortMissionInputs};
+    use replay_data::{rows::NavalEngagementTarget, rows::NavalPortMissionInputs};
     let force = TaskForceRow {
         id: 9,
         mission: 2,
@@ -173,7 +179,7 @@ fn port_suffix_oracle_keeps_historical_fault_and_unreached_domains_distinct() {
     task_force_port(7, &row, &force, &saved, &mut refused);
     assert_eq!(refused.differences.len(), 1);
     let packet = NavalPortMissionInputs {
-        sample_hour: replay::rows::PacketHour::Host,
+        sample_hour: replay_data::rows::PacketHour::Host,
         searching: Some(Vec::new()),
         engagement_target: None,
         avoided_ship_types: None,
@@ -226,7 +232,7 @@ fn base() -> (DecodedFrame, Save) {
     set(
         &mut frame,
         TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
-            forward_visibility: replay::rows::Recorded::NotRecorded,
+            forward_visibility: replay_data::rows::Recorded::NotRecorded,
             country: 101,
             owned_state_count: 1,
             controlled_state_count: 1,
@@ -243,7 +249,7 @@ fn hq_distance_oracle_compares_zero_positive_and_negative_save_omission() {
     let group = (7 << 32) | 53;
     set(
         &mut frame,
-        TableRows::OrdersGroups(vec![replay::rows::OrdersGroupRow {
+        TableRows::OrdersGroups(vec![replay_data::rows::OrdersGroupRow {
             handle: group,
             ..Default::default()
         }]),
@@ -265,17 +271,21 @@ fn hq_distance_oracle_compares_zero_positive_and_negative_save_omission() {
             "countries={{GER={{theatres={{theatre={{id={{id=2 type=67}} orders_group={{id={{id=7 type=53}} name=Army field_marshal_group=no motorization_level=0 {suffix}}}}}}}}}}}"
         );
         save.naval_history = installed_content_save::naval_history::parse(
-            &installed_content::parser::parse(text.as_bytes()).unwrap().items,
+            &installed_content_core::parser::parse(text.as_bytes())
+                .unwrap()
+                .items,
         )
         .unwrap();
         set(
             &mut frame,
-            TableRows::OrdersGroupCounterInputs(vec![replay::rows::OrdersGroupCounterInputRow {
-                group,
-                withdrawing: 0,
-                hq_distance: Recorded::Value(Some(actual)),
-                ..Default::default()
-            }]),
+            TableRows::OrdersGroupCounterInputs(vec![
+                replay_data::rows::OrdersGroupCounterInputRow {
+                    group,
+                    withdrawing: 0,
+                    hq_distance: Recorded::Value(Some(actual)),
+                    ..Default::default()
+                },
+            ]),
         );
         let mut report = Report::default();
         groups(&frame, &save, &mut report).unwrap();
@@ -295,12 +305,14 @@ fn hq_distance_oracle_compares_zero_positive_and_negative_save_omission() {
     ] {
         set(
             &mut frame,
-            TableRows::OrdersGroupCounterInputs(vec![replay::rows::OrdersGroupCounterInputRow {
-                group,
-                withdrawing: 0xff,
-                hq_distance: distance,
-                ..Default::default()
-            }]),
+            TableRows::OrdersGroupCounterInputs(vec![
+                replay_data::rows::OrdersGroupCounterInputRow {
+                    group,
+                    withdrawing: 0xff,
+                    hq_distance: distance,
+                    ..Default::default()
+                },
+            ]),
         );
         let mut report = Report::default();
         groups(&frame, &save, &mut report).unwrap();
@@ -319,7 +331,7 @@ fn invasion_source_distance_oracle_preserves_negative_omission_and_hq_comparison
     let group = (7 << 32) | 53;
     set(
         &mut frame,
-        TableRows::OrdersGroups(vec![replay::rows::OrdersGroupRow {
+        TableRows::OrdersGroups(vec![replay_data::rows::OrdersGroupRow {
             handle: group,
             ..Default::default()
         }]),
@@ -341,17 +353,21 @@ fn invasion_source_distance_oracle_preserves_negative_omission_and_hq_comparison
             "countries={{GER={{theatres={{theatre={{id={{id=2 type=67}} orders_group={{id={{id=7 type=53}} name=Army field_marshal_group=no motorization_level=0 distance=31 {suffix}}}}}}}}}}}"
         );
         save.naval_history = installed_content_save::naval_history::parse(
-            &installed_content::parser::parse(text.as_bytes()).unwrap().items,
+            &installed_content_core::parser::parse(text.as_bytes())
+                .unwrap()
+                .items,
         )
         .unwrap();
         set(
             &mut frame,
-            TableRows::OrdersGroupCounterInputs(vec![replay::rows::OrdersGroupCounterInputRow {
-                group,
-                hq_distance: Recorded::Value(Some(31)),
-                invasion_source_distance: Recorded::Value(Some(actual)),
-                ..Default::default()
-            }]),
+            TableRows::OrdersGroupCounterInputs(vec![
+                replay_data::rows::OrdersGroupCounterInputRow {
+                    group,
+                    hq_distance: Recorded::Value(Some(31)),
+                    invasion_source_distance: Recorded::Value(Some(actual)),
+                    ..Default::default()
+                },
+            ]),
         );
         let mut report = Report::default();
         groups(&frame, &save, &mut report).unwrap();
@@ -374,12 +390,14 @@ fn invasion_source_distance_oracle_preserves_negative_omission_and_hq_comparison
     ] {
         set(
             &mut frame,
-            TableRows::OrdersGroupCounterInputs(vec![replay::rows::OrdersGroupCounterInputRow {
-                group,
-                hq_distance: Recorded::Value(Some(32)),
-                invasion_source_distance: distance,
-                ..Default::default()
-            }]),
+            TableRows::OrdersGroupCounterInputs(vec![
+                replay_data::rows::OrdersGroupCounterInputRow {
+                    group,
+                    hq_distance: Recorded::Value(Some(32)),
+                    invasion_source_distance: distance,
+                    ..Default::default()
+                },
+            ]),
         );
         let mut report = Report::default();
         groups(&frame, &save, &mut report).unwrap();
@@ -398,7 +416,7 @@ fn historical_roster_fields_keep_existing_country_counter_comparisons() {
     set(
         &mut frame,
         TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
-            forward_visibility: replay::rows::Recorded::NotRecorded,
+            forward_visibility: replay_data::rows::Recorded::NotRecorded,
             country: 101,
             owned_state_count: 1,
             controlled_state_count: 1,
@@ -434,7 +452,7 @@ fn first_division_matches_the_first_saved_division() {
     set(
         &mut frame,
         TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
-            forward_visibility: replay::rows::Recorded::NotRecorded,
+            forward_visibility: replay_data::rows::Recorded::NotRecorded,
             country: 101,
             owned_state_count: 1,
             controlled_state_count: 1,
@@ -527,7 +545,7 @@ fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
             naval_transfer: Recorded::Value(Some(0)),
             combat_links: Recorded::Value(Some([0; 2])),
             fresh: Recorded::Value(Some(FreshTaskForceCounterEta {
-                sample_hour: replay::rows::PacketHour::Host,
+                sample_hour: replay_data::rows::PacketHour::Host,
                 base_speed: Some(0),
                 speed_modifier: Some(0),
                 terrain_class: Some(0),
@@ -586,7 +604,7 @@ fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
     set(
         &mut frame,
         TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
-            forward_visibility: replay::rows::Recorded::NotRecorded,
+            forward_visibility: replay_data::rows::Recorded::NotRecorded,
             country: 101,
             pride_of_the_fleet: pride,
             owned_state_count: 1,
@@ -870,7 +888,7 @@ fn pride_name_oracle_requires_a_present_full_ship_and_preserves_country_comparis
         set(
             &mut frame,
             TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
+                forward_visibility: replay_data::rows::Recorded::NotRecorded,
                 country: 101,
                 pride_of_the_fleet: handle,
                 owned_state_count: 1,
@@ -1395,12 +1413,12 @@ fn task_force_motion_compares_routes_target_and_saved_combat_membership() {
 
 #[test]
 fn fresh_task_force_packets_require_each_independent_operand() {
-    use replay::rows::FreshTaskForceCounterEta;
+    use replay_data::rows::FreshTaskForceCounterEta;
     let (mut frame, _) = base();
     let force = (43_u64 << 32) | 51;
     let saved = serialized("path={1}", "");
     let packet = FreshTaskForceCounterEta {
-        sample_hour: replay::rows::PacketHour::Host,
+        sample_hour: replay_data::rows::PacketHour::Host,
         base_speed: Some(i64::MIN),
         speed_modifier: Some(i64::MAX),
         terrain_class: Some(i32::MIN),
@@ -1524,11 +1542,11 @@ fn fresh_task_force_packets_require_each_independent_operand() {
 
 #[test]
 fn fresh_task_force_exile_compares_saved_truth_without_claiming_raw_magnitude() {
-    use replay::rows::FreshTaskForceCounterEta;
+    use replay_data::rows::FreshTaskForceCounterEta;
     let (mut frame, _) = base();
     let force = (43_u64 << 32) | 51;
     let packet = FreshTaskForceCounterEta {
-        sample_hour: replay::rows::PacketHour::Host,
+        sample_hour: replay_data::rows::PacketHour::Host,
         base_speed: Some(0),
         speed_modifier: Some(0),
         terrain_class: Some(0),

@@ -450,7 +450,7 @@ mod tests {
 
     #[test]
     fn vertical_counter_hover_uses_the_native_grid_and_scale_order() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "hoi4_vertical_counter_hover_{}",

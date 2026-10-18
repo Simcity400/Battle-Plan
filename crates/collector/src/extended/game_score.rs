@@ -5,17 +5,10 @@ use crate::{
     spooling::{table, table_iter, unavailable},
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
-use engine::{
-    Memory,
-    allocation::{collect_vec, copy_vec, owned_vec},
-    game_score_inputs as native,
-    walk::Outcome,
-};
-use replay::{
-    format::GAME_SCORE_DISABLED_REASON,
-    frame::TableView,
-    rows::{self, TableId, tables},
-};
+use engine_allocation::{collect_vec, copy_vec, owned_vec};
+use engine_native::{Memory, game_score_inputs as native, walk::Outcome};
+use replay_data::{format::GAME_SCORE_DISABLED_REASON, rows, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static SITES_HINT: AtomicUsize = AtomicUsize::new(0);
@@ -184,7 +177,7 @@ impl AirInputs {
             enabled,
             growing: false,
             allocation_failure: None,
-            countries: owned_vec(engine::allocation::default_vec(countries)),
+            countries: owned_vec(engine_allocation::default_vec(countries)),
             required_countries: 0,
             required_wings: 0,
             written_wings: 0,
@@ -256,8 +249,8 @@ impl AirInputs {
         // Short storage still visits every owner and counts every site's header demand.
         let start = self.sites.len;
         let read = if self.growing {
-            if let Err(error) =
-                engine::walk::Buffer::Growing(&mut self.countries).ensure(self.required_countries)
+            if let Err(error) = engine_native::walk::Buffer::Growing(&mut self.countries)
+                .ensure(self.required_countries)
             {
                 self.allocation_failure = Some(error);
                 self.wings.outcome = Outcome::Unavailable { reason: error };
@@ -268,7 +261,7 @@ impl AirInputs {
                 base,
                 slot,
                 entry,
-                engine::walk::Buffer::Growing(&mut self.sites.first).suffix(start),
+                engine_native::walk::Buffer::Growing(&mut self.sites.first).suffix(start),
             )
         } else {
             native::read_first_sites(memory, base, slot, entry, &mut self.sites.first[start..])
@@ -283,7 +276,7 @@ impl AirInputs {
         &mut self,
         memory: &impl Memory,
         pointer: usize,
-        row: &engine::cair_wing::ScoreLeaf,
+        row: &engine_native::cair_wing::ScoreLeaf,
     ) {
         if !self.enabled {
             return;
@@ -291,8 +284,8 @@ impl AirInputs {
         self.required_wings = self.required_wings.saturating_add(1);
         let len = self.written_wings;
         if self.growing
-            && let Err(reason) =
-                engine::walk::Buffer::Growing(&mut self.wings.rows).ensure(self.required_wings)
+            && let Err(reason) = engine_native::walk::Buffer::Growing(&mut self.wings.rows)
+                .ensure(self.required_wings)
         {
             self.allocation_failure = Some(reason);
             self.wings.outcome = Outcome::Unavailable { reason };
@@ -315,7 +308,7 @@ impl AirInputs {
         let end = offset
             .checked_add(part.sites.len)
             .ok_or("game score air-site join overflow")?;
-        engine::walk::Buffer::Growing(&mut self.sites.first).ensure(end)?;
+        engine_native::walk::Buffer::Growing(&mut self.sites.first).ensure(end)?;
         self.sites.first[offset..end].copy_from_slice(&part.sites.first[..part.sites.len]);
         self.sites.len = end;
         self.sites.required = self.sites.required.saturating_add(part.sites.required);
@@ -323,7 +316,7 @@ impl AirInputs {
         // Short only after the part's own allocation failure, which it carries.
         let end = part.required_countries.min(part.countries.len());
         let slots = first.min(end)..end;
-        engine::walk::Buffer::Growing(&mut self.countries).ensure(end)?;
+        engine_native::walk::Buffer::Growing(&mut self.countries).ensure(end)?;
         for (destination, country) in self.countries[slots.clone()]
             .iter_mut()
             .zip(&part.countries[slots])
@@ -337,7 +330,7 @@ impl AirInputs {
         let end = written
             .checked_add(part.written_wings)
             .ok_or("game score wing join overflow")?;
-        engine::walk::Buffer::Growing(&mut self.wings.rows).ensure(end)?;
+        engine_native::walk::Buffer::Growing(&mut self.wings.rows).ensure(end)?;
         self.wings.rows[written..end].copy_from_slice(&part.wings.rows[..part.written_wings]);
         self.written_wings = end;
         self.required_wings = self.required_wings.saturating_add(part.required_wings);
@@ -570,7 +563,7 @@ impl Captured {
         &mut self,
         memory: &impl Memory,
         pointer: usize,
-        row: &engine::cair_wing::ScoreLeaf,
+        row: &engine_native::cair_wing::ScoreLeaf,
     ) {
         self.air.wing(memory, pointer, row);
     }
@@ -903,7 +896,7 @@ fn count_reason(
     match rows.binary_search_by_key(&reason, |(reason, _)| *reason) {
         Ok(index) => rows[index].1 = rows[index].1.saturating_add(count),
         Err(index) => {
-            engine::allocation::reserve(rows, 1)?;
+            engine_allocation::reserve(rows, 1)?;
             rows.insert(index, (reason, count));
         }
     }

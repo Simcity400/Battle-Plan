@@ -1,12 +1,12 @@
 use super::*;
-use replay::rows::Recorded;
+use replay_data::rows::Recorded;
 use viewer_foundation::diagnostics_panel::test_support::assert_diagnostics;
 use viewer_foundation::map::test_support::gui as tests;
 use viewer_foundation::tooltip_text::NoIcons;
 
 #[test]
 fn naval_trait_hovers_refuse_each_shown_entry_by_name_and_clear_authored_seeds() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use viewer_foundation::map::test_support::gui::windows;
     let windows = windows(
@@ -183,7 +183,7 @@ fn naval_component_skill_icons_and_text_share_native_tooltips() {
     .map(|(key, value)| (key.into(), value.into()))
     .collect();
     let rows = [
-        replay::rows::ModifierDefinitionRow {
+        replay_data::rows::ModifierDefinitionRow {
             index: 1,
             name_key: b"SYN_DAMAGE".to_vec(),
             flags: 0b11,
@@ -191,7 +191,7 @@ fn naval_component_skill_icons_and_text_share_native_tooltips() {
             precision: 2,
             ..Default::default()
         },
-        replay::rows::ModifierDefinitionRow {
+        replay_data::rows::ModifierDefinitionRow {
             index: 2,
             name_key: b"SYN_HIDDEN".to_vec(),
             flags: 0b11,
@@ -212,7 +212,7 @@ fn naval_component_skill_icons_and_text_share_native_tooltips() {
         ..Default::default()
     };
     for index in 1..=4 {
-        commander.skill_definitions[index] = replay::rows::CombatCommanderSkillDefinition {
+        commander.skill_definitions[index] = replay_data::rows::CombatCommanderSkillDefinition {
             present: 1,
             valid: 1,
             level: 3,
@@ -222,7 +222,7 @@ fn naval_component_skill_icons_and_text_share_native_tooltips() {
         for (id, value) in [(1, 20_000), (2, 90_000)] {
             commander
                 .modifiers
-                .push(replay::rows::LandCombatCommanderPortraitModifier {
+                .push(replay_data::rows::LandCombatCommanderPortraitModifier {
                     source: index as u8,
                     id,
                     value,
@@ -232,7 +232,7 @@ fn naval_component_skill_icons_and_text_share_native_tooltips() {
         for (bucket, key) in [(8, "SYN_LAST"), (1, "SYN_EXTRA")] {
             commander
                 .tooltips
-                .push(replay::rows::LandCombatCommanderPortraitTooltip {
+                .push(replay_data::rows::LandCombatCommanderPortraitTooltip {
                     source: index as u8,
                     bucket,
                     text: key.as_bytes().to_vec(),
@@ -288,18 +288,18 @@ fn naval_component_skill_icons_and_text_share_native_tooltips() {
 
 /// A modifier block of `key = value` entries as the shared reader
 /// stores it.
-fn modifiers(entries: &[(&str, &str)]) -> installed_content::modifiers::Modifiers {
+fn modifiers(entries: &[(&str, &str)]) -> installed_content_core::modifiers::Modifiers {
     let items: Vec<_> = entries
         .iter()
-        .map(|(key, value)| installed_content::parser::Item {
+        .map(|(key, value)| installed_content_core::parser::Item {
             key: Some(key.as_bytes().to_vec()),
             key_quoted: false,
-            operator: installed_content::parser::Operator::Equals,
-            value: installed_content::parser::Value::Scalar(value.as_bytes().to_vec()),
-            kind: installed_content::parser::Kind::Bare,
+            operator: installed_content_core::parser::Operator::Equals,
+            value: installed_content_core::parser::Value::Scalar(value.as_bytes().to_vec()),
+            kind: installed_content_core::parser::Kind::Bare,
         })
         .collect();
-    installed_content::modifiers::values(&items)
+    installed_content_core::modifiers::values(&items)
 }
 
 fn exile_localisation() -> Localisation {
@@ -353,15 +353,17 @@ fn exile_assigned_timed(
     let rows: Vec<_> = names
         .iter()
         .enumerate()
-        .map(|(index, (_, key))| replay::rows::ModifierDefinitionRow {
-            index: index as u32 + 1,
-            token: index as u32 + 1,
-            name_key: key.as_bytes().to_vec(),
-            flags: 0b11,
-            category_mask: 1,
-            precision: 2,
-            ..Default::default()
-        })
+        .map(
+            |(index, (_, key))| replay_data::rows::ModifierDefinitionRow {
+                index: index as u32 + 1,
+                token: index as u32 + 1,
+                name_key: key.as_bytes().to_vec(),
+                flags: 0b11,
+                category_mask: 1,
+                precision: 2,
+                ..Default::default()
+            },
+        )
         .collect();
     let names: Vec<_> = names
         .iter()
@@ -439,7 +441,7 @@ fn exile_windows() -> NativeWindows {
 
 #[test]
 fn exile_badge_hover_has_native_modifier_lines_and_delayed_description() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use std::time::{Duration, Instant};
     use viewer_foundation::map::{native_gui::lifecycle::Instance, test_support::gui::fixture};
@@ -516,7 +518,7 @@ fn exile_badge_hover_has_native_modifier_lines_and_delayed_description() {
 
 #[test]
 fn exile_badge_hover_uses_mod_values_and_counts_named_refusals() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let windows = exile_windows();
     let mut files = exile_files();
@@ -602,7 +604,7 @@ fn the_settled_cache_holds_the_index_it_was_read_with() {
         sub_units: Err("unused".into()),
         leader_traits: Err("unused".into()),
     };
-    let rows = [replay::rows::ModifierDefinitionRow::default()];
+    let rows = [replay_data::rows::ModifierDefinitionRow::default()];
     let first = Definitions::from_parts(&rows, &[(&b"army_org"[..], 1)], None);
     let settled = content.settled(Ok(&first));
     assert!(!settled.conditional());
@@ -629,7 +631,7 @@ fn learning_ratio_preserves_native_sentinel_and_integer_arithmetic() {
 
 #[test]
 fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let loc: Localisation = [
         ("MODIFIER_ATTACK", "Division Attack"),
@@ -653,8 +655,8 @@ fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
     .map(|(key, value)| (key.to_owned(), value.to_owned()))
     .collect();
     let rows = [
-        replay::rows::ModifierDefinitionRow::default(),
-        replay::rows::ModifierDefinitionRow {
+        replay_data::rows::ModifierDefinitionRow::default(),
+        replay_data::rows::ModifierDefinitionRow {
             index: 1,
             token: 9,
             name_key: b"MODIFIER_ATTACK".to_vec(),
@@ -715,7 +717,7 @@ fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
     // A block under a name no definition carries was skipped with its
     // block; under a registered one (`ARMY_ATTACK_FACTOR` folds) the
     // trait's reading is unknown.
-    let condition = |modifier: &str| installed_content::unit_leader::Conditional {
+    let condition = |modifier: &str| installed_content_core::unit_leader::Conditional {
         modifier: modifier.into(),
         place: "file.txt trait t modifier".into(),
     };
@@ -732,7 +734,7 @@ fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
     // adjusters and without a newline of their own; a repeat and an
     // unknown key are dropped.
     let sub_unit = |key: &str, attack: i64, entries: &[(&str, &str)]| {
-        installed_content::unit_leader::SubUnitModifiers {
+        installed_content_core::unit_leader::SubUnitModifiers {
             adjuster: Adjuster {
                 key: key.into(),
                 attack,
@@ -965,7 +967,7 @@ fn timed_trait_uses_the_first_matching_entry_and_nonnegative_days() {
 
 #[test]
 fn naval_timed_trait_hover_shows_zero_days_and_refuses_old_format_absence() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let loc: Localisation = exile_localisation()
         .iter()
@@ -973,7 +975,7 @@ fn naval_timed_trait_hover_shows_zero_days_and_refuses_old_format_absence() {
         .chain([("TRAIT_WILL_EXPIRE".into(), "Expires in $DAYS$ days.".into())])
         .collect();
     let windows = exile_windows();
-    let mut commander = replay::rows::NavalCommanderInputs {
+    let mut commander = replay_data::rows::NavalCommanderInputs {
         timed_traits: Recorded::Value(vec![
             LandCombatCommanderTimedTrait {
                 remaining_days: 0,
@@ -1044,16 +1046,14 @@ fn naval_timed_trait_hover_shows_zero_days_and_refuses_old_format_absence() {
 
 #[test]
 fn naval_bind_uses_live_and_result_grid_paths_and_skips_null_commanders() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{
-            CountryLinkRow, NavalCombatDetailsRow, NavalCombatResultDetailsRow,
-            NavalCombatSideDetails, NavalResultSideDetails, SimulationFeatureRow, TableId,
-            TableRows,
-        },
+    use replay_data::{
+        rows::CountryLinkRow, rows::NavalCombatDetailsRow, rows::NavalCombatResultDetailsRow,
+        rows::NavalCombatSideDetails, rows::NavalResultSideDetails, rows::SimulationFeatureRow,
+        rows::TableId, rows::TableRows,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     let loc: Localisation = exile_localisation()
         .iter()
@@ -1102,7 +1102,7 @@ fn naval_bind_uses_live_and_result_grid_paths_and_skips_null_commanders() {
         let expires = timed_traits
             .require("NavalCommanderInputs.timed_traits")
             .is_ok_and(|entries| !entries.is_empty());
-        let commander = replay::rows::NavalCommanderInputs {
+        let commander = replay_data::rows::NavalCommanderInputs {
             commander: if null { 0 } else { (7 << 32) | 4713 },
             country: 1,
             traits: vec![LandCombatCommanderTrait {
@@ -1252,8 +1252,8 @@ fn advisor_traits_resolve_through_the_country_leader_traits() {
             "leader_traits = { valid_specialist = { } valid_genius_name = { } valid_expert = { } valid_genius_name = { } }",
         )
         .unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let (traits, _) = installed_content::leader_traits::read(&layers).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let (traits, _) = installed_content_core::leader_traits::read(&layers).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
     let leaders = Leaders::from_files(
             vec![(

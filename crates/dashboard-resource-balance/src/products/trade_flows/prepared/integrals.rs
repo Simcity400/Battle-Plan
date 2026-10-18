@@ -167,7 +167,7 @@ impl Prepared {
     }
 
     pub(super) fn materialize_integrals(&mut self, hour: i32) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("trade:integrals");
+        let _cpu = ::replay_frame::cpu::scope_phase("trade:integrals");
         let indices: Vec<_> = self.rates.keys().copied().collect();
         for index in indices {
             self.materialize_flow(index, hour, true)?;
@@ -184,7 +184,7 @@ impl Prepared {
         else {
             return Ok(());
         };
-        let _cpu = ::replay::cpu::scope_phase("trade:integrals");
+        let _cpu = ::replay_frame::cpu::scope_phase("trade:integrals");
         #[cfg(test)]
         {
             self.integral_visits += 1;

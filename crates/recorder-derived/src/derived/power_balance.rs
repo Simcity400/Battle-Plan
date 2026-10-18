@@ -1,21 +1,20 @@
 //! Power-balance description trees: playback's derivation from each record's
 //! recorded sources and the content's static modifiers
-//! ([`replay::power_balance_derive`]) against the native trees a recording
+//! ([`replay_derive::power_balance_derive`]) against the native trees a recording
 //! holds as witnesses: the rows of the hour's sampled slice a `breakdown_witness`
 //! collector build read. Rows without witnesses are counted, not compared.
 
-use installed_content::{ResolvedLayers, static_modifiers::Descriptions};
-use replay::{
-    frame::DecodedFrame,
-    modifier_registry::Registry,
-    power_balance_derive as derive,
-    rows::{ModifierBreakdownNode, PowerBalanceModifierBreakdownRow, tables},
+use installed_content_core::{ResolvedLayers, static_modifiers::Descriptions};
+use replay_data::{
+    rows::ModifierBreakdownNode, rows::PowerBalanceModifierBreakdownRow, rows::tables,
 };
+use replay_derive::{modifier_registry::Registry, power_balance_derive as derive};
+use replay_frame::frame::DecodedFrame;
 
 use super::LISTED;
 
-const DAILY: u32 = engine::modifier_keys::POWER_BALANCE_DAILY;
-const WEEKLY: u32 = engine::modifier_keys::POWER_BALANCE_WEEKLY;
+const DAILY: u32 = engine_executable::modifier_keys::POWER_BALANCE_DAILY;
+const WEEKLY: u32 = engine_executable::modifier_keys::POWER_BALANCE_WEEKLY;
 
 #[derive(Default)]
 pub(super) struct Checker {
@@ -95,12 +94,13 @@ impl Checker {
         let mut blocks = Vec::with_capacity(row.sources.len());
         for source in &row.sources {
             // The game compares the name's bytes up to its first NUL.
-            let key = std::str::from_utf8(installed_content::parser::c_string(source)).map_err(|_| {
-                format!(
-                    "static modifier {} is not UTF-8",
-                    String::from_utf8_lossy(source)
-                )
-            })?;
+            let key =
+                std::str::from_utf8(installed_content_core::parser::c_string(source)).map_err(|_| {
+                    format!(
+                        "static modifier {} is not UTF-8",
+                        String::from_utf8_lossy(source)
+                    )
+                })?;
             blocks.push(self.statics.get(layers, key)?.1);
         }
         let inputs: Vec<_> = row

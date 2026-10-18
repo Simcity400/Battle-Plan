@@ -29,7 +29,7 @@
 //! the arc, turned to the mean of the current and previous segment and centred
 //! across the line. No variant fitting draws no text.
 
-use installed_content::localisation::{Argument, Localisation};
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
 
 use super::fixed::{self, Point};
 use viewer_foundation::map::text::{self, Font, GlyphMetrics};

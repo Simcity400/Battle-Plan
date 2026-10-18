@@ -1,14 +1,12 @@
 use crate::test_fixtures::{CAMPAIGN, ownership_frame, records};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::sync::atomic::AtomicBool;
 
 #[test]
 fn artwork_problems_reach_the_reply_once_and_an_unidentified_holder_is_unknown() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use super::{IdeaCharacter, IdeaSpan, ScannedIdeas, reply};
     use crate::products::{CountryParams, politics_content::PoliticsContent};
@@ -98,7 +96,7 @@ fn artwork_problems_reach_the_reply_once_and_an_unidentified_holder_is_unknown()
 /// advisor: like the game, it is in the appointed-advisor list, not the active ideas.
 pub(super) fn idea_frame(hour: i32, ideas: &[&str]) -> DecodedFrame {
     let mut frame = ownership_frame(1, hour, 44);
-    let advisor = |country, ordinal, character, idea: &str| replay::rows::HiredAdvisorRow {
+    let advisor = |country, ordinal, character, idea: &str| replay_data::rows::HiredAdvisorRow {
         country,
         ordinal,
         character,
@@ -116,13 +114,13 @@ pub(super) fn idea_frame(hour: i32, ideas: &[&str]) -> DecodedFrame {
             !appointed
         })
         .enumerate()
-        .map(|(ordinal, token)| replay::rows::ActiveIdeaRow {
+        .map(|(ordinal, token)| replay_data::rows::ActiveIdeaRow {
             country: 9001,
             ordinal: ordinal as u32,
             token: token.as_bytes().to_vec(),
         })
         // Another country's idea is never GER's.
-        .chain([replay::rows::ActiveIdeaRow {
+        .chain([replay_data::rows::ActiveIdeaRow {
             country: 44,
             ordinal: 0,
             token: b"FRA_spirit".to_vec(),
@@ -134,17 +132,18 @@ pub(super) fn idea_frame(hour: i32, ideas: &[&str]) -> DecodedFrame {
     *frame.tables[TableId::HiredAdvisors.index()] =
         TableView::Complete(TableRows::HiredAdvisors(hired));
     // As recorded: the saved name in `token`, the script token as a lexer id.
-    *frame.tables[TableId::Characters.index()] =
-        TableView::Complete(TableRows::Characters(vec![replay::rows::CharacterRow {
+    *frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(vec![
+        replay_data::rows::CharacterRow {
             id: 7,
             country: 9001,
             name_token_id: 42,
             token: b"Hjalmar Schacht".to_vec(),
             ..Default::default()
-        }]));
+        },
+    ]));
     *frame.tables[TableId::LexicalTokens.index()] =
         TableView::Complete(TableRows::LexicalTokens(vec![
-            replay::rows::LexicalTokenRow {
+            replay_data::rows::LexicalTokenRow {
                 token: 42,
                 literal: b"GER_schacht".to_vec(),
             },
@@ -218,7 +217,7 @@ fn idea_history_spans_break_at_gaps_and_advisors_keep_their_recorded_role() {
 
 #[test]
 fn advisor_traits_select_the_first_native_name_match() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::idea_history::{Joined, prepare_info};
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
@@ -240,13 +239,13 @@ fn advisor_traits_select_the_first_native_name_match() {
             "\u{feff}l_english:\n Brilliant:0 \"First trait\"\n bRiLLiant:0 \"Reference spelling\"\n",
         ),
     ]);
-    let (traits, _) = installed_content::leader_traits::read(&catalogue.content.layers).unwrap();
-    let characters = installed_content::characters::parse(
+    let (traits, _) = installed_content_core::leader_traits::read(&catalogue.content.layers).unwrap();
+    let characters = installed_content_core::characters::parse(
         b"characters = { holder = { advisor = { slot = political_advisor idea_token = advisor traits = { bRiLLiant 1trait 2trait Later Missing } } } }",
-        &installed_content::key_names::KeyNames::default(),
+        &installed_content_core::key_names::KeyNames::default(),
     )
     .unwrap();
-    let ideas = installed_content::ideas::IdeaContent::default();
+    let ideas = installed_content_core::ideas::IdeaContent::default();
     let localise = |key: &str, view| catalogue.localised(key, view);
     let joined = Joined {
         ideas: &ideas,
@@ -279,33 +278,33 @@ fn advisor_traits_select_the_first_native_name_match() {
 
 #[test]
 fn ideas_join_content_for_category_slot_and_traits() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::{
         findings::Kind,
         products::idea_history::{Joined, categories, prepare_info},
     };
-    let names = installed_content::key_names::KeyNames::default();
-    let tags = installed_content::ideas::parse_tags(
+    let names = installed_content_core::key_names::KeyNames::default();
+    let tags = installed_content_core::ideas::parse_tags(
         b"idea_categories = { government = { slot = economy character_slot = political_advisor character_slot = political_advisor }           country = { type = national_spirit } military_staff = { character_slot = theorist } }",
         &names,
     );
     // An officer-corps group's entries are character advisor templates,
     // not ideas.
-    let file = installed_content::ideas::parse_ideas(
+    let file = installed_content_core::ideas::parse_ideas(
         b"ideas = { economy = { law = yes civilian_economy = { modifier = { consumer_goods_factor = 0.35 } } }           country = { GER_spirit = { modifier = { STABILITY_FACTOR = 0.1 hidden_modifier = { Stability_Factor = 0.2 } } } }           theorist = { GER_theorist = { traits = { military_theorist } modifier = { army_org = 1 } } } }",
         &["theorist".to_owned()],
         &names,
     );
-    let content = installed_content::ideas::IdeaContent::from_parsed(tags, file.ideas);
+    let content = installed_content_core::ideas::IdeaContent::from_parsed(tags, file.ideas);
     // The advisor's seat and traits come from its character's advisor role.
-    let mut characters = installed_content::characters::parse(
+    let mut characters = installed_content_core::characters::parse(
         b"characters = { GER_schacht = { advisor = { slot = political_advisor idea_token = GER_schacht_idea traits = { captain_of_industry } } }           GER_split = { instance = { allowed = { has_dlc = \"A\" } advisor = { slot = political_advisor idea_token = GER_split_idea traits = { a } } }             instance = { allowed = { NOT = { has_dlc = \"A\" } } advisor = { slot = political_advisor idea_token = GER_split_idea traits = { b } } } } }",
         &names,
     )
     .unwrap();
     characters.merge(file.advisors);
-    let traits = installed_content::leader_traits::LeaderTraits::default();
+    let traits = installed_content_core::leader_traits::LeaderTraits::default();
     let localise =
         |key: &str, _: crate::catalogue::View| (key == "economy").then(|| "Economy".to_owned());
     let joined = Joined {
@@ -314,7 +313,7 @@ fn ideas_join_content_for_category_slot_and_traits() {
         traits: &traits,
         localise: &localise,
     };
-    const NO_HOLDER: Result<&installed_content::characters::BuiltTemplate, &str> = Err("no holder");
+    const NO_HOLDER: Result<&installed_content_core::characters::BuiltTemplate, &str> = Err("no holder");
     let (law, findings) = prepare_info(&joined, "civilian_economy", None, NO_HOLDER, false);
     assert!(findings.is_empty(), "{findings:?}");
     assert_eq!(
@@ -457,7 +456,7 @@ fn idea_history_marks_gaps_in_order_and_to_the_branch_end() {
     ];
     let mut replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
     // The branch ends in a recorded gap: those hours are unobserved, not a removal.
-    replay.gaps.push(replay::branches::Gap {
+    replay.gaps.push(replay_frame::branches::Gap {
         branch: 1,
         first_hour: 107,
         last_hour: 109,
@@ -525,7 +524,9 @@ fn idea_history_additions_ignore_initial_gaps_and_holder_renames() {
 
 #[test]
 fn idea_history_all_country_scan_names_each_span_start() {
-    use replay::rows::{ActiveIdeaRow, CountryAppearanceRow, CountryLinkRow, CountryRow};
+    use replay_data::{
+        rows::ActiveIdeaRow, rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow,
+    };
     let make = |hour, changed: bool| {
         let mut frame = idea_frame(hour, &[]);
         let countries: Vec<_> = (1..=4)
@@ -632,7 +633,7 @@ fn idea_history_tokenless_advisors_are_counted_and_named() {
         let mut frame = idea_frame(hour, &[]);
         *frame.tables[TableId::HiredAdvisors.index()] =
             TableView::Complete(TableRows::HiredAdvisors(vec![
-                replay::rows::HiredAdvisorRow {
+                replay_data::rows::HiredAdvisorRow {
                     country: 9001,
                     ordinal: 0,
                     character: 42,
@@ -664,7 +665,9 @@ fn idea_history_tokenless_advisors_are_counted_and_named() {
 
 #[test]
 fn idea_feed_counts_malformed_rows_once_and_keeps_valid_additions() {
-    use replay::rows::{ActiveIdeaRow, CountryLinkRow, CountryRow, HiredAdvisorRow};
+    use replay_data::{
+        rows::ActiveIdeaRow, rows::CountryLinkRow, rows::CountryRow, rows::HiredAdvisorRow,
+    };
     let mut malformed = idea_frame(101, &["mod_known_law"]);
     if let TableView::Complete(TableRows::ActiveIdeas(rows)) =
         &mut *malformed.tables[TableId::ActiveIdeas.index()]
@@ -875,9 +878,9 @@ fn idea_history_feed_preserves_each_unchanged_unresolved_hour_before_additions()
 
 #[test]
 fn idea_history_effect_keys_include_shared_effect_and_text_sources_once() {
-    let content = installed_content::ideas::IdeaContent::default();
-    let characters = installed_content::characters::Characters::default();
-    let traits = installed_content::leader_traits::LeaderTraits::default();
+    let content = installed_content_core::ideas::IdeaContent::default();
+    let characters = installed_content_core::characters::Characters::default();
+    let traits = installed_content_core::leader_traits::LeaderTraits::default();
     let joined = super::Joined {
         ideas: &content,
         characters: &characters,
@@ -962,7 +965,7 @@ fn idea_history_feed_names_additions_only_at_their_span_start() {
         let mut frame = idea_frame(hour, ideas);
         *frame.tables[TableId::CountryAppearance.index()] =
             TableView::Complete(TableRows::CountryAppearance(vec![
-                replay::rows::CountryAppearanceRow {
+                replay_data::rows::CountryAppearanceRow {
                     country: 9001,
                     cosmetic_tag: cosmetic.to_vec(),
                     ..Default::default()
@@ -1018,7 +1021,7 @@ fn idea_history_feed_names_additions_only_at_their_span_start() {
 #[test]
 fn indexed_idea_naming_preserves_independent_positive_empty_original_and_refusal() {
     use super::NamingCountry;
-    use replay::rows::{Recorded, tables};
+    use replay_data::{rows::Recorded, rows::tables};
     let mut frame = crate::scope::tests::positive_frame();
     for original in [Recorded::Value(Some(Vec::new())), Recorded::Value(None)] {
         let TableView::Complete(TableRows::CountryAppearance(rows)) =
@@ -1057,7 +1060,7 @@ fn prepared_idea_history_replies_match_topics_after_commits_resume_and_append() 
         products::{CountryParams, Product, politics_content::politics_content},
         test_fixtures::{continuation_records, source_with_content},
     };
-    engine::executable_tables::initialize_for_tests().unwrap();
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
     let root =
         std::env::temp_dir().join(format!("prepared-ideas-content-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(root.join("common/ideas")).unwrap();
@@ -1080,7 +1083,7 @@ fn prepared_idea_history_replies_match_topics_after_commits_resume_and_append() 
         }
         *frame.tables[TableId::CountryAppearance.index()] =
             TableView::Complete(TableRows::CountryAppearance(vec![
-                replay::rows::CountryAppearanceRow {
+                replay_data::rows::CountryAppearanceRow {
                     country: 9001,
                     cosmetic_tag: b"recorded-appearance".to_vec(),
                     ..Default::default()
@@ -1175,14 +1178,14 @@ fn prepared_idea_history_replies_match_topics_after_commits_resume_and_append() 
     if let TableView::Complete(TableRows::HiredAdvisors(rows)) =
         &mut *renamed.tables[TableId::HiredAdvisors.index()]
     {
-        rows.push(replay::rows::HiredAdvisorRow {
+        rows.push(replay_data::rows::HiredAdvisorRow {
             country: 9001,
             ordinal: 1,
             character: 9,
             idea: vec![],
             slot: b"empty idea".to_vec(),
         });
-        rows.push(replay::rows::HiredAdvisorRow {
+        rows.push(replay_data::rows::HiredAdvisorRow {
             country: 9001,
             ordinal: 2,
             character: 7,
@@ -1193,7 +1196,7 @@ fn prepared_idea_history_replies_match_topics_after_commits_resume_and_append() 
     if let TableView::Complete(TableRows::ActiveIdeas(rows)) =
         &mut *renamed.tables[TableId::ActiveIdeas.index()]
     {
-        rows.push(replay::rows::ActiveIdeaRow {
+        rows.push(replay_data::rows::ActiveIdeaRow {
             country: 9001,
             ordinal: 9,
             token: vec![0xfe],
@@ -1303,7 +1306,7 @@ fn prepared_idea_history_five_thousand_countries_state_grows_with_changes_not_ho
     let mut frame = idea_frame(0, &[]);
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
         (1..=5000)
-            .map(|id| replay::rows::CountryRow {
+            .map(|id| replay_data::rows::CountryRow {
                 id,
                 canonical_slot: id,
                 tag: format!("country / {id}").into_bytes(),
@@ -1313,7 +1316,7 @@ fn prepared_idea_history_five_thousand_countries_state_grows_with_changes_not_ho
     ));
     *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
         (1..=5000)
-            .map(|id| replay::rows::CountryLinkRow {
+            .map(|id| replay_data::rows::CountryLinkRow {
                 id,
                 canonical_slot: id,
             })
@@ -1321,7 +1324,7 @@ fn prepared_idea_history_five_thousand_countries_state_grows_with_changes_not_ho
     ));
     *frame.tables[TableId::ActiveIdeas.index()] = TableView::Complete(TableRows::ActiveIdeas(
         (1..=5000)
-            .map(|country| replay::rows::ActiveIdeaRow {
+            .map(|country| replay_data::rows::ActiveIdeaRow {
                 country,
                 ordinal: 0,
                 token: b"mod_a".to_vec(),
@@ -1395,7 +1398,7 @@ fn prepared_idea_history_five_thousand_countries_state_grows_with_changes_not_ho
     if let TableView::Complete(TableRows::ActiveIdeas(rows)) =
         &mut *frame.tables[TableId::ActiveIdeas.index()]
     {
-        rows.extend((1..=5000).map(|country| replay::rows::ActiveIdeaRow {
+        rows.extend((1..=5000).map(|country| replay_data::rows::ActiveIdeaRow {
             country,
             ordinal: 1,
             token: b"mod_b".to_vec(),
@@ -1449,8 +1452,9 @@ fn prepared_idea_history_five_thousand_countries_state_grows_with_changes_not_ho
 
 #[test]
 fn prepared_ideas_keep_the_topic_scans_selected_table_refusals() {
-    use replay::rows::{
-        ActiveIdeaRow, CountryAppearanceRow, CountryLinkRow, CountryRow, ReservedCountryNamingRow,
+    use replay_data::{
+        rows::ActiveIdeaRow, rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow,
+        rows::ReservedCountryNamingRow,
     };
     let mut frame = idea_frame(100, &[]);
     if let TableView::Complete(TableRows::Countries(rows)) =
@@ -1524,14 +1528,14 @@ fn idea_observer_work_is_flat_over_unchanged_hours_and_history_at_5000_countries
         frame_changes::FrameChangeTracker,
         observer_tests::{self, Work},
     };
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let work = observer_tests::scaled_work(2, |history| {
         let spans = observer_tests::scaled_work(10, |hours| {
             let mut frame = crate::test_fixtures::scale_frame(1, 100, 5_000);
             *frame.tables[TableId::ActiveIdeas.index()] =
                 TableView::Complete(TableRows::ActiveIdeas(
                     (0..5_000)
-                        .map(|id| replay::rows::ActiveIdeaRow {
+                        .map(|id| replay_data::rows::ActiveIdeaRow {
                             country: 100_000 + id,
                             ordinal: 0,
                             token: b"current".to_vec(),
@@ -1604,7 +1608,7 @@ fn idea_content_success_and_failure_load_once_after_configuration() {
         observer_tests::{Work, unchanged_frames},
     };
     use crate::products::politics_content::{self, politics_content};
-    engine::executable_tables::initialize_for_tests().unwrap();
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
     for success in [false, true] {
         let defines = if success {
             "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}"
@@ -1747,11 +1751,8 @@ fn restored_idea_history_closes_a_holder_that_vanishes_at_the_first_hour_after_a
 fn check_idea_country_delta_work(count: u32) {
     use super::IdeaInputs;
     use crate::prepared::frame_changes::FrameChangeTracker;
-    use replay::{
-        format::FormatVersion,
-        frame::{FrameDecoder, FrameEncoder},
-        rows::{CountryLinkRow, CountryRow},
-    };
+    use replay_data::{format::FormatVersion, rows::CountryLinkRow, rows::CountryRow};
+    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
     use std::sync::Arc;
     let format = FormatVersion::CURRENT;
     let mut frame = crate::test_fixtures::source(1, 100, None);

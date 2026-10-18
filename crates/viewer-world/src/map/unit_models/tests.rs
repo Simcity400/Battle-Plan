@@ -452,7 +452,7 @@ fn country() -> ModelCountry {
 
 #[test]
 fn new_divisions_join_the_daily_census_and_absence_is_empty_only_when_both_are_complete() {
-    let row = |division| replay::rows::DivisionEquipmentRow {
+    let row = |division| replay_data::rows::DivisionEquipmentRow {
         division,
         ..Default::default()
     };
@@ -466,8 +466,8 @@ fn new_divisions_join_the_daily_census_and_absence_is_empty_only_when_both_are_c
     assert!(equipment(false).of(3).is_err());
 }
 
-fn division(id: u64, province: u32, template: u64) -> replay::rows::DivisionRow {
-    replay::rows::DivisionRow {
+fn division(id: u64, province: u32, template: u64) -> replay_data::rows::DivisionRow {
+    replay_data::rows::DivisionRow {
         id,
         roster_owner: 100,
         logical_owner: 100,
@@ -479,11 +479,11 @@ fn division(id: u64, province: u32, template: u64) -> replay::rows::DivisionRow 
 
 /// A division whose recorded camouflage is the `cold` category (token 1),
 /// or whose camouflage was unreadable this hour.
-fn status(division: u64, readable: bool) -> replay::rows::DivisionStatusRow {
-    replay::rows::DivisionStatusRow {
+fn status(division: u64, readable: bool) -> replay_data::rows::DivisionStatusRow {
+    replay_data::rows::DivisionStatusRow {
         division,
-        camouflage: replay::rows::Recorded::Value(
-            readable.then_some(replay::rows::DivisionCamouflage { category: Some(1) }),
+        camouflage: replay_data::rows::Recorded::Value(
+            readable.then_some(replay_data::rows::DivisionCamouflage { category: Some(1) }),
         ),
         ..Default::default()
     }
@@ -492,17 +492,15 @@ fn status(division: u64, readable: bool) -> replay::rows::DivisionStatusRow {
 /// One German hour on provinces `1..=provinces`, all snowy, whose
 /// template 50 names a designer model.
 fn hour_frame(
-    divisions: Vec<replay::rows::DivisionRow>,
-    statuses: Vec<replay::rows::DivisionStatusRow>,
+    divisions: Vec<replay_data::rows::DivisionRow>,
+    statuses: Vec<replay_data::rows::DivisionStatusRow>,
     provinces: u32,
 ) -> DecodedFrame {
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{
-            CountryLinkRow, CountryRow, LexicalTokenRow, ProvinceRow, TableId, TableRows,
-            WeatherProvinceRow, WeatherRegionRow,
-        },
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow, rows::ProvinceRow,
+        rows::TableId, rows::TableRows, rows::WeatherProvinceRow, rows::WeatherRegionRow,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
     let mut views = std::array::from_fn(|_| TableView::Unavailable {
         reason: "not needed for this hour".into(),
     });
@@ -678,7 +676,7 @@ fn prepare(assets: &UnitModelAssets, frame: &DecodedFrame) -> ModelReport {
                     region: &|_| None,
                     scale: &|_, _| 1.0,
                 },
-                localisation: &installed_content::localisation::Localisation::default(),
+                localisation: &installed_content_localisation::localisation::Localisation::default(),
             })
             .unwrap()
             .report
@@ -722,7 +720,7 @@ fn a_content_failure_turns_off_only_the_model_layer_and_says_so() {
 #[test]
 fn unit_graphics_defines_a_mod_breaks_load_with_the_recorded_ones() {
     let defines = |cutoff: &str| {
-        let defines = installed_content::defines::Defines::new().unwrap();
+        let defines = installed_content_core::defines::Defines::new().unwrap();
         defines
             .load(
                 "common/defines/00_defines.lua",
@@ -736,8 +734,8 @@ fn unit_graphics_defines_a_mod_breaks_load_with_the_recorded_ones() {
     };
     let (shown, recorded) = (defines("\"far\""), defines("200"));
     let load = |_: LoadStack,
-                defines: &installed_content::defines::Defines,
-                _: &mut Vec<installed_content::Diagnostic>| {
+                defines: &installed_content_core::defines::Defines,
+                _: &mut Vec<installed_content_core::Diagnostic>| {
         Ok(UnitModelAssets {
             gates: Gates::read(defines)?,
             disabled: None,
@@ -777,22 +775,23 @@ fn unit_graphics_defines_a_mod_breaks_load_with_the_recorded_ones() {
 /// the recorded unit models are drawn and nothing reaches the map's fallback.
 #[test]
 fn a_unit_model_layer_the_mods_break_loads_from_the_recording() {
-    let defines = installed_content::defines::Defines::new().unwrap();
+    let defines = installed_content_core::defines::Defines::new().unwrap();
     let mut stacks = Vec::new();
-    let load =
-        |stack: LoadStack, _: &installed_content::defines::Defines, _: &mut Vec<installed_content::Diagnostic>| {
-            stacks.push(stack);
-            match stack {
-                LoadStack::Shown => Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "gfx/naval_combat.txt: no formation",
-                )),
-                LoadStack::Recorded => Ok(UnitModelAssets {
-                    disabled: None,
-                    ..UnitModelAssets::off(String::new())
-                }),
-            }
-        };
+    let load = |stack: LoadStack,
+                _: &installed_content_core::defines::Defines,
+                _: &mut Vec<installed_content_core::Diagnostic>| {
+        stacks.push(stack);
+        match stack {
+            LoadStack::Shown => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "gfx/naval_combat.txt: no formation",
+            )),
+            LoadStack::Recorded => Ok(UnitModelAssets {
+                disabled: None,
+                ..UnitModelAssets::off(String::new())
+            }),
+        }
+    };
     let layers = ResolvedLayers::default();
     let mut warnings = Vec::new();
     let mut refusal = None;
@@ -820,10 +819,10 @@ fn a_unit_model_layer_the_mods_break_loads_from_the_recording() {
 
 #[test]
 fn an_unreadable_template_leaves_its_stacks_unmodelled_and_counted() {
-    use replay::rows::{DivisionTemplateIconRow, TableId, TableRows};
+    use replay_data::{rows::DivisionTemplateIconRow, rows::TableId, rows::TableRows};
     let mut frame = prepare_frame();
     *frame.tables[TableId::DivisionTemplateIcons.index()] =
-        replay::frame::TableView::Complete(TableRows::DivisionTemplateIcons(vec![
+        replay_frame::frame::TableView::Complete(TableRows::DivisionTemplateIcons(vec![
             DivisionTemplateIconRow {
                 template: 50,
                 // A registered designer model would otherwise win at level 1.
@@ -873,10 +872,8 @@ fn hour_builder_selection_cost() {
 #[test]
 #[ignore = "release unit scaling benchmark"]
 fn unit_scale_model_selection() {
-    use replay::{
-        frame::TableView,
-        rows::{CountryLinkRow, CountryRow, TableId, TableRows},
-    };
+    use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::TableRows};
+    use replay_frame::frame::TableView;
     for count in [50_000u32, 100_000] {
         let provinces = 10_000;
         let divisions = (0..count)
@@ -926,7 +923,7 @@ fn unit_scale_model_selection() {
 
 #[test]
 fn a_division_in_both_equipment_tables_takes_the_hourly_rows_once() {
-    let row = |division, ordinal, amount_raw| replay::rows::DivisionEquipmentRow {
+    let row = |division, ordinal, amount_raw| replay_data::rows::DivisionEquipmentRow {
         division,
         ordinal,
         amount_raw,
@@ -1033,10 +1030,11 @@ fn the_offset_points_the_mesh_s_own_forward_axis_along_the_route() {
 /// One hour with GER in canonical slot 1, whose appearance row carries
 /// `cosmetic` and `culture`.
 fn appearance_frame(cosmetic: &[u8], culture: &[u8]) -> DecodedFrame {
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{CountryAppearanceRow, CountryLinkRow, CountryRow, TableId, TableRows},
+    use replay_data::{
+        rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow, rows::TableId,
+        rows::TableRows,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
     let mut views = std::array::from_fn(|_| TableView::Unavailable {
         reason: "not needed for this hour".into(),
     });
@@ -1109,10 +1107,7 @@ fn the_walker_is_the_viewing_country_s_infantry_by_the_land_ladder() {
         (2, Level::Bare),
         (3, Level::Placeholder),
     ] {
-        assert_eq!(
-            entity(&every[skip..]),
-            Ok((level, every[skip].to_owned()))
-        );
+        assert_eq!(entity(&every[skip..]), Ok((level, every[skip].to_owned())));
     }
     let missing = entity(&[]).unwrap_err();
     assert!(missing.contains(PLACEHOLDER_ENTITY), "{missing}");
@@ -1135,7 +1130,11 @@ fn the_walker_is_the_viewing_country_s_infantry_by_the_land_ladder() {
         .unwrap_err();
     assert!(refused.contains("graphical culture"), "{refused}");
     // A country the hour does not record has no figure, and a layer that is off says why.
-    assert!(walker_assets(&every, None).infantry_entity(&frame, 2).is_err());
+    assert!(
+        walker_assets(&every, None)
+            .infantry_entity(&frame, 2)
+            .is_err()
+    );
     assert_eq!(
         UnitModelAssets::off("no descriptors".into()).infantry_entity(&frame, 1),
         Err("no descriptors".to_owned())

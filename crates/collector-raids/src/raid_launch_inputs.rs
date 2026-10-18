@@ -1,5 +1,5 @@
 //! The stored inputs of a raid offer's launch gate, which the game computes
-//! per viewing country on demand (`engine::raid_launch_inputs`).
+//! per viewing country on demand (`engine_native::raid_launch_inputs`).
 //! RaidAirSites is the sliced `raid_launch` family (owner: canonical slot):
 //! each hour reads that hour's country slice, a country new to the census
 //! and the owners of a read that was not published, and every country a
@@ -19,16 +19,14 @@ use crate::{
     table_capture::{Arena, CaptureRows},
     table_conversion::{table, unavailable},
 };
-use engine::allocation::{copy_vec, owned_vec};
-use engine::{Memory, ccountry, raid_launch_inputs as native, walk::Outcome};
-use replay::{
-    cadence::{SKIPPED_REASON, should_walk},
-    frame::TableView,
-    rows::{
-        AceRangeInputRow, CountryCommandPowerRow, RaidAirSiteRow, RaidCountryInputRow,
-        StockpileArchetypeRow, TableId, tables,
-    },
+use engine_allocation::{copy_vec, owned_vec};
+use engine_native::{Memory, ccountry, raid_launch_inputs as native, walk::Outcome};
+use replay_data::{
+    cadence::SKIPPED_REASON, cadence::should_walk, rows::AceRangeInputRow,
+    rows::CountryCommandPowerRow, rows::RaidAirSiteRow, rows::RaidCountryInputRow,
+    rows::StockpileArchetypeRow, rows::TableId, rows::tables,
 };
+use replay_frame::frame::TableView;
 
 pub const N: usize = 5;
 pub const TABLES: [TableId; N] = [
@@ -110,7 +108,7 @@ pub struct Captured {
     /// Each read country's RaidAirSites digest, ascending.
     hashes: Vec<(u32, u64)>,
     /// Modifier metadata, read once per walk; its storage is kept.
-    memo: engine::modifier_definition::DefinitionMemo,
+    memo: engine_native::modifier_definition::DefinitionMemo,
 }
 
 /// The family's owner store and the site list writers' marks.
@@ -290,12 +288,12 @@ impl Captured {
                 memo: &self.memo,
                 keys: &keys,
                 essentials: &mut self.essentials,
-                countries: engine::walk::Buffer::Growing(&mut self.countries.rows),
-                command_power: engine::walk::Buffer::Growing(&mut self.command_power.rows),
-                reservations: engine::walk::Buffer::Growing(&mut self.reservations.first),
-                archetypes: engine::walk::Buffer::Growing(&mut self.archetypes.rows),
-                sites: engine::walk::Buffer::Growing(&mut self.sites.rows),
-                aces: engine::walk::Buffer::Growing(&mut self.aces.rows),
+                countries: engine_native::walk::Buffer::Growing(&mut self.countries.rows),
+                command_power: engine_native::walk::Buffer::Growing(&mut self.command_power.rows),
+                reservations: engine_native::walk::Buffer::Growing(&mut self.reservations.first),
+                archetypes: engine_native::walk::Buffer::Growing(&mut self.archetypes.rows),
+                sites: engine_native::walk::Buffer::Growing(&mut self.sites.rows),
+                aces: engine_native::walk::Buffer::Growing(&mut self.aces.rows),
             },
             &|slot| selection.contains(slot),
         );
@@ -359,7 +357,7 @@ impl Captured {
                     .i64(row.container_capacity_raw.unwrap_or(0));
                 at += 1;
             }
-            if engine::allocation::reserve(&mut self.hashes, 1).is_err() {
+            if engine_allocation::reserve(&mut self.hashes, 1).is_err() {
                 return false;
             }
             self.hashes.push((owner, digest.finish()));
@@ -487,7 +485,7 @@ mod tests {
         };
         assert_eq!(
             rows,
-            replay::rows::TableRows::RaidCountryInputs(vec![RaidCountryInputRow {
+            replay_data::rows::TableRows::RaidCountryInputs(vec![RaidCountryInputRow {
                 canonical_slot: 3,
                 air_range_factor: Some(1),
                 naval_commando_range_factor: Some(2),
@@ -500,7 +498,7 @@ mod tests {
         };
         assert_eq!(
             power,
-            replay::rows::TableRows::CountryCommandPower(vec![CountryCommandPowerRow {
+            replay_data::rows::TableRows::CountryCommandPower(vec![CountryCommandPowerRow {
                 canonical_slot: 3,
                 allocated_command_power_raw: 7,
                 max_command_power: None,

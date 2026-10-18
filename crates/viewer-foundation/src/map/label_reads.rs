@@ -1,8 +1,6 @@
 //! Anchor placement and province label naming shared by map labels and counter hovers.
-use installed_content::{
-    localisation::{Localisation, Unlocalised},
-    parser::c_string,
-};
+use installed_content_core::parser::c_string;
+use installed_content_localisation::{localisation::Localisation, localisation::Unlocalised};
 use std::collections::BTreeMap;
 
 pub const VICTORY_POINT: u32 = 0x26;

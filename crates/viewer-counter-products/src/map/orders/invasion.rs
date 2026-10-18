@@ -2,10 +2,8 @@
 //! request country's roster slot zero (`CountryCounterInputs.first_division`).
 //! No unit means no route, even when both ports open onto one sea.
 
-use replay::{
-    frame::DecodedFrame,
-    rows::{ArmyOrderPlanRow, ArmyOrderRow, OrdersGroupRow, tables},
-};
+use replay_data::{rows::ArmyOrderPlanRow, rows::ArmyOrderRow, rows::OrdersGroupRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, sync::OnceLock};
 use {
     dashboard_text::triggers::World, viewer_foundation::map::movement_reads::Cells,

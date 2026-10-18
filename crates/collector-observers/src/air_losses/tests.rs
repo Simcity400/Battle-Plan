@@ -1,7 +1,8 @@
 use super::*;
-use engine::{
-    cair_wing, cair_wing_pool, ccountry, cgame_state, cloop_history, cstrategic_air,
-    cstrategic_region, csub_unit_definition, loop_history_record_fields, loop_history_window,
+use engine_air_history::{cloop_history, loop_history_record_fields, loop_history_window};
+use engine_native::{
+    cair_wing, cair_wing_pool, ccountry, cgame_state, cstrategic_air, cstrategic_region,
+    csub_unit_definition,
 };
 use std::sync::Mutex;
 #[cfg(feature = "tap-foreign-probe")]
@@ -591,7 +592,7 @@ fn hook_cost_air_losses() {
         }
     });
     // The guarded native reads alone: family, before and after.
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let (base, game) = (world.base(), world.pointer(World::GAME));
     let reads = crate::test_support::per_call_ns(COUNTRIES, || {
         for country in 1..=COUNTRIES {

@@ -1,11 +1,9 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{
-        DivisionRow, FleetRow, LandCombatRow, NavalCombatParticipantRow, NavalCombatRow, ShipRow,
-        TableRows, TaskForceRow,
-    },
+use replay_data::{
+    rows::DivisionRow, rows::FleetRow, rows::LandCombatRow, rows::NavalCombatParticipantRow,
+    rows::NavalCombatRow, rows::ShipRow, rows::TableRows, rows::TaskForceRow,
 };
+use replay_frame::frame::TableView;
 
 fn membership() -> installed_content_save::PartialMapMembership {
     super::super::fixtures::membership(
@@ -25,7 +23,7 @@ fn zero() -> installed_content_save::Decimal {
 
 #[test]
 fn division_movement_style_compares_writer_truth_priority_and_local_refusals() {
-    use replay::rows::{DivisionMovementRow, Recorded};
+    use replay_data::{rows::DivisionMovementRow, rows::Recorded};
     let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
     let id = (7_u64 << 32) | 51;
     saved.divisions.clear();
@@ -179,7 +177,7 @@ fn division_movement_style_compares_writer_truth_priority_and_local_refusals() {
 
 #[test]
 fn stored_air_wing_name_oracle_compares_bytes_presence_and_capture_refusals() {
-    use replay::rows::{AirWingRow, Recorded};
+    use replay_data::{rows::AirWingRow, rows::Recorded};
     let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
     let id = (1 << 32) | 69;
     let country = frame.complete::<tables::Countries>().unwrap()[0].clone();
@@ -296,18 +294,18 @@ fn division_country_ordinal_compares_the_full_saved_roster() {
         .division_orders
         .insert(b"GER".to_vec(), vec![second, first]);
     let mut rows = vec![
-        replay::rows::DivisionStatusRow {
-            out_of_supply_days: replay::rows::Recorded::NotRecorded,
+        replay_data::rows::DivisionStatusRow {
+            out_of_supply_days: replay_data::rows::Recorded::NotRecorded,
             division: first,
-            country_ordinal: replay::rows::Recorded::Value(Some(1)),
-            supply: replay::rows::Recorded::NotRecorded,
+            country_ordinal: replay_data::rows::Recorded::Value(Some(1)),
+            supply: replay_data::rows::Recorded::NotRecorded,
             ..Default::default()
         },
-        replay::rows::DivisionStatusRow {
-            out_of_supply_days: replay::rows::Recorded::NotRecorded,
+        replay_data::rows::DivisionStatusRow {
+            out_of_supply_days: replay_data::rows::Recorded::NotRecorded,
             division: second,
-            country_ordinal: replay::rows::Recorded::Value(Some(0)),
-            supply: replay::rows::Recorded::NotRecorded,
+            country_ordinal: replay_data::rows::Recorded::Value(Some(0)),
+            supply: replay_data::rows::Recorded::NotRecorded,
             ..Default::default()
         },
     ];
@@ -327,7 +325,7 @@ fn division_country_ordinal_compares_the_full_saved_roster() {
     )
     .unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    rows[0].country_ordinal = replay::rows::Recorded::Value(Some(0));
+    rows[0].country_ordinal = replay_data::rows::Recorded::Value(Some(0));
     set(
         &mut frame,
         TableId::DivisionStatus,
@@ -348,7 +346,9 @@ fn division_country_ordinal_compares_the_full_saved_roster() {
 
 #[test]
 fn division_status_naming_takes_the_witnessed_member_template() {
-    use replay::rows::{DivisionStatusRow, NameOperands, Recorded, Witnessed};
+    use replay_data::{
+        rows::DivisionStatusRow, rows::NameOperands, rows::Recorded, rows::Witnessed,
+    };
     let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
     let id = (1_u64 << 32) | 4713;
     let (standard, deleted) = (1_u64 << 32 | 52, 999_u64 << 32 | 52);
@@ -441,7 +441,7 @@ fn division_status_naming_takes_the_witnessed_member_template() {
     set(
         &mut frame,
         TableId::DivisionTemplates,
-        TableRows::DivisionTemplates(vec![replay::rows::DivisionTemplateRow {
+        TableRows::DivisionTemplates(vec![replay_data::rows::DivisionTemplateRow {
             template: deleted,
             ..Default::default()
         }]),
@@ -451,7 +451,7 @@ fn division_status_naming_takes_the_witnessed_member_template() {
 
 #[test]
 fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precision() {
-    use replay::rows::{DivisionStatusRow, DivisionSupplyFooter, Recorded};
+    use replay_data::{rows::DivisionStatusRow, rows::DivisionSupplyFooter, rows::Recorded};
     let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
     let id = (1_u64 << 32) | 51;
     saved.divisions.clear();
@@ -513,7 +513,7 @@ fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precisio
             &mut frame,
             TableId::DivisionStatus,
             TableRows::DivisionStatus(vec![DivisionStatusRow {
-                out_of_supply_days: replay::rows::Recorded::NotRecorded,
+                out_of_supply_days: replay_data::rows::Recorded::NotRecorded,
                 division: id,
                 supply_grace_maximum: Recorded::Value(0),
                 supply_grace_remaining: Recorded::Value(0),
@@ -565,7 +565,7 @@ fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precisio
         &mut frame,
         TableId::DivisionStatus,
         TableRows::DivisionStatus(vec![DivisionStatusRow {
-            out_of_supply_days: replay::rows::Recorded::NotRecorded,
+            out_of_supply_days: replay_data::rows::Recorded::NotRecorded,
             division: id,
             supply_grace_remaining: Recorded::NotRecorded,
             supply: Recorded::Value(None),
@@ -659,7 +659,12 @@ fn land_combat_classes_follow_the_saved_roster_of_each_participant() {
     let membership = membership();
     let (frame, mut saved, _, _) = super::super::fixtures::fixture();
     let owner = saved.countries.keys().next().unwrap().clone();
-    let (division, gun, task_force, stray) = (21_u64 << 32 | 4713, 22_u64 << 32 | 4713, 23_u64 << 32 | 61, 24_u64 << 32 | 4713);
+    let (division, gun, task_force, stray) = (
+        21_u64 << 32 | 4713,
+        22_u64 << 32 | 4713,
+        23_u64 << 32 | 61,
+        24_u64 << 32 | 4713,
+    );
     saved.divisions.insert(
         division,
         installed_content_save::Division {
@@ -728,25 +733,26 @@ fn land_combat_classes_follow_the_saved_roster_of_each_participant() {
         defenders,
         details: Default::default(),
     };
-    let compare = |saved: &installed_content_save::Save, defenders: Vec<u64>, defender_classes: Vec<u32>| {
-        let mut frame = frame.clone();
-        set(
-            &mut frame,
-            TableId::LandCombats,
-            TableRows::LandCombats(vec![LandCombatRow {
-                id: 11,
-                province: 1,
-                attackers: attackers.clone(),
-                defenders,
-                attacker_classes: vec![0, 13],
-                defender_classes,
-                ..Default::default()
-            }]),
-        );
-        let mut report = Report::default();
-        compare_land_combats(&frame, saved, &membership, &mut report).unwrap();
-        report
-    };
+    let compare =
+        |saved: &installed_content_save::Save, defenders: Vec<u64>, defender_classes: Vec<u32>| {
+            let mut frame = frame.clone();
+            set(
+                &mut frame,
+                TableId::LandCombats,
+                TableRows::LandCombats(vec![LandCombatRow {
+                    id: 11,
+                    province: 1,
+                    attackers: attackers.clone(),
+                    defenders,
+                    attacker_classes: vec![0, 13],
+                    defender_classes,
+                    ..Default::default()
+                }]),
+            );
+            let mut report = Report::default();
+            compare_land_combats(&frame, saved, &membership, &mut report).unwrap();
+            report
+        };
     // A division, a railway gun and a task force each keep their own class.
     saved.land_combats.insert(11, combat(vec![task_force]));
     assert_differences(&compare(&saved, vec![task_force], vec![1]), &[]);
@@ -766,7 +772,7 @@ fn land_combat_classes_follow_the_saved_roster_of_each_participant() {
 
 #[test]
 fn divisions_compare_locations_strength_and_missing_rows_despite_membership_exclusions() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let membership = membership();
     let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();

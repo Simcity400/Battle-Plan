@@ -101,7 +101,7 @@ pub fn read_live(status: &Value) -> Live {
     let hours = status["hours"].as_u64().unwrap_or(0);
     let campaign = status["campaign"]
         .as_str()
-        .filter(|id| replay::identity::is_campaign_uuid(id.as_bytes()))
+        .filter(|id| replay_data::identity::is_campaign_uuid(id.as_bytes()))
         .map(str::to_owned);
     let hour = (hours > 0)
         .then(|| status["last_hour"].as_i64())

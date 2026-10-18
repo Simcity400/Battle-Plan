@@ -1,5 +1,5 @@
 //! Allocation-free notifications from the native writers of every air wing's equipment pool
-//! ([`engine::air_wing_equipment_mutations`]). A detour only notifies the shared watch registry
+//! ([`engine_mutations::air_wing_equipment_mutations`]). A detour only notifies the shared watch registry
 //! ([`WatchRegistry`]) for the pools its arguments name, counts its site and calls the original; it
 //! never changes game behaviour. Receivers are the `CEquipmentVariantPool` addresses
 //! (`cair_wing::EQUIPMENT_POOL`) a WingEquipment capture registered; a notification never infers a
@@ -15,10 +15,10 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{
-    Memory,
-    air_wing_equipment_mutations::{MUTATIONS, pools},
+use engine_mutations::{
+    air_wing_equipment_mutations::MUTATIONS, air_wing_equipment_mutations::pools,
 };
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -77,7 +77,7 @@ impl Watches {
     pub fn kill(&self, wing: usize) -> Notification<'_> {
         self.kills.fetch_add(1, Ordering::Relaxed);
         self.registry
-            .notify(wing.wrapping_add(engine::air_wing_equipment_mutations::POOL))
+            .notify(wing.wrapping_add(engine_mutations::air_wing_equipment_mutations::POOL))
     }
 
     /// Observes only while both this family's hooks and the aircraft loss writer
@@ -294,11 +294,14 @@ impl Hooks {
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
-        use engine::air_wing_equipment_mutations::{Receiver, SUBTRACT_VARIANT_RVA};
+        use engine_mutations::{
+            air_wing_equipment_mutations::Receiver,
+            air_wing_equipment_mutations::SUBTRACT_VARIANT_RVA,
+        };
         let mut hooks = Vec::new();
         if cfg!(feature = "wing_changes")
             && MUTATIONS.iter().all(|(site, _)| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             SUBTRACT.store(base + SUBTRACT_VARIANT_RVA, Ordering::Release);
@@ -373,7 +376,7 @@ fn notify(site: usize, first: usize, second: usize) -> [Option<Notification<'sta
 
 // Each entry site takes at most four integer or pointer arguments (RCX..R9)
 // and returns RAX unchanged from its original; the first two name the pools
-// as its [`engine::air_wing_equipment_mutations::Receiver`] says.
+// as its [`engine_mutations::air_wing_equipment_mutations::Receiver`] says.
 macro_rules! callback {
     ($name:ident, $site:expr) => {
         unsafe extern "system" fn $name(

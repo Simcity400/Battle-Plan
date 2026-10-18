@@ -3,15 +3,13 @@ use crate::test_fixtures::{
     CAMPAIGN, LineFixture, OutputFixture, PRODUCTION_HOUR as FIRST, equipment_types,
     production_frame, records,
 };
-use replay::{
-    container::Replay,
-    frame::TableView,
-    rows::{CountryLinkRow, TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::CountryLinkRow, rows::TableId, rows::TableRows};
+use replay_frame::frame::TableView;
 
 #[test]
 fn production_hour_batches_its_supplying_flags_and_matches_individual_lookups() {
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     for at in 0..48 {
         let mut frame = production_frame(
             FIRST + at,
@@ -47,7 +45,7 @@ fn production_hour_batches_its_supplying_flags_and_matches_individual_lookups() 
 
 #[test]
 fn native_producer_scan_follows_renames_excludes_reused_tags_and_keeps_real_gaps() {
-    use replay::rows::{CountryRow, ProductionLineRow};
+    use replay_data::{rows::CountryRow, rows::ProductionLineRow};
     let frames = (FIRST..=FIRST + 50)
         .filter(|hour| ![FIRST + 30, FIRST + 31].contains(hour))
         .map(|hour| {
@@ -144,11 +142,12 @@ fn native_producer_scan_follows_renames_excludes_reused_tags_and_keeps_real_gaps
 
 #[test]
 fn changed_modifier_layout_refuses_only_the_production_supplement_and_counts_the_supplying_read() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{
-        CountryProductionModifiersRow, LexicalTokenRow, ModifierBreakdownNode,
-        ModifierDefinitionRow, ProductionLineModifiersRow, ProductionModifierTree,
+    use replay_data::{
+        rows::CountryProductionModifiersRow, rows::LexicalTokenRow, rows::ModifierBreakdownNode,
+        rows::ModifierDefinitionRow, rows::ProductionLineModifiersRow,
+        rows::ProductionModifierTree,
     };
     let mut frame = production_frame(FIRST, true, true, 9001, &[(5, 70, 1, 3276800)], None);
     let TableView::Complete(TableRows::ProductionLines(rows)) =
@@ -157,7 +156,7 @@ fn changed_modifier_layout_refuses_only_the_production_supplement_and_counts_the
         panic!("lines");
     };
     rows.iter_mut().find(|row| row.handle == 5).unwrap().country = 9001;
-    let keys = replay::fixed_layout::PRODUCTION_MODIFIERS.keys;
+    let keys = replay_derive::fixed_layout::PRODUCTION_MODIFIERS.keys;
     *frame.tables[TableId::CountryProductionModifiers.index()] =
         TableView::Complete(TableRows::CountryProductionModifiers(vec![
             CountryProductionModifiersRow {
@@ -745,13 +744,14 @@ fn production_output_stops_at_the_first_unavailable_hour_and_lines_between_reads
 /// read only after that census, gets its icon once the definition arrives.
 #[test]
 fn a_variant_defined_after_its_census_gets_its_icon_when_its_definition_arrives() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{
         equipment_icon::{Icon, IconContent},
         production_lines::scan,
     };
-    use installed_content::{equipment_graphics, technology::Enablers};
+    use installed_content_core::technology::Enablers;
+    use installed_content_equipment_graphics::equipment_graphics;
     let frame = |hour: i32| {
         let output: &[OutputFixture] = if hour == FIRST + 24 {
             &[(5, 70, 6, true, false), (9, 71, 4, true, true)]
@@ -841,13 +841,14 @@ fn a_variant_defined_after_its_census_gets_its_icon_when_its_definition_arrives(
 /// entry) gets its new icon at that read, not at the next census.
 #[test]
 fn a_known_variants_icon_follows_a_changed_definition_at_its_read() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{
         equipment_icon::{Icon, IconContent},
         production_lines::scan,
     };
-    use installed_content::{equipment_graphics, technology::Enablers};
+    use installed_content_core::technology::Enablers;
+    use installed_content_equipment_graphics::equipment_graphics;
     let frame = |hour: i32| {
         let mut frame = production_frame(
             hour,
@@ -1015,7 +1016,7 @@ fn a_variant_is_named_only_from_its_first_definition_read_onwards() {
         ],
     );
     let mut shown = std::collections::BTreeMap::new();
-    let mut texts = installed_content::localisation::Localisation::default();
+    let mut texts = installed_content_localisation::localisation::Localisation::default();
     texts.language = "english".into();
     let (entries, unnamed, _) = variant_entries(&scanned, Some(&texts), true, &mut shown);
     assert_eq!(unnamed, 0);
@@ -1365,9 +1366,9 @@ fn a_detail_window_does_not_grow_with_modifier_trees() {
         DETAIL_HOURS, MAX_REPLY_BYTES, RawRun, ScannedLine, ScannedLines,
         breakdown::RawModifierRun, detail_lines,
     };
-    use replay::rows::{
-        CountryProductionModifiersRow, ModifierBreakdownNode, ProductionLineModifiersRow,
-        ProductionModifierTree,
+    use replay_data::{
+        rows::CountryProductionModifiersRow, rows::ModifierBreakdownNode,
+        rows::ProductionLineModifiersRow, rows::ProductionModifierTree,
     };
     let runs: Vec<RawRun> = (0..30)
         .map(|day| RawRun {
@@ -1733,7 +1734,7 @@ fn unresolved_organisation_owner_never_selects_generic_name_or_icon() {
     let mut frame = production_frame(FIRST, true, true, 9001, &[(5, 70, 8, 0)], Some(&[]));
     *frame.tables[TableId::IndustrialOrganisations.index()] =
         TableView::Complete(TableRows::IndustrialOrganisations(vec![
-            replay::rows::IndustrialOrganisationRow {
+            replay_data::rows::IndustrialOrganisationRow {
                 organisation: 79,
                 country: 11,
                 owner: 333,
@@ -1743,7 +1744,7 @@ fn unresolved_organisation_owner_never_selects_generic_name_or_icon() {
         ]));
     *frame.tables[TableId::LexicalTokens.index()] =
         TableView::Complete(TableRows::LexicalTokens(vec![
-            replay::rows::LexicalTokenRow {
+            replay_data::rows::LexicalTokenRow {
                 token: 602,
                 literal: b"acme".to_vec(),
             },
@@ -2076,7 +2077,7 @@ fn a_first_view_holds_a_detail_window_of_newest_blocks_within_its_bound() {
 #[test]
 fn variant_reads_build_only_changed_definitions_and_name_as_every_read_does() {
     use crate::products::production_lines::scan;
-    use replay::rows::{VariantModuleRow, VariantUpgradeRow};
+    use replay_data::{rows::VariantModuleRow, rows::VariantUpgradeRow};
     let frame = |hour: i32| {
         let at = hour - FIRST;
         let mut frame = production_frame(
@@ -2182,7 +2183,7 @@ fn a_saved_scan_restores_the_scan_it_saved() {
         LineKind, RawOrganisation, RawRun, SavedLines, ScannedLine, ScannedLines,
         breakdown::RawModifierRun,
     };
-    use replay::rows::{CountryProductionModifiersRow, ProductionLineModifiersRow};
+    use replay_data::{rows::CountryProductionModifiersRow, rows::ProductionLineModifiersRow};
     let run = |first_hour: i32| RawRun {
         first_hour,
         last_hour: first_hour + 23,
@@ -2450,7 +2451,7 @@ fn a_kept_scans_pictures_hold_only_while_their_files_and_visual_inputs_do() {
         equipment_icon::{Icon, IconContent, IconHour, variant_icon},
         production_lines::{SavedLines, SavedScan, pictures_hold},
     };
-    use replay::rows::VariantDefinitionRow;
+    use replay_data::rows::VariantDefinitionRow;
     const TEXTURE: &str = "gfx/models/custom.dds";
     let content = |files: &[&str], sprites: &[&str]| {
         IconContent::from_parts(
@@ -2525,7 +2526,7 @@ fn saving_a_scan_does_one_lookup_per_modifier_run() {
     use crate::products::production_lines::{
         RawRun, SavedLines, ScannedLines, breakdown::RawModifierRun,
     };
-    use replay::rows::{CountryProductionModifiersRow, ProductionLineModifiersRow};
+    use replay_data::{rows::CountryProductionModifiersRow, rows::ProductionLineModifiersRow};
     let (lines, days) = (50_u64, 200_i32);
     // The country's row changes at every read; every line shares it.
     let rows: Vec<Arc<CountryProductionModifiersRow>> = (0..days)
@@ -2578,7 +2579,7 @@ fn saving_a_scan_does_one_lookup_per_modifier_run() {
 fn country_lookup_reuse(count: u32) {
     use crate::prepared::prepass::noted;
     use crate::test_fixtures::{scale_frame, scale_tag};
-    use replay::frame::FrameEncoder;
+    use replay_frame::frame::FrameEncoder;
     let mut encoder = FrameEncoder::default();
     let mut decoder = FrameDecoder::for_tables(&[TableId::Countries, TableId::CountryLinks]);
     let mut selected = CountryRead::default();

@@ -103,26 +103,26 @@ fn cumulative(values: &mut Accumulator, key: u64, hour: i32, total: i128) {
 }
 impl Prepared {
     #[cfg(test)]
-    pub fn observe(&mut self, frame: &replay::frame::DecodedFrame) -> io::Result<()> {
+    pub fn observe(&mut self, frame: &replay_frame::frame::DecodedFrame) -> io::Result<()> {
         self.observe_changed(
             frame,
             &FrameChanges {
-                rows_changed: [true; replay::frame::TABLE_COUNT],
-                table_read: [true; replay::frame::TABLE_COUNT],
-                slot_read: [true; replay::frame::TABLE_COUNT],
+                rows_changed: [true; replay_data::rows::TABLE_COUNT],
+                table_read: [true; replay_data::rows::TABLE_COUNT],
+                slot_read: [true; replay_data::rows::TABLE_COUNT],
                 updates: None,
             },
         )
     }
     pub fn observe_changed(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         changes: &FrameChanges,
     ) -> io::Result<()> {
-        let cpu = ::replay::cpu::scope_phase("trade:observe");
+        let cpu = ::replay_frame::cpu::scope_phase("trade:observe");
         let continuous =
             self.scan.last_hour.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
-        let _cpu = ::replay::cpu::scope_phase("trade:observe");
+        let _cpu = ::replay_frame::cpu::scope_phase("trade:observe");
         self.publication.initialize(&self.keys, &self.totals);
         self.publication.continuous = continuous;
         if !continuous {
@@ -154,7 +154,7 @@ impl Prepared {
             None => self.observe_tables(frame, changes, continuous)?,
         }
         drop(cpu);
-        let _cpu = ::replay::cpu::scope_phase("trade:integrals");
+        let _cpu = ::replay_frame::cpu::scope_phase("trade:integrals");
         // Branch-wide coverage and refusal clocks advance independently of
         // the flows' deferred constant-rate integrals.
         let known = self.scan.known;
@@ -207,7 +207,7 @@ impl Prepared {
     /// by exactly their recorded rows. None when the whole tables are needed.
     fn observe_rows(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         changes: &FrameChanges,
         continuous: bool,
     ) -> io::Result<Option<RowHour>> {
@@ -269,7 +269,7 @@ impl Prepared {
     /// Observe the hour from the whole tables.
     fn observe_tables(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         changes: &FrameChanges,
         continuous: bool,
     ) -> io::Result<()> {
@@ -414,7 +414,7 @@ impl Prepared {
     }
 
     pub fn bytes(&self) -> usize {
-        let _cpu = ::replay::cpu::scope_phase("trade:budget");
+        let _cpu = ::replay_frame::cpu::scope_phase("trade:budget");
         #[cfg(test)]
         let hourly = self.hourly_integrals;
         #[cfg(not(test))]
@@ -865,7 +865,8 @@ pub fn query(
     });
     let names = std::cell::RefCell::new(Learned::default());
     let sampled_inputs = sample::Query::default();
-    let sampler = |frame: &replay::frame::DecodedFrame, requested: Option<&[(String, String)]>| {
+    let sampler = |frame: &replay_frame::frame::DecodedFrame,
+                   requested: Option<&[(String, String)]>| {
         if let (Ok(definitions), Ok(lexical)) = (
             frame.complete::<tables::ResourceDefinitions>(),
             frame.complete::<tables::LexicalTokens>(),
@@ -879,7 +880,7 @@ pub fn query(
                 .iter()
                 .map(|&actor| (identity(actor), "actor".into())),
         );
-        let _cpu = replay::cpu::scope_phase("trade:query_sample");
+        let _cpu = replay_frame::cpu::scope_phase("trade:query_sample");
         let sampled = sampled_inputs.sample(frame, Some(&requested), source.replay_ref().format)?;
         if manual {
             for ((tag, field), (holder, _)) in &sampled {
@@ -1070,7 +1071,7 @@ fn read_pages(
     progressive: Option<Progressive<'_>>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Value>> {
-    let _cpu = replay::cpu::scope_phase("trade:query_pages");
+    let _cpu = replay_frame::cpu::scope_phase("trade:query_pages");
     let mut holders = Holders::new();
     for (tag, country) in &history.countries {
         for run in country.identities.iter() {
@@ -1849,11 +1850,9 @@ fn read_pages(
 mod tests {
     use super::*;
     use dashboard_core::test_fixtures::{CAMPAIGN, records, resource_frame};
-    use replay::rows::{CountryLinkRow, CountryRow, ResourceExchangeRow};
-    use replay::{
-        frame::{DecodedFrame, TableView},
-        rows::TableRows,
-    };
+    use replay_data::rows::TableRows;
+    use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::ResourceExchangeRow};
+    use replay_frame::{frame::DecodedFrame, frame::TableView};
 
     #[test]
     fn trade_observer_work_is_flat_over_unchanged_hours_and_retired_flows() {
@@ -1951,7 +1950,7 @@ mod tests {
         if let TableView::Complete(TableRows::ResourceExchanges(rows)) =
             &mut *frame.tables[TableId::ResourceExchanges.index()]
         {
-            rows.push(replay::rows::ResourceExchangeRow {
+            rows.push(replay_data::rows::ResourceExchangeRow {
                 id: 55,
                 exporter: 21,
                 importer: 9001,
@@ -2217,7 +2216,7 @@ mod tests {
             );
         }
         let query = sample::Query::default();
-        let format = replay::format::FormatVersion::default();
+        let format = replay_data::format::FormatVersion::default();
         let actual = query.sample(&frame, None, format).unwrap();
         assert_eq!(actual, sampled);
         let before = query.visits();
@@ -2634,21 +2633,21 @@ mod tests {
     /// The recording codec: each input hour is encoded and decoded as the
     /// preparation pipeline reads it, with its recorded updates.
     struct Recorded {
-        encoder: replay::frame::FrameEncoder,
-        decoder: replay::frame::FrameDecoder,
+        encoder: replay_frame::frame::FrameEncoder,
+        decoder: replay_frame::frame::FrameDecoder,
     }
     impl Recorded {
         fn new() -> Self {
             Self {
-                encoder: replay::frame::FrameEncoder::new(),
-                decoder: replay::frame::FrameDecoder::new(),
+                encoder: replay_frame::frame::FrameEncoder::new(),
+                decoder: replay_frame::frame::FrameDecoder::new(),
             }
         }
         fn next(
             &mut self,
             input: &DecodedFrame,
             keyframe: bool,
-        ) -> (DecodedFrame, Arc<replay::frame::Frame>) {
+        ) -> (DecodedFrame, Arc<replay_frame::frame::Frame>) {
             let wire = self.encoder.encode(input.clone(), keyframe).unwrap();
             let decoded = self.decoder.advance(&wire).unwrap().clone();
             (decoded, Arc::new(wire))
@@ -2688,7 +2687,7 @@ mod tests {
 
     fn assert_rows_observe_only_changed_flows(count: u32) {
         use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let mut recorded = Recorded::new();
         let mut tracker = FrameChangeTracker::new();
         // Each hour's exchange rows read, flows published, values written,
@@ -2806,8 +2805,8 @@ mod tests {
     #[test]
     fn trade_rows_observation_matches_whole_tables_and_scan_across_keyframe_gap_and_resume() {
         use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-        use replay::rows::{LexicalTokenRow, ResourceDefinitionRow};
-        let format = replay::format::FormatVersion::CURRENT;
+        use replay_data::{rows::LexicalTokenRow, rows::ResourceDefinitionRow};
+        let format = replay_data::format::FormatVersion::CURRENT;
         let flag = AtomicBool::new(false);
         let mut frame = resource_frame(100, 0, 9001, &[(51, 21, 9001, 12), (52, 11, 31, 5)]);
         // A fourth country, renamed later.
@@ -3068,7 +3067,7 @@ mod tests {
             frame_changes::FrameChangeTracker,
             series::tests::{Fixture, assert_payloads_equal},
         };
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let flag = AtomicBool::new(false);
         let mut input = trade_world(count);
         add_deal(&mut input, steel(u64::from(count), count, 1, 7));
@@ -3214,7 +3213,7 @@ mod tests {
             pages::publication_due,
             series::tests::{Fixture, assert_payloads_equal},
         };
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let flag = AtomicBool::new(false);
         let mut input = trade_world(count);
         add_deal(&mut input, steel(u64::from(count), count, 1, 7));

@@ -1,6 +1,6 @@
 use super::*;
-use engine::{cair_wing, memory::SliceMemory};
-use replay::rows::TableRows;
+use engine_native::{cair_wing, memory::SliceMemory};
+use replay_data::rows::TableRows;
 
 fn put64(bytes: &mut [u8], at: usize, value: u64) {
     bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
@@ -145,17 +145,22 @@ fn game_score_status_counts_current_read_prefix_errors_after_census_failure() {
     const FLEET: usize = 0x3e100;
     let mut bytes = kit::fixture();
     put64(&mut bytes, 0x11010, 0xdead0000);
-    array(&mut bytes, COUNTRY + engine::ccountry::FLEETS, 0x3e000, 2);
+    array(
+        &mut bytes,
+        COUNTRY + engine_native::ccountry::FLEETS,
+        0x3e000,
+        2,
+    );
     put64(&mut bytes, 0x3e000, FLEET as u64);
-    put64(&mut bytes, FLEET, engine::cfleet::VTABLE_RVA as u64);
-    put64(&mut bytes, FLEET + engine::cfleet::HANDLE, 61);
+    put64(&mut bytes, FLEET, engine_native::cfleet::VTABLE_RVA as u64);
+    put64(&mut bytes, FLEET + engine_native::cfleet::HANDLE, 61);
     bytes[kit::WING + cair_wing::MISSION_STATS + cair_wing::MISSION_STAT_INDEXES] = 255;
     struct Fault<'a>(&'a [u8]);
     impl Memory for Fault<'_> {
         fn copy(&self, at: usize, out: &mut [u8]) -> bool {
             let failed = [
-                COUNTRY + engine::ccountry::DIVISIONS_COUNT,
-                FLEET + engine::cfleet::TASK_FORCE_COUNT,
+                COUNTRY + engine_native::ccountry::DIVISIONS_COUNT,
+                FLEET + engine_native::cfleet::TASK_FORCE_COUNT,
                 kit::WING + cair_wing::DEFAULT_STATS + 0x33 * 8,
             ];
             !failed
@@ -388,25 +393,38 @@ fn game_score_live_demand_presizes_all_frame_and_wing_job_buffers() {
     const ENTRY: usize = 0x31000;
     const FLEET: usize = 0x3e100;
     const SITE: usize = 0x3f100;
-    array(&mut bytes, COUNTRY + engine::ccountry::FLEETS, 0x3e000, 3);
+    array(
+        &mut bytes,
+        COUNTRY + engine_native::ccountry::FLEETS,
+        0x3e000,
+        3,
+    );
     for index in 0..3 {
         put64(&mut bytes, 0x3e000 + index * 8, FLEET as u64);
     }
-    put64(&mut bytes, FLEET, engine::cfleet::VTABLE_RVA as u64);
-    put64(&mut bytes, FLEET + engine::cfleet::HANDLE, 61);
-    put32(&mut bytes, FLEET + engine::cfleet::TASK_FORCE_COUNT, 7);
+    put64(&mut bytes, FLEET, engine_native::cfleet::VTABLE_RVA as u64);
+    put64(&mut bytes, FLEET + engine_native::cfleet::HANDLE, 61);
+    put32(
+        &mut bytes,
+        FLEET + engine_native::cfleet::TASK_FORCE_COUNT,
+        7,
+    );
     array(
         &mut bytes,
-        ENTRY + engine::cstrategic_air::FIRST_AIR_SITES,
+        ENTRY + engine_native::cstrategic_air::FIRST_AIR_SITES,
         0x3f000,
         1,
     );
     put64(&mut bytes, 0x3f000, SITE as u64);
-    put64(&mut bytes, SITE, engine::cair_base::VTABLE_RVA as u64);
+    put64(
+        &mut bytes,
+        SITE,
+        engine_native::cair_base::VTABLE_RVA as u64,
+    );
     put64(&mut bytes, SITE + 8, 65);
     put32(
         &mut bytes,
-        SITE + engine::cair_base::COUNTRY_CONTAINERS_COUNT,
+        SITE + engine_native::cair_base::COUNTRY_CONTAINERS_COUNT,
         1,
     );
     for wing in [kit::WING, 0x34000] {
@@ -545,22 +563,26 @@ fn game_score_owned_air_shares_census_and_preserves_independent_failures() {
     const BASE: usize = 0x3a000;
     array(
         &mut bytes,
-        ENTRY + engine::cstrategic_air::FIRST_AIR_SITES,
+        ENTRY + engine_native::cstrategic_air::FIRST_AIR_SITES,
         0x3b000,
         2,
     );
     put64(&mut bytes, 0x3b000, BASE as u64);
     put64(&mut bytes, 0x3b008, BASE as u64);
-    put64(&mut bytes, BASE, engine::cair_base::VTABLE_RVA as u64);
+    put64(
+        &mut bytes,
+        BASE,
+        engine_native::cair_base::VTABLE_RVA as u64,
+    );
     put64(&mut bytes, BASE + 8, 65);
     put32(
         &mut bytes,
-        BASE + engine::cair_base::COUNTRY_CONTAINERS_COUNT,
+        BASE + engine_native::cair_base::COUNTRY_CONTAINERS_COUNT,
         2,
     );
     put64(
         &mut bytes,
-        BASE + engine::cair_base::COUNTRY_CONTAINERS,
+        BASE + engine_native::cair_base::COUNTRY_CONTAINERS,
         0x3c000,
     );
     put64(&mut bytes, 0x3c008, 0x3d000);
@@ -608,7 +630,7 @@ fn game_score_owned_air_shares_census_and_preserves_independent_failures() {
     impl Memory for ScoreReads<'_> {
         fn copy(&self, at: usize, out: &mut [u8]) -> bool {
             let watched = [
-                ENTRY + engine::cstrategic_air::FIRST_AIR_SITES,
+                ENTRY + engine_native::cstrategic_air::FIRST_AIR_SITES,
                 kit::WING + cair_wing::DEFAULT_STATS + 0x33 * 8,
                 0x34000 + cair_wing::DEFAULT_STATS + 0x33 * 8,
             ];
@@ -665,7 +687,7 @@ fn game_score_owned_air_shares_census_and_preserves_independent_failures() {
     let mut unrelated = bytes.clone();
     put64(
         &mut unrelated,
-        kit::WING + cair_wing::MISSION + engine::air_mission::REGION,
+        kit::WING + cair_wing::MISSION + engine_native::air_mission::REGION,
         0xdead0000,
     );
     assert!(air::copy_air_refresh(&kit::memory(&unrelated), context, &mut job).raw_ok);
@@ -704,32 +726,45 @@ fn game_score_fleet_header_grows_first_witness_and_keeps_independent_air_pressur
     const FLEET: usize = 0x3e100;
     put32(
         &mut bytes,
-        COUNTRY + engine::ccountry::DIVISIONS_COUNT,
+        COUNTRY + engine_native::ccountry::DIVISIONS_COUNT,
         (-2_i32) as u32,
     );
     put32(
         &mut bytes,
-        COUNTRY + engine::ccountry::CONTROLLED_PROVINCES_COUNT,
+        COUNTRY + engine_native::ccountry::CONTROLLED_PROVINCES_COUNT,
         9,
     );
-    array(&mut bytes, COUNTRY + engine::ccountry::FLEETS, 0x3e000, 1);
-    put64(&mut bytes, 0x3e000, FLEET as u64);
-    put64(&mut bytes, FLEET, engine::cfleet::VTABLE_RVA as u64);
-    put64(&mut bytes, FLEET + engine::cfleet::HANDLE, 61);
-    put32(&mut bytes, FLEET + engine::cfleet::TASK_FORCE_COUNT, 7);
     array(
         &mut bytes,
-        ENTRY + engine::cstrategic_air::FIRST_AIR_SITES,
+        COUNTRY + engine_native::ccountry::FLEETS,
+        0x3e000,
+        1,
+    );
+    put64(&mut bytes, 0x3e000, FLEET as u64);
+    put64(&mut bytes, FLEET, engine_native::cfleet::VTABLE_RVA as u64);
+    put64(&mut bytes, FLEET + engine_native::cfleet::HANDLE, 61);
+    put32(
+        &mut bytes,
+        FLEET + engine_native::cfleet::TASK_FORCE_COUNT,
+        7,
+    );
+    array(
+        &mut bytes,
+        ENTRY + engine_native::cstrategic_air::FIRST_AIR_SITES,
         0x3f000,
         1,
     );
     put64(&mut bytes, 0x3f000, 0x3f100);
-    put64(&mut bytes, 0x3f100, engine::cair_base::VTABLE_RVA as u64);
+    put64(
+        &mut bytes,
+        0x3f100,
+        engine_native::cair_base::VTABLE_RVA as u64,
+    );
     put64(&mut bytes, 0x3f108, 65);
     // No access: the native bounds test certifies false without a container.
     put32(
         &mut bytes,
-        0x3f100 + engine::cair_base::COUNTRY_CONTAINERS_COUNT,
+        0x3f100 + engine_native::cair_base::COUNTRY_CONTAINERS_COUNT,
         1,
     );
     struct Globals<'a>(&'a [u8]);
@@ -806,7 +841,7 @@ fn game_score_air_short_storage_grows_from_full_demand_and_absence_is_not_failur
     let mut bytes = vec![0; 0x500];
     array(
         &mut bytes,
-        0x100 + engine::cstrategic_air::FIRST_AIR_SITES,
+        0x100 + engine_native::cstrategic_air::FIRST_AIR_SITES,
         0x300,
         7,
     );
@@ -836,7 +871,7 @@ fn game_score_air_short_storage_grows_from_full_demand_and_absence_is_not_failur
     air.owner(&memory, 0, 3, None);
     array(
         &mut bytes,
-        0x100 + engine::cstrategic_air::FIRST_AIR_SITES,
+        0x100 + engine_native::cstrategic_air::FIRST_AIR_SITES,
         0,
         0,
     );
@@ -875,7 +910,7 @@ fn game_score_typed_air_fallback_uses_frame_buffers_while_ordinary_is_loaned() {
     }
     put64(
         &mut bytes,
-        kit::WING + cair_wing::MISSION + engine::air_mission::REGION,
+        kit::WING + cair_wing::MISSION + engine_native::air_mission::REGION,
         0xdead0000,
     );
     let memory = kit::memory(&bytes);
@@ -884,7 +919,7 @@ fn game_score_typed_air_fallback_uses_frame_buffers_while_ordinary_is_loaned() {
     capacity.game_score.wings = 2;
     let mut captured = extended::Captured::with_capacities(&capacity);
     let countries =
-        std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+        std::sync::Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
     let mut parts = captured.take_ordinary_parts(
         &countries,
         0,

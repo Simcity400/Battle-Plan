@@ -2,10 +2,8 @@
 use std::{collections::BTreeMap, fmt::Debug, io};
 
 use installed_content_save::air::{self, Pack};
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryRow, tables},
-};
+use replay_data::{rows::CountryRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::{Report, complete, country_tag, invalid, required_country_tag};
 
@@ -306,14 +304,14 @@ fn compare_aces(
             expected.callsign.as_deref(),
         );
         match &actual.presentation {
-            replay::rows::Recorded::Value(Some(fields)) => {
+            replay_data::rows::Recorded::Value(Some(fields)) => {
                 check(report, &format!("{label}.modifier"), &fields.definition, &expected.modifier);
                 check(report, &format!("{label}.is_female"), fields.gender != 0, expected.female);
                 check(report, &format!("{label}.portrait"), fields.pool_index, expected.portrait);
             }
-            replay::rows::Recorded::Value(None) => report.difference(
+            replay_data::rows::Recorded::Value(None) => report.difference(
                 format!("{label}.presentation"), "capture failed", "saved modifier / portrait operands"),
-            replay::rows::Recorded::NotRecorded => report.limitation(
+            replay_data::rows::Recorded::NotRecorded => report.limitation(
                 "ace presentation operands not recorded; the established roster fields still compare",
                 format!("{label}.presentation")),
         }
@@ -387,18 +385,18 @@ fn ace_names_use_first_nul_and_callsign_stored_length() {
         (b"".as_slice(), "callsign=\"\"", 1),
         (b"C\0tail".as_slice(), "callsign=D", 1),
     ] {
-        let doc = installed_content::parser::parse(format!("countries={{AAA={{ace={{id={{id=1 type=4}} name=N surname=S portrait=0 {callsign}}}}}}}").as_bytes()).unwrap();
+        let doc = installed_content_core::parser::parse(format!("countries={{AAA={{ace={{id={{id=1 type=4}} name=N surname=S portrait=0 {callsign}}}}}}}").as_bytes()).unwrap();
         let saved = air::parse(&doc.items).unwrap();
-        *frame.tables[replay::rows::TableId::AirAces.index()] =
-            replay::frame::TableView::Complete(replay::rows::TableRows::AirAces(vec![
-                replay::rows::AirAceRow {
+        *frame.tables[replay_data::rows::TableId::AirAces.index()] =
+            replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::AirAces(vec![
+                replay_data::rows::AirAceRow {
                     id: (1_u64 << 32) | 4,
                     country: 101,
                     alive: 1,
                     name: b"N\0tail".to_vec(),
                     surname: b"S\0tail".to_vec(),
                     callsign: stored.to_vec(),
-                    presentation: replay::rows::Recorded::NotRecorded,
+                    presentation: replay_data::rows::Recorded::NotRecorded,
                     ..Default::default()
                 },
             ]));
@@ -426,7 +424,7 @@ fn ace_names_use_first_nul_and_callsign_stored_length() {
 
 /// AirRegionCombat at the frame's hour against the saved `combat_history`
 /// holders: each row derived by the daily prune
-/// ([`replay::air_region_derive::retained`]) with the content's
+/// ([`replay_derive::air_region_derive::retained`]) with the content's
 /// `NGame.AIR_LOG_TIMEOUT_HOURS`, then every record in native order, own
 /// vector first, with both damage vectors.
 pub fn compare_region_combat(
@@ -436,7 +434,8 @@ pub fn compare_region_combat(
     timeout: i32,
     report: &mut Report,
 ) -> io::Result<()> {
-    use replay::{air_region_derive, rows::AirCombatRecord};
+    use replay_data::rows::AirCombatRecord;
+    use replay_derive::air_region_derive;
     let rows = complete::<tables::AirRegionCombat>(frame)?;
     // The daily pass prunes only the countries the game simulates, those
     // owning a state; another container keeps its last read records.
@@ -648,11 +647,12 @@ fn compare_statistics(
 mod tests {
     use super::*;
     use crate::test_support::frame;
-    use installed_content::parser;
-    use replay::{
-        frame::TableView,
-        rows::{AirStatisticsRow, TableId, TableRows, WingCumulativeRow, WingEquipmentRow},
+    use installed_content_core::parser;
+    use replay_data::{
+        rows::AirStatisticsRow, rows::TableId, rows::TableRows, rows::WingCumulativeRow,
+        rows::WingEquipmentRow,
     };
+    use replay_frame::frame::TableView;
 
     fn parsed(text: &[u8]) -> Pack {
         air::parse(&parser::parse(text).unwrap().items).unwrap()
@@ -725,7 +725,9 @@ mod tests {
     /// container without an owned state is compared as last read.
     #[test]
     fn region_combat_compares_the_pruned_records_and_both_damage_channels() {
-        use replay::rows::{AirCombatDamage, AirCombatRecord, AirRegionCombatRow, StateRow};
+        use replay_data::{
+            rows::AirCombatDamage, rows::AirCombatRecord, rows::AirRegionCombatRow, rows::StateRow,
+        };
         let save = parsed(br#"strategic_air={GER={combat_history={4={tag="GER" friend={id=9 equipment={allow_zero_entries=yes} time=43800030 mission=5 count=3 tag="GER" ground_attack=yes destination=no sender={type=2 value=1.5} receiver={type=4 value=2}} enemy={id=10 equipment={allow_zero_entries=no} time=43800031 mission=1 count=2 tag="---" ground_attack=no destination=yes}}}}}"#);
         let germany = CountryRow {
             id: 12,
@@ -882,7 +884,7 @@ mod tests {
             *frame.tables[table.index()] = TableView::Unavailable {
                 reason: format!(
                     "{table:?} retired at format {0}; this recording is format {0}",
-                    replay::FORMAT_VERSION
+                    replay_data::FORMAT_VERSION
                 ),
             };
         }
@@ -901,7 +903,7 @@ mod tests {
     }
     #[test]
     fn ace_oracle_checks_selected_definition_and_saved_portrait_operands() {
-        use replay::rows::{AirAcePresentation, AirAceRow, Recorded};
+        use replay_data::{rows::AirAcePresentation, rows::AirAceRow, rows::Recorded};
         let save = parsed(br#"countries={MOD={ace={id={id=1 type=4} name="N" surname="S" modifier="authored_type" is_female=yes portrait=-7}}}"#);
         let country = CountryRow {
             id: 9,

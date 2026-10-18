@@ -7,10 +7,8 @@ use std::{
 };
 
 use installed_content_save::{Save, governance as saved};
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryRow, Recorded, tables},
-};
+use replay_data::{rows::CountryRow, rows::Recorded, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::{
     Report, TokenNames, complete, invalid, required_country_tag, reverse_spellings, token_spelling,
@@ -60,7 +58,7 @@ fn label(tag: &[u8], field: &str) -> String {
 }
 
 fn literal<'a>(report: &mut Report, subject: &str, token: &'a [u8]) -> &'a [u8] {
-    let end = installed_content::parser::c_string(token).len();
+    let end = installed_content_core::parser::c_string(token).len();
     if end < token.len() {
         report.limitation("native text serialization ends at the first NUL; captured trailing bytes are not save-comparable", subject);
     }

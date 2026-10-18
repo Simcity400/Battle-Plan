@@ -1,9 +1,9 @@
 use super::*;
 
 fn observer_frame(countries: u32, invalid_tag: bool) -> DecodedFrame {
-    use replay::rows::{
-        CountryLinkRow, CountryRow, ProductionLineOutputRow, ProductionLineRow,
-        RocketProductionOutputRow, TableRows,
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::ProductionLineOutputRow,
+        rows::ProductionLineRow, rows::RocketProductionOutputRow, rows::TableRows,
     };
     let mut frame = crate::test_fixtures::source(1, 8, Some(1));
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
@@ -78,7 +78,10 @@ fn observer_format(frame: &DecodedFrame) -> FormatVersion {
 }
 
 fn naming_frame() -> DecodedFrame {
-    use replay::rows::{LexicalTokenRow, ProductionLineOutputRow, TableRows, VariantDefinitionRow};
+    use replay_data::{
+        rows::LexicalTokenRow, rows::ProductionLineOutputRow, rows::TableRows,
+        rows::VariantDefinitionRow,
+    };
     let mut frame = observer_frame(2, false);
     frame.hour = crate::test_fixtures::slot_hour(TableId::VariantDefinitions);
     frame.metrics.table_ns.fill(0);
@@ -155,7 +158,7 @@ fn equal_variant_reads_build_and_classify_once_but_keep_each_reads_name_date() {
     let mut frame = first.clone();
     frame.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
     for (offset, expected) in [(73, 3), (74, 4), (75, 5), (76, 7)] {
-        use replay::rows::{TableRows, VariantModuleRow, VariantUpgradeRow};
+        use replay_data::{rows::TableRows, rows::VariantModuleRow, rows::VariantUpgradeRow};
         frame.hour = first.hour + offset;
         match offset {
             73 => {
@@ -233,7 +236,7 @@ fn cached_variant_operands_keep_fresh_frame_pages_state_and_publication_across_r
         frame_changes::FrameChangeTracker,
         series::tests::{Fixture, assert_payloads_equal},
     };
-    use replay::rows::{TableRows, VariantModuleRow, VariantUpgradeRow};
+    use replay_data::{rows::TableRows, rows::VariantModuleRow, rows::VariantUpgradeRow};
     let flag = AtomicBool::new(false);
     let mut frame = naming_frame();
     let first = frame.hour;
@@ -413,7 +416,7 @@ fn production_observer_work_is_flat_over_carried_hours_and_retired_holders() {
             frame.metrics.table_ns[TableId::ProductionLines.index()] = 1;
             for alias in 0..history {
                 frame.hour = first.hour + alias as i32;
-                if let TableView::Complete(replay::rows::TableRows::Countries(rows)) =
+                if let TableView::Complete(replay_data::rows::TableRows::Countries(rows)) =
                     &mut *frame.tables[TableId::Countries.index()]
                 {
                     rows[0].tag = format!("retired production holder {alias}").into_bytes();
@@ -428,7 +431,7 @@ fn production_observer_work_is_flat_over_carried_hours_and_retired_holders() {
             }
             let before = state.work();
             frame.hour += 1;
-            if let TableView::Complete(replay::rows::TableRows::ProductionLineOutput(rows)) =
+            if let TableView::Complete(replay_data::rows::TableRows::ProductionLineOutput(rows)) =
                 &mut *frame.tables[TableId::ProductionLineOutput.index()]
             {
                 rows[0].units = 2;
@@ -459,7 +462,7 @@ fn production_endpoint_warning_clock_matches_every_oracle_hour_across_two_commit
  {
     use crate::prepared::series::tests::Fixture;
     use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
     let flag = AtomicBool::new(false);
     let initial = observer_frame(2, true);
     let format = observer_format(&initial);
@@ -1068,8 +1071,8 @@ fn persisted_pages_and_resume_states_isolate_overlapping_branch_hours() {
     let first = page(0, vec![amount(1, 7, true, false)]);
     let mut second = page(0, vec![amount(1, 9, true, false)]);
     second.branch_id = "2".into();
-    let mut resumed = ProductionAccumulator::new(replay::FORMAT_VERSION, 1, 0);
-    let mut other_branch = ProductionAccumulator::new(replay::FORMAT_VERSION, 2, 0);
+    let mut resumed = ProductionAccumulator::new(replay_data::FORMAT_VERSION, 1, 0);
+    let mut other_branch = ProductionAccumulator::new(replay_data::FORMAT_VERSION, 2, 0);
     assert_eq!(
         publish_endpoint(&mut writer, &mut resumed, &first).unwrap(),
         0
@@ -1146,7 +1149,7 @@ fn endpoint_leaf_events_restore_identical_pages_after_two_commits_resume_append_
     let flag = AtomicBool::new(false);
     let mut fixture = Fixture::new();
     let mut writer = fixture.writer();
-    let mut state = ProductionAccumulator::new(replay::FORMAT_VERSION, 1, 0);
+    let mut state = ProductionAccumulator::new(replay_data::FORMAT_VERSION, 1, 0);
     let wide = (1i128 << 100) + 17;
     let mut expected = Vec::new();
     for block in 0..5 {
@@ -1246,7 +1249,7 @@ fn endpoint_written_bytes_are_flat_at_n_and_ten_n_blocks_and_retired_leaves_are_
     use crate::prepared::series::{Reader, tests::Fixture};
     let flag = AtomicBool::new(false);
     let mut fixture = Fixture::new();
-    let mut state = ProductionAccumulator::new(replay::FORMAT_VERSION, 1, 0);
+    let mut state = ProductionAccumulator::new(replay_data::FORMAT_VERSION, 1, 0);
     let mut current = page(
         0,
         (1..=128)
@@ -1333,7 +1336,7 @@ fn endpoint_changed_payload_stays_flat_when_retired_leaf_history_grows_tenfold()
     use crate::prepared::series::{Reader, tests::Fixture};
     let flag = AtomicBool::new(false);
     let fixture = Fixture::new();
-    let mut state = ProductionAccumulator::new(replay::FORMAT_VERSION, 1, 0);
+    let mut state = ProductionAccumulator::new(replay_data::FORMAT_VERSION, 1, 0);
     let mut current = page(0, Vec::new());
     current.classifications.clear();
     let mut measured = Vec::new();
@@ -1463,7 +1466,7 @@ fn endpoint_reads_search_each_leaf_directory_once_and_restore_only_requested_lea
     let flag = AtomicBool::new(false);
     let fixture = Fixture::new();
     let mut writer = fixture.writer();
-    let mut state = ProductionAccumulator::new(replay::FORMAT_VERSION, 1, 0);
+    let mut state = ProductionAccumulator::new(replay_data::FORMAT_VERSION, 1, 0);
     let tags: Vec<String> = (0..1000).map(|index| format!("T{index:04}")).collect();
     let mut published = Vec::new();
     // Three batches; every leaf changes in each, the classifications never do.
@@ -1546,7 +1549,7 @@ fn endpoint_reads_search_each_leaf_directory_once_and_restore_only_requested_lea
 #[test]
 fn production_spending_projects_equal_inventories_once_and_rebuilds_after_restore() {
     use crate::prepared::series::tests::{Fixture, assert_payloads_equal};
-    use replay::rows::{ProductionLineOutputRow, TableRows};
+    use replay_data::{rows::ProductionLineOutputRow, rows::TableRows};
     let flag = AtomicBool::new(false);
     let mut frame = observer_frame(1, false);
     let format = observer_format(&frame);
@@ -1645,7 +1648,7 @@ fn spending_inventory_visits_follow_changed_holders_across_quiet_spans_and_hourl
         frame_changes::FrameChanges,
         series::tests::{Fixture, assert_payloads_equal},
     };
-    use replay::rows::{ProductionLineOutputRow, ProductionLineRow, TableRows};
+    use replay_data::{rows::ProductionLineOutputRow, rows::ProductionLineRow, rows::TableRows};
     const VARIANTS: u32 = 32;
     let flag = AtomicBool::new(false);
     for quiet in [true, false] {
@@ -1692,9 +1695,9 @@ fn spending_inventory_visits_follow_changed_holders_across_quiet_spans_and_hourl
                     }
                 } else {
                     let changes = FrameChanges {
-                        rows_changed: [false; replay::frame::TABLE_COUNT],
-                        table_read: [false; replay::frame::TABLE_COUNT],
-                        slot_read: [false; replay::frame::TABLE_COUNT],
+                        rows_changed: [false; replay_data::rows::TABLE_COUNT],
+                        table_read: [false; replay_data::rows::TABLE_COUNT],
+                        slot_read: [false; replay_data::rows::TABLE_COUNT],
                         updates: None,
                     };
                     frame.metrics.table_ns.fill(0);
@@ -1727,9 +1730,9 @@ fn spending_inventory_visits_follow_changed_holders_across_quiet_spans_and_hourl
             frame.tables[TableId::ProductionLineOutput.index()] =
                 TableView::Complete(TableRows::ProductionLineOutput(output.clone())).into();
             let mut changes = FrameChanges {
-                rows_changed: [day == 0; replay::frame::TABLE_COUNT],
-                table_read: [false; replay::frame::TABLE_COUNT],
-                slot_read: [false; replay::frame::TABLE_COUNT],
+                rows_changed: [day == 0; replay_data::rows::TABLE_COUNT],
+                table_read: [false; replay_data::rows::TABLE_COUNT],
+                slot_read: [false; replay_data::rows::TABLE_COUNT],
                 updates: None,
             };
             changes.rows_changed[TableId::ProductionLineOutput.index()] = true;
@@ -1780,7 +1783,7 @@ fn spending_inventory_visits_follow_changed_holders_across_quiet_spans_and_hourl
 
 fn presentation_inventory_work_follows_changed_holders(count: u32) {
     use crate::prepared::frame_changes::FrameChangeTracker;
-    use replay::rows::{ProductionLineOutputRow, ProductionLineRow, TableRows};
+    use replay_data::{rows::ProductionLineOutputRow, rows::ProductionLineRow, rows::TableRows};
     let flag = AtomicBool::new(false);
     let mut frame = observer_frame(count, false);
     let first = frame.hour;

@@ -1,5 +1,5 @@
 use super::*;
-use replay::rows::NavalProvinceCombatRow;
+use replay_data::rows::NavalProvinceCombatRow;
 
 /// The index keeps one point per value change: 1,500 combats whose units
 /// keep changing but whose flags never do cost one point per side,
@@ -68,7 +68,7 @@ fn branch_start(reason: BranchReason, loaded_hour: Option<Hour>) -> BranchStart 
         session: 1,
         loaded_hour,
         first_hour: 20,
-        parent: replay::branches::Parentage::Unknown,
+        parent: replay_frame::branches::Parentage::Unknown,
         reason,
     }
 }
@@ -140,10 +140,8 @@ fn a_load_without_its_origin_folds_its_first_hour_as_a_gap() {
 
 #[test]
 fn five_thousand_countries_resolve_and_fold() {
-    use replay::{
-        frame::TableView,
-        rows::{CountryLinkRow, CountryRow, TableRows},
-    };
+    use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableRows};
+    use replay_frame::frame::TableView;
     const COUNTRIES: u32 = 5_000;
     const COMBATS: u64 = 1_500;
     let mut frame = DecodedFrame {
@@ -297,13 +295,12 @@ fn naval_frame(
     combats: u64,
     bytes: [u8; 2],
 ) -> DecodedFrame {
-    use replay::{
-        frame::TableView,
-        rows::{
-            CountryLinkRow, CountryRow, FactionMemberRow, NavalCombatDetailsRow, NavalCombatRow,
-            PlayerRow, TableRows, TaskForceRow,
-        },
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::FactionMemberRow,
+        rows::NavalCombatDetailsRow, rows::NavalCombatRow, rows::PlayerRow, rows::TableRows,
+        rows::TaskForceRow,
     };
+    use replay_frame::frame::TableView;
     let mut frame = DecodedFrame {
         branch: 3,
         hour: 0,
@@ -348,10 +345,12 @@ fn naval_frame(
             })
             .collect(),
     ));
-    set(TableRows::LocalPlayer(vec![replay::rows::LocalPlayerRow {
-        country: players.first().copied().unwrap_or(0),
-        observer_country: 0,
-    }]));
+    set(TableRows::LocalPlayer(vec![
+        replay_data::rows::LocalPlayerRow {
+            country: players.first().copied().unwrap_or(0),
+            observer_country: 0,
+        },
+    ]));
     set(TableRows::FactionMembers(
         factions
             .iter()
@@ -399,14 +398,16 @@ fn naval_frame(
             })
             .collect(),
     ));
-    set(TableRows::LandCombats(vec![replay::rows::LandCombatRow {
-        id: 100,
-        attackers: vec![300],
-        defenders: vec![301],
-        ..Default::default()
-    }]));
+    set(TableRows::LandCombats(vec![
+        replay_data::rows::LandCombatRow {
+            id: 100,
+            attackers: vec![300],
+            defenders: vec![301],
+            ..Default::default()
+        },
+    ]));
     set(TableRows::LandCombatSides(vec![
-        replay::rows::LandCombatSideRow {
+        replay_data::rows::LandCombatSideRow {
             combat: 100,
             attacker_primary: vec![2],
             defender_primary: vec![5],
@@ -617,13 +618,13 @@ fn unread_and_unnamed_hours_are_counted_through_the_pass() {
     // Country links unavailable while naval combats are recorded: neither
     // the perspective nor the recording player resolves.
     let mut frame = naval_frame(6, &[1], none, 1, [0, 0]);
-    *frame.tables[TableId::CountryLinks.index()] = replay::frame::TableView::Unavailable {
+    *frame.tables[TableId::CountryLinks.index()] = replay_frame::frame::TableView::Unavailable {
         reason: "not captured".into(),
     };
     pass.fold_hour(3, 11, Some(&frame), Some(10));
     // A failed client read is unidentified even with two humans.
     let mut frame = naval_frame(6, &[1, 5], none, 1, [0, 0]);
-    *frame.tables[TableId::LocalPlayer.index()] = replay::frame::TableView::Unavailable {
+    *frame.tables[TableId::LocalPlayer.index()] = replay_frame::frame::TableView::Unavailable {
         reason: "not captured".into(),
     };
     pass.fold_hour(3, 12, Some(&frame), Some(10));
@@ -677,13 +678,14 @@ fn an_observer_view_set_without_a_rebuild_shows_one_sample_later() {
         let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
         for (hour, (country, observer_country, bytes)) in (10..).zip(views) {
             let mut frame = naval_frame(6, &[1], allied, 1, bytes);
-            *frame.tables[TableId::LocalPlayer.index()] =
-                replay::frame::TableView::Complete(replay::rows::TableRows::LocalPlayer(vec![
-                    replay::rows::LocalPlayerRow {
+            *frame.tables[TableId::LocalPlayer.index()] = replay_frame::frame::TableView::Complete(
+                replay_data::rows::TableRows::LocalPlayer(vec![
+                    replay_data::rows::LocalPlayerRow {
                         country,
                         observer_country,
                     },
-                ]));
+                ]),
+            );
             pass.fold_hour(3, hour, Some(&frame), Some(10));
         }
         pass
@@ -701,8 +703,8 @@ fn an_observer_view_set_without_a_rebuild_shows_one_sample_later() {
     let index = index(&pass, "C1");
     let mut frame = naval_frame(6, &[1], allied, 1, [1, 0]);
     *frame.tables[TableId::LocalPlayer.index()] =
-        replay::frame::TableView::Complete(replay::rows::TableRows::LocalPlayer(vec![
-            replay::rows::LocalPlayerRow {
+        replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::LocalPlayer(vec![
+            replay_data::rows::LocalPlayerRow {
                 country: 0,
                 observer_country: 4,
             },
@@ -736,10 +738,8 @@ fn an_observer_view_set_without_a_rebuild_shows_one_sample_later() {
 /// C3's own history never saw the combat engaged.
 #[test]
 fn the_recording_players_icons_keep_the_clients_carried_frame() {
-    use replay::{
-        frame::TableView,
-        rows::{NavalCombatShipRow, TableRows},
-    };
+    use replay_data::{rows::NavalCombatShipRow, rows::TableRows};
+    use replay_frame::frame::TableView;
     let hour = |hour: Hour, player: u32, bytes: [u8; 2]| {
         let mut frame = naval_frame(6, &[player], &[], 1, bytes);
         frame.hour = hour;
@@ -787,10 +787,8 @@ fn the_recording_players_icons_keep_the_clients_carried_frame() {
 /// holding countries: the icon keeps the frame the engaged hours set.
 #[test]
 fn a_joined_recordings_icon_keeps_the_frame_its_recorded_bytes_set() {
-    use replay::{
-        frame::TableView,
-        rows::{NavalCombatShipRow, TableRows, TaskForceRow},
-    };
+    use replay_data::{rows::NavalCombatShipRow, rows::TableRows, rows::TaskForceRow};
+    use replay_frame::frame::TableView;
     let hour = |hour: Hour, factions: &[(u32, u32)], defenders: &[u64], bytes: [u8; 2]| {
         let mut frame = naval_frame(6, &[1], factions, 1, bytes);
         frame.hour = hour;
@@ -850,13 +848,12 @@ fn mp_switch_and_observer_hours_are_checked_with_a_stable_human_roster() {
     let mut pass = Pass::new(Arc::default(), Country::Recorded);
     for (hour, country, observer_country) in [(10, 1, 0), (11, 2, 0), (12, 0, 5)] {
         let mut frame = naval_frame(6, &[1, 2, 5], &[], 1, [0, 0]);
-        *frame.tables[TableId::LocalPlayer.index()] =
-            replay::frame::TableView::Complete(replay::rows::TableRows::LocalPlayer(vec![
-                replay::rows::LocalPlayerRow {
-                    country,
-                    observer_country,
-                },
-            ]));
+        *frame.tables[TableId::LocalPlayer.index()] = replay_frame::frame::TableView::Complete(
+            replay_data::rows::TableRows::LocalPlayer(vec![replay_data::rows::LocalPlayerRow {
+                country,
+                observer_country,
+            }]),
+        );
         pass.fold_hour(3, hour, Some(&frame), Some(10));
     }
     let summary = &pass.check.summary;
@@ -937,10 +934,8 @@ fn mismatch_counts_stay_exact_while_only_the_first_five_are_kept() {
 /// keeps frame 1, carried, at that hour and on a seek back to it.
 #[test]
 fn an_unengaged_naval_icon_keeps_its_last_engaged_frame_through_the_index() {
-    use replay::{
-        frame::TableView,
-        rows::{NavalCombatShipRow, TableRows},
-    };
+    use replay_data::{rows::NavalCombatShipRow, rows::TableRows};
+    use replay_frame::frame::TableView;
     let convoy = |frame: &mut DecodedFrame| {
         *frame.tables[TableId::NavalCombatShips.index()] =
             TableView::Complete(TableRows::NavalCombatShips(vec![NavalCombatShipRow {
@@ -1090,13 +1085,11 @@ fn a_lookup_takes_the_last_change_at_or_before_the_hour_for_the_folded_viewer() 
 /// country 2 attacks country 3. `players` are (key, country), `None`
 /// leaving `Players` unrecorded; `allied` puts 1 and 2 in one faction.
 fn roster_frame(hour: Hour, players: Option<&[(i32, u32)]>, allied: bool) -> DecodedFrame {
-    use replay::{
-        frame::TableView,
-        rows::{
-            CountryLinkRow, CountryRow, FactionMemberRow, HumanControllerRow, LandCombatRow,
-            LandCombatSideRow, PlayerRow, TableRows,
-        },
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::FactionMemberRow, rows::HumanControllerRow,
+        rows::LandCombatRow, rows::LandCombatSideRow, rows::PlayerRow, rows::TableRows,
     };
+    use replay_frame::frame::TableView;
     let mut frame = DecodedFrame {
         branch: 1,
         hour,

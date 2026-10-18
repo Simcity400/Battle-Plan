@@ -26,12 +26,10 @@ use dashboard_text::{
     catalogue::{Catalogue, Refusals, View},
     metadata::{LinkTags, branch_bounds, slot_read},
 };
-use installed_content::localisation::Argument;
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, SharedView, TableView, ViewIdentity},
-    rows::{AirAceRow, TableId, tables},
-};
+use installed_content_localisation::localisation::Argument;
+use replay::container::Replay;
+use replay_data::{rows::AirAceRow, rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -44,7 +42,7 @@ use std::{
 use ts_rs::TS;
 #[cfg(test)]
 use {
-    dashboard_text::metadata::validate_campaign, replay::frame::FrameDecoder,
+    dashboard_text::metadata::validate_campaign, replay_frame::frame::FrameDecoder,
     std::collections::VecDeque,
 };
 
@@ -252,7 +250,7 @@ struct Scan {
     /// The recording's format, which dates its daily tables
     /// ([`dashboard_text::metadata::slot_read`]).
     #[serde(skip)]
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
     first: i32,
     last: i32,
     #[serde(skip)]

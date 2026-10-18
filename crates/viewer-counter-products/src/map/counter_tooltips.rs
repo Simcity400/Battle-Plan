@@ -22,14 +22,13 @@ mod task_force_summary;
 use std::{collections::BTreeMap, sync::Arc};
 use viewer_foundation::map::counter_hovers::{land::Timing, refuse};
 
-use installed_content::{
-    country_names::CountryNames,
-    localisation::{Argument as Arg, Localisation},
+use installed_content_country_names::country_names::CountryNames;
+use installed_content_localisation::{localisation::Argument as Arg, localisation::Localisation};
+use replay_data::{
+    rows::CountryLinkRow, rows::DivisionMovementRow, rows::DivisionRow, rows::DivisionStatusRow,
+    rows::tables,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryLinkRow, DivisionMovementRow, DivisionRow, DivisionStatusRow, tables},
-};
+use replay_frame::frame::DecodedFrame;
 
 use {
     super::counter_content,
@@ -200,7 +199,7 @@ struct Context<'a> {
     loc: &'a Localisation,
     recorded_language: &'a str,
     icons: &'a dyn TextIcons,
-    names: &'a installed_content::division_names::Database,
+    names: &'a installed_content_division_names::division_names::Database,
     units: &'a Result<units::Content, String>,
     supply_grace: Result<i32, String>,
     comms_max_distance: Result<i32, String>,
@@ -231,7 +230,7 @@ impl<'a> Context<'a> {
             .map_err(|_| format!("Divisions division {id} is absent"))
     }
 
-    fn orders_group(&self, handle: u64) -> Result<&'a replay::rows::OrdersGroupRow, String> {
+    fn orders_group(&self, handle: u64) -> Result<&'a replay_data::rows::OrdersGroupRow, String> {
         let rows = self
             .frame
             .complete::<tables::OrdersGroups>()
@@ -244,7 +243,7 @@ impl<'a> Context<'a> {
     fn group_input(
         &self,
         handle: u64,
-    ) -> Result<&'a replay::rows::OrdersGroupCounterInputRow, String> {
+    ) -> Result<&'a replay_data::rows::OrdersGroupCounterInputRow, String> {
         let rows = self
             .frame
             .complete::<tables::OrdersGroupCounterInputs>()
@@ -438,7 +437,10 @@ impl<'a> Context<'a> {
     fn hq(&self, out: &mut Tooltip, candidates: &[u64]) {
         for &id in candidates {
             let result: Result<
-                (String, Option<&replay::rows::OrdersGroupCounterInputRow>),
+                (
+                    String,
+                    Option<&replay_data::rows::OrdersGroupCounterInputRow>,
+                ),
                 String,
             > = (|| {
                 let division = self.division(id)?;
@@ -624,7 +626,7 @@ fn next_hours(members: &[(u64, u32, u32, &Timing)]) -> Result<Option<i32>, Strin
             .next
             .ok_or_else(|| format!("unit {id} has no next-province arrival estimate"))?;
         // The next-province duration rounds each first edge up to whole hours.
-        let hours = engine::cunit::eta_hours(remaining) as i32;
+        let hours = engine_native::cunit::eta_hours(remaining) as i32;
         minimum = Some(minimum.map_or(hours, |previous: i32| previous.min(hours)));
     }
     Ok(minimum.filter(|&hours| hours > 0))
@@ -777,7 +779,7 @@ impl<'a> Batch<'a> {
 
 enum ArrivalUnit<'a> {
     Division(&'a DivisionMovementRow),
-    Railway(&'a replay::rows::RailwayGunCounterInputRow),
+    Railway(&'a replay_data::rows::RailwayGunCounterInputRow),
 }
 
 fn build_context(
@@ -1093,10 +1095,11 @@ fn build_divisions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{
-        ClockRow, CountryAppearanceRow, CountryLinkRow, CountryRow, DivisionTemplateIconRow,
-        DivisionTemplateRow, LandCombatDivisionRow, LexicalTokenRow, NameOperands, PoliticsRow,
-        ProvinceRow, Recorded, TableRows, TemplateSubunit,
+    use replay_data::{
+        rows::ClockRow, rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow,
+        rows::DivisionTemplateIconRow, rows::DivisionTemplateRow, rows::LandCombatDivisionRow,
+        rows::LexicalTokenRow, rows::NameOperands, rows::PoliticsRow, rows::ProvinceRow,
+        rows::Recorded, rows::TableRows, rows::TemplateSubunit,
     };
     use viewer_foundation::map::test_support::{test_frame, test_put as put};
 
@@ -1290,7 +1293,7 @@ mod tests {
         frame: &'a DecodedFrame,
         loc: &'a Localisation,
         vision: &'a Vision,
-        names: &'a installed_content::division_names::Database,
+        names: &'a installed_content_division_names::division_names::Database,
         units: &'a Result<units::Content, String>,
     ) -> Context<'a> {
         Context {
@@ -1320,14 +1323,14 @@ mod tests {
         vision: &Vision,
     ) -> Tooltip {
         let loc = loc();
-        let defines = installed_content::defines::Defines::new().unwrap();
+        let defines = installed_content_core::defines::Defines::new().unwrap();
         defines
             .load("synthetic.lua", b"NDefines={NIntel={COUNTRY_LEVEL_INTEL_MAXIMUMS={1,1,1,1},ARMY_TEMPLATE_UNIT_COUNT_INTEL_MIN=0.25,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MAX=0.75,ARMY_TEMPLATE_UNIT_COUNT_INTEL_RANGE_AT_LOWEST_INTEL=1.5}}")
             .unwrap();
-        let mut subunits = installed_content::unit_leader::SubUnits::default();
+        let mut subunits = installed_content_core::unit_leader::SubUnits::default();
         subunits.read(b"sub_units={Foot={type=infantry}}", "synthetic.txt");
         let units = units::Content::load(&defines, Ok(&subunits));
-        let names = installed_content::division_names::Database::default();
+        let names = installed_content_division_names::division_names::Database::default();
         let context = context(frame, &loc, vision, &names, &units);
         let timing = members
             .iter()
@@ -1356,7 +1359,7 @@ mod tests {
 
     #[test]
     fn status_cached_name_is_authoritative_even_when_combat_has_a_name() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = frame(true);
         put(
@@ -1430,7 +1433,7 @@ mod tests {
         put(&mut frame, TableRows::DivisionStatus(status.clone()));
         let mut loc = loc();
         loc.language = "french".into();
-        let names = installed_content::division_names::Database::default();
+        let names = installed_content_division_names::division_names::Database::default();
         let units = Err("synthetic composition is unavailable".into());
         let build = |frame: &DecodedFrame, recorded_language| {
             let context = Context {
@@ -1480,7 +1483,7 @@ mod tests {
 
     #[test]
     fn supply_line_uses_grace_and_known_stack_average_and_refuses_historical_gaps() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let vision = Vision::sharing(1, []);
         let mut frame = frame(true);
@@ -1535,7 +1538,7 @@ mod tests {
 
     #[test]
     fn single_tooltip_orders_native_lines_without_a_date_or_unrecorded_name() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let vision = Vision::sharing(1, []);
         let named = tooltip(&frame(true), &[1], false, false, &vision);
@@ -1583,7 +1586,7 @@ mod tests {
 
     #[test]
     fn full_two_template_stack_sorts_headers_and_coarse_counter_bypasses_detail() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = frame(false);
         let vision = Vision::sharing(1, []);
@@ -1607,7 +1610,7 @@ mod tests {
 
     #[test]
     fn invalid_orders_child_does_not_change_normal_or_coarse_hovers() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = frame(true);
         let vision = Vision::sharing(1, []);
@@ -1628,7 +1631,7 @@ mod tests {
         let frame = test_frame(600);
         let loc = loc();
         let vision = Vision::sharing(1, []);
-        let names = installed_content::division_names::Database::default();
+        let names = installed_content_division_names::division_names::Database::default();
         let units = Err("unused".into());
         let context = Context {
             links: Err("unavailable".into()),
@@ -1664,7 +1667,7 @@ mod tests {
         vision: &Vision,
         loc: &Localisation,
     ) -> Tooltip {
-        let names = installed_content::division_names::Database::default();
+        let names = installed_content_division_names::division_names::Database::default();
         let units = Err("unused division content".into());
         let context = Context {
             recorded_language: "english",
@@ -1723,8 +1726,8 @@ mod tests {
         gun: u64,
         name: &[u8],
         strength: i64,
-    ) -> replay::rows::RailwayGunCounterInputRow {
-        replay::rows::RailwayGunCounterInputRow {
+    ) -> replay_data::rows::RailwayGunCounterInputRow {
+        replay_data::rows::RailwayGunCounterInputRow {
             gun,
             roster_owner: 11,
             province: 3,
@@ -1738,8 +1741,8 @@ mod tests {
     #[test]
     fn railway_gun_headers_and_strength_use_their_own_recorded_rows() {
         let mut frame = frame(false);
-        *frame.tables[replay::rows::TableId::Divisions.index()] =
-            replay::frame::TableView::Unavailable {
+        *frame.tables[replay_data::rows::TableId::Divisions.index()] =
+            replay_frame::frame::TableView::Unavailable {
                 reason: "unused division census".into(),
             };
         put(
@@ -1986,7 +1989,7 @@ mod tests {
         .into_iter()
         .collect();
         let vision = Vision::sharing(1, []);
-        let names = installed_content::division_names::Database::default();
+        let names = installed_content_division_names::division_names::Database::default();
         let units = Err("unused".into());
         let context = context(&frame, &loc, &vision, &names, &units);
         assert_eq!(context.template(1 << 32 | 7).unwrap(), (1, "Right".into()));
@@ -1995,7 +1998,7 @@ mod tests {
 
     #[test]
     fn missing_unit_intel_preserves_movement_with_one_eligibility_gap() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = frame(true);
         let vision = Vision::sharing(2, []).with_truncated_unit_intel([]);
@@ -2066,7 +2069,7 @@ mod tests {
 
     #[test]
     fn only_hidden_foreign_stacks_suppress_the_arrival_line() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = frame(true);
         for ours in [1, 2] {
@@ -2101,7 +2104,7 @@ mod tests {
     #[test]
     fn derived_arrival_is_formatted_without_the_obsolete_cache_limitation() {
         let vision = Vision::sharing(1, []);
-        let names = installed_content::division_names::Database::default();
+        let names = installed_content_division_names::division_names::Database::default();
         let units = Err("unused".into());
         for (remaining, moving, replacement) in [
             (Some(2_900_000), true, None),
@@ -2185,7 +2188,7 @@ mod tests {
 
         let loc = loc();
         let vision = Vision::sharing(1, []);
-        let names = installed_content::division_names::Database::default();
+        let names = installed_content_division_names::division_names::Database::default();
         let units = Err("unused".into());
         let mut frame = frame(true);
         let cases = [
@@ -2326,7 +2329,9 @@ mod tests {
     /// it. A recording without that speed refuses the line by its own name.
     #[test]
     fn division_arrival_words_the_estimate_of_the_stored_route() {
-        use installed_content::movement::{MovementMap, Neighbour, ProvinceTerrain};
+        use installed_content_core::{
+            movement::MovementMap, movement::Neighbour, movement::ProvinceTerrain,
+        };
         use viewer_foundation::movement_timing::{
             Etas, LandSpeedContent, MovementContent, arrival as movement_timing_arrival,
             test_support::{neutral_status, neutral_world},
@@ -2345,7 +2350,7 @@ mod tests {
                 ),
                 (4, land, vec![]),
             ]),
-            defines: replay::eta_derive::Defines {
+            defines: replay_derive::eta_derive::Defines {
                 outer_scale: 100_000,
                 ..Default::default()
             },
@@ -2358,7 +2363,7 @@ mod tests {
         };
         let loc = loc();
         let vision = Vision::sharing(1, []);
-        let names = installed_content::division_names::Database::default();
+        let names = installed_content_division_names::division_names::Database::default();
         let units = Err("unused".into());
         let mut frame = frame(true);
         // Arrival composes all recorded speed terms; keep everything but the
@@ -2470,7 +2475,7 @@ mod tests {
             TableRows::RailwayGunCounterInputs(
                 [1, 2]
                     .into_iter()
-                    .map(|gun| replay::rows::RailwayGunCounterInputRow {
+                    .map(|gun| replay_data::rows::RailwayGunCounterInputRow {
                         ordinary_path: vec![4],
                         ..railway_row(gun, b"Gun", 5)
                     })
@@ -2484,7 +2489,7 @@ mod tests {
             .chain(railway.iter())
             .map(|(key, value)| (key.to_owned(), value.to_owned()))
             .collect();
-        let names = installed_content::division_names::Database::default();
+        let names = installed_content_division_names::division_names::Database::default();
         let units = Err("unused composition".into());
         let known = Vision::sharing(1, []);
         let mixed = Vision::sharing(2, []).with_truncated_unit_intel([(1, 2), (2, 0)]);
@@ -2576,11 +2581,11 @@ mod tests {
             assert_eq!(absent_first, Tooltip::default());
             let mut incomplete = frame.clone();
             let table = if railway_gun {
-                replay::rows::TableId::RailwayGunCounterInputs
+                replay_data::rows::TableId::RailwayGunCounterInputs
             } else {
-                replay::rows::TableId::Divisions
+                replay_data::rows::TableId::Divisions
             };
-            *incomplete.tables[table.index()] = replay::frame::TableView::Unavailable {
+            *incomplete.tables[table.index()] = replay_frame::frame::TableView::Unavailable {
                 reason: "fixture incomplete unit census".into(),
             };
             let unresolved = build(
@@ -2605,19 +2610,19 @@ mod tests {
 
     #[test]
     fn ordinary_authored_fallback_follows_the_class_zero_and_thirteen_handler_result() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use replay::rows::{ArmyIconInputRow, RailwayGunCounterInputRow};
+        use replay_data::{rows::ArmyIconInputRow, rows::RailwayGunCounterInputRow};
         use std::cell::Cell;
         use viewer_foundation::map::counter_hovers::land::CounterControl as Control;
 
-        let parsed = installed_content::gui::native::read(
+        let parsed = installed_content_core::gui::native::read(
             br#"guiTypes = {
             iconType = { name = child pdx_tooltip = RAW_TITLE pdx_tooltip_delayed = RAW_BODY }
         }"#,
         );
         let authored = gui_authored::Authored::read(parsed.template("child").unwrap(), false);
-        let names = installed_content::division_names::Database::default();
+        let names = installed_content_division_names::division_names::Database::default();
         let units = Err("unused composition".into());
         let mut frame = frame(true);
         for railway_gun in [false, true] {

@@ -7,16 +7,14 @@ use crate::{
     table_capture::{Arena, CaptureRows, grow_capacity},
     table_conversion::{table, unavailable},
 };
-use engine::allocation::{map_slice, owned_vec};
-use engine::{Memory, cdeployment_status, cproduction_status, walk::Outcome};
-use replay::{
-    cadence::{SKIPPED_REASON, should_walk},
-    frame::TableView,
-    rows::{
-        AvailableEquipmentVariantRow, CountryLocalSubunitRow, LocalSubunitRequirement, TableId,
-        tables,
-    },
+use engine_allocation::{map_slice, owned_vec};
+use engine_deployment::cdeployment_status;
+use engine_native::{Memory, cproduction_status, walk::Outcome};
+use replay_data::{
+    cadence::SKIPPED_REASON, cadence::should_walk, rows::AvailableEquipmentVariantRow,
+    rows::CountryLocalSubunitRow, rows::LocalSubunitRequirement, rows::TableId, rows::tables,
 };
+use replay_frame::frame::TableView;
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [
@@ -236,12 +234,12 @@ pub use local_store::LocalStore;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
 
     /// CountryLocalSubunits walks every hour; the rosters only on their slot.
     #[test]
     fn each_table_walks_on_its_own_cadence() {
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -273,7 +271,7 @@ mod tests {
         captured.local.rows[0] = cdeployment_status::LocalSubunitRow {
             country: 3,
             token: 5,
-            requirements: engine::creferenced_division_template::Span { start: 0, len: 2 },
+            requirements: engine_native::creferenced_division_template::Span { start: 0, len: 2 },
         };
         captured.local.outcome = Outcome::Rows { len: 1 };
         captured.requirements.first[1] = cdeployment_status::LocalRequirement {
@@ -302,7 +300,7 @@ mod tests {
 
     #[test]
     fn five_thousand_countries_use_live_three_roster_demand_and_same_hour_growth() {
-        use engine::{ccountry, cequipment_variant, cgame_state, csub_unit_definition};
+        use engine_native::{ccountry, cequipment_variant, cgame_state, csub_unit_definition};
         const COUNTRIES: usize = 5_000;
         const STATE: usize = 0x1000;
         const FIRST: usize = 0x20000;
@@ -401,7 +399,7 @@ mod tests {
                     output.copy_from_slice(&(DATABASE as u64).to_le_bytes());
                     return true;
                 }
-                engine::memory::SliceMemory {
+                engine_native::memory::SliceMemory {
                     base: 0,
                     bytes: self.0,
                 }

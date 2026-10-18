@@ -4,20 +4,20 @@ use crate::{
     table_capture::{CaptureRows, grow_capacity, grow_vec},
     table_conversion::table,
 };
-use engine::{
-    Memory, allocation, carmy::DivisionSeed, division_land_inputs as native, walk::Outcome,
+use engine_allocation as allocation;
+use engine_land_inputs::division_land_inputs as native;
+use engine_native::{Memory, carmy::DivisionSeed, walk::Outcome};
+use replay_data::{
+    rows::DivisionLandInputsRow, rows::DivisionManpowerContributor, rows::RetiredI64, rows::tables,
 };
-use replay::{
-    frame::TableView,
-    rows::{DivisionLandInputsRow, DivisionManpowerContributor, RetiredI64, tables},
-};
+use replay_frame::frame::TableView;
 
 pub struct Captured {
     rows: CaptureRows<native::Row>,
     contributors: Vec<native::Contributor>,
     pointers: Vec<usize>,
     ordinals: Vec<usize>,
-    first: Vec<[u8; 2 * engine::manpower_value_entry::STRIDE]>,
+    first: Vec<[u8; 2 * engine_deployment::manpower_value_entry::STRIDE]>,
     used: usize,
     required: usize,
 }
@@ -62,7 +62,8 @@ impl Captured {
             + self.contributors.capacity() * size_of::<native::Contributor>()
             + self.pointers.capacity() * size_of::<usize>()
             + self.ordinals.capacity() * size_of::<usize>()
-            + self.first.capacity() * size_of::<[u8; 2 * engine::manpower_value_entry::STRIDE]>()
+            + self.first.capacity()
+                * size_of::<[u8; 2 * engine_deployment::manpower_value_entry::STRIDE]>()
     }
     pub fn capture(
         &mut self,
@@ -71,15 +72,15 @@ impl Captured {
         sources: &[DivisionSeed],
         source: Outcome,
     ) -> u64 {
-        let _reads = crate::read_accounting::table(replay::rows::TableId::DivisionLandInputs);
+        let _reads = crate::read_accounting::table(replay_data::rows::TableId::DivisionLandInputs);
         let start = qpc();
         // Presentation is worker-only; scratch follows this original admitted
         // census before the reader visits the retained contributor headers.
         let prepared = (|| {
             for buffer in [&mut self.pointers, &mut self.ordinals] {
-                engine::walk::Buffer::Growing(buffer).ensure(source.len())?;
+                engine_native::walk::Buffer::Growing(buffer).ensure(source.len())?;
             }
-            engine::walk::Buffer::Growing(&mut self.first).ensure(source.len())?;
+            engine_native::walk::Buffer::Growing(&mut self.first).ensure(source.len())?;
             Ok::<_, &'static str>(())
         })();
         if let Err(reason) = prepared {

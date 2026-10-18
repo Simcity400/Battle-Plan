@@ -12,10 +12,8 @@
 use std::{collections::BTreeMap, io};
 
 use installed_content_save::{IntelEntry, Save};
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryRow, tables},
-};
+use replay_data::{rows::CountryRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::{Report, complete, country_tag, invalid};
 
@@ -625,15 +623,14 @@ mod tests {
     use super::*;
     use crate::test_support::frame;
     use installed_content_save::parse;
-    use replay::{
-        frame::TableView,
-        rows::{
-            AirBaseCarrierInputs, AirBaseCountryOccurrence, AirBaseRegistrationCarrierInputs,
-            AirBaseRegistrationRow, AirBaseRow, AirWingRow, CarrierAirPool, RadarCoverageRow,
-            Recorded, StationedUnitRow, TableId, TableRows, TheatreAreaRow, UnitIntelRow,
-            VolunteerHostRow,
-        },
+    use replay_data::{
+        rows::AirBaseCarrierInputs, rows::AirBaseCountryOccurrence,
+        rows::AirBaseRegistrationCarrierInputs, rows::AirBaseRegistrationRow, rows::AirBaseRow,
+        rows::AirWingRow, rows::CarrierAirPool, rows::RadarCoverageRow, rows::Recorded,
+        rows::StationedUnitRow, rows::TableId, rows::TableRows, rows::TheatreAreaRow,
+        rows::UnitIntelRow, rows::VolunteerHostRow,
     };
+    use replay_frame::frame::TableView;
 
     const DIVISION: u64 = (9_u64 << 32) | 4919;
     const RAILWAY_GUN: u64 = (7_u64 << 32) | 74;

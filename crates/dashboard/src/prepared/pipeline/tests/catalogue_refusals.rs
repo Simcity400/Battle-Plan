@@ -14,7 +14,7 @@ const OTHER_READ: &str = "outside_policy/other_consumer.txt";
 /// A sinking from hour 101 in a content strategic region whose name the
 /// plain view refuses, so the naval family's own reads refuse `mod_sea`.
 fn sinking_frame(hour: i32) -> DecodedFrame {
-    use replay::rows::{SunkShipEntry, SunkShipsRow};
+    use replay_data::{rows::SunkShipEntry, rows::SunkShipsRow};
     let mut frame = crate::test_fixtures::source(1, hour, Some(i64::from(hour) * 1000));
     let entries = if hour >= 101 {
         vec![SunkShipEntry {
@@ -195,7 +195,7 @@ fn assert_own_refusals_only(published: &BTreeMap<(String, u64), Vec<u8>>) {
 
 #[test]
 fn another_consumers_refusal_leaves_every_published_payload_unchanged() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
     let (mut fixture, options) = refusing_fixture();
     for parallelism in [2, 4] {
@@ -220,7 +220,7 @@ fn another_consumers_refusal_leaves_every_published_payload_unchanged() {
 
 #[test]
 fn serial_and_lane_preparation_publish_the_same_refusals_whenever_others_refuse() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
     let (mut fixture, options) = refusing_fixture();
     // The other consumer's refusal lands late in the serial run and before the
@@ -236,7 +236,7 @@ fn serial_and_lane_preparation_publish_the_same_refusals_whenever_others_refuse(
 
 #[test]
 fn restored_families_publish_the_refusals_continued_ones_do() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
     let (mut fixture, options) = refusing_fixture();
     for parallelism in [2, 4] {
@@ -294,7 +294,7 @@ fn served(
 #[test]
 fn served_replies_carry_the_stacks_live_diagnostics_where_they_keep_content_warnings() {
     use serde_json::json;
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
     let (mut fixture, options) = refusing_fixture();
     let source = fixture.source("served-diagnostics");

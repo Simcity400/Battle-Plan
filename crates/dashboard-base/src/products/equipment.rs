@@ -7,12 +7,11 @@
 pub mod production;
 
 use crate::{Source, catalogue::Catalogue, metadata::slot_read};
-use replay::{
-    frame::{DecodedFrame, SharedView, ViewIdentity},
-    rows::{
-        LexicalTokenRow, TableId, VariantDefinitionRow, VariantModuleRow, VariantUpgradeRow, tables,
-    },
+use replay_data::{
+    rows::LexicalTokenRow, rows::TableId, rows::VariantDefinitionRow, rows::VariantModuleRow,
+    rows::VariantUpgradeRow, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -26,10 +25,10 @@ pub use crate::variant_names::{
     raw_variant, variant_name, variant_names, variant_order,
 };
 
-/// Decimal places of recorded equipment amounts (`engine::equipment_entry`) and
+/// Decimal places of recorded equipment amounts (`engine_native::equipment_entry`) and
 /// of production line cost and speed: fixed5.
 pub const EQUIPMENT_DECIMALS: u8 = 5;
-const _: () = assert!(engine::equipment_entry::FIXED_POINT_SCALE == 100_000);
+const _: () = assert!(engine_native::equipment_entry::FIXED_POINT_SCALE == 100_000);
 
 /// Units a production line makes per week, fixed5, by the game's weekly formula:
 /// its production-rate formatter writes the line's speed (the IC added at each
@@ -65,7 +64,7 @@ pub fn daily_units_raw(speed_raw: i64, cost_raw: i64) -> Option<i64> {
 }
 
 /// Which arm an equipment type serves, from the engine's own classifiers of its
-/// effective category flags (`installed_content::equipment::Database::category`):
+/// effective category flags (`installed_content_core::equipment::Database::category`):
 /// the plane family is air, the ship family (convoys included) naval, everything
 /// else land.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
@@ -102,9 +101,9 @@ pub fn marked_keys_warning<'a>(keys: impl IntoIterator<Item = &'a str>) -> Optio
 
 impl Domain {
     pub fn of(category: u64) -> Self {
-        if category & engine::cequipment_type::PLANE_MASK != 0 {
+        if category & engine_native::cequipment_type::PLANE_MASK != 0 {
             Self::Air
-        } else if category & engine::cequipment_type::SHIP_MASK != 0 {
+        } else if category & engine_native::cequipment_type::SHIP_MASK != 0 {
             Self::Naval
         } else {
             Self::Land
@@ -210,8 +209,8 @@ pub(crate) struct VariantReads {
     pending: [Option<BTreeSet<u128>>; 4],
     token_variants: BTreeMap<u32, BTreeSet<u64>>,
     appearance_dirty: bool,
-    country_tags: BTreeMap<u32, replay::rows::CountryRow>,
-    original_tags: BTreeMap<u32, replay::rows::CountryAppearanceRow>,
+    country_tags: BTreeMap<u32, replay_data::rows::CountryRow>,
+    original_tags: BTreeMap<u32, replay_data::rows::CountryAppearanceRow>,
     tag_links: BTreeMap<u32, BTreeSet<u64>>,
     tag_slots: BTreeMap<u32, BTreeSet<u64>>,
     original_slots: BTreeMap<u32, BTreeSet<u64>>,
@@ -261,9 +260,9 @@ fn same_view(held: Option<&SharedView>, now: &SharedView) -> bool {
     held.is_some_and(|held| SharedView::ptr_eq(held, now) || held == now)
 }
 
-fn complete_rows<T: replay::rows::TableSchema>(view: &SharedView) -> Option<&[T::Row]> {
+fn complete_rows<T: replay_data::rows::TableSchema>(view: &SharedView) -> Option<&[T::Row]> {
     match &**view {
-        replay::frame::TableView::Complete(rows) => rows.rows::<T>(),
+        replay_frame::frame::TableView::Complete(rows) => rows.rows::<T>(),
         _ => None,
     }
 }
@@ -398,7 +397,7 @@ impl VariantReads {
     /// inputs and the hour alone ([`read_raw`]), so one not built
     /// holds those it had.
     pub(crate) fn build(&mut self, frame: &DecodedFrame, all: bool) -> Vec<(u64, RawVariant)> {
-        let cpu = ::replay::cpu::scope_phase("variants:context");
+        let cpu = ::replay_frame::cpu::scope_phase("variants:context");
         let hour = frame.hour;
         let tracked = self.country_at == Some((frame.branch, hour));
         let view = |table: TableId| &frame.tables[table.index()];
@@ -508,7 +507,7 @@ impl VariantReads {
                 .map(|row| {
                     (
                         row.canonical_slot,
-                        replay::rows::CountryRow {
+                        replay_data::rows::CountryRow {
                             canonical_slot: row.canonical_slot,
                             tag: row.tag.clone(),
                             ..Default::default()
@@ -612,7 +611,7 @@ impl VariantReads {
             })
             .flatten();
         drop(cpu);
-        let _cpu = ::replay::cpu::scope_phase("variants:definition_designs");
+        let _cpu = ::replay_frame::cpu::scope_phase("variants:definition_designs");
         let mut built = Vec::new();
         let selected_rows: Vec<_> = if let Some(ids) = &selected {
             ids.iter()
@@ -665,7 +664,7 @@ impl VariantReads {
             }
             let id = definition.id;
             let held = self.inputs.remove(&id);
-            let _variant_cpu = ::replay::cpu::scope_phase("variants:variant_operands");
+            let _variant_cpu = ::replay_frame::cpu::scope_phase("variants:variant_operands");
             if let Some(held) = &held {
                 self.remove_dependencies(held);
             }
@@ -746,7 +745,7 @@ impl VariantReads {
                 .map(|row| {
                     (
                         row.canonical_slot,
-                        replay::rows::CountryRow {
+                        replay_data::rows::CountryRow {
                             canonical_slot: row.canonical_slot,
                             tag: row.tag.clone(),
                             ..Default::default()
@@ -769,7 +768,7 @@ impl VariantReads {
         self.links = Some(view(TableId::CountryLinks).clone());
         self.appearance = Some(view(TableId::CountryAppearance).clone());
         self.appearance_dirty = false;
-        let cpu = ::replay::cpu::scope_phase("variants:spelling_dependencies");
+        let cpu = ::replay_frame::cpu::scope_phase("variants:spelling_dependencies");
         if selected.is_none() {
             self.token_variants.clear();
             self.tag_links.clear();
@@ -969,13 +968,13 @@ impl VariantCatalogue {
     ];
 
     /// One decoded frame, in hour order.
-    pub fn observe(&mut self, format: replay::format::FormatVersion, frame: &DecodedFrame) {
+    pub fn observe(&mut self, format: replay_data::format::FormatVersion, frame: &DecodedFrame) {
         let _ = self.observe_versions(format, frame, None);
     }
 
     pub fn observe_changed(
         &mut self,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         frame: &DecodedFrame,
         changes: &crate::prepared::frame_changes::FrameChanges,
     ) -> Vec<(u64, VariantVersion)> {
@@ -984,7 +983,7 @@ impl VariantCatalogue {
 
     fn observe_versions(
         &mut self,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         frame: &DecodedFrame,
         changes: Option<&crate::prepared::frame_changes::FrameChanges>,
     ) -> Vec<(u64, VariantVersion)> {
@@ -1034,7 +1033,7 @@ impl VariantCatalogue {
             return changed;
         };
         if changes.is_some() {
-            let cpu = ::replay::cpu::scope_phase("variants:changed_operands");
+            let cpu = ::replay_frame::cpu::scope_phase("variants:changed_operands");
             #[cfg(any(test, feature = "test-support"))]
             let before = self.reads.work.row_visits;
             let built = self.reads.build(frame, !self.settled);
@@ -1140,7 +1139,10 @@ impl VariantCatalogue {
     /// What [`Self::observe`] reads of an hour's frame besides a complete
     /// read's rows: whether the variant table was read, and which of its tables
     /// were complete.
-    pub fn hour_of(format: replay::format::FormatVersion, frame: &DecodedFrame) -> VariantHour {
+    pub fn hour_of(
+        format: replay_data::format::FormatVersion,
+        frame: &DecodedFrame,
+    ) -> VariantHour {
         Self::hour_read(
             frame,
             slot_read(
@@ -1177,7 +1179,7 @@ impl VariantCatalogue {
     /// then, so it keeps its version. The versions are those `observe` records.
     pub fn observe_built(
         &mut self,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         frame: &DecodedFrame,
         build: impl FnOnce(bool) -> Vec<(u64, RawVariant)>,
     ) {
@@ -1330,7 +1332,7 @@ impl VariantCatalogue {
 
 /// A variant's type resolved through content: its archetype key, database place and domain.
 pub fn archetype_of(
-    types: &installed_content::equipment::Database,
+    types: &installed_content_core::equipment::Database,
     token: &str,
 ) -> Result<(String, usize, Domain), String> {
     let kind = types
@@ -1351,12 +1353,12 @@ pub fn archetype_of(
 }
 
 /// Native-reader diagnostics, with their file and definition names.
-pub fn equipment_warnings(types: &installed_content::equipment::Database) -> Vec<String> {
+pub fn equipment_warnings(types: &installed_content_core::equipment::Database) -> Vec<String> {
     types.misreads.clone()
 }
 
 /// The authored equipment types as read, or why they could not be.
-type Units = Result<Arc<installed_content::equipment::Database>, String>;
+type Units = Result<Arc<installed_content_core::equipment::Database>, String>;
 
 /// The recorded content stack's equipment types for a catalogue, read on first use.
 pub fn units(_source: &Source, catalogue: &Arc<Catalogue>) -> Units {
@@ -1368,8 +1370,10 @@ pub fn units_of(catalogue: &Catalogue) -> Units {
     catalogue
         .content
         .layers
-        .derived::<crate::catalogue::CachedResult<installed_content::equipment::Database>>()
-        .get_or_init(|| installed_content::equipment::Database::load_complete(&catalogue.content.layers))
+        .derived::<crate::catalogue::CachedResult<installed_content_core::equipment::Database>>()
+        .get_or_init(|| {
+            installed_content_core::equipment::Database::load_complete(&catalogue.content.layers)
+        })
         .map_err(|error| error.to_string())
 }
 
@@ -1379,7 +1383,7 @@ pub fn unit_loads(catalogue: &Catalogue) -> usize {
     catalogue
         .content
         .layers
-        .derived::<crate::catalogue::CachedResult<installed_content::equipment::Database>>()
+        .derived::<crate::catalogue::CachedResult<installed_content_core::equipment::Database>>()
         .loads()
 }
 

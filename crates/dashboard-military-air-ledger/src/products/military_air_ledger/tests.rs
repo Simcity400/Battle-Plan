@@ -1,12 +1,10 @@
 use super::*;
 use dashboard_core::test_fixtures::{CAMPAIGN, records, source};
-use replay::{
-    frame::TableView,
-    rows::{
-        AirLossEventRow, BuildingBombingDamageRow, CountryLinkRow, CountryRow, LexicalTokenRow,
-        TableRows,
-    },
+use replay_data::{
+    rows::AirLossEventRow, rows::BuildingBombingDamageRow, rows::CountryLinkRow, rows::CountryRow,
+    rows::LexicalTokenRow, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 
 pub(super) fn frame(
     hour: i32,
@@ -376,7 +374,8 @@ fn military_air_ledger_ranges_select_native_dates_before_publication_prefixes() 
 
 #[test]
 fn military_air_ledger_block_keyframes_keep_branch_census_and_missing_hours_separate() {
-    use replay::{frame::FrameEncoder, spool::Record};
+    use replay::spool::Record;
+    use replay_frame::frame::FrameEncoder;
     let row = |id, country, hour, amount| AirLossEventRow {
         id,
         game_hour: hour,
@@ -683,8 +682,7 @@ fn military_air_events_recorded_again_after_an_unread_interval_refuse_by_name() 
     for (air, bombing, events) in [(true, true, "air loss"), (false, true, "bombing")] {
         let frames = tiled(air, bombing, false);
         // The whole-recording oracle.
-        let replay =
-            Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
         let error = match scan(&replay, 1, &AtomicBool::new(false)) {
             Ok(_) => panic!("{events} events recorded again were accepted"),
             Err(error) => error,
@@ -694,7 +692,7 @@ fn military_air_events_recorded_again_after_an_unread_interval_refuse_by_name() 
         // Hourly preparation refuses the same hour with the same words.
         let mut state = prepared::Prepared::default();
         let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
-        let format = replay::format::FormatVersion::default();
+        let format = replay_data::format::FormatVersion::default();
         for frame in &frames[..3] {
             state
                 .observe_changed(frame, &tracker.observe(frame, format))

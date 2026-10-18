@@ -23,10 +23,8 @@
 
 use super::*;
 use crate::country_input_changes::{Domain, Table};
-use engine::{
-    cgame_state, climited_use_tech_bonus as bonus, modifier_definition, research_inputs,
-    research_modifiers,
-};
+use engine_native::{cgame_state, modifier_definition};
+use engine_research::{climited_use_tech_bonus as bonus, research_inputs, research_modifiers};
 
 const BASE: usize = 0;
 const HEAP_START: usize = 0x1000;
@@ -198,7 +196,7 @@ fn window(bytes: &[u8], start: usize, address: usize, len: usize) -> Option<&[u8
     bytes.get(offset..offset.checked_add(len)?)
 }
 
-impl engine::Memory for World {
+impl engine_native::Memory for World {
     fn copy(&self, address: usize, out: &mut [u8]) -> bool {
         // The module window first: a scaled heap reaches past its start.
         let source = window(&self.image, IMAGE_START, address, out.len())
@@ -691,7 +689,7 @@ fn governance_failure_keeps_successful_research_rows() {
     let outcomes = captured.outcomes();
     let tables = captured.tables();
     for index in (0..N).filter(|index| !RESEARCH.contains(index)) {
-        assert!(replay::cadence::should_walk(
+        assert!(replay_data::cadence::should_walk(
             TABLES[index],
             context.hour,
             context.force_full
@@ -728,10 +726,10 @@ fn research_part_failure_publishes_reason_or_cadence_skip() {
             let outcomes = captured.outcomes();
             let tables = captured.tables();
             for index in RESEARCH {
-                let reason = if replay::cadence::should_walk(TABLES[index], hour, force_full) {
+                let reason = if replay_data::cadence::should_walk(TABLES[index], hour, force_full) {
                     "research acquisition panicked"
                 } else {
-                    replay::cadence::SKIPPED_REASON
+                    replay_data::cadence::SKIPPED_REASON
                 };
                 assert_eq!(
                     outcomes[index],
@@ -762,7 +760,7 @@ fn owners(captured: &Captured) -> Vec<u32> {
 /// One hour's research read, selected by `changes`' marks, with the hour's
 /// sampled comparisons ([`crate::sampled_verify::begin_hour`]).
 fn slice_capture(
-    world: &impl engine::Memory,
+    world: &impl engine_native::Memory,
     hour: i32,
     fingerprints: &mut SliceFingerprints,
     changes: &Domain,
@@ -776,7 +774,7 @@ fn slice_capture(
 }
 
 /// A full-hour read: every country is read, and the take's epoch held.
-fn primed(world: &impl engine::Memory, changes: &Domain) -> SliceFingerprints {
+fn primed(world: &impl engine_native::Memory, changes: &Domain) -> SliceFingerprints {
     let mut fingerprints = SliceFingerprints::new();
     let mut captured = captured();
     let mut part = captured.take_research();
@@ -807,7 +805,7 @@ fn off_full_hours_read_only_the_slice_and_label_rows_with_the_hour() {
                 panic!("slice tables complete")
             };
             assert!(
-                replay::sliced::owners(&rows)
+                replay_data::sliced::owners(&rows)
                     .into_iter()
                     .all(|owner| selection.contains(owner))
             );
@@ -855,7 +853,7 @@ fn a_marked_country_is_read_within_the_hour_and_an_unmarked_change_poisons_at_it
     let mut fingerprints = primed(&world, &changes);
     assert!(owners(&slice_capture(&world, 5, &mut fingerprints, &changes)).is_empty());
     // Technology assignment writes country 3's slot speed and marks it.
-    let speed = SECOND.origin + SLOT + engine::cresearch_slot::RESEARCH_SPEED;
+    let speed = SECOND.origin + SLOT + engine_research::cresearch_slot::RESEARCH_SPEED;
     world.put(speed, 95_000_i64.to_le_bytes());
     changes.write(Table::Research, 3);
     let captured = slice_capture(&world, 6, &mut fingerprints, &changes);
@@ -869,7 +867,7 @@ fn a_marked_country_is_read_within_the_hour_and_an_unmarked_change_poisons_at_it
     // Daily progress moves unmarked: no early read, and country 3's slice
     // (hour 27) reads it and compares equal.
     world.put(
-        SECOND.origin + TECH + engine::ctechnology::LIVE_PROGRESS,
+        SECOND.origin + TECH + engine_research::ctechnology::LIVE_PROGRESS,
         260_000_i64.to_le_bytes(),
     );
     assert!(owners(&slice_capture(&world, 8, &mut fingerprints, &changes)).is_empty());
@@ -1013,7 +1011,7 @@ impl World {
 #[test]
 #[ignore = "bench"]
 fn research_quiet_hours_bench() {
-    fn run(world: &impl engine::Memory, countries: usize, label: &str) {
+    fn run(world: &impl engine_native::Memory, countries: usize, label: &str) {
         let changes = Domain::enabled(countries + 64);
         let mut fingerprints = primed(world, &changes);
         let mut reads = 0;
@@ -1042,15 +1040,15 @@ fn research_quiet_hours_bench() {
         for (label, stated) in [("all owning a state", 1), ("1/6 owning a state", 6)] {
             let world = World::scaled(countries, stated);
             run(&world, countries, label);
-            let mut cache = engine::country_memory::Cache::try_with_capacity(
-                engine::country_memory::Cache::cells_for_countries(countries + 1, 64),
+            let mut cache = engine_native::country_memory::Cache::try_with_capacity(
+                engine_native::country_memory::Cache::cells_for_countries(countries + 1, 64),
             )
             .unwrap();
             let seed = cache.prepare(&world, BASE, GAME_STATE).seed_status();
-            assert_eq!(seed, engine::country_memory::SeedStatus::Ready);
+            assert_eq!(seed, engine_native::country_memory::SeedStatus::Ready);
             let roster = cache.roster_view(&world);
             assert!(
-                engine::Memory::authenticated_countries(&roster, BASE, GAME_STATE).is_some(),
+                engine_native::Memory::authenticated_countries(&roster, BASE, GAME_STATE).is_some(),
                 "the roster view serves the census"
             );
             run(&roster, countries, &format!("{label}, roster"));
@@ -1064,7 +1062,7 @@ struct Reads<'a> {
     addresses: std::cell::RefCell<Vec<usize>>,
 }
 
-impl engine::Memory for Reads<'_> {
+impl engine_native::Memory for Reads<'_> {
     fn copy(&self, address: usize, out: &mut [u8]) -> bool {
         self.addresses.borrow_mut().push(address);
         self.world.copy(address, out)
@@ -1082,11 +1080,11 @@ fn an_unmarked_slice_reads_only_the_daily_drift() {
     let changes = Domain::enabled(64);
     let mut fingerprints = primed(&world, &changes);
     world.put(
-        SECOND.origin + TECH + engine::ctechnology::LIVE_PROGRESS,
+        SECOND.origin + TECH + engine_research::ctechnology::LIVE_PROGRESS,
         270_000_i64.to_le_bytes(),
     );
     world.put(
-        SECOND.origin + SLOT + engine::cresearch_slot::BANKED_DAYS,
+        SECOND.origin + SLOT + engine_research::cresearch_slot::BANKED_DAYS,
         4_200_000_i64.to_le_bytes(),
     );
     let reads = Reads {
@@ -1150,7 +1148,7 @@ fn a_carried_slice_keeps_each_slots_banked_days_on_its_row() {
     let mut fingerprints = primed(&world, &changes);
     for position in 0..FIRST.slots.len() {
         world.put(
-            FIRST.origin + SLOT + position * 0x100 + engine::cresearch_slot::BANKED_DAYS,
+            FIRST.origin + SLOT + position * 0x100 + engine_research::cresearch_slot::BANKED_DAYS,
             (1_000_000 * (position as i64 + 1)).to_le_bytes(),
         );
     }
@@ -1176,7 +1174,7 @@ struct Faulty<'a> {
     reads: std::cell::Cell<u32>,
 }
 
-impl engine::Memory for Faulty<'_> {
+impl engine_native::Memory for Faulty<'_> {
     fn copy(&self, address: usize, out: &mut [u8]) -> bool {
         if address == self.address {
             self.reads.set(self.reads.get() + 1);
@@ -1203,15 +1201,15 @@ fn a_persistent_drift_fault_keeps_the_slice_unavailable() {
 }
 
 fn drift_fault_slice(once: bool) {
-    use engine::batch_fallback::{Batch, count};
+    use engine_native::{batch_fallback::Batch, batch_fallback::count};
     let mut world = World::new();
     let changes = Domain::enabled(64);
     let mut fingerprints = primed(&world, &changes);
-    let banked = SECOND.origin + SLOT + engine::cresearch_slot::BANKED_DAYS;
+    let banked = SECOND.origin + SLOT + engine_research::cresearch_slot::BANKED_DAYS;
     // Distinguish successful live fallback rows from stale held rows.
     world.put(banked, 4_200_000_i64.to_le_bytes());
     world.put(
-        SECOND.origin + TECH + engine::ctechnology::LIVE_PROGRESS,
+        SECOND.origin + TECH + engine_research::ctechnology::LIVE_PROGRESS,
         270_000_i64.to_le_bytes(),
     );
     let only = |rows: Research| Research {
@@ -1266,11 +1264,11 @@ fn a_carried_slice_reads_the_slots_in_roster_order() {
         world: &'a World,
         reads: std::cell::RefCell<Vec<usize>>,
     }
-    impl engine::Memory for Banked<'_> {
+    impl engine_native::Memory for Banked<'_> {
         fn copy(&self, address: usize, out: &mut [u8]) -> bool {
             let first = FIRST.origin + SLOT;
             if (first..first + FIRST.slots.len() * 0x100).contains(&address)
-                && (address - first) % 0x100 == engine::cresearch_slot::BANKED_DAYS
+                && (address - first) % 0x100 == engine_research::cresearch_slot::BANKED_DAYS
             {
                 self.reads.borrow_mut().push((address - first) / 0x100);
             }
@@ -1313,10 +1311,16 @@ fn a_carried_slice_fails_as_the_full_walk_at_each_fault() {
         status + ctechnology_status::RESEARCH_SLOTS_DATA,
     ];
     for (position, slot) in FIRST.slots.iter().enumerate() {
-        faults.push(FIRST.origin + SLOT + position * 0x100 + engine::cresearch_slot::BANKED_DAYS);
+        faults.push(
+            FIRST.origin + SLOT + position * 0x100 + engine_research::cresearch_slot::BANKED_DAYS,
+        );
         if slot.tech.is_some() {
-            faults
-                .push(FIRST.origin + TECH + position * 0x400 + engine::ctechnology::LIVE_PROGRESS);
+            faults.push(
+                FIRST.origin
+                    + TECH
+                    + position * 0x400
+                    + engine_research::ctechnology::LIVE_PROGRESS,
+            );
         }
     }
     let world = World::new();

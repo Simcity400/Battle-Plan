@@ -1,5 +1,5 @@
 //! Allocation-free notifications from the native writers of the character
-//! roster and of scientist roles ([`engine::character_roster_mutations`]).
+//! roster and of scientist roles ([`engine_mutations::character_roster_mutations`]).
 //! A detour only moves its domain's quiet token, counts its site and calls
 //! the original; it never changes game behaviour. Neither domain registers
 //! receivers: a capture compares the token it took before its latest complete
@@ -23,10 +23,8 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{
-    Memory,
-    character_roster_mutations::{Domain, MUTATIONS},
-};
+use engine_mutations::{character_roster_mutations::Domain, character_roster_mutations::MUTATIONS};
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -317,7 +315,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "roster_changes")
             && MUTATIONS.iter().all(|(site, _)| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [
@@ -416,7 +414,7 @@ macro_rules! callback {
         }
     };
 }
-use engine::character_roster_mutations as sites;
+use engine_mutations::character_roster_mutations as sites;
 // Roster push (array, unique_ptr).
 callback!(roster_push, sites::PUSH);
 // Roster clear (array).

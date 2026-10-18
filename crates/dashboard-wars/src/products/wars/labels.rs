@@ -1,8 +1,10 @@
 //! Historical names for a stable label column, never for filling a dated label.
 use super::*;
 use crate::products::war_casualties::same_name_rows;
-use installed_content::country_names::{self, CountryNames, Operands};
-use replay::frame::SharedView;
+use installed_content_country_names::{
+    country_names, country_names::CountryNames, country_names::Operands,
+};
+use replay_frame::frame::SharedView;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Default)]

@@ -1,11 +1,10 @@
 use super::*;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{
-        FactionMemberRow, LandTheatreRow, Recorded, ReservedCountryNamingRow, SentVolunteerRow,
-        SubjectRow, TableRows, WarRelationRow, ZeroSubjectInputs,
-    },
+use replay_data::{
+    rows::FactionMemberRow, rows::LandTheatreRow, rows::Recorded, rows::ReservedCountryNamingRow,
+    rows::SentVolunteerRow, rows::SubjectRow, rows::TableRows, rows::WarRelationRow,
+    rows::ZeroSubjectInputs,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 
 fn frame(roster: &[u32]) -> DecodedFrame {
     let mut frame = DecodedFrame {
@@ -343,7 +342,7 @@ fn zero_inputs(
     *frame.tables[TableId::CountryCounterInputs.index()] =
         TableView::Complete(TableRows::CountryCounterInputs(vec![
             CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
+                forward_visibility: replay_data::rows::Recorded::NotRecorded,
                 country: 101,
                 zero_war: war,
                 zero_subject: subject,
@@ -391,7 +390,7 @@ fn genuine_zero_subject_can_succeed_when_faction_is_unknown() {
         &mut frame,
         Recorded::Value(Some([0, 0])),
         Recorded::Value(Some(ZeroSubjectInputs {
-            relation_type: Some(engine::csubject_relation::TYPE_VALUE),
+            relation_type: Some(engine_native::csubject_relation::TYPE_VALUE),
             parties: Some([Some(106), Some(0)]),
         })),
         Recorded::NotRecorded,
@@ -418,7 +417,7 @@ fn reserved_subject_null_wrong_type_and_nonzero_parties_are_known_false() {
             parties: None,
         },
         ZeroSubjectInputs {
-            relation_type: Some(engine::csubject_relation::TYPE_VALUE),
+            relation_type: Some(engine_native::csubject_relation::TYPE_VALUE),
             parties: Some([Some(101), Some(501)]),
         },
     ] {
@@ -445,7 +444,7 @@ fn unknown_zero_war_cannot_be_overridden_by_family_and_missing_fields_stay_named
             &mut frame,
             war,
             Recorded::Value(Some(ZeroSubjectInputs {
-                relation_type: Some(engine::csubject_relation::TYPE_VALUE),
+                relation_type: Some(engine_native::csubject_relation::TYPE_VALUE),
                 parties: Some([Some(0), None]),
             })),
             Recorded::Value(Some(909)),
@@ -463,15 +462,15 @@ fn zero_subject_refusal_is_not_native_null_and_inconsistent_branches_are_refused
         Recorded::NotRecorded,
         Recorded::Value(None),
         Recorded::Value(Some(ZeroSubjectInputs {
-            relation_type: Some(engine::csubject_relation::TYPE_VALUE),
+            relation_type: Some(engine_native::csubject_relation::TYPE_VALUE),
             parties: None,
         })),
         Recorded::Value(Some(ZeroSubjectInputs {
-            relation_type: Some(engine::csubject_relation::TYPE_VALUE),
+            relation_type: Some(engine_native::csubject_relation::TYPE_VALUE),
             parties: Some([None, Some(106)]),
         })),
         Recorded::Value(Some(ZeroSubjectInputs {
-            relation_type: Some(engine::csubject_relation::TYPE_VALUE),
+            relation_type: Some(engine_native::csubject_relation::TYPE_VALUE),
             parties: Some([Some(106), None]),
         })),
     ] {
@@ -502,7 +501,7 @@ fn one_genuine_zero_party_proves_visibility_without_filling_the_other_word() {
             &mut frame,
             Recorded::Value(Some([0, 0])),
             Recorded::Value(Some(ZeroSubjectInputs {
-                relation_type: Some(engine::csubject_relation::TYPE_VALUE),
+                relation_type: Some(engine_native::csubject_relation::TYPE_VALUE),
                 parties: Some(parties),
             })),
             Recorded::NotRecorded,
@@ -527,7 +526,7 @@ fn admitted_zero_requires_a_current_complete_count_certificate_without_hiding_po
             &mut frame,
             Recorded::Value(Some([0, 0])),
             Recorded::Value(Some(ZeroSubjectInputs {
-                relation_type: Some(engine::csubject_relation::TYPE_VALUE),
+                relation_type: Some(engine_native::csubject_relation::TYPE_VALUE),
                 parties: Some([Some(0), None]),
             })),
             Recorded::Value(Some(0)),
@@ -573,7 +572,7 @@ fn reserved_theatre_certificate_checks_native_ordinals_and_unique_full_handles()
             &mut frame,
             Recorded::Value(Some([0, 0])),
             Recorded::Value(Some(ZeroSubjectInputs {
-                relation_type: Some(engine::csubject_relation::TYPE_VALUE),
+                relation_type: Some(engine_native::csubject_relation::TYPE_VALUE),
                 parties: Some([Some(0), None]),
             })),
             Recorded::NotRecorded,

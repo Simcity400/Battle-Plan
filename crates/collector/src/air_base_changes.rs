@@ -3,7 +3,7 @@
 //! the game state's country count), almost all null; its only run-time writers, create country
 //! container and remove country access, keep the dense list (`cair_base::REGISTERED_CONTAINERS`) in
 //! step in the same call. AirBaseRegistrations therefore reads, per base, the dense list and each
-//! listed container's identity, span, link entry and slot word ([`engine::cair_base::dense_plan`]),
+//! listed container's identity, span, link entry and slot word ([`engine_native::cair_base::dense_plan`]),
 //! and no other slot: the listed containers are the occupied slots, in slot order. A list that does
 //! not prove the slots leaves the base to the full scan. Containers, pools, wings, capacity and
 //! fuel are still read every hour. No hook is involved.
@@ -16,7 +16,7 @@
 //! and the fast path stops for the attachment. `air_base_verify`, on by
 //! default during its burn-in, compares every fast-path base instead.
 use crate::sampled_verify::{Check, Sampled};
-use engine::cair_base::DenseRefusal;
+use engine_native::cair_base::DenseRefusal;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Every fast-path base is compared with its full scan (`air_base_verify`).

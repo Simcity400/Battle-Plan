@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn naval_inherited_controls_follow_visible_attachment_order_and_the_holder_clip() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let gui = native::read_at(br#"guiTypes = {
             containerWindowType = { name = unit_counter_navy size = { width = 66 height = 33 } clipping = no
@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn inherited_native_text_and_container_use_their_actual_shapes() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let gui = native::read_at(
             br#"guiTypes = {
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn full_frame_native_hit_does_not_replace_legacy_stretched_draw_bounds() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let gui = native::read_at(
             br#"guiTypes = { containerWindowType = {

@@ -117,7 +117,8 @@ impl Destination<'_> {
                             // storage, not a read share: it keeps each shared
                             // group key once in the arena, as the walk does.
                             self.sources.clear();
-                            let countries = engine::ccountry::Reader::new(memory, base, state);
+                            let countries =
+                                engine_native::ccountry::Reader::new(memory, base, state);
                             let result = read_division(
                                 divisional,
                                 base,
@@ -128,7 +129,7 @@ impl Destination<'_> {
                                 DivisionOutputs {
                                     name_groups: self.name_groups,
                                     names: &mut self.names,
-                                    exile_tags: engine::walk::Buffer::GrowingFrom(
+                                    exile_tags: engine_native::walk::Buffer::GrowingFrom(
                                         self.exile_tags,
                                         exile_start,
                                     ),
@@ -212,12 +213,12 @@ impl Destination<'_> {
         let at = self.detail_used;
         let roster = self.arenas[0].len;
         let mut arenas = cland_combat::DetailArenas::with_buffers(
-            engine::walk::Buffer::GrowingFrom(self.rosters, roster),
-            engine::walk::Buffer::GrowingFrom(self.air_counts, at.air),
-            engine::walk::Buffer::GrowingFrom(self.detail_text, at.text),
-            engine::walk::Buffer::GrowingFrom(self.commander_traits, at.traits),
-            engine::walk::Buffer::GrowingFrom(self.timed_traits, at.timed),
-            engine::walk::Buffer::GrowingFrom(self.learning_traits, at.learning),
+            engine_native::walk::Buffer::GrowingFrom(self.rosters, roster),
+            engine_native::walk::Buffer::GrowingFrom(self.air_counts, at.air),
+            engine_native::walk::Buffer::GrowingFrom(self.detail_text, at.text),
+            engine_native::walk::Buffer::GrowingFrom(self.commander_traits, at.traits),
+            engine_native::walk::Buffer::GrowingFrom(self.timed_traits, at.timed),
+            engine_native::walk::Buffer::GrowingFrom(self.learning_traits, at.learning),
         );
         let result = cland_combat::read_details(
             memory,

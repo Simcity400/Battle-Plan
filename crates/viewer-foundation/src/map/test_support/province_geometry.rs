@@ -1,5 +1,5 @@
 //! Synthetic province bitmap and centroid inputs for geometry and order rays.
-use installed_content::map::MapData;
+use installed_content_core::map::MapData;
 use std::collections::BTreeMap;
 
 pub fn fixture_map(width: u32, height: u32, province_ids: &[u32]) -> MapData {

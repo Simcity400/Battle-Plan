@@ -17,7 +17,7 @@ pub fn balance(
             let names: Vec<_> = row
                 .sources
                 .iter()
-                .map(|name| installed_content::parser::c_string(name))
+                .map(|name| installed_content_core::parser::c_string(name))
                 .collect();
             if names
                 .iter()
@@ -44,7 +44,8 @@ pub fn balance(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{frame::Metrics, rows::*};
+    use replay_data::rows::*;
+    use replay_frame::frame::Metrics;
 
     #[test]
     fn saved_balance_order_is_checked() {
@@ -56,7 +57,7 @@ mod tests {
                 TableView::Complete(TableRows::empty(TableId::ALL[i])).into()
             }),
         };
-        let pack = save::governance::parse(&installed_content::parser::parse(b"countries={} power_balance={power_balances={{template=x value=0 left_side=l right_side=r trending_side=r modifier=b modifier=a modifier=b}}}").unwrap().items).unwrap();
+        let pack = save::governance::parse(&installed_content_core::parser::parse(b"countries={} power_balance={power_balances={{template=x value=0 left_side=l right_side=r trending_side=r modifier=b modifier=a modifier=b}}}").unwrap().items).unwrap();
         let row = |sources| PowerBalanceModifierBreakdownRow {
             record: 0,
             sources,

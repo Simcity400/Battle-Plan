@@ -66,7 +66,7 @@ impl Events {
         from: i32,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        let _cpu = replay::cpu::scope_phase("military_air_ledger:query_events");
+        let _cpu = replay_frame::cpu::scope_phase("military_air_ledger:query_events");
         family.leaves = self
             .leaves
             .iter()
@@ -106,7 +106,7 @@ impl Prepared {
     #[cfg(test)]
     pub(crate) fn observe(&mut self, frame: &DecodedFrame) -> io::Result<()> {
         let changes = dashboard_base::prepared::frame_changes::FrameChangeTracker::new()
-            .observe(frame, replay::format::FormatVersion::default());
+            .observe(frame, replay_data::format::FormatVersion::default());
         self.observe_changed(frame, &changes)
     }
     pub fn observe_changed(
@@ -157,7 +157,7 @@ impl Prepared {
         serde_json::from_reader(zstd::stream::Decoder::new(file)?).map_err(Into::into)
     }
     fn read_query(store: &store::Store, key: &store::SourceKey, branch: u64) -> io::Result<Self> {
-        let _cpu = replay::cpu::scope_phase("military_air_ledger:query_continuation");
+        let _cpu = replay_frame::cpu::scope_phase("military_air_ledger:query_continuation");
         #[derive(Deserialize)]
         struct QueryState {
             scan: Scan,
@@ -224,7 +224,7 @@ impl Prepared {
             params.from_hour.unwrap_or(i32::MIN),
             cancelled,
         )?;
-        let _cpu = replay::cpu::scope_phase("military_air_ledger:query_projection");
+        let _cpu = replay_frame::cpu::scope_phase("military_air_ledger:query_projection");
         self.scan.reply(source, params, context, cancelled)
     }
 }
@@ -307,10 +307,8 @@ mod tests {
     use super::*;
     use dashboard_base::prepared::series::tests::Fixture;
     use dashboard_core::test_fixtures::{CAMPAIGN, records, scale_frame};
-    use replay::{
-        frame::TableView,
-        rows::{AirLossEventRow, BuildingBombingDamageRow, TableRows},
-    };
+    use replay_data::{rows::AirLossEventRow, rows::BuildingBombingDamageRow, rows::TableRows};
+    use replay_frame::frame::TableView;
 
     fn loss(id: u64, hour: i32, amount: i64) -> AirLossEventRow {
         AirLossEventRow {
@@ -500,7 +498,7 @@ mod tests {
             let mut state = Prepared::default();
             let mut tracker = FrameChangeTracker::new();
             let mut frame = super::super::tests::frame(0, vec![], vec![]);
-            let format = replay::format::FormatVersion::default();
+            let format = replay_data::format::FormatVersion::default();
             for hour in 0..history {
                 frame.hour = hour as i32;
                 if let TableView::Complete(TableRows::Countries(rows)) =
@@ -629,7 +627,7 @@ mod tests {
             })
             .collect();
         frames[29].hour = 41;
-        let format = replay::format::FormatVersion::default();
+        let format = replay_data::format::FormatVersion::default();
         let mut state = Prepared::default();
         for chunk in [&frames[..10], &frames[10..20]] {
             let mut tracker = FrameChangeTracker::new();

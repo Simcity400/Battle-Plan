@@ -64,7 +64,7 @@
 //! Complete Countries and CountryLinks distinguish an absent tag from unresolved
 //! identity. An absent tag cannot own a removal and adds no unknown span. Countries
 //! lists allocated native objects, including dormant tags, rather than all content
-//! tags (engine::ccountry::walk); release or annexation need not remove a row.
+//! tags (engine_native::ccountry::walk); release or annexation need not remove a row.
 //! For a present tag, any unresolved raw owner might own its removals, so the total
 //! stays an incomplete subtotal through branch end. Persistent spans merge by reason and distinct
 //! count-free detail, using a keyed index. Earliest incomplete hours
@@ -114,16 +114,14 @@ use dashboard_text::{
     catalogue::View,
     metadata::{TaggedCountry, branch_bounds, link_slot, mapped_slot, validate_campaign},
 };
-#[cfg(test)]
-use replay::frame::FrameDecoder;
-use replay::{
-    container::Replay,
-    frame::DecodedFrame,
-    rows::{
-        CountryLinkRow, EQUIPMENT_DESTRUCTION_PARTIAL_REASON, EquipmentDestructionCause, RowCodec,
-        TableId, tables,
-    },
+use replay::container::Replay;
+use replay_data::{
+    rows::CountryLinkRow, rows::EQUIPMENT_DESTRUCTION_PARTIAL_REASON,
+    rows::EquipmentDestructionCause, rows::RowCodec, rows::TableId, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
+#[cfg(test)]
+use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::{
@@ -500,7 +498,7 @@ pub struct Scanned {
     /// The recording's format, which dates its daily tables
     /// ([`dashboard_text::metadata::slot_read`]).
     #[serde(skip)]
-    pub(crate) format: replay::format::FormatVersion,
+    pub(crate) format: replay_data::format::FormatVersion,
     /// (source, variant) to (hour, delta) events, in scan order.
     #[serde(with = "dashboard_core::map_pairs")]
     pub events: BTreeMap<LeafKey, Vec<(i32, i128)>>,
@@ -754,7 +752,7 @@ fn country_metadata(
 fn ship_rows<'a>(
     scanned: &mut Scanned,
     state: &mut State,
-    entries: impl Iterator<Item = &'a replay::rows::SunkShipEntry>,
+    entries: impl Iterator<Item = &'a replay_data::rows::SunkShipEntry>,
 ) {
     let mut counts: BTreeMap<ShipKey, (usize, i32, u64)> = BTreeMap::new();
     for entry in entries {
@@ -786,7 +784,7 @@ fn convoy_rows<'a>(
     scanned: &mut Scanned,
     state: &mut State,
     hour: i32,
-    rows: impl Iterator<Item = &'a replay::rows::SunkConvoyRow>,
+    rows: impl Iterator<Item = &'a replay_data::rows::SunkConvoyRow>,
 ) {
     for row in rows {
         let last = state
@@ -808,7 +806,7 @@ fn lend_lease_rows<'a>(
     scanned: &mut Scanned,
     state: &mut State,
     hour: i32,
-    rows: impl Iterator<Item = &'a replay::rows::LendLeaseEquipmentRow> + Clone,
+    rows: impl Iterator<Item = &'a replay_data::rows::LendLeaseEquipmentRow> + Clone,
 ) {
     // The game deletes an ended exchange with its totals: an exchange
     // the last complete read showed and this one does not ended after
@@ -847,7 +845,7 @@ fn lend_lease_rows<'a>(
             .or_default();
         let delta = i128::from(row.amount_raw) - i128::from(*last);
         *last = row.amount_raw;
-        let source = if row.kind == engine::clend_lease_exchange::SUNK_KIND {
+        let source = if row.kind == engine_resources::clend_lease_exchange::SUNK_KIND {
             LossSource::LendLeaseSunk
         } else {
             LossSource::LendLeaseSent
@@ -858,7 +856,7 @@ fn lend_lease_rows<'a>(
 }
 
 /// The variant reference type (low word of a variant handle).
-const VARIANT_TYPE: u32 = engine::cequipment_variant::REFERENCE_TYPE;
+const VARIANT_TYPE: u32 = engine_native::cequipment_variant::REFERENCE_TYPE;
 
 const DESTRUCTION_TRUNCATED: &str = "Equipment destruction drain is truncated; branch unavailable";
 
@@ -876,15 +874,15 @@ struct DestructionInputs {
 fn destruction_inputs(
     decoded: &DecodedFrame,
     links: Option<&[CountryLinkRow]>,
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
 ) -> io::Result<DestructionInputs> {
     let Ok(rows) = decoded.complete::<tables::EquipmentDestruction>() else {
         return Ok(DestructionInputs::default());
     };
     let marker = rows.first().filter(|row| {
         row.coverage
-            == replay::rows::Recorded::Value(
-                replay::rows::EquipmentDestructionCoverage::SupplementalUnavailable,
+            == replay_data::rows::Recorded::Value(
+                replay_data::rows::EquipmentDestructionCoverage::SupplementalUnavailable,
             )
     });
     #[cfg(test)]
@@ -967,13 +965,13 @@ fn destruction_from(
         return Ok(());
     }
     let rows = match table {
-        replay::frame::TableView::Complete(rows) => {
+        replay_frame::frame::TableView::Complete(rows) => {
             scanned.destruction_counted_from.get_or_insert(hour);
             rows.rows::<tables::EquipmentDestruction>().ok_or_else(|| {
                 io::Error::other("Equipment destruction table has the wrong row type")
             })?
         }
-        replay::frame::TableView::Unavailable { reason } => {
+        replay_frame::frame::TableView::Unavailable { reason } => {
             let partial = reason == EQUIPMENT_DESTRUCTION_PARTIAL_REASON;
             // A deliberately partial startup interval precedes counting.
             // A later partial interval has lost an already counted drain.
@@ -985,7 +983,7 @@ fn destruction_from(
             } else {
                 UnknownReason::DestructionWithheld
             };
-            let detail = if reason.starts_with(replay::frame::TRUNCATED_KEYFRAME_REASON) {
+            let detail = if reason.starts_with(replay_frame::frame::TRUNCATED_KEYFRAME_REASON) {
                 DESTRUCTION_TRUNCATED.to_owned()
             } else {
                 reason.clone()
@@ -997,7 +995,7 @@ fn destruction_from(
             }
             return Ok(());
         }
-        replay::frame::TableView::Truncated { .. } => {
+        replay_frame::frame::TableView::Truncated { .. } => {
             let reason = DESTRUCTION_TRUNCATED.to_owned();
             scanned.destruction_cover(hour, hour, Some(reason.clone()));
             scanned.destruction_unknown(hour, UnknownReason::DestructionWithheld, reason.clone());
@@ -1147,7 +1145,7 @@ fn coverage_inputs(decoded: &DecodedFrame, links: &[CountryLinkRow]) -> Coverage
         .map(<[_]>::as_ref)
     {
         inputs.features =
-            Some(features.dlc_mask & engine::dlc_feature_state::EQUIPMENT_LOSSES_MASK != 0);
+            Some(features.dlc_mask & engine_dlc::dlc_feature_state::EQUIPMENT_LOSSES_MASK != 0);
     }
     inputs
 }
@@ -1167,7 +1165,7 @@ fn land_read(decoded: &DecodedFrame) -> bool {
     decoded.complete::<tables::SliceReads>().is_ok()
         && matches!(
             &*decoded.tables[TableId::CombatLogEquipment.index()],
-            replay::frame::TableView::Complete(_)
+            replay_frame::frame::TableView::Complete(_)
         )
 }
 
@@ -1180,14 +1178,14 @@ fn combat_rows<'a>(
     scanned: &mut Scanned,
     state: &mut State,
     hour: i32,
-    rows: impl Iterator<Item = &'a replay::rows::CombatLogEquipmentRow>,
+    rows: impl Iterator<Item = &'a replay_data::rows::CombatLogEquipmentRow>,
 ) {
     for row in rows {
         let key = (row.group, row.kind, row.month, row.variant);
         let last = state.log.entry(key).or_default();
         let delta = i128::from(row.amount_raw) - i128::from(*last);
         *last = row.amount_raw;
-        let source = if row.kind == engine::ncombat_log_cmanager::RECOVERED_KIND {
+        let source = if row.kind == engine_land_inputs::ncombat_log_cmanager::RECOVERED_KIND {
             LossSource::Recovered
         } else {
             LossSource::CombatLog(row.kind)
@@ -1256,7 +1254,7 @@ const COMBAT_LOG_TITLES: [(&str, &str); 3] = [
 const NAVAL_LOSSES_WINDOW: &str = "navallosseswindow";
 const NAVAL_LOSSES_TOTAL: [(&str, &str); 1] = [("total_ships", "pdx_tooltip")];
 /// The cause names only the content's interface files author, read through
-/// the content stack ([`installed_content::gui::native::window_texts`]). A key that does not
+/// the content stack ([`installed_content_core::gui::native::window_texts`]). A key that does not
 /// resolve is null, and why is a warning.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct InterfaceKeys {
@@ -1267,9 +1265,9 @@ pub struct InterfaceKeys {
 }
 
 impl InterfaceKeys {
-    pub fn read(guis: &installed_content::gui::native::Guis, warnings: &mut Vec<String>) -> Self {
+    pub fn read(guis: &installed_content_core::gui::native::Guis, warnings: &mut Vec<String>) -> Self {
         let mut resolve = |window: &str, texts: &[(&str, &str)]| -> Vec<Option<String>> {
-            match installed_content::gui::native::window_texts(guis, window, texts, warnings) {
+            match installed_content_core::gui::native::window_texts(guis, window, texts, warnings) {
                 Ok(keys) => keys
                     .into_iter()
                     .map(|key| {
@@ -1351,7 +1349,7 @@ fn equipment_name(catalogue: &catalogue::Catalogue, key: &str) -> Option<String>
     catalogue.localised(key, View::Plain)
 }
 
-fn archetype_token(database: &installed_content::equipment::Database, token: &str) -> Option<String> {
+fn archetype_token(database: &installed_content_core::equipment::Database, token: &str) -> Option<String> {
     let archetype = database.named(token)?.archetype?;
     database
         .equipment
@@ -1363,14 +1361,15 @@ fn archetype_token(database: &installed_content::equipment::Database, token: &st
 
 /// NDefines.NGame.COMBAT_LOG_MAX_MONTHS, used by daily pruning.
 fn retained_months(catalogue: &catalogue::Catalogue) -> io::Result<i32> {
-    installed_content::defines::read(&catalogue.content.layers)?.int32("NGame", "COMBAT_LOG_MAX_MONTHS")
+    installed_content_core::defines::read(&catalogue.content.layers)?
+        .int32("NGame", "COMBAT_LOG_MAX_MONTHS")
 }
 
 /// Checks authored inputs through the reply's naming and retention functions;
 /// loss/design inventories themselves only exist in a recording.
 pub fn check_content(
     catalogue: &catalogue::Catalogue,
-    database: &installed_content::equipment::Database,
+    database: &installed_content_core::equipment::Database,
 ) -> io::Result<Vec<dashboard_core::findings::Finding>> {
     use dashboard_core::findings::{Finding, Kind};
     let mut warnings = Vec::new();
@@ -1443,7 +1442,7 @@ fn retention_unknown(months: i32) -> String {
 #[derive(Clone, Copy, Default)]
 pub struct Content<'a> {
     pub catalogue: Option<&'a catalogue::Catalogue>,
-    pub archetypes: Option<&'a installed_content::equipment::Database>,
+    pub archetypes: Option<&'a installed_content_core::equipment::Database>,
     pub keys: Option<&'a InterfaceKeys>,
     /// `NGame.COMBAT_LOG_MAX_MONTHS`.
     pub retained_months: Option<i32>,
@@ -1588,8 +1587,8 @@ pub fn reply(
                 .min();
         }
         let kind = match source {
-            LossSource::LendLeaseSunk => engine::clend_lease_exchange::SUNK_KIND,
-            LossSource::LendLeaseSent => engine::clend_lease_exchange::DELIVERED_KIND,
+            LossSource::LendLeaseSunk => engine_resources::clend_lease_exchange::SUNK_KIND,
+            LossSource::LendLeaseSent => engine_resources::clend_lease_exchange::DELIVERED_KIND,
             _ => return None,
         };
         variant.and_then(|variant| ended_lower_bounds.get(&(kind, variant)).copied())
@@ -1859,7 +1858,7 @@ fn reply_with_content(
         }
     };
     let archetypes = catalogue.as_ref().and_then(|catalogue| {
-        installed_content::equipment::Database::load_complete(&catalogue.content.layers)
+        installed_content_core::equipment::Database::load_complete(&catalogue.content.layers)
             .inspect(|database| warnings.extend(database.misreads.iter().cloned()))
             .map_err(|error| warnings.push(format!("Equipment types are unavailable: {error}")))
             .ok()
@@ -1869,7 +1868,7 @@ fn reply_with_content(
         .then_some(catalogue.as_ref())
         .flatten()
         .and_then(|catalogue| {
-            installed_content::defines::read(&catalogue.content.layers)
+            installed_content_core::defines::read(&catalogue.content.layers)
                 .and_then(|defines| defines.int32("NGame", "COMBAT_LOG_MAX_MONTHS"))
                 .map_err(|error| {
                     warnings.push(format!(

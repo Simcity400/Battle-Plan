@@ -1,13 +1,13 @@
 use super::*;
 
-fn history_fixture(input: &[u8]) -> installed_content::states::StateDefinition {
-    let context = installed_content::states::Context {
-        resource: &|_| installed_content::states::Resource::Found,
+fn history_fixture(input: &[u8]) -> installed_content_states::states::StateDefinition {
+    let context = installed_content_states::states::Context {
+        resource: &|_| installed_content_states::states::Resource::Found,
         max_building_levels: 20,
         province_count: 1000,
-        names: &installed_content::key_names::KeyNames::default(),
+        names: &installed_content_core::key_names::KeyNames::default(),
     };
-    installed_content::states::parse_states(input, &context)
+    installed_content_states::states::parse_states(input, &context)
         .unwrap()
         .0
         .remove(0)
@@ -43,19 +43,19 @@ fn state_cores_compare_canonical_membership_with_the_saved_country_lists() {
     let reads = |states: &[u32]| {
         states
             .iter()
-            .map(|&owner| replay::rows::SliceReadRow {
-                table: replay::rows::TableId::StateCores.index() as u32,
+            .map(|&owner| replay_data::rows::SliceReadRow {
+                table: replay_data::rows::TableId::StateCores.index() as u32,
                 owner,
                 sample_hour: 10,
             })
             .collect::<Vec<_>>()
     };
-    let row = |state, cores: &[u32]| replay::rows::StateCoreRow {
+    let row = |state, cores: &[u32]| replay_data::rows::StateCoreRow {
         state,
         cores: cores.to_vec(),
         ..Default::default()
     };
-    let run = |rows: &[replay::rows::StateCoreRow], countries, read: &[u32]| {
+    let run = |rows: &[replay_data::rows::StateCoreRow], countries, read: &[u32]| {
         let mut report = Report::default();
         state_cores(rows, countries, &links, &reads(read), 10, &mut report).unwrap();
         report
@@ -82,7 +82,7 @@ fn state_cores_compare_canonical_membership_with_the_saved_country_lists() {
 /// saved claim against them differs.
 #[test]
 fn state_claims_compare_canonical_membership_with_the_saved_country_lists() {
-    use replay::rows::{Recorded, StateCoreRow};
+    use replay_data::{rows::Recorded, rows::StateCoreRow};
     let country = |tag: &[u8], id| CountryRow {
         id,
         tag: tag.to_vec(),
@@ -103,8 +103,8 @@ fn state_claims_compare_canonical_membership_with_the_saved_country_lists() {
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let reads = [1_u32, 2].map(|owner| replay::rows::SliceReadRow {
-        table: replay::rows::TableId::StateCores.index() as u32,
+    let reads = [1_u32, 2].map(|owner| replay_data::rows::SliceReadRow {
+        table: replay_data::rows::TableId::StateCores.index() as u32,
         owner,
         sample_hour: 10,
     });
@@ -134,7 +134,7 @@ fn state_claims_compare_canonical_membership_with_the_saved_country_lists() {
 /// `strategic_province_location`. A reordered or missing entry differs.
 #[test]
 fn state_strategic_locations_compare_with_the_saved_state_and_province_lists() {
-    use replay::rows::{Recorded, StateCoreRow};
+    use replay_data::{rows::Recorded, rows::StateCoreRow};
     let names = BTreeMap::from([
         (701_u32, &b"natural_harbor"[..]),
         (702, b"favorable_approach"),
@@ -171,8 +171,8 @@ fn state_strategic_locations_compare_with_the_saved_state_and_province_lists() {
         (32, province(32, &[])),
     ]);
     let state_of = BTreeMap::from([(31, 4), (32, 4)]);
-    let reads = [replay::rows::SliceReadRow {
-        table: replay::rows::TableId::StateCores.index() as u32,
+    let reads = [replay_data::rows::SliceReadRow {
+        table: replay_data::rows::TableId::StateCores.index() as u32,
         owner: 4,
         sample_hour: 10,
     }];
@@ -220,13 +220,14 @@ fn state_strategic_locations_compare_with_the_saved_state_and_province_lists() {
 }
 
 fn saved_pack(text: &[u8]) -> saved::Pack {
-    saved::parse(&installed_content::parser::parse(text).unwrap().items).unwrap()
+    saved::parse(&installed_content_core::parser::parse(text).unwrap().items).unwrap()
 }
 
 #[test]
 fn occupation_law_names_compare_native_first_nul_prefixes() {
-    use replay::rows::{
-        OccupationGroupLaw, OccupationSettingsRow, Recorded, StateOccupationLawRow,
+    use replay_data::{
+        rows::OccupationGroupLaw, rows::OccupationSettingsRow, rows::Recorded,
+        rows::StateOccupationLawRow,
     };
     let saved = saved_pack(b"countries={AAA={occupation_status={default_law=Law occupation={BBB={occupation_law=Law occupation_law_list={1=Law}}}}} BBB={}} states={} provinces={}");
     let countries = [b"AAA", b"BBB"].map(|tag| CountryRow {
@@ -292,13 +293,11 @@ fn occupation_law_names_compare_native_first_nul_prefixes() {
 
 #[test]
 fn garrison_equipment_oracle_compares_requirements_and_names_the_unsaved_allocation_cache() {
-    use replay::{
-        frame::TableView,
-        rows::{
-            GarrisonEquipment, GarrisonEquipmentInputs, Recorded, StateGarrisonRow, TableRows,
-            VariantDefinitionRow,
-        },
+    use replay_data::{
+        rows::GarrisonEquipment, rows::GarrisonEquipmentInputs, rows::Recorded,
+        rows::StateGarrisonRow, rows::TableRows, rows::VariantDefinitionRow,
     };
+    use replay_frame::frame::TableView;
     let a = CountryRow {
         tag: b"A".to_vec(),
         ..Default::default()
@@ -376,19 +375,19 @@ fn state_resource_block_gate_keeps_negative_siblings_but_omits_negative_only_poo
         saved_pack(b"countries={} provinces={} states={2={resources={ore=8 coolant=-2}} 3={}}");
     let names = BTreeMap::from([(7, b"ore".as_slice()), (8, b"coolant".as_slice())]);
     let mut rows = vec![
-        replay::rows::StateResourceRow {
+        replay_data::rows::StateResourceRow {
             state: 2,
             resource: 7,
             pool: 800_000,
             ..Default::default()
         },
-        replay::rows::StateResourceRow {
+        replay_data::rows::StateResourceRow {
             state: 2,
             resource: 8,
             pool: -200_000,
             ..Default::default()
         },
-        replay::rows::StateResourceRow {
+        replay_data::rows::StateResourceRow {
             state: 3,
             resource: 8,
             pool: -300_000,
@@ -434,7 +433,7 @@ fn state_pools_and_modifiers_compare_names_order_and_scopes() {
         }}}"#,
     );
     let names = BTreeMap::from([(7_u32, &b"steel"[..]), (8, &b"oil"[..])]);
-    let pool = |resource, pool| replay::rows::StateResourceRow {
+    let pool = |resource, pool| replay_data::rows::StateResourceRow {
         state: 2,
         resource,
         pool,
@@ -480,13 +479,14 @@ fn state_pools_and_modifiers_compare_names_order_and_scopes() {
         ..Default::default()
     };
     let links = BTreeMap::from([(5_u32, &swiss)]);
-    let modifier = |ordinal, token: &[u8], scope_country| replay::rows::StateDynamicModifierRow {
-        state: 2,
-        ordinal,
-        token: token.to_vec(),
-        scope_country,
-        scope_state: 0,
-    };
+    let modifier =
+        |ordinal, token: &[u8], scope_country| replay_data::rows::StateDynamicModifierRow {
+            state: 2,
+            ordinal,
+            token: token.to_vec(),
+            scope_country,
+            scope_state: 0,
+        };
     let mut report = Report::default();
     state_modifiers(
         &[modifier(0, b"b", 5), modifier(1, b"a", 0)],
@@ -526,17 +526,17 @@ fn resource_inputs_compare_origins_and_infrastructure_levels() {
     };
     let links = BTreeMap::from([(5_u32, &italy)]);
     let names = BTreeMap::from([(
-        engine::cbuilding_database::INFRASTRUCTURE_TOKEN,
+        engine_native::cbuilding_database::INFRASTRUCTURE_TOKEN,
         &b"infra"[..],
     )]);
     let states: Vec<_> = [2, 3, 4]
-        .map(|id| replay::rows::StateRow {
+        .map(|id| replay_data::rows::StateRow {
             id,
             controller: 5,
             ..Default::default()
         })
         .into();
-    let input = |state, origin, infrastructure_level| replay::rows::StateResourceInputRow {
+    let input = |state, origin, infrastructure_level| replay_data::rows::StateResourceInputRow {
         state,
         origin,
         infrastructure_level,
@@ -567,16 +567,16 @@ fn resource_inputs_compare_null_controller_without_a_country_join() {
     let saved = saved_pack(
         b"countries={A={resources={origin={country=A state=2}}}} states={2={}} provinces={}",
     );
-    let states = [replay::rows::StateRow {
+    let states = [replay_data::rows::StateRow {
         id: 2,
         controller: 0,
         ..Default::default()
     }];
     let names = BTreeMap::from([(
-        engine::cbuilding_database::INFRASTRUCTURE_TOKEN,
+        engine_native::cbuilding_database::INFRASTRUCTURE_TOKEN,
         b"infra".as_slice(),
     )]);
-    let mut row = replay::rows::StateResourceInputRow {
+    let mut row = replay_data::rows::StateResourceInputRow {
         state: 2,
         ..Default::default()
     };
@@ -629,14 +629,14 @@ fn building_overrides_compare_entries_elements_and_empty_controllers() {
     let links = BTreeMap::from([(5_u32, &italy), (24, &germany)]);
     let names = BTreeMap::from([(40_u32, &b"refinery"[..]), (41, &b"dock"[..])]);
     let resources: Vec<_> = [(1, 70), (3, 72)]
-        .map(|(id, token)| replay::rows::ResourceDefinitionRow {
+        .map(|(id, token)| replay_data::rows::ResourceDefinitionRow {
             id,
             token,
             ..Default::default()
         })
         .into();
     let states: Vec<_> = [(2, 5), (3, 24)]
-        .map(|(id, controller)| replay::rows::StateRow {
+        .map(|(id, controller)| replay_data::rows::StateRow {
             id,
             controller,
             ..Default::default()
@@ -644,7 +644,7 @@ fn building_overrides_compare_entries_elements_and_empty_controllers() {
         .into();
     let hour = 5;
     let row = |ordinal, entry, building, count, resource, amount| {
-        replay::rows::CountryBuildingResourceRow {
+        replay_data::rows::CountryBuildingResourceRow {
             country: 5,
             ordinal,
             entry,
@@ -654,8 +654,8 @@ fn building_overrides_compare_entries_elements_and_empty_controllers() {
             amount,
         }
     };
-    let read = |owner, sample_hour| replay::rows::SliceReadRow {
-        table: replay::rows::TableId::CountryBuildingResources.index() as u32,
+    let read = |owner, sample_hour| replay_data::rows::SliceReadRow {
+        table: replay_data::rows::TableId::CountryBuildingResources.index() as u32,
         owner,
         sample_hour,
     };
@@ -724,7 +724,7 @@ fn building_and_railway_comparisons_detect_one_native_unit_and_order_changes() {
     };
     let links = BTreeMap::from([(12, &germany)]);
     let names = BTreeMap::from([(31, b"factory".as_slice())]);
-    let building = replay::rows::BuildingRow {
+    let building = replay_data::rows::BuildingRow {
         location: 1,
         building_type: 31,
         level: i16::MIN,
@@ -732,7 +732,7 @@ fn building_and_railway_comparisons_detect_one_native_unit_and_order_changes() {
         partial_health: 1,
         ..Default::default()
     };
-    let mut rail = replay::rows::RailwayConstructionRow {
+    let mut rail = replay_data::rows::RailwayConstructionRow {
         id: (2_u64 << 32) | 4713,
         country: 12,
         cost: 9_007_199_254_740_993,
@@ -780,17 +780,17 @@ fn occupation_template_id_retains_full_handle_and_null_omission() {
     };
     let links = BTreeMap::from([(12, &germany), (22, &france)]);
     let mut rows = [
-        replay::rows::OccupationSettingsRow {
+        replay_data::rows::OccupationSettingsRow {
             country: 12,
             garrison_template: Some((u64::from(u32::MAX) << 32) | 52),
             default_law_present: 1,
             law: Vec::new(),
-            group_laws: replay::rows::Recorded::Value(Some(Vec::new())),
+            group_laws: replay_data::rows::Recorded::Value(Some(Vec::new())),
             ..Default::default()
         },
-        replay::rows::OccupationSettingsRow {
+        replay_data::rows::OccupationSettingsRow {
             country: 22,
-            group_laws: replay::rows::Recorded::Value(Some(Vec::new())),
+            group_laws: replay_data::rows::Recorded::Value(Some(Vec::new())),
             ..Default::default()
         },
     ];
@@ -825,12 +825,12 @@ fn occupied_country_roster_oracle_checks_order_and_appended_availability() {
         .enumerate()
         .map(|(ordinal, country)| (ordinal as u32 + 1, country))
         .collect();
-    let mut row = replay::rows::OccupationSettingsRow {
+    let mut row = replay_data::rows::OccupationSettingsRow {
         country: 1,
-        occupied: replay::rows::Recorded::Value(Some(vec![3, 2])),
-        group_laws: replay::rows::Recorded::Value(Some(
+        occupied: replay_data::rows::Recorded::Value(Some(vec![3, 2])),
+        group_laws: replay_data::rows::Recorded::Value(Some(
             [3, 2]
-                .map(|occupied| replay::rows::OccupationGroupLaw {
+                .map(|occupied| replay_data::rows::OccupationGroupLaw {
                     occupied,
                     scope_country: Some(occupied),
                     law: None,
@@ -842,10 +842,10 @@ fn occupied_country_roster_oracle_checks_order_and_appended_availability() {
     let mut report = Report::default();
     occupation_settings(&[row.clone()], &saved, &links, &mut report).unwrap();
     assert!(report.differences.is_empty());
-    row.occupied = replay::rows::Recorded::Value(Some(vec![2, 3]));
+    row.occupied = replay_data::rows::Recorded::Value(Some(vec![2, 3]));
     occupation_settings(&[row.clone()], &saved, &links, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
-    row.occupied = replay::rows::Recorded::NotRecorded;
+    row.occupied = replay_data::rows::Recorded::NotRecorded;
     let mut report = Report::default();
     occupation_settings(&[row], &saved, &links, &mut report).unwrap();
     assert!(report.differences.is_empty());
@@ -874,13 +874,13 @@ fn laws_with_zero_state_remain_distinct_in_different_occupied_scopes() {
     };
     let links = BTreeMap::from([(12, &germany), (22, &france), (32, &britain)]);
     let mut rows = [
-        replay::rows::StateOccupationLawRow {
+        replay_data::rows::StateOccupationLawRow {
             controller: 12,
             occupied: 22,
             state: 0,
             name: b"a".to_vec(),
         },
-        replay::rows::StateOccupationLawRow {
+        replay_data::rows::StateOccupationLawRow {
             controller: 12,
             occupied: 32,
             state: 0,
@@ -898,7 +898,7 @@ fn laws_with_zero_state_remain_distinct_in_different_occupied_scopes() {
 #[test]
 fn resistance_country_omission_does_not_certify_raw_zero() {
     let saved = saved_pack(b"countries={} states={1={resistance={resistance=90071992547.40993 resistance_speed=-0.00001}}} provinces={}");
-    let mut row = replay::rows::StateResistanceRow {
+    let mut row = replay_data::rows::StateResistanceRow {
         state: 1,
         country: u32::MAX,
         level: 9_007_199_254_740_993,
@@ -946,10 +946,10 @@ fn dictionary_missing_entry_is_explicit_and_literal_bytes_are_preserved() {
 
 #[test]
 fn missing_dictionary_preserves_scope_checks_without_inventing_named_rows() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let saved = saved_pack(b"countries={} states={} provinces={7={buildings={factory={level=1 healthy_levels=1 partial_health=0}}}}");
-    let row = replay::rows::BuildingRow {
+    let row = replay_data::rows::BuildingRow {
         location: 7,
         building_type: 99,
         ordinal: 77,
@@ -995,13 +995,13 @@ fn missing_dictionary_preserves_scope_checks_without_inventing_named_rows() {
         .add_state_history(&history_fixture(b"state={id=1 resources={steel=3 oil=7}}"))
         .unwrap();
     let resources = [
-        replay::rows::StateBaseResourceRow {
+        replay_data::rows::StateBaseResourceRow {
             state: 1,
             resource: 91,
             ordinal: 77,
             amount: i64::MIN,
         },
-        replay::rows::StateBaseResourceRow {
+        replay_data::rows::StateBaseResourceRow {
             state: 1,
             resource: 92,
             ordinal: 1,
@@ -1032,7 +1032,7 @@ fn missing_dictionary_preserves_scope_checks_without_inventing_named_rows() {
 
 #[test]
 fn nul_token_mapping_limits_keep_independent_scope_count_and_numeric_checks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let saved = saved_pack(b"countries={GER={production={general_lines={building={id={id=4 type=59} cost=1 priority=0 amount=1 created_date=1936.1.1.12 building={template=factory location=3}}}}}} states={} provinces={7={buildings={factory={level=1 healthy_levels=1 partial_health=0}}}}");
     let names = BTreeMap::from([
@@ -1041,7 +1041,7 @@ fn nul_token_mapping_limits_keep_independent_scope_count_and_numeric_checks() {
     ]);
     let mut report = Report::default();
     buildings(
-        &[replay::rows::BuildingRow {
+        &[replay_data::rows::BuildingRow {
             location: 7,
             building_type: 11,
             level: i16::MIN,
@@ -1061,7 +1061,7 @@ fn nul_token_mapping_limits_keep_independent_scope_count_and_numeric_checks() {
         .add_state_history(&history_fixture(b"state={id=1 resources={oil=3 steel=0}}"))
         .unwrap();
     base_resources(
-        &[replay::rows::StateBaseResourceRow {
+        &[replay_data::rows::StateBaseResourceRow {
             state: 1,
             resource: 12,
             ordinal: 77,
@@ -1080,7 +1080,7 @@ fn nul_token_mapping_limits_keep_independent_scope_count_and_numeric_checks() {
         ..Default::default()
     };
     building_construction(
-        &[replay::rows::BuildingConstructionRow {
+        &[replay_data::rows::BuildingConstructionRow {
             id: (4_u64 << 32) | 59,
             country: 12,
             cost: 100_001,
@@ -1131,12 +1131,12 @@ fn resolved_province_buildings_compare_signed_zero_values_and_named_membership()
     let saved = saved_pack(b"countries={} states={7={buildings={port={level=9 healthy_levels=9 partial_health=0}}}} provinces={7={buildings={factory={level=0 healthy_levels=0 partial_health=0} port={level=-32768 healthy_levels=-1 partial_health=-90071992547.40993}}}}");
     let names = BTreeMap::from([(91, b"factory".as_slice()), (92, b"port".as_slice())]);
     let rows = [
-        replay::rows::BuildingRow {
+        replay_data::rows::BuildingRow {
             location: 7,
             building_type: 91,
             ..Default::default()
         },
-        replay::rows::BuildingRow {
+        replay_data::rows::BuildingRow {
             location: 7,
             building_type: 92,
             ordinal: 1,
@@ -1154,7 +1154,7 @@ fn resolved_province_buildings_compare_signed_zero_values_and_named_membership()
     // A positive saved level must be in the active vector.
     let mut report = Report::default();
     buildings(
-        &[replay::rows::BuildingRow {
+        &[replay_data::rows::BuildingRow {
             location: 7,
             building_type: 92,
             level: 9,
@@ -1224,11 +1224,11 @@ fn naval_bases_sum_the_contents_port_buildings() {
                 .collect(),
         ),
     }];
-    let mut row = replay::rows::NavalBaseRow {
+    let mut row = replay_data::rows::NavalBaseRow {
         province: 7,
         level: 5,
         healthy_level: 4,
-        country_tags: replay::rows::Recorded::Value(Some(Vec::new())),
+        country_tags: replay_data::rows::Recorded::Value(Some(Vec::new())),
         ..Default::default()
     };
     let mut report = Report::default();
@@ -1312,8 +1312,8 @@ fn naval_base_membership_uses_saved_rosters_rather_than_all_port_buildings() {
 #[test]
 fn naval_base_saved_country_lists_compare_order_multiplicity_and_zero_level_bases() {
     use installed_content_save::naval_launch::parse_country_occurrences;
-    use replay::rows::{NavalBaseRow, Recorded};
-    let bases = parse_country_occurrences(&installed_content::parser::parse(
+    use replay_data::{rows::NavalBaseRow, rows::Recorded};
+    let bases = parse_country_occurrences(&installed_content_core::parser::parse(
         b"A={strategic_navy={naval_base={7={disabled_for_repairs=\"A\" disabled_for_repairs=\"B\" disabled_for_repairs=\"A\" disabled_for_repairs=\"\"} 7={disabled_for_repairs=\"A\" disabled_for_repairs=\"B\" disabled_for_repairs=\"A\" disabled_for_repairs=\"\"}}}}",
     ).unwrap().items).unwrap();
     // Raw aliases cannot be projected through the canonical CountryLinks:
@@ -1391,7 +1391,7 @@ fn naval_base_saved_country_lists_compare_order_multiplicity_and_zero_level_base
 
 #[test]
 fn resolved_base_resources_compare_repeated_initial_blocks_and_native_ordinals() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut content = saved::BaseResources::default();
     content.add_state_history(&history_fixture(b"state={id=949 resources={steel=0 oil=-2147483648.9} history={resources={steel=999 aluminium=888}} resources={} resources={aluminium=10.000}}"))
@@ -1402,19 +1402,19 @@ fn resolved_base_resources_compare_repeated_initial_blocks_and_native_ordinals()
         (93, b"aluminium".as_slice()),
     ]);
     let rows = [
-        replay::rows::StateBaseResourceRow {
+        replay_data::rows::StateBaseResourceRow {
             state: 949,
             resource: 91,
             ordinal: 0,
             amount: 0,
         },
-        replay::rows::StateBaseResourceRow {
+        replay_data::rows::StateBaseResourceRow {
             state: 949,
             resource: 92,
             ordinal: 1,
             amount: -214_748_364_800_000,
         },
-        replay::rows::StateBaseResourceRow {
+        replay_data::rows::StateBaseResourceRow {
             state: 949,
             resource: 93,
             ordinal: 2,
@@ -1466,7 +1466,7 @@ fn resolved_construction_names_retain_exact_numeric_and_queue_checks() {
     };
     let links = BTreeMap::from([(12, &germany)]);
     let names = BTreeMap::from([(91, b"factory".as_slice())]);
-    let row = replay::rows::BuildingConstructionRow {
+    let row = replay_data::rows::BuildingConstructionRow {
         id: (u64::from(u32::MAX) << 32) | 59,
         country: 12,
         active_factories: -2,
@@ -1538,7 +1538,7 @@ fn missing_construction_name_does_not_skip_numeric_or_target_comparison() {
         ..Default::default()
     };
     let links = BTreeMap::from([(12, &germany)]);
-    let row = replay::rows::BuildingConstructionRow {
+    let row = replay_data::rows::BuildingConstructionRow {
         id: (4_u64 << 32) | 59,
         country: 12,
         cost: 9_007_199_254_740_994,
@@ -1638,7 +1638,7 @@ fn manpower_filter_retains_relative_order_and_resolves_country_aliases() {
 
 #[test]
 fn occupation_group_laws_compare_null_membership_aliases_and_missing_or_extra_groups() {
-    use replay::rows::{OccupationGroupLaw, OccupationSettingsRow, Recorded};
+    use replay_data::{rows::OccupationGroupLaw, rows::OccupationSettingsRow, rows::Recorded};
     let saved = saved_pack(b"countries={A={occupation_status={occupation={B={occupation_law=mod_law} C={}}}} B={} C={}} states={} provinces={}");
     let a = CountryRow {
         tag: b"A".to_vec(),
@@ -1722,9 +1722,10 @@ fn occupation_group_laws_compare_null_membership_aliases_and_missing_or_extra_gr
 /// countries read at this hour, and an import's line colour against its saved exchange.
 #[test]
 fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save() {
-    use replay::rows::{
-        ConvoyClientRow, RegionalConvoyEfficiencyRow, ResourceDefinitionRow, ResourceOriginRow,
-        ResourceRightRow, SliceReadRow, TableId, TradeRouteRow,
+    use replay_data::{
+        rows::ConvoyClientRow, rows::RegionalConvoyEfficiencyRow, rows::ResourceDefinitionRow,
+        rows::ResourceOriginRow, rows::ResourceRightRow, rows::SliceReadRow, rows::TableId,
+        rows::TradeRouteRow,
     };
     let saved = saved_pack(
         br#"countries={GER={resources={
@@ -1784,7 +1785,7 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
     }];
     let import = ConvoyClientRow {
         handle: 0x33,
-        category: engine::resource_map::IMPORT,
+        category: engine_resources::resource_map::IMPORT,
         bad: false,
         ..Default::default()
     };
@@ -1835,7 +1836,7 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
         owner_ordinal: Some(0),
         other_ordinal: Some(0),
         handle: 0x34,
-        category: engine::resource_map::LEND_LEASE,
+        category: engine_resources::resource_map::LEND_LEASE,
         bad: true,
         convoys_assigned: 2,
         convoys_required: 3,
@@ -1997,7 +1998,7 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
 
 #[test]
 fn resource_right_order_is_runtime_only_but_membership_and_unique_positions_are_checked() {
-    use replay::rows::{ResourceDefinitionRow, ResourceRightRow};
+    use replay_data::{rows::ResourceDefinitionRow, rows::ResourceRightRow};
     let saved = saved_pack(
         br#"countries={GER={resources={origin={state=119
             given_resource_rights={ { oil "AFG" } { steel "AFG" } }}}} AFG={}}

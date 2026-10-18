@@ -17,15 +17,13 @@
 //! Products about equipment (production lines, stockpile) read icons here.
 
 use crate::catalogue::Catalogue;
-use installed_content::{
-    equipment::Database,
-    equipment_graphics::{self, Context, context::Prepared, countries::ModelCountry},
-    technology::Enablers,
+use installed_content_core::{equipment::Database, technology::Enablers};
+use installed_content_equipment_graphics::{
+    equipment_graphics, equipment_graphics::Context, equipment_graphics::context::Prepared,
+    equipment_graphics::countries::ModelCountry,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryLinkRow, VariantDefinitionRow, tables},
-};
+use replay_data::{rows::CountryLinkRow, rows::VariantDefinitionRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -153,10 +151,11 @@ impl IconContent {
         units: Option<Arc<Database>>,
     ) -> io::Result<Self> {
         let layers = &catalogue.content.layers;
-        let default_map = installed_content::terrain::read_default_map(layers)?;
-        let provinces =
-            installed_content::map::parse_definitions(&layers.read(&default_map.file("definitions")?)?)?;
-        let defines = installed_content::defines::read(layers)?;
+        let default_map = installed_content_core::terrain::read_default_map(layers)?;
+        let provinces = installed_content_core::map::parse_definitions(
+            &layers.read(&default_map.file("definitions")?)?,
+        )?;
+        let defines = installed_content_core::defines::read(layers)?;
         let mut warnings = Vec::new();
         let names = equipment_graphics::Names::read(layers, &default_map, &mut warnings)?;
         let files = Arc::clone(&catalogue);
@@ -169,7 +168,7 @@ impl IconContent {
                         Some(database) if database.lost.is_none() => {
                             // Reuse registration only after the ordinary verified reads,
                             // in the order followed by the complete database loader.
-                            for path in installed_content::equipment::files(layers) {
+                            for path in installed_content_core::equipment::files(layers) {
                                 layers.read(&path)?;
                             }
                             Arc::clone(database)
@@ -180,7 +179,7 @@ impl IconContent {
                     }
                 }
             },
-            enablers: installed_content::technology::read_enablers(layers)?,
+            enablers: installed_content_core::technology::read_enablers(layers)?,
             pools: equipment_graphics::Content::load(layers, &names)?,
             geography: equipment_graphics::context::Content::load(
                 layers,
@@ -299,20 +298,20 @@ impl IconContent {
         warnings
     }
 
-    pub fn preparation_warnings(&self) -> Vec<installed_content::Diagnostic> {
+    pub fn preparation_warnings(&self) -> Vec<installed_content_core::Diagnostic> {
         let mut warnings: Vec<_> = self
             .load_warnings
             .iter()
             .cloned()
-            .map(|message| (installed_content::DiagnosticKind::Warning, message))
+            .map(|message| (installed_content_core::DiagnosticKind::Warning, message))
             .collect();
         warnings.extend(self.enablers.refused.iter().map(|definition| {
-            (installed_content::DiagnosticKind::Unsupported,
+            (installed_content_core::DiagnosticKind::Unsupported,
                 format!("technology {definition} enables equipment through a script, which is not supported; icons that would use it are unknown"))
         }));
         warnings.extend(self.pools.refusals().into_iter().map(|(subject, reason)| {
             (
-                installed_content::DiagnosticKind::Refused,
+                installed_content_core::DiagnosticKind::Refused,
                 format!("{subject}: {reason}"),
             )
         }));
@@ -386,7 +385,7 @@ impl IconContent {
     }
 
     /// A declared sprite by its exact name: the sprite registry compares names byte
-    /// for byte (see `installed_content::gfx::SpriteSet`),
+    /// for byte (see `installed_content_gfx::gfx::SpriteSet`),
     /// unlike the lexer tokens a name is built from.
     fn sprite(&self, name: &str) -> Result<Option<Icon>, String> {
         if let Some(reason) = self.refused_sprites.get(name) {
@@ -535,7 +534,9 @@ pub fn variant_icon(
             let found = if variant.icon_kind == 0 {
                 content.sprite(&entry)?
             } else {
-                content.file(&entry)?.then(|| Icon::Path(entry.clone().into_owned()))
+                content
+                    .file(&entry)?
+                    .then(|| Icon::Path(entry.clone().into_owned()))
             };
             if found.is_some() {
                 return Ok(found);

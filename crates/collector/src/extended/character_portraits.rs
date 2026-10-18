@@ -12,14 +12,12 @@ use crate::{
     spooling::unavailable,
     table_capture::{Arena, CaptureRows},
 };
-use engine::allocation::{copy_vec, map_slice, owned_vec, reserve_exact};
-use engine::{Memory, ccharacter, walk::Outcome};
+use engine_allocation::{copy_vec, map_slice, owned_vec, reserve_exact};
+use engine_native::{Memory, ccharacter, walk::Outcome};
+use replay_data::{rows::CharacterPortraitRow, rows::TableId, rows::tables};
+use replay_frame::frame::TableInput;
 #[cfg(test)]
-use replay::frame::TableView;
-use replay::{
-    frame::TableInput,
-    rows::{CharacterPortraitRow, TableId, tables},
-};
+use replay_frame::frame::TableView;
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::CharacterPortraits];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
@@ -66,7 +64,7 @@ pub const PARTS: usize = 4;
 struct Certificate {
     scope: (usize, usize, usize, bool),
     revision: (u64, u64),
-    acquired: engine::cprovince::UnitOrderWalk,
+    acquired: engine_native::cprovince::UnitOrderWalk,
     /// Every entry of the walk these rows came from held a watch.
     watched: bool,
 }
@@ -74,8 +72,8 @@ struct Certificate {
 /// One share of the roster: its rows and their portrait entries.
 pub struct Part {
     rows: CaptureRows<ccharacter::PortraitRow>,
-    arena: Arena<engine::character_portrait_entry::Row<engine::capture_text::Owned>>,
-    cache: engine::portrait_cache::Cache,
+    arena: Arena<engine_native::character_portrait_entry::Row<engine_native::capture_text::Owned>>,
+    cache: engine_native::portrait_cache::Cache,
     plan: crate::snapshot_plan::SnapshotPlan,
     certified: Option<Certificate>,
     /// The stamp of the portrait census whose occurrences this share's
@@ -92,13 +90,15 @@ impl Part {
         Self {
             rows: CaptureRows::new(c.rows),
             arena: Arena::new(c.arena),
-            cache: engine::portrait_cache::Cache::new(if cfg!(feature = "portrait_changes") {
-                c.rows
-            } else {
-                0
-            })
+            cache: engine_native::portrait_cache::Cache::new(
+                if cfg!(feature = "portrait_changes") {
+                    c.rows
+                } else {
+                    0
+                },
+            )
             .map_err(crate::allocation::io)
-            .unwrap_or_else(|_| engine::portrait_cache::Cache::empty()),
+            .unwrap_or_else(|_| engine_native::portrait_cache::Cache::empty()),
             plan: crate::snapshot_plan::SnapshotPlan::new(spans, bytes),
             certified: None,
             matched: None,
@@ -108,7 +108,7 @@ impl Part {
         Self {
             rows: CaptureRows::new(0),
             arena: Arena::new(0),
-            cache: engine::portrait_cache::Cache::empty(),
+            cache: engine_native::portrait_cache::Cache::empty(),
             plan: crate::snapshot_plan::SnapshotPlan::new(0, 0),
             certified: None,
             matched: None,
@@ -150,7 +150,7 @@ impl Part {
         memory: &impl Memory,
         context: CaptureContext,
         part: usize,
-        census: Option<&engine::ccharacter_manager::PortraitCensus>,
+        census: Option<&engine_native::ccharacter_manager::PortraitCensus>,
     ) -> u64 {
         self.capture_observed(
             memory,
@@ -168,8 +168,8 @@ impl Part {
         memory: &impl Memory,
         context: CaptureContext,
         part: usize,
-        census: Option<&engine::ccharacter_manager::PortraitCensus>,
-        observer: &dyn engine::portrait_cache::Changes,
+        census: Option<&engine_native::ccharacter_manager::PortraitCensus>,
+        observer: &dyn engine_native::portrait_cache::Changes,
         check: Check,
     ) -> u64 {
         self.plan.enable_worker_growth();
@@ -195,7 +195,7 @@ impl Part {
         let before_any = observer.any_revision();
         let identities = census.and_then(|census| census.rows(context.base, context.game_state));
         let scope = (context.base, context.game_state, part, identities.is_some());
-        let stamp = census.map(engine::ccharacter_manager::PortraitCensus::stamp);
+        let stamp = census.map(engine_native::ccharacter_manager::PortraitCensus::stamp);
         let same_census = identities.is_none_or(|rows| {
             let first = rows.len() * part / PARTS;
             let last = rows.len() * (part + 1) / PARTS;
@@ -237,7 +237,7 @@ impl Part {
                 self.rows.outcome = acquired.outcome;
                 self.arena.len = acquired.len;
                 self.arena.required = acquired.required;
-                crate::portrait_changes::record(engine::portrait_cache::Counts {
+                crate::portrait_changes::record(engine_native::portrait_cache::Counts {
                     reused_characters: acquired.outcome.len() as u64,
                     reused_entries: acquired.len as u64,
                     ..Default::default()
@@ -494,7 +494,7 @@ impl Captured {
                 character: r.character,
                 portraits: owned_vec(map_slice(
                     &part.arena.first[r.portraits[0]..r.portraits[0] + r.portraits[1]],
-                    |p| replay::rows::CharacterPortrait {
+                    |p| replay_data::rows::CharacterPortrait {
                         category: p.category,
                         size: p.size,
                         is_set: p.is_set,
@@ -511,7 +511,10 @@ impl Captured {
 mod owned_tests {
     use super::*;
     use crate::extended::characters::characters_test_kit as kit;
-    use engine::ccharacter_manager::{PortraitCensus, PortraitIdentity, Roster};
+    use engine_native::{
+        ccharacter_manager::PortraitCensus, ccharacter_manager::PortraitIdentity,
+        ccharacter_manager::Roster,
+    };
     #[cfg(all(feature = "portrait_changes", not(feature = "portrait_verify")))]
     use std::cell::{Cell, RefCell};
 
@@ -534,7 +537,7 @@ mod owned_tests {
         let pointer = census.rows(kit::BASE, kit::GAME_STATE).unwrap()[0].pointer;
         let header = pointer + ccharacter::PORTRAIT_DATA;
         let entry = bytes.len();
-        bytes.resize(entry + engine::character_portrait_entry::STRIDE, 0);
+        bytes.resize(entry + engine_native::character_portrait_entry::STRIDE, 0);
         let offset = header - kit::GAME_STATE;
         bytes[offset..offset + 8]
             .copy_from_slice(&((kit::GAME_STATE + entry) as u64).to_le_bytes());
@@ -557,7 +560,7 @@ mod owned_tests {
             any: Cell<u64>,
             during: Cell<bool>,
         }
-        impl engine::portrait_cache::Changes for Observer {
+        impl engine_native::portrait_cache::Changes for Observer {
             fn revision(&self, _: usize) -> Option<(u64, u64)> {
                 Some((1, 0))
             }
@@ -639,7 +642,7 @@ mod owned_tests {
             holders: Cell<u64>,
             domain: Cell<u64>,
         }
-        impl engine::portrait_cache::Changes for Observer {
+        impl engine_native::portrait_cache::Changes for Observer {
             fn revision(&self, _: usize) -> Option<(u64, u64)> {
                 Some((1, self.holders.get()))
             }
@@ -758,7 +761,7 @@ mod owned_tests {
     #[test]
     fn a_quiet_share_stays_quiet_across_growth_and_a_new_census() {
         struct Observer;
-        impl engine::portrait_cache::Changes for Observer {
+        impl engine_native::portrait_cache::Changes for Observer {
             fn revision(&self, _: usize) -> Option<(u64, u64)> {
                 Some((1, 0))
             }
@@ -814,7 +817,7 @@ mod owned_tests {
     #[test]
     fn sampled_shares_find_an_unobserved_entry_write_within_one_rotation() {
         struct Observer(Cell<u64>);
-        impl engine::portrait_cache::Changes for Observer {
+        impl engine_native::portrait_cache::Changes for Observer {
             fn revision(&self, _: usize) -> Option<(u64, u64)> {
                 Some((1, self.0.get()))
             }
@@ -878,10 +881,8 @@ mod owned_tests {
 
     #[test]
     fn projection_compares_every_portrait_field_and_discovers_new_characters() {
-        use replay::{
-            frame::{DecodedFrame, FrameEncoder, Metrics},
-            rows::TableRows,
-        };
+        use replay_data::rows::TableRows;
+        use replay_frame::{frame::DecodedFrame, frame::FrameEncoder, frame::Metrics};
         let mut capture = Captured::with_capacities(&Capacities { rows: 2, arena: 2 });
         for part in &mut capture.parts {
             part.rows.outcome = Outcome::Rows { len: 0 };

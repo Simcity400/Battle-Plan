@@ -555,7 +555,7 @@ impl Hook {
 // leave owned patches and executable storage intact for a later restore retry.
 pub fn publication_storage<T>(capacity: usize, enabled: bool) -> io::Result<Vec<T>> {
     if enabled {
-        engine::allocation::vec(capacity)
+        engine_allocation::vec(capacity)
     } else {
         let mut storage = Vec::new();
         storage

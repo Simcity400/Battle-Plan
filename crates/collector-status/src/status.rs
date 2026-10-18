@@ -207,7 +207,7 @@ pub fn serialize_into(bytes: &mut Vec<u8>, value: &impl Serialize) -> std::io::R
     impl Write for Writer<'_> {
         fn write(&mut self, input: &[u8]) -> io::Result<usize> {
             if !self.failed {
-                if engine::allocation::reserve(self.bytes, input.len()).is_err() {
+                if engine_allocation::reserve(self.bytes, input.len()).is_err() {
                     self.failed = true;
                 } else {
                     self.bytes.extend_from_slice(input);

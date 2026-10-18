@@ -1,7 +1,7 @@
 use super::*;
 
 fn railway_fields(extra: &str) -> Vec<Item> {
-    installed_content::parser::parse(
+    installed_content_core::parser::parse(
         format!(
             "id={{id=4294967295 type=4713}} cost=-90071992547.40993 priority=-9 amount=-2147483648 created_date=1936.1.1.12 base=-3 target=7 current_province=-1 remaining_hours=0.00001 {extra}"
         )
@@ -12,7 +12,7 @@ fn railway_fields(extra: &str) -> Vec<Item> {
 }
 
 fn pack(input: &str) -> io::Result<Pack> {
-    parse(&installed_content::parser::parse(input.as_bytes())?.items)
+    parse(&installed_content_core::parser::parse(input.as_bytes())?.items)
 }
 
 #[test]

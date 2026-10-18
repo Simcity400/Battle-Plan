@@ -49,12 +49,7 @@ fn the_flying_aircraft_draws_whatever_the_map_cutoffs_and_layer_switches() -> io
             ground: document.aircraft.ground_contact().map_err(invalid)?,
         }
     };
-    let mut flight = Flight::new(
-        [x, defines.map_objects_cutoff + 50.0, z],
-        1.0,
-        0.0,
-        0.0,
-    );
+    let mut flight = Flight::new([x, defines.map_objects_cutoff + 50.0, z], 1.0, 0.0, 0.0);
     flight.update(
         &crate::controls::Frame::default(),
         &base,

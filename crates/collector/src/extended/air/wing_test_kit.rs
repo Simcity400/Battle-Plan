@@ -1,5 +1,5 @@
 use super::{AirWingCopyContext, AirWingCopyReport, AirWingJob, Capacities, Captured};
-use engine::{Memory, memory::SliceMemory, walk::Outcome};
+use engine_native::{Memory, memory::SliceMemory, walk::Outcome};
 
 pub(crate) const BASE: usize = 0;
 pub(crate) const GAME_STATE: usize = 0x10000;
@@ -30,13 +30,13 @@ fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
 }
 
 pub(crate) fn fixture() -> Vec<u8> {
-    use engine::{
+    use engine_native::{
         cair_wing, ccountry, cequipment_variant, cequipment_variant_pool, equipment_entry,
     };
     let mut bytes = vec![0; 0x40000];
     header(
         &mut bytes,
-        GAME_STATE + engine::cgame_state::COUNTRIES,
+        GAME_STATE + engine_native::cgame_state::COUNTRIES,
         CTAB,
         3,
     );
@@ -45,7 +45,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     p64(&mut bytes, CTAB + 16, C0 as u64);
     header(
         &mut bytes,
-        GAME_STATE + engine::cgame_state::COUNTRY_LINKS,
+        GAME_STATE + engine_native::cgame_state::COUNTRY_LINKS,
         LTAB,
         3,
     );
@@ -56,17 +56,17 @@ pub(crate) fn fixture() -> Vec<u8> {
     p32(&mut bytes, C0 + ccountry::ID, 1);
     p64(
         &mut bytes,
-        GAME_STATE + engine::cgame_state::STRATEGIC_AIR_MANAGER,
+        GAME_STATE + engine_native::cgame_state::STRATEGIC_AIR_MANAGER,
         MANAGER as u64,
     );
     p64(
         &mut bytes,
         MANAGER,
-        engine::cstrategic_air_manager::VTABLE_RVA as u64,
+        engine_native::cstrategic_air_manager::VTABLE_RVA as u64,
     );
     header(
         &mut bytes,
-        MANAGER + engine::cstrategic_air_manager::COUNTRY_AIR,
+        MANAGER + engine_native::cstrategic_air_manager::COUNTRY_AIR,
         0x38000,
         2,
     );
@@ -75,28 +75,41 @@ pub(crate) fn fixture() -> Vec<u8> {
     p64(
         &mut bytes,
         OWNER_AIR,
-        engine::cstrategic_air::VTABLE_RVA as u64,
+        engine_native::cstrategic_air::VTABLE_RVA as u64,
     );
-    p32(&mut bytes, OWNER_AIR + engine::cstrategic_air::COUNTRY, 1);
+    p32(
+        &mut bytes,
+        OWNER_AIR + engine_native::cstrategic_air::COUNTRY,
+        1,
+    );
     header(
         &mut bytes,
-        OWNER_AIR + engine::cstrategic_air::POOLS,
+        OWNER_AIR + engine_native::cstrategic_air::POOLS,
         0x38100,
         1,
     );
     p64(&mut bytes, 0x38100, POOL as u64);
-    p64(&mut bytes, POOL, engine::cair_wing_pool::VTABLE_RVA as u64);
     p64(
         &mut bytes,
-        POOL + engine::cair_wing_pool::OWNER,
+        POOL,
+        engine_native::cair_wing_pool::VTABLE_RVA as u64,
+    );
+    p64(
+        &mut bytes,
+        POOL + engine_native::cair_wing_pool::OWNER,
         OWNER_AIR as u64,
     );
     p64(
         &mut bytes,
-        POOL + engine::cair_wing_pool::AIR_BASE_REFERENCE,
+        POOL + engine_native::cair_wing_pool::AIR_BASE_REFERENCE,
         0x1234u64,
     );
-    header(&mut bytes, POOL + engine::cair_wing_pool::WINGS, 0x38200, 2);
+    header(
+        &mut bytes,
+        POOL + engine_native::cair_wing_pool::WINGS,
+        0x38200,
+        2,
+    );
     p64(&mut bytes, 0x38200, WING as u64);
     p64(&mut bytes, 0x38200 + 8, WING2 as u64);
     for (wing, id, accidents, exp) in [
@@ -115,12 +128,12 @@ pub(crate) fn fixture() -> Vec<u8> {
         p32(&mut bytes, wing + cair_wing::PLANE_COUNT, 10);
         p32(
             &mut bytes,
-            wing + cair_wing::MISSION + engine::air_mission::ENABLED_MASK,
+            wing + cair_wing::MISSION + engine_native::air_mission::ENABLED_MASK,
             0xff,
         );
         p64(
             &mut bytes,
-            wing + cair_wing::MISSION + engine::air_mission::REGION,
+            wing + cair_wing::MISSION + engine_native::air_mission::REGION,
             0,
         );
         p32(&mut bytes, wing + cair_wing::COUNTRY_OVERRIDE, 0);
@@ -176,13 +189,13 @@ pub(crate) fn memory(bytes: &[u8]) -> SliceMemory<'_> {
 
 pub(crate) struct Split {
     pub equipment_outcome: Outcome,
-    pub equipment: Vec<replay::rows::WingEquipmentRow>,
+    pub equipment: Vec<replay_data::rows::WingEquipmentRow>,
     pub cumulative_outcome: Outcome,
-    pub cumulative: Vec<engine::cair_wing::CumulativeRow>,
+    pub cumulative: Vec<engine_native::cair_wing::CumulativeRow>,
 }
 
 fn collect_typed(memory: &impl Memory, capacity: &Capacities) -> Split {
-    use engine::cair_wing;
+    use engine_native::cair_wing;
     let mut captured = Captured::with_capacities(capacity);
     // Typed reference: wing walk with visitor into pooled buffers,
     // exactly like the game thread's Sources::air sequence.

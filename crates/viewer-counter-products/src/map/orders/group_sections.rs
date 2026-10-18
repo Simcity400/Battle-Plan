@@ -5,8 +5,9 @@ use super::{
     chain::{self, Pair},
     fixed::Point,
 };
-use replay::rows::{
-    ArmyOrderPlanRow, DivisionRow, OrderChildFront, OrdersGroupPlanRow, OrdersGroupRow, Recorded,
+use replay_data::{
+    rows::ArmyOrderPlanRow, rows::DivisionRow, rows::OrderChildFront, rows::OrdersGroupPlanRow,
+    rows::OrdersGroupRow, rows::Recorded,
 };
 use std::{cell::OnceCell, collections::BTreeMap};
 
@@ -55,9 +56,11 @@ pub struct DivisionGroups<'a> {
     index: OnceCell<BTreeMap<u64, u64>>,
 }
 impl<'a> DivisionGroups<'a> {
-    pub fn read(frame: &'a replay::frame::DecodedFrame) -> Self {
+    pub fn read(frame: &'a replay_frame::frame::DecodedFrame) -> Self {
         Self {
-            rows: frame.complete::<replay::rows::tables::Divisions>().ok(),
+            rows: frame
+                .complete::<replay_data::rows::tables::Divisions>()
+                .ok(),
             index: OnceCell::new(),
         }
     }

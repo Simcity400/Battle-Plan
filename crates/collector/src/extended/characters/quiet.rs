@@ -5,7 +5,7 @@
 //! array, by `roster clear(array)`; nothing erases, swaps or reorders one. The manager is rebuilt
 //! only by its constructor, and a rostered character's id is written after its push only by
 //! character identity repair. Every one of them moves the roster domain's quiet token
-//! ([`engine::character_roster_mutations`]), so while the token stands still the roster's
+//! ([`engine_mutations::character_roster_mutations`]), so while the token stands still the roster's
 //! occurrences (pointers), their order (roster and ordinal) and their ids are those of the job's
 //! latest complete full pass.
 //!
@@ -66,9 +66,9 @@ use crate::{
     roster_changes::{Counts, Roster, Table},
     sampled_verify::Check,
 };
-use engine::{
-    ccharacter_manager::PortraitIdentity,
-    memory::{RecordField, RecordLayout, RecordSources},
+use engine_native::{
+    ccharacter_manager::PortraitIdentity, memory::RecordField, memory::RecordLayout,
+    memory::RecordSources,
 };
 
 /// One roster slot pointer.
@@ -233,11 +233,11 @@ impl QuietRoster {
         self.slots.clear();
         self.pointers.clear();
         if growing
-            && engine::allocation::advisory(|| {
-                engine::allocation::reserve_exact(&mut self.slots, sampled)?;
-                engine::allocation::reserve_exact(&mut self.pointers, sampled)?;
+            && engine_allocation::advisory(|| {
+                engine_allocation::reserve_exact(&mut self.slots, sampled)?;
+                engine_allocation::reserve_exact(&mut self.pointers, sampled)?;
                 if self.fresh.len() < bytes {
-                    engine::allocation::resize(&mut self.fresh, bytes, 0)?;
+                    engine_allocation::resize(&mut self.fresh, bytes, 0)?;
                 }
                 std::io::Result::Ok(())
             })
@@ -670,9 +670,9 @@ impl Published {
         let (Some(rows), Some(bytes)) = (rows.get(..len), bytes.get(..result.bytes_len)) else {
             return;
         };
-        let stored = engine::allocation::advisory(|| {
-            engine::allocation::reserve_exact(&mut self.rows, rows.len())?;
-            engine::allocation::reserve_exact(&mut self.bytes, bytes.len())
+        let stored = engine_allocation::advisory(|| {
+            engine_allocation::reserve_exact(&mut self.rows, rows.len())?;
+            engine_allocation::reserve_exact(&mut self.bytes, bytes.len())
         });
         if stored.is_ok() {
             self.rows.extend_from_slice(rows);
@@ -701,9 +701,9 @@ impl Published {
         rows: &mut Vec<ccharacter::Row>,
         bytes: &mut Vec<u8>,
     ) -> ReadResult {
-        let room = engine::walk::Buffer::Growing(rows)
+        let room = engine_native::walk::Buffer::Growing(rows)
             .ensure(self.rows.len())
-            .and_then(|_| engine::walk::Buffer::Growing(bytes).ensure(self.bytes.len()));
+            .and_then(|_| engine_native::walk::Buffer::Growing(bytes).ensure(self.bytes.len()));
         if let Err(reason) = room {
             return ReadResult::rows(Outcome::Unavailable { reason });
         }

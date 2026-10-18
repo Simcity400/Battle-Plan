@@ -1,13 +1,13 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{LaunchNavalBase, LaunchNavalBases, ReservedLaunchSources, TableRows},
+use replay_data::{
+    rows::LaunchNavalBase, rows::LaunchNavalBases, rows::ReservedLaunchSources, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 
 fn fixture(physical: Vec<u32>, countries: &[u8], words: &[i32]) -> (DecodedFrame, Save) {
     let (mut frame, mut save, _, _) = super::super::super::fixtures::fixture();
     save.country_naval_launch = installed_content_save::naval_launch::parse_country_occurrences(
-        &installed_content::parser::parse(countries).unwrap().items,
+        &installed_content_core::parser::parse(countries).unwrap().items,
     )
     .unwrap();
     *frame.tables[TableId::ReservedCountryNaming.index()] =
@@ -17,7 +17,7 @@ fn fixture(physical: Vec<u32>, countries: &[u8], words: &[i32]) -> (DecodedFrame
                 country_array: Recorded::Value(Some(physical)),
                 owned_state_count: Recorded::Value(Some(3)),
                 launch_sources: Recorded::Value(Some(ReservedLaunchSources {
-                    sample_hour: replay::rows::PacketHour::Host,
+                    sample_hour: replay_data::rows::PacketHour::Host,
                     naval_bases: LaunchNavalBases::Bases(
                         words
                             .iter()
@@ -407,7 +407,7 @@ fn unavailable_domains_fail_independently_and_historical_packet_stays_absent() {
     assert_eq!(run(&frame, &save).differences.len(), 1);
     for naval_failed in [true, false] {
         row(&mut frame).launch_sources = Recorded::Value(Some(ReservedLaunchSources {
-            sample_hour: replay::rows::PacketHour::Host,
+            sample_hour: replay_data::rows::PacketHour::Host,
             naval_bases: if naval_failed {
                 LaunchNavalBases::Unavailable
             } else {

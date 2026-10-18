@@ -39,12 +39,9 @@ use crate::{
         equipment_stockpile,
     },
 };
-use replay::{
-    container::{QuietHours, Replay, TableFields},
-    format::FormatVersion,
-    frame::DecodedFrame,
-    rows::TableId,
-};
+use replay::{container::QuietHours, container::Replay, container::TableFields};
+use replay_data::{format::FormatVersion, rows::TableId};
+use replay_frame::frame::DecodedFrame;
 use serde::{Serialize, de::DeserializeOwned};
 use std::{any::Any, io, ops::Range, sync::atomic::AtomicBool};
 
@@ -54,7 +51,7 @@ enum Hour {
     Observed {
         frame: DecodedFrame,
         changes: FrameChanges,
-        demand: Option<replay::rows::TableRows>,
+        demand: Option<replay_data::rows::TableRows>,
     },
     /// Hours `first..=last`, after the hour before, at which nothing the
     /// family reads changed and none of its daily reads is dated.
@@ -151,15 +148,15 @@ impl Extract for DailyExtract {
         self.last = Some(frame.hour);
         let demand = if self.fuel && changes.slot_read[TableId::CountryFuel.index()] {
             frame
-                .complete::<replay::rows::tables::CountryFuel>()
+                .complete::<replay_data::rows::tables::CountryFuel>()
                 .ok()
                 .map(|rows| {
-                    replay::rows::with_demand_parts(
+                    replay_frame::rows::with_demand_parts(
                         rows,
                         &frame.tables[TableId::FuelDemandParts.index()],
                         self.format,
                     )
-                    .map(replay::rows::TableRows::CountryFuel)
+                    .map(replay_data::rows::TableRows::CountryFuel)
                 })
                 .transpose()?
         } else {
@@ -167,10 +164,11 @@ impl Extract for DailyExtract {
         };
         let mut kept = frame.clone();
         if self.fuel {
-            kept.tables[TableId::FuelDemandParts.index()] = replay::frame::TableView::Unavailable {
-                reason: "Demand parts assembled by the block extract".into(),
-            }
-            .into();
+            kept.tables[TableId::FuelDemandParts.index()] =
+                replay_frame::frame::TableView::Unavailable {
+                    reason: "Demand parts assembled by the block extract".into(),
+                }
+                .into();
         }
         self.hours.push(Hour::Observed {
             frame: kept,
@@ -193,12 +191,12 @@ impl Extract for DailyExtract {
             return None;
         }
         let last = self.last?;
-        (1..=replay::cadence::STAGGER_PERIOD)
+        (1..=replay_data::cadence::STAGGER_PERIOD)
             .filter_map(|ahead| last.checked_add(ahead))
             .find(|&hour| {
-                self.reads
-                    .iter()
-                    .any(|&table| replay::cadence::cadence_in(table, self.format).is_refresh(hour))
+                self.reads.iter().any(|&table| {
+                    replay_data::cadence::cadence_in(table, self.format).is_refresh(hour)
+                })
             })
     }
 
@@ -248,7 +246,7 @@ trait Ledger {
         &mut self,
         frame: &DecodedFrame,
         changes: &FrameChanges,
-        demand: Option<&replay::rows::TableRows>,
+        demand: Option<&replay_data::rows::TableRows>,
     ) -> io::Result<()> {
         let _ = demand;
         self.observe(frame, changes)
@@ -282,9 +280,9 @@ fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let facts = {
-        let _cpu = ::replay::cpu::scope("fold facts", None);
+        let _cpu = ::replay_frame::cpu::scope("fold facts", None);
         facts
             .downcast::<Facts>()
             .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -295,7 +293,7 @@ fn fold(
     let mut reached = None;
     let mut last: Option<DecodedFrame> = None;
     for hour in facts.hours {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         check()?;
         match hour {
             Hour::Observed {
@@ -307,7 +305,7 @@ fn fold(
                 #[cfg(test)]
                 count(family.name, |counts| counts.observed += 1);
                 let result = {
-                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     ledger.observe_demand(&frame, &changes, demand.as_ref())
                 };
                 if !observed(frame.hour, result)? {
@@ -317,7 +315,7 @@ fn fold(
             }
             Hour::Quiet { first, last: end } => {
                 let advanced = {
-                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     match &last {
                         Some(frame) => ledger.quiet(first, end, frame),
                         None => Ok(false),
@@ -367,7 +365,7 @@ fn observe_block(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     ledger.prepare(block)?;
     let format = block.replay.format;
     let mut tracker = FrameChangeTracker::new();
@@ -380,7 +378,7 @@ fn observe_block(
         block.index,
         family.tables,
         |raw, frame| {
-            let _cpu = ::replay::cpu::scope("fold driver", None);
+            let _cpu = ::replay_frame::cpu::scope("fold driver", None);
             let facts = tracker.observe_updates(frame, raw, format);
             if stopped {
                 return Ok(());
@@ -401,7 +399,7 @@ fn observe_block(
             #[cfg(test)]
             count(family.name, |counts| counts.observed += 1);
             let result = {
-                let _cpu = ::replay::cpu::scope("fold observe", None);
+                let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                 ledger.observe(frame, &facts)
             };
             match observed(frame.hour, result) {
@@ -577,7 +575,7 @@ impl ConstructionBranch {
 
 impl Ledger for ConstructionBranch {
     fn prepare(&mut self, block: &Block<'_>) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope("fold binds", None);
+        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
         if self.names.is_none() {
             self.names = Some(NameSource::of(block.source, block.context));
         }
@@ -763,7 +761,7 @@ struct StockpileBranch {
 
 impl Ledger for StockpileBranch {
     fn prepare(&mut self, block: &Block<'_>) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope("fold binds", None);
+        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
         if !self.bound {
             self.prepared
                 .bind_content(&equipment_stockpile::prepared::Prepared::content(
@@ -948,7 +946,7 @@ impl ProductionBranch {
 
 impl Ledger for ProductionBranch {
     fn prepare(&mut self, block: &Block<'_>) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope("fold binds", None);
+        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
         if self.naming.is_none() {
             self.naming = Some(ProductionNaming::load(block.source, block.context));
         }
@@ -1129,7 +1127,7 @@ struct ExperienceBranch {
 
 impl Ledger for ExperienceBranch {
     fn prepare(&mut self, _: &Block<'_>) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope("fold binds", None);
+        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
         Ok(())
     }
 
@@ -1284,7 +1282,7 @@ impl FuelBranch {
 
 impl Ledger for FuelBranch {
     fn prepare(&mut self, _: &Block<'_>) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope("fold binds", None);
+        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
         self.prepared();
         Ok(())
     }
@@ -1300,14 +1298,14 @@ impl Ledger for FuelBranch {
         &mut self,
         frame: &DecodedFrame,
         changes: &FrameChanges,
-        demand: Option<&replay::rows::TableRows>,
+        demand: Option<&replay_data::rows::TableRows>,
     ) -> io::Result<()> {
         let format = self.format;
         self.prepared().observe_demand(
             frame,
             format,
             changes,
-            demand.and_then(|rows| rows.rows::<replay::rows::tables::CountryFuel>()),
+            demand.and_then(|rows| rows.rows::<replay_data::rows::tables::CountryFuel>()),
             &AtomicBool::new(false),
         )
     }
@@ -1427,10 +1425,11 @@ mod tests {
     #[test]
     fn fuel_extract_releases_part_baselines_and_keeps_the_same_assembled_reads() {
         use crate::test_fixtures::{CAMPAIGN, records, source};
-        use replay::frame::TableView;
-        use replay::rows::{
-            CountryFuelRow, FuelDemandRead, FuelDemandUnit, Recorded, TableRows, tables,
+        use replay_data::{
+            rows::CountryFuelRow, rows::FuelDemandRead, rows::FuelDemandUnit, rows::Recorded,
+            rows::TableRows, rows::tables,
         };
+        use replay_frame::frame::TableView;
         let frames = (0..3)
             .map(|day| {
                 let hour = 100 + 24 * day;
@@ -1460,7 +1459,7 @@ mod tests {
             })
             .collect();
         let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
-        let before = replay::cpu::delta_copies()[TableId::FuelDemandParts.index()];
+        let before = replay_frame::cpu::delta_copies()[TableId::FuelDemandParts.index()];
         let facts = dashboard_base::prepared::prepass::extract_alone(
             &replay,
             &replay.index[0],
@@ -1470,7 +1469,7 @@ mod tests {
         .downcast::<Facts>()
         .unwrap();
         assert_eq!(
-            replay::cpu::delta_copies()[TableId::FuelDemandParts.index()],
+            replay_frame::cpu::delta_copies()[TableId::FuelDemandParts.index()],
             before
         );
         assert_eq!(facts.hours.len(), 3);

@@ -1,10 +1,8 @@
 //! Hourly counter inputs projected from the shared authenticated division census.
 use crate::{clock::qpc, table_capture::CaptureRows, table_conversion::table};
-use engine::{Memory, carmy, cequipment_variant_pool::DivisionSource, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{ArmyIconInputRow, TableId, tables},
-};
+use engine_native::{Memory, carmy, cequipment_variant_pool::DivisionSource, walk::Outcome};
+use replay_data::{rows::ArmyIconInputRow, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ArmyIconInputs];
@@ -166,7 +164,7 @@ fn read(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     #[test]
     fn worker_rows_grow_for_first_and_later_5000_country_mod_censuses() {
         let mut capture = Captured::vacant();
@@ -367,7 +365,8 @@ mod tests {
             alternate_template: 52 | (9 << 32),
         };
         capture.rows.outcome = Outcome::Rows { len: 1 };
-        let [TableView::Complete(replay::rows::TableRows::ArmyIconInputs(rows))] = capture.tables()
+        let [TableView::Complete(replay_data::rows::TableRows::ArmyIconInputs(rows))] =
+            capture.tables()
         else {
             panic!("complete primary row");
         };

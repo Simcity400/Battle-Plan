@@ -1,6 +1,6 @@
 use super::*;
 use crate::scripted_text::{EventObject, EventScope, EventScopes, Link};
-use replay::rows::*;
+use replay_data::rows::*;
 use std::{cell::RefCell, rc::Rc};
 
 const RAID: u64 = 7 << 32 | 84;
@@ -63,7 +63,7 @@ fn fixture() -> DecodedFrame {
 
 #[test]
 fn named_carriers_use_pool_country_and_roster_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let f = fixture();
     with_world(&f, "", Err("none"), |world| {
@@ -71,7 +71,7 @@ fn named_carriers_use_pool_country_and_roster_order() {
         let caller = Scopes::of(Scope::Country(1));
         let enter = |key| {
             evaluator.enter(
-                &installed_content::scope::parse(key, false, world.recorded()),
+                &installed_content_core::scope::parse(key, false, world.recorded()),
                 caller,
             )
         };
@@ -90,7 +90,7 @@ fn named_carriers_use_pool_country_and_roster_order() {
         ] {
             assert_eq!(
                 evaluator.enter(
-                    &installed_content::scope::Scope::Keyword(installed_content::scope::Keyword::Owner),
+                    &installed_content_core::scope::Scope::Keyword(installed_content_core::scope::Keyword::Owner),
                     Scopes::of(scope)
                 ),
                 Ok(Some(Scope::Country(owner)))
@@ -101,7 +101,7 @@ fn named_carriers_use_pool_country_and_roster_order() {
 
 #[test]
 fn named_carriers_resolve_the_last_of_five_thousand_countries() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let tags = (0..5_000)
         .map(|i| {
@@ -154,7 +154,7 @@ fn named_carriers_resolve_the_last_of_five_thousand_countries() {
         let caller = Scopes::of(Scope::Country(5_000));
         assert_eq!(
             evaluator.enter(
-                &installed_content::scope::parse("sp:synthetic_project", false, world.recorded()),
+                &installed_content_core::scope::parse("sp:synthetic_project", false, world.recorded()),
                 caller
             ),
             Ok(Some(Scope::Project {
@@ -164,7 +164,7 @@ fn named_carriers_resolve_the_last_of_five_thousand_countries() {
         );
         assert_eq!(
             evaluator.enter(
-                &installed_content::scope::parse("mio:synthetic_mio", false, world.recorded()),
+                &installed_content_core::scope::parse("mio:synthetic_mio", false, world.recorded()),
                 caller
             ),
             Ok(Some(Scope::IndustrialOrganisation(MIO)))
@@ -174,13 +174,13 @@ fn named_carriers_resolve_the_last_of_five_thousand_countries() {
 
 #[test]
 fn prefix_misses_clear_but_countryless_prefixes_keep_caller_and_faults_refuse() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = fixture();
     with_world(&f, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
         for key in ["sp:missing", "mio:missing"] {
-            let parsed = installed_content::scope::parse(key, false, world.recorded());
+            let parsed = installed_content_core::scope::parse(key, false, world.recorded());
             assert_eq!(
                 evaluator.enter(&parsed, Scopes::of(Scope::Country(1))),
                 Ok(Some(Scope::State(NULL_STATE)))
@@ -195,7 +195,7 @@ fn prefix_misses_clear_but_countryless_prefixes_keep_caller_and_faults_refuse() 
         for key in ["unit:8", "raid:7"] {
             assert_eq!(
                 evaluator.enter(
-                    &installed_content::scope::parse(key, false, world.recorded()),
+                    &installed_content_core::scope::parse(key, false, world.recorded()),
                     Scopes::of(Scope::Country(1))
                 ),
                 Ok(None)
@@ -207,7 +207,7 @@ fn prefix_misses_clear_but_countryless_prefixes_keep_caller_and_faults_refuse() 
     };
     with_world(&f, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
-        let parsed = installed_content::scope::parse("sp:synthetic_project", false, world.recorded());
+        let parsed = installed_content_core::scope::parse("sp:synthetic_project", false, world.recorded());
         assert!(
             evaluator
                 .enter(&parsed, Scopes::of(Scope::Country(1)))
@@ -223,7 +223,7 @@ fn prefix_misses_clear_but_countryless_prefixes_keep_caller_and_faults_refuse() 
 
 #[test]
 fn carried_targets_round_trip_links_seeds_and_description_storage() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let f = fixture();
     with_world(&f, "", Err("none"), |world| {
@@ -272,7 +272,7 @@ fn carried_targets_round_trip_links_seeds_and_description_storage() {
             let entered = evaluator.event_scopes(at).unwrap();
             let selected = evaluator
                 .enter_scope(
-                    &installed_content::scope::parse("event_target:chosen", false, world.recorded()),
+                    &installed_content_core::scope::parse("event_target:chosen", false, world.recorded()),
                     entered,
                 )
                 .unwrap();
@@ -283,7 +283,9 @@ fn carried_targets_round_trip_links_seeds_and_description_storage() {
                 assert_eq!(selected.this, scope);
                 assert_eq!(
                     evaluator.enter(
-                        &installed_content::scope::Scope::Keyword(installed_content::scope::Keyword::Prev),
+                        &installed_content_core::scope::Scope::Keyword(
+                            installed_content_core::scope::Keyword::Prev
+                        ),
                         selected
                     ),
                     Ok(Some(scope))
@@ -295,7 +297,7 @@ fn carried_targets_round_trip_links_seeds_and_description_storage() {
 
 #[test]
 fn saved_carriers_follow_the_context_and_variable_readers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let f = fixture();
     with_world(&f, "", Err("none"), |world| {
@@ -313,7 +315,7 @@ fn saved_carriers_follow_the_context_and_variable_readers() {
         let caller = evaluator.event_scopes(0).unwrap();
         assert_eq!(
             evaluator.enter(
-                &installed_content::scope::parse("event_target:raid", false, world.recorded()),
+                &installed_content_core::scope::parse("event_target:raid", false, world.recorded()),
                 caller
             ),
             Ok(Some(Scope::Country(1)))
@@ -324,7 +326,7 @@ fn saved_carriers_follow_the_context_and_variable_readers() {
         );
         assert_eq!(
             evaluator.enter(
-                &installed_content::scope::parse("event_target:unit", false, world.recorded()),
+                &installed_content_core::scope::parse("event_target:unit", false, world.recorded()),
                 caller
             ),
             Ok(Some(Scope::Unit(UNIT)))
@@ -336,12 +338,12 @@ fn saved_carriers_follow_the_context_and_variable_readers() {
 
 #[test]
 fn tagged_variables_decode_recorded_carriers_without_reading_object_stores() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = fixture();
     *f.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
-            seed: replay::rows::Recorded::Value(None),
+            seed: replay_data::rows::Recorded::Value(None),
             scope_kind: 1,
             scope_id: 101,
             entries: [
@@ -416,12 +418,12 @@ fn tagged_variables_decode_recorded_carriers_without_reading_object_stores() {
 
 #[test]
 fn carrier_random_list_identity_uses_object_hash_arms() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let f = fixture();
     with_world(&f, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
-        let list = installed_content::scripted_localisation::RandomList {
+        let list = installed_content_scripted_localisation::scripted_localisation::RandomList {
             seed: items("seed=1"),
             ..Default::default()
         };
@@ -440,7 +442,7 @@ fn carrier_random_list_identity_uses_object_hash_arms() {
 
 #[test]
 fn persisted_carrier_targets_name_the_missing_reference_and_keep_raid_context() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = fixture();
     *f.tables[TableId::GlobalSavedEventTargets.index()] =
@@ -471,8 +473,11 @@ fn persisted_carrier_targets_name_the_missing_reference_and_keep_raid_context() 
             ("unit", "unit"),
             ("industrial_organisation", "organisation"),
         ] {
-            let parsed =
-                installed_content::scope::parse(&format!("event_target:{name}"), false, world.recorded());
+            let parsed = installed_content_core::scope::parse(
+                &format!("event_target:{name}"),
+                false,
+                world.recorded(),
+            );
             assert!(
                 evaluator
                     .enter(&parsed, caller)
@@ -480,7 +485,8 @@ fn persisted_carrier_targets_name_the_missing_reference_and_keep_raid_context() 
                     .contains(&format!("full {reference} reference"))
             );
         }
-        let raid = installed_content::scope::parse("event_target:raid_instance", false, world.recorded());
+        let raid =
+            installed_content_core::scope::parse("event_target:raid_instance", false, world.recorded());
         assert_eq!(evaluator.enter(&raid, caller), Ok(Some(Scope::Country(1))));
         assert!(
             evaluator

@@ -1,10 +1,13 @@
 use super::*;
 use dashboard_core::test_fixtures::{CAMPAIGN, scale_frame, scale_tag, session};
-use replay::{
-    branches::{BranchReason, BranchStart, Gap, Parentage},
-    frame::{FrameEncoder, TableView},
-    rows::{AirWingRow, FactionMemberRow, FactionRow, RaidAirScoreRow, TableRows, WarRelationRow},
-    spool::Record,
+use replay::spool::Record;
+use replay_data::{
+    rows::AirWingRow, rows::FactionMemberRow, rows::FactionRow, rows::RaidAirScoreRow,
+    rows::TableRows, rows::WarRelationRow,
+};
+use replay_frame::{
+    branches::BranchReason, branches::BranchStart, branches::Gap, branches::Parentage,
+    frame::FrameEncoder, frame::TableView,
 };
 use std::{sync::Arc, time::Instant};
 
@@ -65,9 +68,13 @@ fn fixture_content(regions: u32) -> (i32, usize) {
     let base = folder.0.join("base");
     let modification = folder.0.join("mod");
     let layers =
-        installed_content::ResolvedLayers::from_folders(&[(&base, &[]), (&modification, &[])]).unwrap();
-    let defines = installed_content::defines::read(&layers).unwrap();
-    let content_regions = installed_content::regions::read(&layers).unwrap().regions.len();
+        installed_content_core::ResolvedLayers::from_folders(&[(&base, &[]), (&modification, &[])])
+            .unwrap();
+    let defines = installed_content_core::defines::read(&layers).unwrap();
+    let content_regions = installed_content_regions::regions::read(&layers)
+        .unwrap()
+        .regions
+        .len();
     (
         2 * defines
             .int32("NAir", "HOURS_DELAY_AFTER_EACH_COMBAT")
@@ -348,7 +355,9 @@ fn fixture(scenario: Scenario) -> Fixture {
         }
         wings.sort_by_key(|wing| wing.id);
         if many_factions {
-            use replay::rows::{AirTheatreGroupRow, AirTheatreMemberRow, AirTheatreRow};
+            use replay_data::{
+                rows::AirTheatreGroupRow, rows::AirTheatreMemberRow, rows::AirTheatreRow,
+            };
             *frame.tables[TableId::AirTheatres.index()] =
                 TableView::Complete(TableRows::AirTheatres(
                     (0..leaders.len())

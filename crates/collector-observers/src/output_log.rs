@@ -112,7 +112,7 @@ impl Log {
         counters: DrainCounters<'_>,
     ) -> Result<Drained, &'static str> {
         self.drain_buffer(
-            engine::walk::Buffer::Fixed(output),
+            engine_native::walk::Buffer::Fixed(output),
             entry,
             unavailable,
             restarted,
@@ -128,7 +128,7 @@ impl Log {
         counters: DrainCounters<'_>,
     ) -> Result<Drained, &'static str> {
         self.drain_buffer(
-            engine::walk::Buffer::Growing(output),
+            engine_native::walk::Buffer::Growing(output),
             entry,
             unavailable,
             restarted,
@@ -137,7 +137,7 @@ impl Log {
     }
     pub fn drain_buffer<T: Default>(
         &self,
-        mut output: engine::walk::Buffer<'_, T>,
+        mut output: engine_native::walk::Buffer<'_, T>,
         entry: impl Fn(usize) -> T,
         unavailable: impl FnOnce() -> Option<&'static str>,
         restarted: &'static str,

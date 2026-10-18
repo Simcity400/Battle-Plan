@@ -1,9 +1,7 @@
 use super::*;
 use installed_content_save::{CountryEmissionIdentity, SaveDocument};
-use replay::{
-    frame::TableView,
-    rows::{Recorded, ReservedCountryIntelSample, TableRows},
-};
+use replay_data::{rows::Recorded, rows::ReservedCountryIntelSample, rows::TableRows};
+use replay_frame::frame::TableView;
 
 const RESERVED_TAG: &[u8] = b"R01";
 

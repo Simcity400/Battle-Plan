@@ -7,10 +7,10 @@
 
 use std::time::Instant;
 
-use installed_content::province_graph::ProvinceGraph;
-use replay::rows::{
-    DivisionMovementRow, DivisionRow, DivisionStatusRow, FactionMemberRow, NavalBaseRow,
-    RelationLinkRow, WarRelationRow,
+use installed_content_core::province_graph::ProvinceGraph;
+use replay_data::{
+    rows::DivisionMovementRow, rows::DivisionRow, rows::DivisionStatusRow, rows::FactionMemberRow,
+    rows::NavalBaseRow, rows::RelationLinkRow, rows::WarRelationRow,
 };
 
 use super::*;
@@ -241,7 +241,9 @@ fn army_reach_bench() {
     use launch::RaidPaths;
     let (graph, geometry) = grid();
     let mut assets = assets();
-    assets.moves = Ok(installed_content::unit_path::MoveGraph::new(&graph, &geometry));
+    assets.moves = Ok(installed_content_unit_path::unit_path::MoveGraph::new(
+        &graph, &geometry,
+    ));
     assets.geometry = geometry;
     assets.paths = Ok(paths::PathSearch::new(graph));
     let sources = base_provinces();

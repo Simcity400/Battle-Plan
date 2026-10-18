@@ -1,6 +1,6 @@
 //! Internal consistency checks only; no independent text-save counterpart.
 use super::*;
-use replay::rows::{Recorded, UnitCombatReferences};
+use replay_data::{rows::Recorded, rows::UnitCombatReferences};
 
 pub fn compare(frame: &DecodedFrame, report: &mut Report) {
     report.attempt("DivisionMovement combat-reference consistency", |report| {
@@ -108,10 +108,10 @@ fn check_packet(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{LandCombatDetailsRow, LandCombatRow, UnitCombatReference};
+    use replay_data::{rows::LandCombatDetailsRow, rows::LandCombatRow, rows::UnitCombatReference};
     fn packet() -> UnitCombatReferences {
         UnitCombatReferences {
-            sample_hour: replay::rows::PacketHour::Host,
+            sample_hour: replay_data::rows::PacketHour::Host,
             entries: vec![
                 UnitCombatReference {
                     combat: u64::MAX,
@@ -132,7 +132,7 @@ mod tests {
             (Recorded::Value(None), 0, 1),
             (
                 Recorded::Value(Some(UnitCombatReferences {
-                    sample_hour: replay::rows::PacketHour::Host,
+                    sample_hour: replay_data::rows::PacketHour::Host,
                     entries: Vec::new(),
                 })),
                 0,
@@ -211,7 +211,10 @@ mod tests {
                 id: u64::MAX,
                 ..Default::default()
             }]));
-        for border in [None, Some(replay::rows::LandBorderWarInputs::default())] {
+        for border in [
+            None,
+            Some(replay_data::rows::LandBorderWarInputs::default()),
+        ] {
             *frame.tables[TableId::LandCombatDetails.index()] =
                 TableView::Complete(TableRows::LandCombatDetails(vec![LandCombatDetailsRow {
                     combat: u64::MAX,
@@ -220,7 +223,7 @@ mod tests {
                 }]));
             let actual = u8::from(border.is_some());
             let packet = UnitCombatReferences {
-                sample_hour: replay::rows::PacketHour::Host,
+                sample_hour: replay_data::rows::PacketHour::Host,
                 entries: vec![UnitCombatReference {
                     combat: u64::MAX,
                     kind: 1 - actual,

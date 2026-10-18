@@ -1,9 +1,7 @@
 use super::*;
 use dashboard_text::catalogue::tests::folder_catalogue;
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{ProvinceRow, TableRows},
-};
+use replay_data::{rows::ProvinceRow, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 fn geo() -> Geography {
     Geography {
@@ -151,14 +149,12 @@ fn partial_province_tables_keep_proven_points_and_missing_titles_are_counted() {
 
 #[test]
 fn selected_title_names_keep_current_original_reserved_and_rename_operands() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::{
-        container::Replay,
-        rows::{
-            CountryAppearanceRow, CountryLinkRow, CountryRow, ProvinceNameRow, Recorded,
-            ReservedCountryNamingRow, StateRow,
-        },
+    use replay::container::Replay;
+    use replay_data::{
+        rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow, rows::ProvinceNameRow,
+        rows::Recorded, rows::ReservedCountryNamingRow, rows::StateRow,
     };
     let (cat, folder) = folder_catalogue(&[
         ("hoi4.exe", "test"),
@@ -319,7 +315,7 @@ fn selected_title_names_keep_current_original_reserved_and_rename_operands() {
 #[test]
 fn prepared_sinking_titles_match_oracle_after_two_commits_resume_append_and_5000_countries() {
     use dashboard_base::prepared::series::{self, tests::Fixture};
-    use replay::rows::{SunkShipEntry, SunkShipsRow};
+    use replay_data::{rows::SunkShipEntry, rows::SunkShipsRow};
     let flag = AtomicBool::new(false);
     let context = LoadContext { content: None };
     let mut inputs = Vec::new();

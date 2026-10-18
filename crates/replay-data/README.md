@@ -2,8 +2,9 @@
 
 The recorded data contract: engine-native rows, typed tables, cadence, exact
 values, content identity and their bounded codecs. Frame, spool and container
-implementations consume these definitions; this crate depends only on `engine`
-for native value types and checked allocation, and on
+implementations consume these definitions; this crate depends directly on the
+native libraries that own its value types and on `engine-allocation` for checked
+growth. It depends on
 [replay-identity](../replay-identity/README.md) for the content identity types
 its `identity` module writes and reads. [weather-period](../weather-period/README.md) supplies the shared weather-period types and calendar arithmetic, re-exported by `temperature`.
 
@@ -25,16 +26,21 @@ availability. Writers emit the current format; readers admit unchanged contracts
 through the compatibility history and refuse changed tables by name. Preserve
 recorded absence separately from native empty, zero or absence. Content facts
 remain resolved through the recorded content stack. Shared rules are in
-[AGENTS.md](../../AGENTS.md); frame and recording I/O are in
-[replay](../replay/README.md).
+[AGENTS.md](../../AGENTS.md); frames are in [replay-frame](../replay-frame/README.md)
+and recording I/O is in [replay](../replay/README.md).
 
 The `test-support` feature exposes synthetic row fixtures, historical fixture
 encoding and thread-local decode observations for replay's frame/container tests.
 These helpers are absent from ordinary builds. Unit tests exercise round trips,
 display steps, historical prefixes, delta ownership, malformed input and wide
-country lists. The replay host owns tests requiring frames, recovery and complete
-recordings. Run `cargo test -p replay-data` for the data contract and
-`cargo test -p replay -p replay-data --features slow-tests` for both suites.
+country lists. [replay-frame](../replay-frame/README.md) owns frame and baseline tests;
+[replay](../replay/README.md) owns recovery and complete recording tests. Run
+`cargo test -p replay-data` for the data contract, or select all three packages
+with `--features slow-tests` for their long synthetic checks.
+
+Terminal failure witnesses live in [witness.rs](src/witness.rs), so capture
+helpers can report exact failures without depending on compressed recording I/O.
+The row registry owns `rows::TABLE_COUNT`; table accounting needs no frame engine.
 
 `AgencyOperationBuffers` holds one observed shared-client snapshot: completed, running, ready-preparation and unready-preparation references in native order, with each reference's resolved target state. Empty lists are recorded; unavailable acquisition remains a table refusal. UI membership is runtime state, independent of saved operation-roster membership.
 

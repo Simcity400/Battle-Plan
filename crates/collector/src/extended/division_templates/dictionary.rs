@@ -9,7 +9,7 @@
 //! every hour: it is carried from the held capture when the template object and handle are the held
 //! ones and either the family's quiet token is the one taken before that capture or no hooked
 //! writer touched the template since it registered (every run-time writer of the key is a hooked
-//! site, [`engine::template_mutations`]). Every other template's names are read afresh. A capture
+//! site, [`engine_mutations::template_mutations`]). Every other template's names are read afresh. A capture
 //! is held only when it completed and the quiet token stood still across it. The carryable keys of
 //! the hour's [`crate::sampled_verify`] slice (by template id) are read afresh instead and compared
 //! with the held ones. After all name reads and an acquire fence, an unchanged final certificate
@@ -20,7 +20,8 @@ use crate::{
     sampled_verify::Check,
     template_changes::{Changes, Counts},
 };
-use engine::{allocation, creferenced_division_template as native, walk::Outcome};
+use engine_allocation as allocation;
+use engine_native::{creferenced_division_template as native, walk::Outcome};
 use std::{
     ops::Range,
     sync::atomic::{Ordering, fence},
@@ -125,7 +126,7 @@ fn append(bytes: &mut Vec<u8>, value: &[u8]) -> Result<native::Span, &'static st
 /// hour's counts.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn derive(
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     icons: &[native::IconRow],
     outcome: Outcome,
     names: &[u8],

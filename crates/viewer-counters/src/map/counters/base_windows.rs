@@ -75,9 +75,7 @@ impl PreparedBases {
             Family::AirBase
             | Family::RocketSite
             | Family::GunEmplacement
-            | Family::StrategicLocation => {
-                inputs.content.defines.air_base_cutoff
-            }
+            | Family::StrategicLocation => inputs.content.defines.air_base_cutoff,
             Family::Radar => inputs.content.defines.radar_cutoff,
             Family::Headquarter | Family::Facility => inputs.content.defines.facility_cutoff,
         };
@@ -140,7 +138,12 @@ impl PreparedBases {
                 MapIconPool::GunEmplacement,
                 inputs.priority(PriorityIcon::GunEmplacement),
             ),
-            (Family::Radar, RADAR_WINDOW, MapIconPool::Radar, RADAR_PRIORITY),
+            (
+                Family::Radar,
+                RADAR_WINDOW,
+                MapIconPool::Radar,
+                RADAR_PRIORITY,
+            ),
             (
                 Family::StrategicLocation,
                 STRATEGIC_LOCATION_WINDOW,
@@ -399,13 +402,14 @@ mod tests {
     #[test]
     fn strategic_location_preparation_in_free_views_keeps_nearby_elevated_anchors() {
         use super::super::tests::{action_gui, wings_frame, with_counter_inputs_fixture};
-        use replay::{
-            frame::TableView,
-            rows::{LexicalTokenRow, ProvinceRow, Recorded, StateCoreRow, TableId, TableRows},
+        use replay_data::{
+            rows::LexicalTokenRow, rows::ProvinceRow, rows::Recorded, rows::StateCoreRow,
+            rows::TableId, rows::TableRows,
         };
+        use replay_frame::frame::TableView;
         use viewer_foundation::map::camera::{Free, Lens, Pose};
 
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut frame, _) = wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
         *frame.tables[TableId::Provinces.index()] =
@@ -473,13 +477,11 @@ mod tests {
     #[test]
     fn radar_preparation_in_free_views_keeps_nearby_elevated_anchors() {
         use super::super::tests::{action_gui, wings_frame, with_counter_inputs_fixture};
-        use replay::{
-            frame::TableView,
-            rows::{RadarCoverageRow, StateRow, TableId, TableRows},
-        };
+        use replay_data::{rows::RadarCoverageRow, rows::StateRow, rows::TableId, rows::TableRows};
+        use replay_frame::frame::TableView;
         use viewer_foundation::map::camera::{Free, Lens, Pose};
 
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut frame, vision) =
             wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
@@ -548,7 +550,7 @@ mod tests {
 
     #[test]
     fn air_update_uses_local_buttons_and_hides_the_air_mode_controls() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = window(
             r#"
@@ -599,7 +601,7 @@ mod tests {
     /// rocket site's `rockets_box` hides. Before, neither icon was drawn.
     #[test]
     fn site_updates_show_the_plain_button_with_the_site_frame() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = window(
             r#"
@@ -662,26 +664,36 @@ mod tests {
     fn a_strategic_location_keeps_its_sprite_for_its_window_s_lifetime() {
         let mut acquired: HashMap<u32, (u32, Option<String>)> = HashMap::new();
         let offer = |name: &str| Some(name.to_owned());
-        assert_eq!(acquired_sprite(&mut acquired, 7, 1, &offer("A")), offer("A"));
+        assert_eq!(
+            acquired_sprite(&mut acquired, 7, 1, &offer("A")),
+            offer("A")
+        );
         forget_released(&mut acquired, &[(7, 1)]);
         // A province token added while the icon is visible keeps the first.
-        assert_eq!(acquired_sprite(&mut acquired, 7, 1, &offer("B")), offer("A"));
+        assert_eq!(
+            acquired_sprite(&mut acquired, 7, 1, &offer("B")),
+            offer("A")
+        );
         // Released, then acquired again: the current choice.
         forget_released(&mut acquired, &[]);
         assert!(acquired.is_empty());
-        assert_eq!(acquired_sprite(&mut acquired, 7, 1, &offer("B")), offer("B"));
+        assert_eq!(
+            acquired_sprite(&mut acquired, 7, 1, &offer("B")),
+            offer("B")
+        );
         // A different slot is a new window.
-        assert_eq!(acquired_sprite(&mut acquired, 7, 2, &offer("C")), offer("C"));
+        assert_eq!(
+            acquired_sprite(&mut acquired, 7, 2, &offer("C")),
+            offer("C")
+        );
     }
 
     /// The radar window shows its one efficiency icon in its authored frame.
     #[test]
     fn radar_update_shows_its_icon() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let root = window(
-            r#"iconType = { name = radar_mapicon spriteType = GFX_even frame = 2 }"#,
-        );
+        let root = window(r#"iconType = { name = radar_mapicon spriteType = GFX_even frame = 2 }"#);
         let resources = fixture();
         let mut instance = Instance::construct(&root, [800, 600], &resources).unwrap();
         instance.gui_show(&root, &root).unwrap();
@@ -708,9 +720,10 @@ mod tests {
     /// the authored frame; an undefined sprite keeps the authored one.
     #[test]
     fn strategic_location_update_sets_the_location_sprite_and_keeps_the_frame() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let root = window(r#"buttonType = { name = bg_btn quadTextureSprite = GFX_even frame = 2 }"#);
+        let root =
+            window(r#"buttonType = { name = bg_btn quadTextureSprite = GFX_even frame = 2 }"#);
         let resources = fixture();
         let mut instance = Instance::construct(&root, [800, 600], &resources).unwrap();
         instance.gui_show(&root, &root).unwrap();
@@ -720,9 +733,21 @@ mod tests {
             enabled: true,
             sprite: Some(sprite.into()),
         };
-        update(&mut instance, &root, Family::StrategicLocation, &state("GFX_missing")).unwrap();
+        update(
+            &mut instance,
+            &root,
+            Family::StrategicLocation,
+            &state("GFX_missing"),
+        )
+        .unwrap();
         assert_eq!(instance.control(&root, button).unwrap().frame, None);
-        update(&mut instance, &root, Family::StrategicLocation, &state("GFX_odd")).unwrap();
+        update(
+            &mut instance,
+            &root,
+            Family::StrategicLocation,
+            &state("GFX_odd"),
+        )
+        .unwrap();
         let layout = instance.layout(&root, &resources, None).unwrap().unwrap();
         assert_eq!(layout.parts.len(), 1);
         assert_eq!(instance.control(&root, button).unwrap().frame, None);
@@ -730,7 +755,7 @@ mod tests {
 
     #[test]
     fn base_hits_use_drawn_scale_clip_and_sprite_hit_mode() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = window(
             r#"buttonType = { name = bg_btn quadTextureSprite = GFX_even position = { x = 2 y = 3 } scale = 2 }"#,
@@ -784,7 +809,7 @@ mod tests {
 
     #[test]
     fn base_binders_do_not_bind_nested_controls() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = window(
             r#"containerWindowType={name=nested
@@ -811,7 +836,7 @@ mod tests {
 
     #[test]
     fn facility_setter_rebuilds_the_drawable_and_keeps_an_undefined_sprite() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = window(
             r#"buttonType = { name = bg_btn quadTextureSprite = GFX_even frame = 2 rotation = 1 }"#,
@@ -853,7 +878,7 @@ mod tests {
 
     #[test]
     fn naval_update_overrides_authored_scale_and_hides_strategic_controls() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = window(
             r#"

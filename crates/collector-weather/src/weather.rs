@@ -14,17 +14,13 @@ use crate::{
     table_capture::{CaptureRows, bounded},
     table_conversion::{table, table_iter},
 };
-use engine::allocation::{filled, owned_vec, resize};
-use engine::{
-    Memory, cweather_manager,
-    memory::{RecordLayout, RecordSources},
-    sweather_per_province, sweather_per_region,
-    walk::Outcome,
+use engine_allocation::{filled, owned_vec, resize};
+use engine_native::{
+    Memory, cweather_manager, memory::RecordLayout, memory::RecordSources, sweather_per_province,
+    sweather_per_region, walk::Outcome,
 };
-use replay::{
-    frame::TableView,
-    rows::{self, TableId, tables},
-};
+use replay_data::{rows, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 
 pub mod carry;
 mod display;
@@ -104,10 +100,10 @@ pub struct Captured {
     clocks_updated: bool,
     /// Each province record's temperature words at the pass's anchor, by slot, and the pass
     /// ([`temperature::Tracker`]); `None` when the hour's temperature inputs were not read whole.
-    temperature_anchor: std::sync::Arc<Vec<replay::temperature::State>>,
+    temperature_anchor: std::sync::Arc<Vec<replay_data::temperature::State>>,
     temperature_pass: Option<rows::TemperaturePass>,
     /// The hour's read words handed to the tracker, which returns the hour before's buffer.
-    temperature_read: Vec<replay::temperature::State>,
+    temperature_read: Vec<replay_data::temperature::State>,
     /// Each region record's ([`WeatherJob::combat`]) raw weather speed, attack and
     /// breakthrough entries, in region order; `None` refuses one region.
     combat: Vec<Option<RegionModifiers>>,
@@ -151,7 +147,7 @@ impl Captured {
         self.regions.allocated_bytes()
             + self.provinces.allocated_bytes()
             + self.display.allocated_bytes()
-            + self.temperature_read.capacity() * size_of::<replay::temperature::State>()
+            + self.temperature_read.capacity() * size_of::<replay_data::temperature::State>()
             + self.combat.capacity() * size_of::<Option<RegionModifiers>>()
             + self.province_modifiers.allocated_bytes()
     }
@@ -272,15 +268,14 @@ impl Captured {
             ),
             table::<tables::WeatherProvinces, _>(outcomes[1], &self.provinces.rows, |r| {
                 // A slot past the read (a short fixture) or refused is a refusal.
-                let modifiers =
-                    self.province_modifiers
-                        .get(r.id as usize)
-                        .map(|entries| rows::ProvinceWeatherModifiers {
-                            entries: entries
-                                .iter()
-                                .map(|&(key, value)| rows::ProvinceModifierEntry { key, value })
-                                .collect(),
-                        });
+                let modifiers = self.province_modifiers.get(r.id as usize).map(|entries| {
+                    rows::ProvinceWeatherModifiers {
+                        entries: entries
+                            .iter()
+                            .map(|&(key, value)| rows::ProvinceModifierEntry { key, value })
+                            .collect(),
+                    }
+                });
                 rows::WeatherProvinceRow {
                     modifiers: rows::Recorded::Value(modifiers),
                     id: r.id,
@@ -300,13 +295,13 @@ impl Captured {
                             None => words_of(r),
                         },
                     ),
-                    raw_mud: replay::rows::Recorded::Value(r.raw_mud),
+                    raw_mud: replay_data::rows::Recorded::Value(r.raw_mud),
                     // Slot 0 is never updated (day/night update starts at 1); a
                     // suspended or unread gate holds every slot's clock.
                     clock: if r.id != 0 && self.clocks_updated {
                         rows::DayNightClock::UPDATED
                     } else {
-                        rows::DayNightClock::held(replay::day_night::Clock {
+                        rows::DayNightClock::held(replay_data::day_night::Clock {
                             local_hour: r.local_hour,
                             night_factor: r.night_factor,
                         })
@@ -340,14 +335,14 @@ impl Captured {
         if words.is_some() {
             let rows = &self.provinces.rows[..self.provinces.outcome.len()];
             self.temperature_read.clear();
-            engine::allocation::reserve(&mut self.temperature_read, rows.len())
+            engine_allocation::reserve(&mut self.temperature_read, rows.len())
                 .map_err(|_| ALLOCATION)?;
             self.temperature_read.extend(rows.iter().map(words_of));
         }
         let read = words.map(|words| (words, &mut self.temperature_read));
         match tracker.observe(hour, read).map_err(|_| ALLOCATION)? {
             Some((anchor, pass)) => {
-                let hours = engine::allocation::copy_vec(&pass.hours).map_err(|_| ALLOCATION)?;
+                let hours = engine_allocation::copy_vec(&pass.hours).map_err(|_| ALLOCATION)?;
                 self.temperature_anchor = anchor;
                 self.temperature_pass = Some(rows::TemperaturePass {
                     anchor: pass.anchor,
@@ -364,8 +359,8 @@ impl Captured {
 }
 
 /// A read record's temperature words.
-fn words_of(row: &sweather_per_province::Row) -> replay::temperature::State {
-    replay::temperature::State {
+fn words_of(row: &sweather_per_province::Row) -> replay_data::temperature::State {
+    replay_data::temperature::State {
         temperature: row.temperature,
         drift: row.drift,
         staged: row.staged_temperature,
@@ -503,7 +498,7 @@ impl WeatherJob {
 /// failed field is retained as a prefix, never retried or zero-filled.
 #[derive(Debug, Default)]
 struct DensePayload {
-    array: Option<engine::cpdx_array::Array>,
+    array: Option<engine_native::cpdx_array::Array>,
     bytes: Vec<u8>,
     required: usize,
     copied_fields: usize,
@@ -526,7 +521,7 @@ impl DensePayload {
     fn needs_growth(&self) -> bool {
         self.required > self.bytes.len()
     }
-    fn prepare(&mut self, array: Option<engine::cpdx_array::Array>, record_bytes: usize) {
+    fn prepare(&mut self, array: Option<engine_native::cpdx_array::Array>, record_bytes: usize) {
         self.array = array;
         self.required = array.map_or(0, |array| {
             (array.count as usize).saturating_mul(record_bytes)
@@ -668,9 +663,12 @@ fn header(
     address: Option<usize>,
     stride: usize,
     mask: u32,
-) -> Option<engine::cpdx_array::Array> {
+) -> Option<engine_native::cpdx_array::Array> {
     let start = log.take(memory, address?, 16, mask)?;
-    engine::cpdx_array::Array::from_header(log.bytes[start..start + 16].try_into().unwrap(), stride)
+    engine_native::cpdx_array::Array::from_header(
+        log.bytes[start..start + 16].try_into().unwrap(),
+        stride,
+    )
 }
 
 /// Acquire the manager topology once and preflight every destination. Returns
@@ -680,8 +678,8 @@ fn prepare_weather_pass(
     game_state: usize,
     base: usize,
     job: &mut WeatherJob,
-) -> Option<[engine::cpdx_array::Array; 2]> {
-    use engine::cgame_state;
+) -> Option<[engine_native::cpdx_array::Array; 2]> {
+    use engine_native::cgame_state;
     let mut reads = read_accounting::table(TableId::WeatherRegions);
     let log = &mut job.log;
     let pointer_start = log.take(
@@ -781,7 +779,7 @@ fn prepare_weather_pass(
 fn copy_weather_dense(
     memory: &impl Memory,
     job: &mut WeatherJob,
-    display: Option<[engine::cpdx_array::Array; 2]>,
+    display: Option<[engine_native::cpdx_array::Array; 2]>,
 ) {
     const REGIONS_LAYOUT: RecordLayout<'static> = RecordLayout::new(
         &sweather_per_region::FIELDS,
@@ -843,10 +841,10 @@ pub type RegionModifiers = [Option<i64>; 4];
 
 /// The keys of [`WeatherJob::combat`], ascending.
 const COMBAT_KEYS: [u32; 4] = [
-    engine::modifier_keys::ARMY_SPEED_FACTOR,
-    engine::modifier_keys::ARMY_ATTACK_FACTOR,
-    engine::modifier_keys::BREAKTHROUGH_FACTOR,
-    engine::modifier_keys::ARMY_ATTACK_SPEED_FACTOR,
+    engine_executable::modifier_keys::ARMY_SPEED_FACTOR,
+    engine_executable::modifier_keys::ARMY_ATTACK_FACTOR,
+    engine_executable::modifier_keys::BREAKTHROUGH_FACTOR,
+    engine_executable::modifier_keys::ARMY_ATTACK_SPEED_FACTOR,
 ];
 
 pub use entries::ProvinceModifiers;
@@ -970,8 +968,8 @@ impl Captured {
             let rows = job.regions.array.map_or(0, |array| array.count as usize);
             let provinces = job.provinces.array.map_or(0, |array| array.count as usize);
             let grown = (|| {
-                engine::walk::Buffer::Growing(&mut self.regions.rows).ensure(rows)?;
-                engine::walk::Buffer::Growing(&mut self.provinces.rows).ensure(provinces)?;
+                engine_native::walk::Buffer::Growing(&mut self.regions.rows).ensure(rows)?;
+                engine_native::walk::Buffer::Growing(&mut self.provinces.rows).ensure(provinces)?;
                 let mut display_bytes = job.display.required;
                 self.display.grow(&mut display_bytes);
                 Ok::<(), &'static str>(())
@@ -1015,7 +1013,7 @@ impl Captured {
                     row.max_snow = max_snow;
                 }
                 self.combat.clear();
-                if engine::allocation::reserve_exact(&mut self.combat, job.combat.len()).is_ok() {
+                if engine_allocation::reserve_exact(&mut self.combat, job.combat.len()).is_ok() {
                     self.combat.extend_from_slice(&job.combat);
                 }
                 outcome

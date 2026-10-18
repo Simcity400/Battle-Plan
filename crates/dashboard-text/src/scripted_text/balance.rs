@@ -1,6 +1,6 @@
 //! Country balance-of-power properties.
 use super::*;
-use installed_content::localisation::Argument;
+use installed_content_localisation::localisation::Argument;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BalanceProperty {
@@ -80,7 +80,7 @@ pub(super) fn matches_numeric_handler(name: &str, ordinal: u32) -> bool {
 impl<'a> ScriptedText<'a> {
     fn active_range_effects(
         &self,
-        effects: &[installed_content::parser::Item],
+        effects: &[installed_content_core::parser::Item],
         refused: &mut Vec<String>,
         slot: u32,
         name: &str,
@@ -131,7 +131,7 @@ impl<'a> ScriptedText<'a> {
     fn active_range_description(
         &self,
         slot: u32,
-        record: &replay::rows::PowerBalanceRow,
+        record: &replay_data::rows::PowerBalanceRow,
         name: &str,
         which: usize,
         scopes: &ExpansionScopes<'_, 'a>,
@@ -156,7 +156,7 @@ impl<'a> ScriptedText<'a> {
             })?;
             registry.insert(literal.to_ascii_lowercase(), definition);
         }
-        let database = installed_content::power_balance::read(&self.content.layers.layers, &|key| {
+        let database = installed_content_core::power_balance::read(&self.content.layers.layers, &|key| {
             Some(registry.contains_key(&key.to_ascii_lowercase()))
         })
         .map_err(|e| format!("{name}: {e}"))?;
@@ -190,11 +190,12 @@ impl<'a> ScriptedText<'a> {
                     continue;
                 }
                 // Clamp first; even this unit scale uses wrapping multiplication.
-                let value = if definition.flags & engine::modifier_definition::CLAMP_MAXIMUM != 0 {
-                    modifier.value.clamp(0, 100_000)
-                } else {
-                    modifier.value
-                };
+                let value =
+                    if definition.flags & engine_native::modifier_definition::CLAMP_MAXIMUM != 0 {
+                        modifier.value.clamp(0, 100_000)
+                    } else {
+                        modifier.value
+                    };
                 let value = value.wrapping_mul(100_000) / 100_000;
                 if value == 0 && definition.flags & 0x100 == 0 {
                     continue;
@@ -262,8 +263,10 @@ impl<'a> ScriptedText<'a> {
         } else if which == 10 {
             // Changed rules follow registry order.
             let mut start = 0;
-            for (&value, &(_, key, default, fulfilled)) in
-                range.rules.iter().zip(installed_content::power_balance::rules())
+            for (&value, &(_, key, default, fulfilled)) in range
+                .rules
+                .iter()
+                .zip(installed_content_core::power_balance::rules())
             {
                 if value == default {
                     continue;
@@ -323,13 +326,13 @@ impl<'a> ScriptedText<'a> {
 
     /// The record's cached description trees for keys 0x98 and 0x99, derived from its recorded
     /// static-modifier sources and the content stack's static modifiers
-    /// ([`replay::power_balance_derive`]); a source the content cannot resolve refuses both by
+    /// ([`replay_derive::power_balance_derive`]); a source the content cannot resolve refuses both by
     /// name.
     fn balance_trees(
         &self,
         sources: &[Vec<u8>],
-    ) -> Result<[Vec<replay::rows::ModifierBreakdownNode>; 2], String> {
-        let registry = replay::modifier_registry::Registry::from_frame(self.frame)?;
+    ) -> Result<[Vec<replay_data::rows::ModifierBreakdownNode>; 2], String> {
+        let registry = replay_derive::modifier_registry::Registry::from_frame(self.frame)?;
         let effects = self.content.effects()?;
         let statics = effects
             .view(None)
@@ -339,35 +342,38 @@ impl<'a> ScriptedText<'a> {
         for source in sources {
             // The game compares the name's bytes; the native string ends at
             // its first NUL.
-            let key = std::str::from_utf8(installed_content::parser::c_string(source)).map_err(|_| {
-                format!(
-                    "static modifier {} is not UTF-8",
-                    String::from_utf8_lossy(source)
-                )
-            })?;
+            let key =
+                std::str::from_utf8(installed_content_core::parser::c_string(source)).map_err(|_| {
+                    format!(
+                        "static modifier {} is not UTF-8",
+                        String::from_utf8_lossy(source)
+                    )
+                })?;
             blocks.push(statics.get(&self.content.layers.layers, key)?.1);
         }
         let inputs: Vec<_> = sources
             .iter()
             .zip(&blocks)
-            .map(|(source, block)| replay::power_balance_derive::Source {
-                name: source,
-                auxiliary: !block.tooltip_table().is_empty() || !block.children.is_empty(),
-                values: block
-                    .values
-                    .iter()
-                    .map(|value| (value.name.as_str(), value.value))
-                    .collect(),
-            })
+            .map(
+                |(source, block)| replay_derive::power_balance_derive::Source {
+                    name: source,
+                    auxiliary: !block.tooltip_table().is_empty() || !block.children.is_empty(),
+                    values: block
+                        .values
+                        .iter()
+                        .map(|value| (value.name.as_str(), value.value))
+                        .collect(),
+                },
+            )
             .collect();
         Ok([
-            replay::power_balance_derive::tree(
-                engine::modifier_keys::POWER_BALANCE_DAILY,
+            replay_derive::power_balance_derive::tree(
+                engine_executable::modifier_keys::POWER_BALANCE_DAILY,
                 &inputs,
                 &registry,
             )?,
-            replay::power_balance_derive::tree(
-                engine::modifier_keys::POWER_BALANCE_WEEKLY,
+            replay_derive::power_balance_derive::tree(
+                engine_executable::modifier_keys::POWER_BALANCE_WEEKLY,
                 &inputs,
                 &registry,
             )?,
@@ -478,8 +484,14 @@ impl<'a> ScriptedText<'a> {
                 .map_err(|e| format!("{name}: {e}"))?;
             let mut output = String::new();
             for (key, nodes) in [
-                (engine::modifier_keys::POWER_BALANCE_DAILY, &trees[0]),
-                (engine::modifier_keys::POWER_BALANCE_WEEKLY, &trees[1]),
+                (
+                    engine_executable::modifier_keys::POWER_BALANCE_DAILY,
+                    &trees[0],
+                ),
+                (
+                    engine_executable::modifier_keys::POWER_BALANCE_WEEKLY,
+                    &trees[1],
+                ),
             ] {
                 let definition = definitions
                     .iter()
@@ -541,7 +553,7 @@ impl<'a> ScriptedText<'a> {
         let (mut daily, mut weekly) = (0_i64, 0_i64);
         if let Some(record) = record {
             for m in members.iter().filter(|m| m.record == record.ordinal) {
-                let native = engine::power_balance_record::MemberRow {
+                let native = engine_power_balance::power_balance_record::MemberRow {
                     daily_raw: m.daily_raw,
                     weekly_raw: m.weekly_raw,
                     daily_flags: m.daily_flags,

@@ -4,7 +4,7 @@ use super::*;
 /// An undeclared portrait sprite preserves the widget. Both are named and counted.
 #[test]
 fn a_refused_portrait_or_tactic_picture_hides_the_earlier_sprite() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut out = Bindings::default();
     let has = |name: &str| name == "GFX_known" || name == "combat_tactic:tactic_a";
@@ -24,10 +24,11 @@ fn a_refused_portrait_or_tactic_picture_hides_the_earlier_sprite() {
     // An undeclared sprite: the setter keeps the widget as it was.
     portrait(&mut out, &has, "leader", &value, 2);
     assert_eq!(out.values["leader"].sprite.as_deref(), Some("GFX_earlier"));
-    let tactics = super::super::tactics::Content::from_database(installed_content::combat_tactics::parse(
-        b"a = { picture = tactic_a } b = { picture = tactic_b }",
-        &installed_content::key_names::KeyNames::default(),
-    ));
+    let tactics =
+        super::super::tactics::Content::from_database(installed_content_core::combat_tactics::parse(
+            b"a = { picture = tactic_a } b = { picture = tactic_b }",
+            &installed_content_core::key_names::KeyNames::default(),
+        ));
     tactic(&mut out, &has, &tactics, "tactic", 2, b"b");
     assert_eq!(out.values["tactic"].sprite, None);
     assert!(out.values["tactic"].hidden);
@@ -109,7 +110,7 @@ fn exile_operand_refusal_hides_only_badge_and_keeps_commander_portrait() {
 
 #[test]
 fn null_tactic_keeps_authored_art_and_counters_the_real_defender() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut out = Bindings::default();
     for prefix in ["attacker", "defender"] {
@@ -119,10 +120,11 @@ fn null_tactic_keeps_authored_art_and_counters_the_real_defender() {
             &format!("{prefix}_countered_tactic_overlay"),
         );
     }
-    let content = super::super::tactics::Content::from_database(installed_content::combat_tactics::parse(
-        b"defend = { picture = mod_defense }",
-        &installed_content::key_names::KeyNames::default(),
-    ));
+    let content =
+        super::super::tactics::Content::from_database(installed_content_core::combat_tactics::parse(
+            b"defend = { picture = mod_defense }",
+            &installed_content_core::key_names::KeyNames::default(),
+        ));
     let mut sides = [
         LandCombatSideDetails {
             tactic_kind: 1,

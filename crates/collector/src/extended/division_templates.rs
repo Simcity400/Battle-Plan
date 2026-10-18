@@ -8,15 +8,14 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
-use engine::allocation::{copy_vec, owned_vec};
-use engine::{Memory, creferenced_division_template as native, walk::Outcome};
-use replay::{
-    frame::{TableInput, TableView},
-    rows::{
-        DivisionTemplateIconRow, DivisionTemplateRow, Recorded, TableId, TemplateDisplayName,
-        TemplateGrids, TemplateNameValue, TemplateSubunit, tables,
-    },
+use engine_allocation::{copy_vec, owned_vec};
+use engine_native::{Memory, creferenced_division_template as native, walk::Outcome};
+use replay_data::{
+    rows::DivisionTemplateIconRow, rows::DivisionTemplateRow, rows::Recorded, rows::TableId,
+    rows::TemplateDisplayName, rows::TemplateGrids, rows::TemplateNameValue, rows::TemplateSubunit,
+    rows::tables,
 };
+use replay_frame::{frame::TableInput, frame::TableView};
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [TableId::DivisionTemplates, TableId::DivisionTemplateIcons];
@@ -449,7 +448,7 @@ impl Captured {
             template: r.template,
             owner: r.owner,
             name: owned_vec(copy_vec(span(bytes, r.name).unwrap())),
-            name_key: replay::rows::Recorded::Value(owned_vec(copy_vec(
+            name_key: replay_data::rows::Recorded::Value(owned_vec(copy_vec(
                 span(bytes, r.name_key).unwrap(),
             ))),
             unit_type: r.unit_type,
@@ -483,7 +482,7 @@ impl Captured {
             return unavailable("template icon row spans outside captured arenas");
         }
         let entries = |range: native::Span| {
-            owned_vec(engine::allocation::collect_vec(
+            owned_vec(engine_allocation::collect_vec(
                 span(counts, range)
                     .unwrap()
                     .iter()
@@ -513,7 +512,9 @@ impl Captured {
                     span(variants, r.excluded_variants).unwrap(),
                 )),
                 model_unreadable: u8::from(r.model_failure.is_some()),
-                formation_division_count: replay::rows::Recorded::Value(r.formation_division_count),
+                formation_division_count: replay_data::rows::Recorded::Value(
+                    r.formation_division_count,
+                ),
                 display_name: name_inputs(r, names, dictionary, self.sample_hour),
                 grids: Recorded::Value(TemplateGrids {
                     regiments: entries(regiments),
@@ -568,7 +569,7 @@ fn name_inputs(
         }
     };
     Recorded::Value(Some(TemplateDisplayName {
-        sample_hour: replay::rows::PacketHour::Host,
+        sample_hour: replay_data::rows::PacketHour::Host,
         value,
     }))
 }

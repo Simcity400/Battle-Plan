@@ -12,7 +12,8 @@ fn oracle_output_keeps_the_latest_uncovered_content_note() {
     fs::write(root.join("events/a.txt"), b"synthetic event").unwrap();
     fs::write(root.join("gfx/leaders/a.tga"), b"synthetic portrait").unwrap();
     let layers =
-        installed_content::ResolvedLayers::from_folders_with_coverage_policy(&[(&root, &[])], 2).unwrap();
+        installed_content_core::ResolvedLayers::from_folders_with_coverage_policy(&[(&root, &[])], 2)
+            .unwrap();
     let report = Report {
         content_reads: Some(layers.report_uncovered_reads()),
         ..Default::default()
@@ -64,8 +65,8 @@ fn membership_exclusions_are_counted_separately_from_failed_groups() {
 /// groups, groups naming no table and a full hour are compared as before.
 #[test]
 fn carried_daily_groups_are_listed_not_compared_at_a_non_full_hour() {
-    let (slot, hour) = match replay::cadence::cadence(TableId::CountryFuel) {
-        replay::cadence::Cadence::Daily(slot) => (slot as Hour, 24 * 1000 + 5_i32),
+    let (slot, hour) = match replay_data::cadence::cadence(TableId::CountryFuel) {
+        replay_data::cadence::Cadence::Daily(slot) => (slot as Hour, 24 * 1000 + 5_i32),
         other => panic!("CountryFuel is {other:?}"),
     };
     assert_ne!(
@@ -111,7 +112,7 @@ fn carried_daily_groups_are_listed_not_compared_at_a_non_full_hour() {
     // compared; so is every table on a full hour.
     report
         .observed_refresh
-        .push(replay::cadence::cadence(TableId::CountryFuel));
+        .push(replay_data::cadence::cadence(TableId::CountryFuel));
     report.attempt("economy CountryFuel", differ);
     assert_eq!(report.differences.len(), 3);
     report.observed_refresh.clear();
@@ -122,8 +123,8 @@ fn carried_daily_groups_are_listed_not_compared_at_a_non_full_hour() {
     // deferral on its slot hour is carried, a retry off its slot is
     // compared.
     report.forced_full = false;
-    let intel_slot = match replay::cadence::cadence(TableId::CountryIntel) {
-        replay::cadence::Cadence::Daily(slot) => slot as Hour,
+    let intel_slot = match replay_data::cadence::cadence(TableId::CountryIntel) {
+        replay_data::cadence::Cadence::Daily(slot) => slot as Hour,
         other => panic!("CountryIntel is {other:?}"),
     };
     report.hour = 24 * 1000 + intel_slot;
@@ -158,8 +159,8 @@ fn carried_daily_groups_are_listed_not_compared_at_a_non_full_hour() {
 /// its own walk.
 #[test]
 fn a_daily_read_is_dated_by_its_slot_not_by_its_charged_timing() {
-    let slot = match replay::cadence::cadence(TableId::CountryFuel) {
-        replay::cadence::Cadence::Daily(slot) => slot as Hour,
+    let slot = match replay_data::cadence::cadence(TableId::CountryFuel) {
+        replay_data::cadence::Cadence::Daily(slot) => slot as Hour,
         other => panic!("CountryFuel is {other:?}"),
     };
     let frame = |hour, timed: &[TableId]| {
@@ -192,8 +193,8 @@ fn a_daily_read_is_dated_by_its_slot_not_by_its_charged_timing() {
         &frame(hour + 1, &[TableId::CountryFuelConsumers]),
         TableId::CountryFuel
     ));
-    let lend_slot = match replay::cadence::cadence(TableId::LendLeaseEquipment) {
-        replay::cadence::Cadence::Daily(slot) => 24 * 1000 + slot as Hour,
+    let lend_slot = match replay_data::cadence::cadence(TableId::LendLeaseEquipment) {
+        replay_data::cadence::Cadence::Daily(slot) => 24 * 1000 + slot as Hour,
         other => panic!("LendLeaseEquipment is {other:?}"),
     };
     assert!(read(
@@ -204,8 +205,8 @@ fn a_daily_read_is_dated_by_its_slot_not_by_its_charged_timing() {
         &frame(lend_slot + 1, &[TableId::Divisions]),
         TableId::LendLeaseEquipment
     ));
-    let intel = match replay::cadence::cadence(TableId::CountryIntel) {
-        replay::cadence::Cadence::Daily(slot) => 24 * 1000 + slot as Hour,
+    let intel = match replay_data::cadence::cadence(TableId::CountryIntel) {
+        replay_data::cadence::Cadence::Daily(slot) => 24 * 1000 + slot as Hour,
         other => panic!("CountryIntel is {other:?}"),
     };
     assert!(!read(
@@ -228,13 +229,13 @@ fn a_daily_read_is_dated_by_its_slot_not_by_its_charged_timing() {
 /// logistics rows current; the scan of read hours agrees.
 #[test]
 fn country_intel_and_the_rest_of_its_slot_are_no_evidence_for_each_other() {
-    let slot = match replay::cadence::cadence(TableId::CountryIntel) {
-        replay::cadence::Cadence::Daily(slot) => slot as Hour,
+    let slot = match replay_data::cadence::cadence(TableId::CountryIntel) {
+        replay_data::cadence::Cadence::Daily(slot) => slot as Hour,
         other => panic!("CountryIntel is {other:?}"),
     };
     assert_eq!(
-        replay::cadence::cadence(TableId::LogisticsEquipment),
-        replay::cadence::cadence(TableId::CountryIntel)
+        replay_data::cadence::cadence(TableId::LogisticsEquipment),
+        replay_data::cadence::cadence(TableId::CountryIntel)
     );
     let differ = |report: &mut Report| {
         report.difference("field", 1, 2);
@@ -332,14 +333,17 @@ fn field_gap_frame() -> DecodedFrame {
 
 #[test]
 fn field_limitations_aggregate_counts_without_duplicate_subjects() {
-    use replay::rows::{ProvinceTemperature, Recorded, TemperatureRecord, WeatherProvinceRow};
+    use replay_data::{
+        rows::ProvinceTemperature, rows::Recorded, rows::TemperatureRecord,
+        rows::WeatherProvinceRow,
+    };
 
     let mut frame = field_gap_frame();
     let rows: Vec<_> = (0..13_413)
         .map(|id| WeatherProvinceRow {
             id,
             temperature: if id == 0 {
-                ProvinceTemperature::anchored(replay::temperature::State::default())
+                ProvinceTemperature::anchored(replay_data::temperature::State::default())
             } else {
                 ProvinceTemperature::NOT_RECORDED
             },
@@ -391,9 +395,9 @@ fn field_limitations_aggregate_counts_without_duplicate_subjects() {
 
 #[test]
 fn compatibility_nested_field_limitations_are_counted_after_table_aggregation() {
-    use replay::rows::{
-        LandBorderWarInputs, LandCombatDetailsRow, NavalCombatDetailsRow,
-        NavalCombatResultDetailsRow, NavalCommanderInputs, Recorded,
+    use replay_data::{
+        rows::LandBorderWarInputs, rows::LandCombatDetailsRow, rows::NavalCombatDetailsRow,
+        rows::NavalCombatResultDetailsRow, rows::NavalCommanderInputs, rows::Recorded,
     };
 
     let mut frame = field_gap_frame();

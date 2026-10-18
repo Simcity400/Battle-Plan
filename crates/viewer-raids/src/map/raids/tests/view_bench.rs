@@ -23,10 +23,12 @@ use std::time::{Duration, Instant};
 use viewer_foundation::parallel::Workers;
 use viewer_foundation::parallel::usable_processors;
 
-use installed_content::raids::{BattalionRequirement, SourceKind, StartingPoint, UnitRequirement};
-use replay::rows::{
-    DivisionTemplateIconRow, NavalBaseRow, NukeRow, RaidCountryInputRow, RaidPathDistanceRow,
-    TemplateSubunit,
+use installed_content_raids::{
+    raids::BattalionRequirement, raids::SourceKind, raids::StartingPoint, raids::UnitRequirement,
+};
+use replay_data::{
+    rows::DivisionTemplateIconRow, rows::NavalBaseRow, rows::NukeRow, rows::RaidCountryInputRow,
+    rows::RaidPathDistanceRow, rows::TemplateSubunit,
 };
 
 use super::{
@@ -60,10 +62,12 @@ fn kinds() -> Vec<RaidType> {
         } else {
             "supply_node"
         };
-        vec![TargetType::Building(installed_content::raids::BuildingSelector {
-            types: vec![building.into()],
-            ..Default::default()
-        })]
+        vec![TargetType::Building(
+            installed_content_raids::raids::BuildingSelector {
+                types: vec![building.into()],
+                ..Default::default()
+            },
+        )]
     };
     let marines = vec![UnitRequirement {
         battalions: vec![BattalionRequirement {
@@ -74,7 +78,7 @@ fn kinds() -> Vec<RaidType> {
         ..Default::default()
     }];
     let bombers = vec![UnitRequirement {
-        equipment: vec![installed_content::raids::EquipmentRequirement {
+        equipment: vec![installed_content_raids::raids::EquipmentRequirement {
             types: vec!["strategic_bomber".into()],
             min: Some(10),
             ..Default::default()
@@ -134,7 +138,9 @@ fn kinds() -> Vec<RaidType> {
 fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
     let (graph, geometry) = grid();
     let mut assets = assets();
-    assets.moves = Ok(installed_content::unit_path::MoveGraph::new(&graph, &geometry));
+    assets.moves = Ok(installed_content_unit_path::unit_path::MoveGraph::new(
+        &graph, &geometry,
+    ));
     assets.geometry = geometry;
     assets.paths = Ok(paths::PathSearch::new(graph));
     // Command power capacity for the types' cost.
@@ -143,7 +149,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
         types: kinds(),
         ..Default::default()
     };
-    assets.trigger_content.buildings = installed_content::buildings::Buildings {
+    assets.trigger_content.buildings = installed_content_core::buildings::Buildings {
         types: ["naval_base", "supply_node"]
             .map(|name| {
                 (
@@ -159,7 +165,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
         ..Default::default()
     };
     super::set_counts(&mut assets);
-    assets.equipment = installed_content::equipment::fixture::load(&[(
+    assets.equipment = installed_content_core::equipment::fixture::load(&[(
         "common/units/equipment/a.txt",
         "equipments = { large_plane_airframe = { is_archetype = yes type = strategic_bomber } }",
     )])
@@ -332,7 +338,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
         faction
             .iter()
             .filter_map(|&slot| {
-                Some(replay::rows::AirBaseRow {
+                Some(replay_data::rows::AirBaseRow {
                     id: base_id(slot),
                     state: Some(10_000 + slot),
                     province: Some(*first.get(&raw(slot))?),
@@ -348,7 +354,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
             .iter()
             .filter(|slot| first.contains_key(&raw(**slot)))
             .enumerate()
-            .map(|(ordinal, &slot)| replay::rows::RaidAirSiteRow {
+            .map(|(ordinal, &slot)| replay_data::rows::RaidAirSiteRow {
                 canonical_slot: 0,
                 ordinal: ordinal as u32,
                 list: 0,
@@ -361,7 +367,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
     put::<tables::AirWings>(
         &mut frame,
         (0..WINGS)
-            .map(|index| replay::rows::AirWingRow {
+            .map(|index| replay_data::rows::AirWingRow {
                 id: wing_id(index),
                 owner: raw(0),
                 air_base: base_id(0),
@@ -374,7 +380,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
     put::<tables::WingEquipment>(
         &mut frame,
         (0..WINGS)
-            .map(|index| replay::rows::WingEquipmentRow {
+            .map(|index| replay_data::rows::WingEquipmentRow {
                 wing: wing_id(index),
                 ordinal: 0,
                 variant: VARIANT,
@@ -384,7 +390,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
     );
     put::<tables::VariantDefinitions>(
         &mut frame,
-        vec![replay::rows::VariantDefinitionRow {
+        vec![replay_data::rows::VariantDefinitionRow {
             id: VARIANT,
             archetype_token: LARGE,
             ..Default::default()
@@ -822,11 +828,13 @@ fn churn_world_keeping(keep: usize) -> (RaidAssets, DecodedFrame) {
     kinds[6].available = parse("has_country_flag = reuse_flag");
     kinds[8].available = parse("num_of_nukes > 0");
     kinds[4].show_target = parse("var:target_state = { is_controlled_by = FROM }");
-    kinds[7].target_types = vec![TargetType::Building(installed_content::raids::BuildingSelector {
-        types: vec!["naval_base".into()],
-        minimum_level: Some(2),
-        ..Default::default()
-    })];
+    kinds[7].target_types = vec![TargetType::Building(
+        installed_content_raids::raids::BuildingSelector {
+            types: vec!["naval_base".into()],
+            minimum_level: Some(2),
+            ..Default::default()
+        },
+    )];
     let targets = frame
         .complete::<tables::RaidTargetStatuses>()
         .unwrap()
@@ -924,7 +932,7 @@ fn churn(frame: &mut DecodedFrame, rng: &mut Rng, hour: i32) -> usize {
             if rng.chance(50) && rows.len() > 1 {
                 rows.remove(rng.below(rows.len()));
             } else if let Some(last) = rows.last().cloned() {
-                rows.push(replay::rows::RaidAirSiteRow {
+                rows.push(replay_data::rows::RaidAirSiteRow {
                     ordinal: last.ordinal + 1,
                     base: (u64::from(rng.below(300) as u32) << 32) | 0x41,
                     ..last
@@ -980,7 +988,7 @@ fn churn(frame: &mut DecodedFrame, rng: &mut Rng, hour: i32) -> usize {
             let enemy = raw(300 + rng.below(10) as u32);
             match rows.iter().position(|row| row.first_country == raw(0)) {
                 Some(at) if rng.chance(50) => rows[at].end_hour = hour,
-                _ => rows.push(replay::rows::WarRelationRow {
+                _ => rows.push(replay_data::rows::WarRelationRow {
                     first_country: raw(0),
                     second_country: enemy,
                     start_hour: hour,
@@ -992,7 +1000,7 @@ fn churn(frame: &mut DecodedFrame, rng: &mut Rng, hour: i32) -> usize {
         // Our flag is set or cleared.
         9 => {
             let rows = if rng.chance(50) {
-                vec![replay::rows::ScriptFlagRow {
+                vec![replay_data::rows::ScriptFlagRow {
                     scope_kind: 1,
                     scope_id: raw(0),
                     token: FLAG,
@@ -1082,7 +1090,7 @@ fn shown(icons: &RaidIcons) -> String {
 
 /// Each row's evaluation hour in `cycle`, `None` for a row not evaluated
 /// since the reset.
-fn evaluated_at(cycle: &cycle::Cycle) -> Vec<Option<replay::Hour>> {
+fn evaluated_at(cycle: &cycle::Cycle) -> Vec<Option<replay_data::Hour>> {
     (0..cycle.progress().1)
         .map(|at| cycle.kept(at).map(|kept| kept.0))
         .collect()
@@ -1131,7 +1139,7 @@ fn append_target(frame: &mut DecodedFrame, province: u32) {
 /// all rows are current.
 #[test]
 fn a_cycle_evaluates_a_batch_per_hour_from_a_rolling_cursor() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut assets, mut frame) = churn_world_keeping(5);
     assets.batch = Ok(2);
@@ -1192,7 +1200,7 @@ fn a_cycle_evaluates_a_batch_per_hour_from_a_rolling_cursor() {
 /// to it; a row not evaluated since the reset shows nothing.
 #[test]
 fn a_kept_row_shows_its_last_evaluation_until_evaluated_again() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut assets, mut frame) = churn_world();
     assets.batch = Ok(10);
@@ -1225,7 +1233,7 @@ fn a_kept_row_shows_its_last_evaluation_until_evaluated_again() {
 /// and the targets not evaluated since draw nothing.
 #[test]
 fn a_changed_or_lost_row_starts_the_cycle_again() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut assets, mut frame) = churn_world();
     assets.batch = Ok(10);
@@ -1279,7 +1287,7 @@ fn a_changed_or_lost_row_starts_the_cycle_again() {
 /// of an hour with moved marines and changed controllers.
 #[test]
 fn stopped_and_full_army_searches_answer_alike() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (assets, mut frame) = churn_world();
     let mut rng = Rng(0x0bad_5eed_1234_5678);
@@ -1296,7 +1304,7 @@ fn stopped_and_full_army_searches_answer_alike() {
     let cells = reach::Cells::default();
     let moves = reach::Moves::new(&world, assets.movement_reads(), &cells);
     let graph = assets.moves.as_ref().unwrap();
-    let mover = installed_content::unit_path::Mover {
+    let mover = installed_content_unit_path::unit_path::Mover {
         graph,
         world: &moves,
     };
@@ -1329,7 +1337,7 @@ fn stopped_and_full_army_searches_answer_alike() {
     ignore = "slow: runs in the full suite (--features slow-tests)"
 )]
 fn a_complete_cycle_equals_a_full_evaluation_under_random_changes() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for seed in [
         0x9e37_79b9_7f4a_7c15,
@@ -1402,7 +1410,7 @@ fn a_complete_cycle_equals_a_full_evaluation_under_random_changes() {
     ignore = "slow: runs in the full suite (--features slow-tests)"
 )]
 fn a_cycle_carried_across_skipped_hours_equals_a_full_evaluation() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for seed in [0x9e37_79b9_7f4a_7c15, 0xd1b5_4a32_d192_ed03] {
         let (mut assets, mut frame) = churn_world();
@@ -1456,7 +1464,7 @@ fn a_cycle_carried_across_skipped_hours_equals_a_full_evaluation() {
 /// from row 0, whatever row the hour's sweep began at.
 #[test]
 fn a_complete_cycle_equals_the_full_evaluation_from_row_zero() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut assets, mut frame) = churn_world();
     assets.batch = Ok(5);
@@ -1622,7 +1630,7 @@ fn split_run(
     ignore = "slow: runs in the full suite (--features slow-tests)"
 )]
 fn a_batch_split_across_threads_equals_the_batch_in_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let pool = viewer_foundation::builder_pool::builder_workers().unwrap();
     let (mut again, mut prefetched) = (0, 0);

@@ -1,4 +1,4 @@
-//! The hourly temperature pass's recorded inputs ([`replay::rows::TemperaturePass`]).
+//! The hourly temperature pass's recorded inputs ([`replay_data::rows::TemperaturePass`]).
 //!
 //! The decode worker sees the hours in order. Each complete read gives every province record's
 //! words ([`State`]) and the manager's cursor, window and seed. An hour extends the current anchor
@@ -12,12 +12,11 @@
 
 use std::sync::Arc;
 
-use engine::allocation;
-use replay::{
-    KEYFRAME_INTERVAL,
-    rows::TemperaturePass,
-    temperature::{State, checksum, window_span},
+use engine_allocation as allocation;
+use replay_data::{
+    rows::TemperaturePass, temperature::State, temperature::checksum, temperature::window_span,
 };
+use replay_frame::KEYFRAME_INTERVAL;
 
 /// Hours an anchor lasts: two keyframe intervals. A block's keyframe holds
 /// its frame's anchor words, and the keyframe one interval after an anchor

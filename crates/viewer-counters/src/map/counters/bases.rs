@@ -1,8 +1,8 @@
 //! Air-base, naval-base, naval-HQ and special-facility icons.
 
 use super::*;
-use installed_content::buildings::{BuildingType, Buildings, SpawnPoint};
-use replay::rows::{BuildingRow, ProvinceRow};
+use installed_content_core::{buildings::BuildingType, buildings::Buildings, buildings::SpawnPoint};
+use replay_data::{rows::BuildingRow, rows::ProvinceRow};
 use viewer_foundation::map::province_map::ProvinceMap;
 use viewer_foundation::table_access::TokenNames;
 
@@ -908,8 +908,11 @@ pub(super) fn radar_states(frame: &DecodedFrame, ours: u32) -> io::Result<RadarS
             hosts.entry(country).or_default().insert(state);
         }
     }
-    let hosted =
-        |country: u32, state: u32| hosts.get(&country).is_some_and(|states| states.contains(&state));
+    let hosted = |country: u32, state: u32| {
+        hosts
+            .get(&country)
+            .is_some_and(|states| states.contains(&state))
+    };
     // The countries the viewer's search reaches; which one answers first does
     // not change whether one does.
     let mut circle = BTreeSet::from([ours]);
@@ -941,12 +944,12 @@ pub(super) fn radar_states(frame: &DecodedFrame, ours: u32) -> io::Result<RadarS
     {
         Some(row) => {
             match &row.subjects {
-                replay::rows::Recorded::Value(subjects) => circle.extend(
+                replay_data::rows::Recorded::Value(subjects) => circle.extend(
                     subjects
                         .iter()
                         .filter_map(|&raw| u32::try_from(raw).ok().and_then(slot)),
                 ),
-                replay::rows::Recorded::NotRecorded => {
+                replay_data::rows::Recorded::NotRecorded => {
                     undecided.push("CountryAppearance subjects");
                 }
             }
@@ -1434,7 +1437,11 @@ pub(super) fn wings_per_site(
             // wings here.
             foreign.insert(row.base);
         }
-        if row.wings.iter().any(|wing| planes.get(wing).is_some_and(|&n| n > 0)) {
+        if row
+            .wings
+            .iter()
+            .any(|wing| planes.get(wing).is_some_and(|&n| n > 0))
+        {
             occupied.insert(row.base);
         } else if !wings_complete && row.wings.iter().any(|wing| !planes.contains_key(wing)) {
             unweighed.insert(row.base);
@@ -1508,7 +1515,7 @@ pub(super) fn wings_per_site(
 }
 
 /// The air base a wing stands at: its recorded location when lent out, else its pool's own base.
-pub(super) fn wing_base(wing: &replay::rows::AirWingRow) -> u64 {
+pub(super) fn wing_base(wing: &replay_data::rows::AirWingRow) -> u64 {
     if wing.base_override != 0 {
         wing.base_override
     } else {

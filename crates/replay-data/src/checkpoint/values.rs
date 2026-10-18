@@ -4,7 +4,7 @@ use crate::{
     rows::*,
     value::Value,
 };
-use engine::allocation;
+use engine_allocation as allocation;
 use std::io;
 
 pub(crate) trait CheckpointValue: Sized {

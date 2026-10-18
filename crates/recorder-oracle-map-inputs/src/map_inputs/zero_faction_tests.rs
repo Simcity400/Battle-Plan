@@ -1,5 +1,5 @@
 use super::*;
-use replay::rows::{Recorded, ReservedCountryNamingRow};
+use replay_data::{rows::Recorded, rows::ReservedCountryNamingRow};
 
 #[test]
 fn reserved_faction_oracle_preserves_null_full_handle_refusal_and_history() {

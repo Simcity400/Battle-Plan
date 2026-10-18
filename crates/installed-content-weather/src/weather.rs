@@ -382,7 +382,11 @@ pub(crate) fn parse_effect_names(bytes: &[u8]) -> io::Result<Names> {
 }
 
 fn parse_temperature_ranges(bytes: &[u8]) -> io::Result<[[i64; 2]; 4]> {
-    read_ranges(&parse_weather(bytes)?, "temperature", &TEMPERATURE_MODIFIERS)
+    read_ranges(
+        &parse_weather(bytes)?,
+        "temperature",
+        &TEMPERATURE_MODIFIERS,
+    )
 }
 
 /// The `keys` intervals of every `settings` group named `group`.

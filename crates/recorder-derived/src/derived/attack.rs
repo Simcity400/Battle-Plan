@@ -1,19 +1,17 @@
-//! The selected army's attack operands ([`replay::attack_derive`]) against
+//! The selected army's attack operands ([`replay_derive::attack_derive`]) against
 //! the native ones a recording witnessed: for every DivisionStatus row that
 //! holds both the recorded stat-block operands (`attack_stats`) and a
 //! witnessed packet (`attack`, which the collector's `attack_witness`
 //! diagnostic reads afresh for another slice of divisions each hour), every
 //! terrain's attack is derived as the stat block's entry at the
 //! terrain index minus one plus the content terrain's own adjuster
-//! (`installed_content::terrain`) and compared with the witnessed sum, and every
+//! (`installed_content_core::terrain`) and compared with the witnessed sum, and every
 //! scalar and the acclimatization factor with the witnessed one. A carried
 //! row that disagrees is a missed stat-block write; a terrain that disagrees
 //! everywhere is a content resolution difference.
 
-use replay::{
-    frame::DecodedFrame,
-    rows::{Recorded, tables},
-};
+use replay_data::{rows::Recorded, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 /// Mismatches listed by name; all of them are counted.
 const LISTED: usize = 40;
@@ -159,13 +157,12 @@ impl Checker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{
-            AttackStats, AttackTerrain, DivisionAttackInputs, DivisionAttackStats,
-            DivisionStatusRow, PacketHour, TableId, TableRows, Witnessed,
-        },
+    use replay_data::{
+        rows::AttackStats, rows::AttackTerrain, rows::DivisionAttackInputs,
+        rows::DivisionAttackStats, rows::DivisionStatusRow, rows::PacketHour, rows::TableId,
+        rows::TableRows, rows::Witnessed,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     fn frame(rows: Vec<DivisionStatusRow>) -> DecodedFrame {
         let mut frame = DecodedFrame {

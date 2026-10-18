@@ -3,11 +3,9 @@
 use super::CasualtyParams;
 use dashboard_base::source::Source;
 use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{CountryLinkRow, CountryRow, TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::sync::{Arc, atomic::AtomicBool};
 
 /// One chosen country whose tag has the characters a tag may carry.
@@ -40,9 +38,12 @@ pub fn research_replay(frames: Vec<DecodedFrame>) -> Replay {
 
 /// Three countries with an alias link each, at war between the first two when losses are given.
 pub fn casualty_frame(hour: i32, losses: Option<(i64, i64)>, end: i32) -> DecodedFrame {
-    use replay::rows::WarRelationRow;
+    use replay_data::rows::WarRelationRow;
     let mut frame = source(1, hour, None);
-    let template = frame.complete::<replay::rows::tables::Countries>().unwrap()[0].clone();
+    let template = frame
+        .complete::<replay_data::rows::tables::Countries>()
+        .unwrap()[0]
+        .clone();
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
         (1..=3)
             .map(|slot| CountryRow {

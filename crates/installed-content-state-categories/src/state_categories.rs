@@ -25,6 +25,9 @@ use crate::{
 };
 use std::io;
 
+/// Authored category names and their parsed cap for one building.
+pub type BuildingCaps<'a> = Vec<(&'a [u8], Result<i32, String>)>;
+
 #[derive(Default)]
 pub struct Database {
     /// First-declaration order and spelling; repeated bodies reuse the object.
@@ -74,7 +77,7 @@ impl Database {
     /// lexer's ASCII fold, in declaration order, with the maximum it sets.
     /// `Err` names an entry that does not scan as an integer or a building
     /// named again with a different maximum, whose stored value is unverified.
-    pub fn capping(&self, building: &str) -> Result<Vec<(&[u8], Result<i32, String>)>, String> {
+    pub fn capping(&self, building: &str) -> Result<BuildingCaps<'_>, String> {
         if let Some(why) = &self.gap {
             return Err(format!("state-category definitions uncertain: {why}"));
         }

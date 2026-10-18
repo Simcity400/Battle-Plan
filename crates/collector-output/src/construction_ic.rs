@@ -1,5 +1,5 @@
 //! Allocation-free observation of the civilian-factory output every construction
-//! line consumes each day ([`engine::construction_ic_sites`]), which the game keeps
+//! line consumes each day ([`engine_production::construction_ic_sites`]), which the game keeps
 //! nowhere: `produced` holds only the progress toward a building's next level, and
 //! a repair keeps its progress on the building. A detour only records and calls the
 //! original; it never changes game behaviour and calls no game function.
@@ -32,13 +32,14 @@ use crate::{
     output_hooks,
     output_log::{DrainCounters, Log},
 };
-use engine::{
-    Memory,
-    construction_ic_sites::{
-        BUILDING_COMPLETE, BUILDING_RESET, BUILDING_SPEED, BUILDING_SPEND_RETURN, COMPLETE_RETURN,
-        LINKED_COMPLETE_RETURN, RAILWAY_ADVANCE, RAILWAY_COMPLETE, RAILWAY_PROGRESS,
-        REMOVE_GENERAL_LINE, Site,
-    },
+use engine_native::Memory;
+use engine_production::{
+    construction_ic_sites::BUILDING_COMPLETE, construction_ic_sites::BUILDING_RESET,
+    construction_ic_sites::BUILDING_SPEED, construction_ic_sites::BUILDING_SPEND_RETURN,
+    construction_ic_sites::COMPLETE_RETURN, construction_ic_sites::LINKED_COMPLETE_RETURN,
+    construction_ic_sites::RAILWAY_ADVANCE, construction_ic_sites::RAILWAY_COMPLETE,
+    construction_ic_sites::RAILWAY_PROGRESS, construction_ic_sites::REMOVE_GENERAL_LINE,
+    construction_ic_sites::Site,
 };
 use std::{
     cell::Cell,
@@ -65,9 +66,9 @@ struct Storage {
 }
 impl Storage {
     fn new(capacity: usize) -> Option<Box<Self>> {
-        let mut slots = engine::allocation::vec(capacity).ok()?;
+        let mut slots = engine_allocation::vec(capacity).ok()?;
         slots.resize_with(capacity, Slot::default);
-        engine::allocation::boxed(Self { slots }).ok()
+        engine_allocation::boxed(Self { slots }).ok()
     }
 }
 
@@ -113,7 +114,7 @@ pub fn capacity() -> usize {
 /// Loader/sizing thread: two native passes cover the bounded hourly handoff,
 /// independently of country count. Rejected bursts retain their whole demand.
 pub fn presize(events: usize) {
-    engine::allocation::advisory(|| presize_storage(events));
+    engine_allocation::advisory(|| presize_storage(events));
 }
 
 fn presize_storage(events: usize) {
@@ -207,7 +208,7 @@ pub struct Entry {
     /// partner's factories.
     pub partner: Option<u64>,
     /// A native daily or linked-line completion, independent of spending.
-    pub completion: Option<replay::rows::ConstructionCompletion>,
+    pub completion: Option<replay_data::rows::ConstructionCompletion>,
     /// The secondary receiver completed inside its primary's advance; its share
     /// stays unknown even if the primary spend preceded this observation.
     pub linked_completion: bool,
@@ -228,20 +229,21 @@ pub fn invalidate() {
 /// Buildings use their copied speed; railways supply the segment call's amount.
 fn observe(line: usize, amount: i64, railway: bool, carry: bool) {
     let base = BASE.load(Ordering::Relaxed);
-    let memory = unsafe { engine::memory::LiveMemory::new() };
-    let operands = match engine::construction_ic_sites::operands(&memory, base, line, railway) {
-        Ok(operands) => operands,
-        Err(reason) => {
-            refuse(reason);
-            return;
-        }
-    };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let operands =
+        match engine_production::construction_ic_sites::operands(&memory, base, line, railway) {
+            Ok(operands) => operands,
+            Err(reason) => {
+                refuse(reason);
+                return;
+            }
+        };
     // The speed getter returns the receiver's stored speed at the filtered site.
     let amount = if railway { amount } else { operands.speed };
     // Railway instant progress is player-only; the amount identifies the path
     // without reading the player global.
     let instant = if railway {
-        amount == engine::construction_ic_sites::RAILWAY_INSTANT_AMOUNT
+        amount == engine_production::construction_ic_sites::RAILWAY_INSTANT_AMOUNT
     } else {
         operands.instant
     };
@@ -306,14 +308,15 @@ fn observe_completion(line: usize, caller: usize, result: u8, railway: bool) {
     if result == 0 || caller != base.wrapping_add(COMPLETE_RETURN) {
         return;
     }
-    let memory = unsafe { engine::memory::LiveMemory::new() };
-    let event = match engine::construction_ic_sites::completion(&memory, base, line, railway) {
-        Ok(event) => event,
-        Err(reason) => {
-            refuse(reason);
-            return;
-        }
-    };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let event =
+        match engine_production::construction_ic_sites::completion(&memory, base, line, railway) {
+            Ok(event) => event,
+            Err(reason) => {
+                refuse(reason);
+                return;
+            }
+        };
     append_completion(event, railway, false);
 }
 
@@ -322,22 +325,22 @@ fn observe_linked_completion(status: usize, line: usize, caller: usize) {
     if caller != base.wrapping_add(LINKED_COMPLETE_RETURN) {
         return;
     }
-    let memory = unsafe { engine::memory::LiveMemory::new() };
-    match engine::construction_ic_sites::linked_completion(&memory, base, status, line) {
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    match engine_production::construction_ic_sites::linked_completion(&memory, base, status, line) {
         Ok(event) => append_completion(event, false, true),
         Err(reason) => refuse(reason),
     }
 }
 
 fn append_completion(
-    event: engine::construction_ic_sites::Completion,
+    event: engine_production::construction_ic_sites::Completion,
     railway: bool,
     linked: bool,
 ) {
     append(Entry {
         line: event.line,
         railway,
-        completion: Some(replay::rows::ConstructionCompletion {
+        completion: Some(replay_data::rows::ConstructionCompletion {
             hour: event.hour,
             cancelled: event.cancelled,
         }),
@@ -419,7 +422,7 @@ fn entry(slot: &Slot) -> Entry {
         instant: flags & INSTANT != 0,
         partner: (flags & LINKED != 0 && flags & COMPLETE == 0)
             .then(|| slot.partner.load(Ordering::SeqCst)),
-        completion: (flags & COMPLETE != 0).then_some(replay::rows::ConstructionCompletion {
+        completion: (flags & COMPLETE != 0).then_some(replay_data::rows::ConstructionCompletion {
             hour: amount as i32,
             cancelled: flags & CANCELLED != 0,
         }),
@@ -609,8 +612,12 @@ fn original(site: usize) -> usize {
 unsafe extern "system-unwind" fn building_reset(line: usize) {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::ConstructionIc);
     let _call = OBSERVATION.enter();
-    let memory = unsafe { engine::memory::LiveMemory::new() };
-    match engine::construction_ic_sites::count_reset(&memory, BASE.load(Ordering::Relaxed), line) {
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    match engine_production::construction_ic_sites::count_reset(
+        &memory,
+        BASE.load(Ordering::Relaxed),
+        line,
+    ) {
         Ok((line, count)) => append(Entry {
             line,
             count_reset: Some(count),
@@ -757,11 +764,13 @@ mod growth_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::construction_ic_sites::{
-        CIC_BANK_DRAW, INSTANT_CONSTRUCTION, INVALID_REFERENCE, LINE_HANDLE, LINE_VTABLES,
-        LINKED_LINE, REPAIR_LEVELS,
+    use engine_native::cproduction_line;
+    use engine_production::{
+        construction_ic_sites::CIC_BANK_DRAW, construction_ic_sites::INSTANT_CONSTRUCTION,
+        construction_ic_sites::INVALID_REFERENCE, construction_ic_sites::LINE_HANDLE,
+        construction_ic_sites::LINE_VTABLES, construction_ic_sites::LINKED_LINE,
+        construction_ic_sites::REPAIR_LEVELS,
     };
-    use engine::cproduction_line;
 
     #[test]
     fn count_reset_entries_preserve_quantity_without_spending_or_completion() {
@@ -796,7 +805,7 @@ mod tests {
             append(Entry {
                 line: 9,
                 railway: true,
-                completion: Some(replay::rows::ConstructionCompletion {
+                completion: Some(replay_data::rows::ConstructionCompletion {
                     hour: -1,
                     cancelled,
                 }),
@@ -804,7 +813,7 @@ mod tests {
             });
         }
         append_completion(
-            engine::construction_ic_sites::Completion {
+            engine_production::construction_ic_sites::Completion {
                 line: 10,
                 hour: -1,
                 cancelled: false,
@@ -1235,7 +1244,7 @@ mod tests {
     fn unrecognised_prologues_leave_the_table_unavailable() {
         let _lock = test_lock();
         let bytes = vec![0_u8; 0x10];
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         };

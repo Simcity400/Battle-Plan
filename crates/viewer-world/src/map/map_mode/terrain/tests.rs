@@ -1,5 +1,5 @@
 use super::*;
-use installed_content::terrain::{TerrainAdjuster, TerrainCategory};
+use installed_content_core::{terrain::TerrainAdjuster, terrain::TerrainCategory};
 
 fn category(name: &str, color: Result<[f32; 4], &str>) -> TerrainCategory {
     TerrainCategory {
@@ -26,12 +26,18 @@ const DEFINES: Defines = Defines {
 
 fn database(with_ocean: bool) -> TerrainDefinitions {
     let mut categories = vec![
-        category("forest", Ok([89.0 / 255.0, 199.0 / 255.0, 85.0 / 255.0, 1.0])),
+        category(
+            "forest",
+            Ok([89.0 / 255.0, 199.0 / 255.0, 85.0 / 255.0, 1.0]),
+        ),
         category("deep", Ok([2.0 / 255.0, 38.0 / 255.0, 150.0 / 255.0, 1.0])),
         category("broken", Err("terrain category broken: a packed colour")),
     ];
     if with_ocean {
-        categories.push(category("ocean", Ok([40.0 / 255.0, 83.0 / 255.0, 176.0 / 255.0, 1.0])));
+        categories.push(category(
+            "ocean",
+            Ok([40.0 / 255.0, 83.0 / 255.0, 176.0 / 255.0, 1.0]),
+        ));
     }
     TerrainDefinitions {
         categories,
@@ -98,13 +104,28 @@ fn land_takes_its_category_and_water_its_regions_naval_terrain_or_ocean() {
     }
     // Every province is its own region.
     assert_eq!(layer.region_of, [0, 1, 2, 3, 4, 0, 0, 0, 8]);
-    assert!(layer.styles.values().all(|style| !style.pulse && style.fill == 1.0));
+    assert!(
+        layer
+            .styles
+            .values()
+            .all(|style| !style.pulse && style.fill == 1.0)
+    );
     assert_eq!(layer.thickness, Some(0.0));
     assert_eq!(layer.gradient, Some(TERRAIN_GRADIENT));
     assert_eq!(layer.channel, DEFINES.channel);
     assert_eq!(built.warnings.len(), 3, "{:?}", built.warnings);
-    assert!(built.warnings.iter().any(|line| line.contains("1 provinces unfilled: land provinces on the null terrain")));
-    assert!(built.warnings.iter().any(|line| line.contains("without a terrain record")));
+    assert!(
+        built
+            .warnings
+            .iter()
+            .any(|line| line.contains("1 provinces unfilled: land provinces on the null terrain"))
+    );
+    assert!(
+        built
+            .warnings
+            .iter()
+            .any(|line| line.contains("without a terrain record"))
+    );
     assert!(built.warnings.iter().any(|line| line.contains("broken")));
 }
 
@@ -114,5 +135,10 @@ fn water_without_an_ocean_category_is_refused_by_name() {
     let layer = &built.layer;
     assert!(layer.styles.contains_key(&2) && layer.styles.contains_key(&8));
     assert!(!layer.styles.contains_key(&3) && !layer.styles.contains_key(&4));
-    assert!(built.warnings.iter().any(|line| line.contains("2 provinces unfilled") && line.contains("no ocean")));
+    assert!(
+        built
+            .warnings
+            .iter()
+            .any(|line| line.contains("2 provinces unfilled") && line.contains("no ocean"))
+    );
 }

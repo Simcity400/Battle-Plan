@@ -1,6 +1,6 @@
 use super::*;
 use crate::test_fixtures::{CAMPAIGN, continuation_records, records, source};
-use replay::format::FormatVersion;
+use replay_data::format::FormatVersion;
 use std::thread::ThreadId;
 
 /// A family whose facts are the hours it observed and the thread it ran on.
@@ -604,7 +604,7 @@ enum Captured {
     },
     Quiet {
         hours: Vec<i32>,
-        metrics: Vec<replay::frame::Metrics>,
+        metrics: Vec<replay_frame::frame::Metrics>,
         sampled: Vec<Option<i32>>,
         rebuilt: Vec<bool>,
     },
@@ -613,7 +613,7 @@ enum Captured {
 #[derive(Default)]
 struct Capture {
     events: Vec<Captured>,
-    identities: Vec<Vec<replay::frame::ViewIdentity>>,
+    identities: Vec<Vec<replay_frame::frame::ViewIdentity>>,
     last: Option<i32>,
 }
 
@@ -729,7 +729,10 @@ fn capture(
     replay: &Replay,
     families: &[&'static Family],
     releasing: bool,
-) -> (Vec<Vec<Captured>>, [[u64; 2]; replay::frame::TABLE_COUNT]) {
+) -> (
+    Vec<Vec<Captured>>,
+    [[u64; 2]; replay_data::rows::TABLE_COUNT],
+) {
     struct Restore(bool);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -737,7 +740,7 @@ fn capture(
         }
     }
     let _restore = Restore(RELEASING.with(|value| value.replace(releasing)));
-    let before = replay::cpu::delta_copies();
+    let before = replay_frame::cpu::delta_copies();
     let events = extract_block_measured(
         replay,
         &replay.index[0],
@@ -752,7 +755,7 @@ fn capture(
         Outcome::Sequential => panic!("the block was observed hourly"),
     })
     .collect();
-    let after = replay::cpu::delta_copies();
+    let after = replay_frame::cpu::delta_copies();
     (
         events,
         std::array::from_fn(|table| {
@@ -766,7 +769,7 @@ fn moving_tables(count: u32, quiet: bool) -> Replay {
         .filter(|&hour| !quiet || hour != 105)
         .map(|hour| {
             let mut frame = crate::test_fixtures::scale_frame(1, hour, count);
-            if let TableView::Complete(replay::rows::TableRows::Countries(rows)) =
+            if let TableView::Complete(replay_data::rows::TableRows::Countries(rows)) =
                 &mut *frame.tables[TableId::Countries.index()]
             {
                 rows[0].political_power_raw = Some(i64::from(if quiet { hour / 5 } else { hour }));
@@ -775,14 +778,14 @@ fn moving_tables(count: u32, quiet: bool) -> Replay {
                     rows.pop();
                 }
             }
-            if let TableView::Complete(replay::rows::TableRows::States(rows)) =
+            if let TableView::Complete(replay_data::rows::TableRows::States(rows)) =
                 &mut *frame.tables[TableId::States.index()]
             {
                 rows[0].controller = hour as u32;
             }
             if quiet && matches!(hour, 103 | 104) {
                 *frame.tables[TableId::States.index()] = TableView::Truncated {
-                    rows: replay::rows::TableRows::States(Vec::new()),
+                    rows: replay_data::rows::TableRows::States(Vec::new()),
                     missing: 1,
                 };
             }
@@ -982,15 +985,14 @@ fn leaders_fold_shared_variable_and_tag_visibility_without_decoding_on_the_famil
     use crate::products::unit_leaders::{self, Content, prepared::Prepared};
     use dashboard_base::prepared::series::tests::Fixture;
     use dashboard_text::triggers::{Eval, Evaluator, inputs};
-    use replay::{
-        container::test_work::table_decodes,
-        rows::{
-            CountryCounterInputRow, CountryLinkRow, CountryRow, LexicalTokenRow, Recorded,
-            ScriptVariableEntry, ScriptVariablesRow, TableRows,
-        },
+    use replay::container::test_work::table_decodes;
+    use replay_data::{
+        rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryRow,
+        rows::LexicalTokenRow, rows::Recorded, rows::ScriptVariableEntry, rows::ScriptVariablesRow,
+        rows::TableRows,
     };
 
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
         (
@@ -1006,7 +1008,8 @@ fn leaders_fold_shared_variable_and_tag_visibility_without_decoding_on_the_famil
             "characters={mod_commander={corps_commander={visible={NOT={has_war_with=AAA has_war_with=BBB} check_variable={leader_gate=1}}}}}",
         ),
     ]);
-    let templates = installed_content::characters::leader_templates(&catalogue.content.layers).unwrap();
+    let templates =
+        installed_content_core::characters::leader_templates(&catalogue.content.layers).unwrap();
     let template = &templates[0];
     let frames: Vec<_> = (100..=104)
         .map(|hour| {
@@ -1086,7 +1089,7 @@ fn leaders_fold_shared_variable_and_tag_visibility_without_decoding_on_the_famil
     for (frame, expected) in frames[..2].iter().zip([Eval::True, Eval::False]) {
         let world = scripted.recorded_world(frame).unwrap();
         let row = &frame
-            .complete::<replay::rows::tables::UnitLeaders>()
+            .complete::<replay_data::rows::tables::UnitLeaders>()
             .unwrap()[0];
         let visibility = world.decoded_leader_visibility(row);
         let (value, reads) = inputs::capture(frame, || {
@@ -1124,8 +1127,9 @@ fn leaders_fold_shared_variable_and_tag_visibility_without_decoding_on_the_famil
     ];
     // The shared reader also wants the trigger kit's recorded updates.
     // A kept-only table is decoded but not reconstructed for an extract.
-    let mut deposited: Vec<Arc<replay::frame::RecordedFrame>> = Vec::new();
-    let mut deposit = |frames: &[Arc<replay::frame::RecordedFrame>]| deposited = frames.to_vec();
+    let mut deposited: Vec<Arc<replay_frame::frame::RecordedFrame>> = Vec::new();
+    let mut deposit =
+        |frames: &[Arc<replay_frame::frame::RecordedFrame>]| deposited = frames.to_vec();
     let (mut measured, decodes) = table_decodes(|| {
         extract_bound(
             replay,
@@ -1159,7 +1163,7 @@ fn leaders_fold_shared_variable_and_tag_visibility_without_decoding_on_the_famil
                 |_, frame| {
                     assert!(
                         frame
-                            .complete::<replay::rows::tables::ScriptVariables>()
+                            .complete::<replay_data::rows::tables::ScriptVariables>()
                             .is_ok()
                     );
                     supplied += 1;

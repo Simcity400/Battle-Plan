@@ -1,10 +1,8 @@
 //! Exact comparisons for saved project, nuclear, raid and conference fields.
 use super::{Report, complete, country_tag, invalid, required_country_tag};
 use installed_content_save::{characters as characters_saved, projects as saved};
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryRow, RaidScope, RaidSource, tables},
-};
+use replay_data::{rows::CountryRow, rows::RaidScope, rows::RaidSource, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -28,7 +26,7 @@ fn token<'a>(
     report: &mut Report,
     label: &str,
 ) -> Option<&'a [u8]> {
-    if value == engine::cpdx_lexer::FIXED15_TOKEN {
+    if value == engine_native::cpdx_lexer::FIXED15_TOKEN {
         report.limitation("the token writer formats reserved lexical token 0x167 as fixed15 numeric text; its raw dictionary literal cannot certify this saved field", label);
         return None;
     }
@@ -115,7 +113,7 @@ pub fn compare(
     // Each table's refresh comes from the cadence table: Projects and
     // ProjectHistory are read every hour, the panel-only programs and
     // breakthroughs on their daily slot.
-    use replay::rows::TableId;
+    use replay_data::rows::TableId;
     let [programs, projects, history, breakthroughs] = [
         TableId::ProjectPrograms,
         TableId::Projects,
@@ -126,10 +124,10 @@ pub fn compare(
         let current = report.refresh_is_current(table, frame.hour);
         if !current {
             report.limitation(
-                &format!("Projects {}", replay::cadence::STAGGER_LIMITATION),
+                &format!("Projects {}", replay_data::cadence::STAGGER_LIMITATION),
                 format!(
                     "{table:?} refreshes on {} (oracle hour {})",
-                    replay::cadence::refresh_text(table),
+                    replay_data::cadence::refresh_text(table),
                     frame.hour
                 ),
             );
@@ -479,7 +477,8 @@ fn compare_facilities(
         equal(
             report,
             format!("{label}.id"),
-            (u64::from(row.id) << 32) | u64::from(engine::nproject_cprogram::REFERENCE_TYPE),
+            (u64::from(row.id) << 32)
+                | u64::from(engine_projects::nproject_cprogram::REFERENCE_TYPE),
             saved.id,
         );
         equal(

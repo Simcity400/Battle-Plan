@@ -1,10 +1,12 @@
 use super::*;
-use replay::{
-    branches::{BranchReason, BranchStart, Parentage},
-    frame::{FrameEncoder, Metrics, TableView},
-    identity::{Roster, SampleBoundary, SessionStart, Verification},
-    rows::{CampaignRow, CountryLinkRow, CountryRow, SunkShipsRow, TableRows},
-    spool::Record,
+use replay::spool::Record;
+use replay_data::{
+    identity::Roster, identity::SampleBoundary, identity::SessionStart, identity::Verification,
+    rows::CampaignRow, rows::CountryLinkRow, rows::CountryRow, rows::SunkShipsRow, rows::TableRows,
+};
+use replay_frame::{
+    branches::BranchReason, branches::BranchStart, branches::Parentage, frame::FrameEncoder,
+    frame::Metrics, frame::TableView,
 };
 
 fn ship(name: &[u8], hour: i32) -> SunkShipEntry {
@@ -349,7 +351,7 @@ fn replay_of(frames: Vec<DecodedFrame>) -> Replay {
         process_start_time: 1,
         qpc_frequency: 10_000_000,
         sample_boundary: SampleBoundary::EndOfHour,
-        identity: replay::identity::Identity {
+        identity: replay_data::identity::Identity {
             game_version: "synthetic".into(),
             exe_hash: [1; 32],
             exe_size: 1,
@@ -625,7 +627,7 @@ fn sinkings_real_decoder_dates_fresh_reads_and_country_identity_at_event_hour() 
     let mut initial = frame(first, 2);
     *initial.tables[TableId::LexicalTokens.index()] =
         TableView::Complete(TableRows::LexicalTokens(vec![
-            replay::rows::LexicalTokenRow {
+            replay_data::rows::LexicalTokenRow {
                 token: 77,
                 literal: b"first_class".to_vec(),
             },
@@ -658,11 +660,11 @@ fn sinkings_real_decoder_dates_fresh_reads_and_country_identity_at_event_hour() 
     tail.metrics = Metrics::default();
     *recover.tables[TableId::LexicalTokens.index()] =
         TableView::Complete(TableRows::LexicalTokens(vec![
-            replay::rows::LexicalTokenRow {
+            replay_data::rows::LexicalTokenRow {
                 token: 77,
                 literal: b"first_class".to_vec(),
             },
-            replay::rows::LexicalTokenRow {
+            replay_data::rows::LexicalTokenRow {
                 token: 88,
                 literal: b"later_mod_class".to_vec(),
             },
@@ -1000,7 +1002,7 @@ fn prepared_ship_history_resumes_duplicate_and_pruning_state_without_recovery_bi
     let mut reads = Vec::new();
     let mut oracle = Scanned::default();
     let mut track = Tracker::default();
-    let format = replay::format::FormatVersion::default();
+    let format = replay_data::format::FormatVersion::default();
     let a = ship(b"same mod name", 1);
     let b = ship(b"same mod name", 2);
     for (hour, entries) in [
@@ -1041,7 +1043,7 @@ fn prepared_ship_history_resumes_duplicate_and_pruning_state_without_recovery_bi
 
 #[test]
 fn prepared_ship_history_retains_multiset_through_unavailable_resume_and_future_read() {
-    let format = replay::format::FormatVersion::default();
+    let format = replay_data::format::FormatVersion::default();
     let mut history = ShipHistory::default();
     let mut archived = BTreeMap::new();
     let mut reads = Vec::new();

@@ -1,7 +1,9 @@
 use super::super::tests::{frame, operative};
 use super::*;
 use dashboard_base::{prepared::series::tests::Fixture, test_fixtures};
-use replay::{container::Replay, frame::TableView, rows::TableRows};
+use replay::container::Replay;
+use replay_data::rows::TableRows;
+use replay_frame::frame::TableView;
 
 #[test]
 fn prepared_placements_query_rejects_a_different_parameter_branch() {

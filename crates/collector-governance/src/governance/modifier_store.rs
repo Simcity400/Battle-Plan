@@ -17,7 +17,8 @@ use crate::{
     sampled_verify::Check,
     world_input_changes::{self as changes, Changes, Domain},
 };
-use engine::{ccountry, cdynamic_modifier_container as container};
+use engine_native::ccountry;
+use engine_stability::cdynamic_modifier_container as container;
 use std::sync::{Mutex, MutexGuard, TryLockError};
 
 type Certificate = [(u64, u64); 2];
@@ -139,7 +140,7 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
             .expect("a carrying plan names a held country");
         let held = &self.store.held[index];
         let grown = (|| {
-            use engine::walk::Buffer::Growing;
+            use engine_native::walk::Buffer::Growing;
             Growing(&mut *rows).ensure(first + held.rows.len())?;
             Growing(&mut *tokens).ensure(text + held.tokens.len())?;
             Growing(&mut *values).ensure(value_start + held.values.len())?;
@@ -147,7 +148,7 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
         })();
         if let Err(reason) = grown {
             return container::Walk {
-                outcome: engine::walk::Outcome::Unavailable { reason },
+                outcome: engine_native::walk::Outcome::Unavailable { reason },
                 token_bytes: 0,
                 values_len: 0,
                 required_token_bytes: held.tokens.len(),
@@ -159,7 +160,7 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
         values[value_start..value_start + held.values.len()].copy_from_slice(&held.values);
         self.carried += 1;
         container::Walk {
-            outcome: engine::walk::Outcome::Rows {
+            outcome: engine_native::walk::Outcome::Rows {
                 len: held.rows.len(),
             },
             token_bytes: held.tokens.len(),
@@ -217,7 +218,7 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
                 self.store.held.remove(index);
             }
             (Err(index), Some(held)) => {
-                if engine::allocation::reserve(&mut self.store.held, 1).is_ok() {
+                if engine_allocation::reserve(&mut self.store.held, 1).is_ok() {
                     self.store.held.insert(index, held);
                 }
             }
@@ -239,7 +240,7 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
 /// An owned copy; `None` when it cannot be allocated, and nothing is held.
 fn copy<T: Copy>(values: &[T]) -> Option<Vec<T>> {
     let mut copied = Vec::new();
-    engine::allocation::reserve(&mut copied, values.len()).ok()?;
+    engine_allocation::reserve(&mut copied, values.len()).ok()?;
     copied.extend_from_slice(values);
     Some(copied)
 }

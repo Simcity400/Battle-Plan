@@ -838,7 +838,7 @@ fn ready_milestone(
     *emitted = true;
     emit(json!({
         "event": "cpu", "ms": probe.now_ms(), "acceptedHours": accepted_hours(status),
-        "sections": status["sections"], "cpu": replay::cpu::snapshot(), "allReady": true,
+        "sections": status["sections"], "cpu": replay_frame::cpu::snapshot(), "allReady": true,
     }))
 }
 
@@ -873,7 +873,7 @@ fn finish_map(
 pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
     fresh(path)?;
     // Measurement only: every thread's CPU by label, into the evidence.
-    replay::cpu::enable();
+    replay_frame::cpu::enable();
     let table = match &settings.table {
         Some(file) => fs::read_to_string(file)?,
         None => readiness::WIDGETS.to_owned(),
@@ -986,7 +986,7 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
             })
             .sum()
     });
-    replay::cpu::set_hours(first, last);
+    replay_frame::cpu::set_hours(first, last);
     output.line(json!({
         "event": "open", "recording": recording, "startedUnixMs": started_unix_ms, "openMs": open_ms,
         "branch": branch_id, "firstHour": first, "lastHour": last, "tag": tag, "totalHours": total_hours,
@@ -1061,7 +1061,7 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
             next_cpu = Instant::now() + CPU_EVERY;
             output.line(json!({
                 "event": "cpu", "ms": probe.now_ms(), "acceptedHours": accepted_hours(&status),
-                "sections": status["sections"], "cpu": replay::cpu::snapshot(),
+                "sections": status["sections"], "cpu": replay_frame::cpu::snapshot(),
             }))?;
         }
         // Preparation status has its own poll, apart from the queries.
@@ -1296,7 +1296,7 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
             .filter_map(|widget| widget.ready_ms)
             .fold(map_ms.unwrap_or(0.0), f64::max)
     });
-    let cpu = replay::cpu::snapshot();
+    let cpu = replay_frame::cpu::snapshot();
     output.line(json!({
         "event": "cpu", "ms": probe.now_ms(), "acceptedHours": accepted_hours(&status),
         "sections": status["sections"], "cpu": cpu, "final": true,

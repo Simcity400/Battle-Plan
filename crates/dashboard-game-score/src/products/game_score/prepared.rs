@@ -993,10 +993,8 @@ fn values_at(
 mod state_tests {
     use super::*;
     use dashboard_base::test_fixtures::{CAMPAIGN, records, source as frame};
-    use replay::{
-        frame::TableView,
-        rows::{CampaignRow, TableRows},
-    };
+    use replay_data::{rows::CampaignRow, rows::TableRows};
+    use replay_frame::frame::TableView;
     use std::sync::Arc;
 
     #[test]

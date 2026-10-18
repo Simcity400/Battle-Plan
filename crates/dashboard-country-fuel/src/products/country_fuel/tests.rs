@@ -1,9 +1,7 @@
 use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{CountryLinkRow, CountryRow, TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::sync::{Arc, atomic::AtomicBool};
 
 pub(super) fn replay_source(frames: Vec<DecodedFrame>, id: &str) -> dashboard_base::source::Source {
@@ -21,7 +19,7 @@ pub(super) fn replay_source(frames: Vec<DecodedFrame>, id: &str) -> dashboard_ba
 
 /// A read as its reply shows it.
 pub(super) fn reply_read(
-    row: &replay::rows::CountryFuelRow,
+    row: &replay_data::rows::CountryFuelRow,
     hour: i32,
     left_out: Option<super::DayLeftOut>,
 ) -> super::FuelRead {
@@ -31,7 +29,7 @@ pub(super) fn reply_read(
 
 #[test]
 fn day_keeps_receipts_and_other_in_their_recorded_native_units() {
-    let row = replay::rows::CountryFuelRow {
+    let row = replay_data::rows::CountryFuelRow {
         ring_gain_raw: 17,
         ring_consumed_raw: 32769,
         ring_received_0_raw: 50001,
@@ -64,7 +62,7 @@ pub(super) fn fuel_frame(
     germany: u32,
     fuel: (i64, i64, i64, i64),
 ) -> DecodedFrame {
-    use replay::rows::{CountryFuelRow, StateRow};
+    use replay_data::{rows::CountryFuelRow, rows::StateRow};
     let mut frame = source(1, hour, Some(1));
     let country = |id, canonical_slot, tag: &[u8]| CountryRow {
         id,
@@ -136,7 +134,7 @@ fn unlinked(mut frame: DecodedFrame) -> DecodedFrame {
 /// The frame with Germany's state taken by Italy, and another state owned by a
 /// link id the links cannot resolve.
 fn stateless_with_unknown_owner(frame: DecodedFrame) -> DecodedFrame {
-    use replay::rows::StateRow;
+    use replay_data::rows::StateRow;
     let mut frame = stateless(frame);
     if let TableView::Complete(TableRows::States(states)) =
         &mut *frame.tables[TableId::States.index()]
@@ -152,7 +150,7 @@ fn stateless_with_unknown_owner(frame: DecodedFrame) -> DecodedFrame {
 
 /// The frame with Germany's state taken by Italy.
 fn stateless(mut frame: DecodedFrame) -> DecodedFrame {
-    use replay::rows::StateRow;
+    use replay_data::rows::StateRow;
     *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
         StateRow {
             id: 1,
@@ -179,11 +177,12 @@ fn unowned_unknown(mut frame: DecodedFrame) -> DecodedFrame {
 
 /// The fuel slot's hour on day `day`.
 pub(super) fn fuel_slot(day: i32) -> i32 {
-    let replay::cadence::Cadence::Daily(slot) = replay::cadence::cadence(TableId::CountryFuel)
+    let replay_data::cadence::Cadence::Daily(slot) =
+        replay_data::cadence::cadence(TableId::CountryFuel)
     else {
         panic!("CountryFuel is read in a daily slot");
     };
-    day * replay::cadence::STAGGER_PERIOD + slot as i32
+    day * replay_data::cadence::STAGGER_PERIOD + slot as i32
 }
 
 /// What a fuel test hour holds, relative to the fuel slot: a read, a sample
@@ -486,7 +485,7 @@ fn five_thousand_country_requests_share_one_decode_and_ownership_walk() {
     use crate::products::country_fuel::{CountryFuel, CountryFuelConsumption};
     use dashboard_base::products::{CountryParams, Product};
     use dashboard_core::config::LoadContext;
-    use replay::rows::{CountryFuelRow, StateRow};
+    use replay_data::{rows::CountryFuelRow, rows::StateRow};
     let count = 5_000_u32;
     let slot = fuel_slot(1000);
     let frame = |hour| {
@@ -526,11 +525,11 @@ fn five_thousand_country_requests_share_one_decode_and_ownership_walk() {
                     current_raw: i64::from(slot),
                     maximum_raw: i64::from(count),
                     ring_gain_raw: i64::from(slot),
-                    country_instance: replay::rows::Recorded::Value(Some(9)),
-                    demand: replay::rows::Recorded::Value(replay::rows::FuelDemandRead {
-                        hour: replay::rows::FuelDemandHour::Stamped(hour),
+                    country_instance: replay_data::rows::Recorded::Value(Some(9)),
+                    demand: replay_data::rows::Recorded::Value(replay_data::rows::FuelDemandRead {
+                        hour: replay_data::rows::FuelDemandHour::Stamped(hour),
                         country_instance: Some(9),
-                        divisions: vec![replay::rows::FuelDemandUnit {
+                        divisions: vec![replay_data::rows::FuelDemandUnit {
                             reference: u64::from(slot) << 32 | 29,
                             rate_raw: Some(i64::from(slot)),
                             ..Default::default()
@@ -636,8 +635,10 @@ fn a_new_tag_has_the_same_absent_sample_evidence_as_a_single_country_scan() {
 /// (own gain 2), transferring [1, -3, 4, 1], consuming 1 and paying one
 /// recipient 1, whose retained name reads "before" at even hours and "after"
 /// at odd ones: two recipients of 12 receipts each.
-pub(super) fn award_row(hour: i32) -> replay::rows::CountryFuelRow {
-    use replay::rows::{CountryFuelRow, FuelAwardDay, FuelAwardDayRecipient, Recorded};
+pub(super) fn award_row(hour: i32) -> replay_data::rows::CountryFuelRow {
+    use replay_data::{
+        rows::CountryFuelRow, rows::FuelAwardDay, rows::FuelAwardDayRecipient, rows::Recorded,
+    };
     let recipient = |name: &[u8], first_hour: i32| FuelAwardDayRecipient {
         kind: 0,
         reference: 7 << 32 | 29,
@@ -663,7 +664,7 @@ pub(super) fn award_row(hour: i32) -> replay::rows::CountryFuelRow {
             last_hour: hour,
             gains_raw: [24, -48, 72, 0],
             own_gain_raw: 48,
-            own_gain_quantity_raw: 24 * engine::fuel_awards::quantity(2),
+            own_gain_quantity_raw: 24 * engine_fuel::fuel_awards::quantity(2),
             transfers_raw: [24, -72, 96, 24],
             consumed_raw: -24,
             received_raw: [-24, 0, 0],
@@ -677,7 +678,7 @@ pub(super) fn award_row(hour: i32) -> replay::rows::CountryFuelRow {
 #[test]
 fn completed_award_totals_keep_i64_extremes_and_the_recorded_conversion_exact() {
     let mut row = award_row(1000);
-    let replay::rows::Recorded::Value(recorded) = &mut row.award_day else {
+    let replay_data::rows::Recorded::Value(recorded) = &mut row.award_day else {
         panic!()
     };
     recorded.own_gain_raw = i64::MAX;
@@ -768,7 +769,7 @@ fn applied_updates_override_prefilled_ring_and_stale_ownership_without_inventing
         .is_err()
     );
     let mut row = row;
-    let replay::rows::Recorded::Value(recorded) = &mut row.award_day else {
+    let replay_data::rows::Recorded::Value(recorded) = &mut row.award_day else {
         panic!()
     };
     recorded.recipients[0].kind = 1;
@@ -791,7 +792,7 @@ fn applied_updates_override_prefilled_ring_and_stale_ownership_without_inventing
 
 #[test]
 fn attribution_requires_the_supplying_hour_and_native_country_identity() {
-    use replay::rows::Recorded;
+    use replay_data::rows::Recorded;
     let mut row = award_row(1000);
     assert!(super::awards_of(&row, 1001).is_err());
     row.country_instance = Recorded::Value(Some(10));
@@ -809,7 +810,7 @@ fn attribution_requires_the_supplying_hour_and_native_country_identity() {
 #[test]
 fn cached_receipt_names_obey_viewer_language_without_losing_numeric_receipts() {
     let row = award_row(1000);
-    let mut localisation = installed_content::localisation::Localisation::default();
+    let mut localisation = installed_content_localisation::localisation::Localisation::default();
     localisation.language = "french".into();
     let rows = super::recipients_of(&row, &AtomicBool::new(false), |bytes| {
         dashboard_text::scripted_text::stored_text(

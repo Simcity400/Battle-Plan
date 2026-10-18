@@ -2,7 +2,8 @@ use super::*;
 use crate::catalogue::tests::{Folder, folder_catalogue};
 use crate::effect_description::tests::Fixture;
 use crate::scripted_text::{EventObject, EventScope, Link};
-use replay::{frame::TableView, rows::*};
+use replay_data::rows::*;
+use replay_frame::frame::TableView;
 
 pub(super) fn empty_variable_stores(fixture: &mut Fixture) {
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
@@ -111,7 +112,7 @@ fn character_scopes() -> EventScopes {
 // A scalar country selects nationality.
 #[test]
 fn set_nationality() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
@@ -125,7 +126,7 @@ fn set_nationality() {
 
 #[test]
 fn nationality_character_selector_uses_root_roster_then_current_fallback() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     for (selector, name) in [
@@ -151,7 +152,7 @@ fn nationality_character_selector_uses_root_roster_then_current_fallback() {
 // The retirement boolean is execution-only.
 #[test]
 fn retire() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render("retire=yes", &mut character_scopes(), Content::default());
@@ -162,7 +163,7 @@ fn retire() {
 // A scalar country selects the capturer.
 #[test]
 fn capture_by() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
@@ -178,7 +179,7 @@ fn capture_by() {
 // and target is an unexpected key.
 #[test]
 fn capture_by_block_reads_country_without_target_leak() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     for (body, expected) in [
@@ -199,7 +200,7 @@ fn capture_by_block_reads_country_without_target_leak() {
 // supply their owner.
 #[test]
 fn country_target_zero_and_state_owner_follow_character_gates() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     for category in [0, 3] {
@@ -246,7 +247,7 @@ fn country_target_zero_and_state_owner_follow_character_gates() {
 
 #[test]
 fn referenced_leader_uses_matching_recorded_handle_or_refuses_its_missing_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::CharacterOperatives.index()] =
@@ -294,7 +295,7 @@ fn referenced_leader_uses_matching_recorded_handle_or_refuses_its_missing_name()
 
 #[test]
 fn unit_leader_scope_resolves_its_character_role() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let mut leader = EventScope::of(EventObject::UnitLeader((5_u64 << 32) | 55));
@@ -313,7 +314,7 @@ fn unit_leader_scope_resolves_its_character_role() {
 
 #[test]
 fn add_nationality() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     // Native early gate: an army leader is not an operative.
@@ -328,7 +329,7 @@ fn add_nationality() {
 
 #[test]
 fn valid_operative_refuses_unrecorded_codename_by_class_and_field() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
@@ -360,7 +361,7 @@ fn valid_operative_refuses_unrecorded_codename_by_class_and_field() {
 // rather than another character's display name.
 #[test]
 fn capture_by_uses_format98_referenced_name_and_capture_status() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
@@ -401,7 +402,7 @@ fn capture_by_uses_format98_referenced_name_and_capture_status() {
 // then expand without appending LF.
 #[test]
 fn add_nationality_uses_format98_selected_codename() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     for custom in [Vec::new(), b"Chosen name".to_vec()] {
@@ -441,7 +442,7 @@ fn add_nationality_uses_format98_selected_codename() {
 // History effects produce no description outside their required UNIT or RAID carrier.
 #[test]
 fn history_entries_are_empty_without_their_reference() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     for body in [
@@ -456,7 +457,7 @@ fn history_entries_are_empty_without_their_reference() {
 
 #[test]
 fn absent_character_is_empty_and_stored_name_does_not_use_saved_key() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
@@ -485,7 +486,7 @@ fn absent_character_is_empty_and_stored_name_does_not_use_saved_key() {
 
 #[test]
 fn character_and_leader_names_keep_recording_language_rule() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     std::sync::Arc::make_mut(&mut fixture.catalogue.localisation).language =
@@ -506,7 +507,7 @@ fn character_and_leader_names_keep_recording_language_rule() {
 
 #[test]
 fn named_character_selector_uses_retired_roster_after_active() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::CountryCharacters.index()] =
@@ -530,7 +531,7 @@ fn named_character_selector_uses_retired_roster_after_active() {
 
 #[test]
 fn missing_executable_localisation_name_is_named_and_counted() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
@@ -551,7 +552,7 @@ fn missing_executable_localisation_name_is_named_and_counted() {
 
 #[test]
 fn character_lookup_keeps_country_five_thousand() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::Countries(countries)) =

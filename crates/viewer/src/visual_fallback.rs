@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 /// A recording and the revision its selected visual mods held
-/// ([`installed_content::content::visual::revision`]).
+/// ([`installed_content_core::content::visual::revision`]).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FallbackKey {
     /// The recording's identity (its source and revision).
@@ -78,16 +78,6 @@ impl Decision {
 pub enum Under {
     Mods { excused: BTreeSet<String> },
     Recording { failures: BTreeSet<String> },
-}
-
-impl Under {
-    /// The refusals content built under this does not count as failures.
-    pub fn excused(&self) -> Option<&BTreeSet<String>> {
-        match self {
-            Self::Mods { excused } => Some(excused),
-            Self::Recording { .. } => None,
-        }
-    }
 }
 
 /// The key content was built for and what it was built under.
@@ -271,9 +261,9 @@ impl Fallbacks {
 /// error, and nothing it loads lazily is queued or decoding.
 pub fn settled(
     drew: bool,
-    requested: (replay::BranchId, i32),
-    rendered: Option<(replay::BranchId, i32)>,
-    shown: Option<(replay::BranchId, i32, bool)>,
+    requested: (replay_data::BranchId, i32),
+    rendered: Option<(replay_data::BranchId, i32)>,
+    shown: Option<(replay_data::BranchId, i32, bool)>,
     loading: bool,
 ) -> bool {
     drew && rendered == Some(requested)

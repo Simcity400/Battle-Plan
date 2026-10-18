@@ -5,14 +5,14 @@ use replay::container::Replay;
 impl Scan {
     pub(super) fn observe(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
-        format: replay::format::FormatVersion,
+        decoded: &replay_frame::frame::DecodedFrame,
+        format: replay_data::format::FormatVersion,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         self.observe_inner(decoded, format, None, None, cancelled)
             .map(|_| ())
     }
-    pub(super) fn finish(self, format: replay::format::FormatVersion) -> ScannedBranch {
+    pub(super) fn finish(self, format: replay_data::format::FormatVersion) -> ScannedBranch {
         let mut result = ScannedBranch {
             unnamed: self.unnamed,
             #[cfg(test)]

@@ -5,7 +5,8 @@
 //! ([`crate::territory_changes`]).
 
 use crate::{acquisition_gather, extended::state_flags, sampling};
-use engine::{Memory, crailway_manager::fresh_inputs, cstate, walk::Outcome};
+use engine_native::{Memory, cstate, walk::Outcome};
+use engine_railways::crailway_manager::fresh_inputs;
 
 mod state_store;
 pub(crate) use state_store::StateStore;
@@ -41,7 +42,7 @@ impl Default for Inputs {
 impl Inputs {
     pub(crate) fn with_capacity(capacity: usize) -> std::io::Result<Self> {
         Ok(Self {
-            rows: engine::allocation::default_vec(capacity)?,
+            rows: engine_allocation::default_vec(capacity)?,
             ..Self::default()
         })
     }
@@ -100,7 +101,7 @@ impl Inputs {
             return;
         }
         let capacity = sources.len().max(self.rows.len());
-        if growing && engine::allocation::resize_default(&mut self.rows, capacity).is_err() {
+        if growing && engine_allocation::resize_default(&mut self.rows, capacity).is_err() {
             self.fail("state fraction buffer allocation failed");
             return;
         }
@@ -185,7 +186,7 @@ impl InputWork {
         let index = match self.reasons.binary_search_by_key(&reason, |entry| entry.0) {
             Ok(index) => index,
             Err(index) => {
-                engine::allocation::reserve(&mut self.reasons, 1)?;
+                engine_allocation::reserve(&mut self.reasons, 1)?;
                 self.reasons.insert(index, (reason, 0));
                 index
             }
@@ -258,7 +259,7 @@ impl Request {
     }
 
     fn run_with(&mut self, memory: &impl Memory, growing: bool) -> Report {
-        let _reads = crate::read_accounting::table(replay::rows::TableId::States);
+        let _reads = crate::read_accounting::table(replay_data::rows::TableId::States);
         let Self {
             census,
             names,
@@ -329,7 +330,7 @@ impl Request {
 pub(crate) mod tests {
     use super::*;
     use crate::acquisition::Pool;
-    use engine::{cbuilding_database, cbuilding_template, cgame_state, memory::SliceMemory};
+    use engine_native::{cbuilding_database, cbuilding_template, cgame_state, memory::SliceMemory};
     use std::cell::RefCell;
 
     const STATE: usize = 0x1000;
@@ -394,7 +395,7 @@ pub(crate) mod tests {
             for field in [cstate::PRIMARY_DISPLAY_NAME, cstate::SECONDARY_DISPLAY_NAME] {
                 put(
                     &mut bytes,
-                    pointer + field + engine::msvc_string::CAPACITY,
+                    pointer + field + engine_native::msvc_string::CAPACITY,
                     15_u64.to_le_bytes(),
                 );
             }

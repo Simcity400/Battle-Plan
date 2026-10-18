@@ -1,7 +1,7 @@
 //! Joined country/region values use shared series; queries reuse the air renderers.
 use super::*;
 use dashboard_base::prepared::series::{self, Accumulator, Reader};
-use replay::frame::DecodedFrame;
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 
 mod first_view;
@@ -892,7 +892,7 @@ impl Prepared {
     }
 
     fn read_query(store: &store::Store, key: &store::SourceKey, branch: u64) -> io::Result<Self> {
-        let _cpu = replay::cpu::scope_phase("air_superiority:query_continuation");
+        let _cpu = replay_frame::cpu::scope_phase("air_superiority:query_continuation");
         let state: QueryState =
             series::read_reply(store, key, &format!("air-superiority-{branch}"), 0)?
                 .ok_or_else(|| invalid("Prepared air-superiority continuation is missing"))?;
@@ -977,7 +977,7 @@ impl Prepared {
             .iter()
             .map(|(field, &id)| serde_json::from_str::<Field>(field).map(|field| (field, id)))
             .collect::<Result<_, _>>()?;
-        let cpu = replay::cpu::scope_phase("air_superiority:query_values");
+        let cpu = replay_frame::cpu::scope_phase("air_superiority:query_values");
         let observed = values::samples(
             source,
             key,
@@ -992,7 +992,7 @@ impl Prepared {
             cancelled,
         )?;
         drop(cpu);
-        let _cpu = replay::cpu::scope_phase("air_superiority:query_classification");
+        let _cpu = replay_frame::cpu::scope_phase("air_superiority:query_classification");
         let mut indices = sides
             .iter()
             .enumerate()
@@ -1001,7 +1001,8 @@ impl Prepared {
         let mut samples = Vec::new();
         let mut rosters = scan::RosterRead::default();
         for (hour, observed) in observed {
-            let _cpu = replay::cpu::scope_phase("air_superiority:query_sample_classification");
+            let _cpu =
+                replay_frame::cpu::scope_phase("air_superiority:query_sample_classification");
             check_cancel(cancelled)?;
             let (projection, auxiliary) = &*observed;
             let view = (
@@ -1036,7 +1037,7 @@ fn read_groups(
     key: &store::SourceKey,
     branch: u64,
 ) -> io::Result<dashboard_base::products::country_groups::Scan> {
-    let _cpu = replay::cpu::scope_phase("air_superiority:query_groups");
+    let _cpu = replay_frame::cpu::scope_phase("air_superiority:query_groups");
     let file = match store.read(key, &super::block::groups_section(branch), 0)? {
         Some(file) => file,
         None => store
@@ -1205,10 +1206,8 @@ mod tests {
     use super::*;
     use dashboard_base::prepared::series::tests::Fixture;
     use dashboard_core::test_fixtures::scale_frame;
-    use replay::{
-        frame::TableView,
-        rows::{RaidAirScoreRow, TableRows, WarRelationRow},
-    };
+    use replay_data::{rows::RaidAirScoreRow, rows::TableRows, rows::WarRelationRow};
+    use replay_frame::frame::TableView;
 
     #[test]
     #[cfg_attr(
@@ -1432,7 +1431,7 @@ mod tests {
             first.tables[TableId::AirTheatres.index()] =
                 TableView::Complete(TableRows::AirTheatres(
                     (0..128)
-                        .map(|id| replay::rows::AirTheatreRow {
+                        .map(|id| replay_data::rows::AirTheatreRow {
                             id,
                             name: format!("theatre-{id}").into_bytes(),
                             ..Default::default()
@@ -1653,22 +1652,24 @@ mod tests {
         ];
         for frame in &mut frames {
             *frame.tables[TableId::AirWings.index()] =
-                TableView::Complete(TableRows::AirWings(vec![replay::rows::AirWingRow {
+                TableView::Complete(TableRows::AirWings(vec![replay_data::rows::AirWingRow {
                     id: 17,
                     owner: 9001,
                     mission_region: Some(if frame.hour >= 48 { 7999 } else { 7000 }),
                     ..Default::default()
                 }]));
             *frame.tables[TableId::AirTheatres.index()] =
-                TableView::Complete(TableRows::AirTheatres(vec![replay::rows::AirTheatreRow {
-                    id: 700,
-                    owner: 9001,
-                    name: b"Synthetic theatre".to_vec(),
-                    ..Default::default()
-                }]));
+                TableView::Complete(TableRows::AirTheatres(vec![
+                    replay_data::rows::AirTheatreRow {
+                        id: 700,
+                        owner: 9001,
+                        name: b"Synthetic theatre".to_vec(),
+                        ..Default::default()
+                    },
+                ]));
             *frame.tables[TableId::AirTheatreGroups.index()] =
                 TableView::Complete(TableRows::AirTheatreGroups(vec![
-                    replay::rows::AirTheatreGroupRow {
+                    replay_data::rows::AirTheatreGroupRow {
                         id: 701,
                         theatre: 700,
                         ..Default::default()
@@ -1676,7 +1677,7 @@ mod tests {
                 ]));
             *frame.tables[TableId::AirTheatreMembers.index()] =
                 TableView::Complete(TableRows::AirTheatreMembers(vec![
-                    replay::rows::AirTheatreMemberRow {
+                    replay_data::rows::AirTheatreMemberRow {
                         wing: 17,
                         group: 701,
                         ..Default::default()
@@ -1884,7 +1885,7 @@ mod tests {
     fn superiority_held_keys_and_pair_diffs_publish_what_plain_observation_does() {
         use super::super::block::ScoreTracker;
         use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-        use replay::rows::AirWingRow;
+        use replay_data::rows::AirWingRow;
         let score = |country, region, friendly, enemy| RaidAirScoreRow {
             country,
             region,

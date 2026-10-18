@@ -1,8 +1,8 @@
 use super::*;
 use crate::prepared::series::{Reader, tests::Fixture};
 use crate::products::country_history::HistoryScan;
-use replay::frame::TableView;
-use replay::rows::{TableId, TableRows};
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::frame::TableView;
 
 fn frame(hour: i32, tag: &[u8], slot: u32, id: u32, raw: Option<i64>) -> DecodedFrame {
     let mut frame = crate::test_fixtures::source(1, hour, raw);
@@ -203,7 +203,7 @@ fn five_thousand_opaque_countries_and_mismatched_links_have_no_cap() {
 #[test]
 fn stateless_sample_and_observer_share_values_for_all_five_thousand_countries() {
     let mut frame = crate::test_fixtures::scale_frame(1, 0, 5000);
-    if let replay::frame::TableView::Complete(replay::rows::TableRows::Countries(rows)) =
+    if let replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::Countries(rows)) =
         &mut *frame.tables[TableId::Countries.index()]
     {
         for (index, row) in rows.iter_mut().enumerate() {
@@ -274,7 +274,7 @@ fn measure_scaled_work(countries: u32) {
                 observer.work,
                 &first,
                 hours as i32,
-                replay::format::FormatVersion::CURRENT,
+                replay_data::format::FormatVersion::CURRENT,
                 |frame, changes| {
                     assert!(changes.table_read[TableId::Countries.index()]);
                     observer.observe_changes(frame, changes)?;
@@ -301,7 +301,7 @@ fn measure_scaled_work(countries: u32) {
             let mut previous = first.clone();
             previous.hour = hours as i32;
             let mut tracker = FrameChangeTracker::new();
-            tracker.observe(&previous, replay::format::FormatVersion::CURRENT);
+            tracker.observe(&previous, replay_data::format::FormatVersion::CURRENT);
             let mut unrelated = previous.clone();
             unrelated.hour += 1;
             if let TableView::Complete(TableRows::Countries(rows)) =
@@ -310,7 +310,7 @@ fn measure_scaled_work(countries: u32) {
                 rows[0].stability_raw += 1;
             }
             let before = observer.work;
-            let changes = tracker.observe(&unrelated, replay::format::FormatVersion::CURRENT);
+            let changes = tracker.observe(&unrelated, replay_data::format::FormatVersion::CURRENT);
             observer.observe_changes(&unrelated, &changes)?;
             assert_eq!(
                 observer.work.emitted, before.emitted,
@@ -325,7 +325,7 @@ fn measure_scaled_work(countries: u32) {
             {
                 rows[0].political_power_raw = Some(1001);
             }
-            let changes = tracker.observe(&changed, replay::format::FormatVersion::CURRENT);
+            let changes = tracker.observe(&changed, replay_data::format::FormatVersion::CURRENT);
             let before = observer.work;
             observer.observe_changes(&changed, &changes)?;
             let work = Work {
@@ -404,7 +404,7 @@ fn measure_scaled_work(countries: u32) {
                 rows.remove(0);
             }
             let before = observer.work;
-            let changes = tracker.observe(&removed, replay::format::FormatVersion::CURRENT);
+            let changes = tracker.observe(&removed, replay_data::format::FormatVersion::CURRENT);
             observer.observe_changes(&removed, &changes)?;
             assert_eq!(
                 observer.work.emitted - before.emitted,
@@ -492,7 +492,7 @@ fn measure_shared_facts_keep_hourly_diagnostics_without_rejoining_equal_fresh_or
             observer.work,
             &first,
             hours as i32,
-            replay::format::FormatVersion::CURRENT,
+            replay_data::format::FormatVersion::CURRENT,
             |frame, changes| {
                 observer.observe_changes(frame, changes)?;
                 oracle.observe(frame);
@@ -510,8 +510,8 @@ fn measure_shared_facts_keep_hourly_diagnostics_without_rejoining_equal_fresh_or
         let mut tracker = FrameChangeTracker::new();
         let mut previous = first.clone();
         previous.hour = carried.hour - 1;
-        tracker.observe(&previous, replay::format::FormatVersion::CURRENT);
-        let changes = tracker.observe(&carried, replay::format::FormatVersion::CURRENT);
+        tracker.observe(&previous, replay_data::format::FormatVersion::CURRENT);
+        let changes = tracker.observe(&carried, replay_data::format::FormatVersion::CURRENT);
         assert!(!changes.table_read[TableId::Countries.index()]);
         observer.observe_changes(&carried, &changes)?;
         oracle.observe(&carried);
@@ -523,7 +523,7 @@ fn measure_shared_facts_keep_hourly_diagnostics_without_rejoining_equal_fresh_or
         {
             rows[0].political_power_raw = Some(99);
         }
-        let changes = tracker.observe(&changed, replay::format::FormatVersion::CURRENT);
+        let changes = tracker.observe(&changed, replay_data::format::FormatVersion::CURRENT);
         observer.observe_changes(&changed, &changes)?;
         oracle.observe(&changed);
         assert_eq!(observer.countries["opaque / tag"].political.value, Some(99));

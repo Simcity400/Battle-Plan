@@ -2,7 +2,8 @@ use super::*;
 use crate::catalogue::tests::{Folder, folder_catalogue};
 use crate::effect_description::tests::Fixture;
 use crate::scripted_text::{EventObject, EventScope, Link};
-use replay::{frame::TableView, rows::*};
+use replay_data::rows::*;
+use replay_frame::frame::TableView;
 
 fn fixture() -> (Fixture, Folder) {
     fixture_with_advisor_modifier("")
@@ -210,7 +211,7 @@ fn text(source: &str, expected: &str) {
 // A legacy name, ideology and trait block.
 #[test]
 fn create_country_leader() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     text(
         "create_country_leader={traits={} expire=2037.6.23 name=\"Archived Label\" ideology=synthetic_ideology picture=GFX_synthetic desc=synthetic_desc}",
@@ -221,7 +222,7 @@ fn create_country_leader() {
 // A role with an explicit character and ideology.
 #[test]
 fn add_country_leader_role() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     text(
         "add_country_leader_role={character=synthetic_character country_leader={expire=2043.11.9.5 ideology=synthetic_ideology}}",
@@ -231,7 +232,7 @@ fn add_country_leader_role() {
 
 #[test]
 fn promoted_role_preserves_traits_and_no_scoped_expansion() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     text(
         "add_country_leader_role={character=synthetic_character promote_leader=yes country_leader={ideology=synthetic_ideology traits={synthetic_trait}}}",
@@ -241,7 +242,7 @@ fn promoted_role_preserves_traits_and_no_scoped_expansion() {
 
 #[test]
 fn country_role_description_keeps_trait_lines_and_core_children() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = render(
@@ -260,7 +261,7 @@ fn country_role_description_keeps_trait_lines_and_core_children() {
 // An explicit character/ideology promotion block.
 #[test]
 fn promote_character() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     text(
         "promote_character={ideology=synthetic_ideology character=synthetic_character}",
@@ -272,7 +273,7 @@ fn promote_character() {
 // A block's character key cannot replace THIS.
 #[test]
 fn promote_character_uses_character_scope_reader_fields() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     if let TableView::Complete(TableRows::Characters(rows)) =
@@ -324,7 +325,7 @@ fn promote_character_uses_character_scope_reader_fields() {
 
 #[test]
 fn promote_scalar_and_template_fallback_keep_single_role_gate() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     text(
         "promote_character=synthetic_character",
@@ -367,7 +368,7 @@ fn promote_scalar_and_template_fallback_keep_single_role_gate() {
 // An older instance can be copied into a later character ID.
 #[test]
 fn template_promote_names_the_unrecorded_tag_map_winner() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = render(
@@ -388,7 +389,7 @@ fn template_promote_names_the_unrecorded_tag_map_winner() {
 // Only startup-allowed templates are registered after clearing the maps.
 #[test]
 fn agreeing_conditional_templates_do_not_prove_tag_presence() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = render(
@@ -409,7 +410,7 @@ fn agreeing_conditional_templates_do_not_prove_tag_presence() {
 // Select a character by scalar token.
 #[test]
 fn retire_character() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     text(
         "retire_character=synthetic_character",
@@ -420,7 +421,7 @@ fn retire_character() {
 // The boolean is execution-only.
 #[test]
 fn retire_country_leader() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     text(
         "retire_country_leader=yes",
@@ -431,7 +432,7 @@ fn retire_country_leader() {
 // Use the current ruling leader.
 #[test]
 fn kill_country_leader() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     text("kill_country_leader=yes", "Kill leader Current name AAA\n");
 }
@@ -439,7 +440,7 @@ fn kill_country_leader() {
 // Map the ideology subgroup to its group.
 #[test]
 fn remove_country_leader_role() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     text(
         "remove_country_leader_role={ideology=synthetic_ideology character=synthetic_character}",
@@ -450,7 +451,7 @@ fn remove_country_leader_role() {
 // Select a leader by ideology group.
 #[test]
 fn retire_ideology_leader() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     text(
         "retire_ideology_leader=synthetic_group",
@@ -461,7 +462,7 @@ fn retire_ideology_leader() {
 // Select the killed leader by ideology group.
 #[test]
 fn kill_ideology_leader() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     text(
         "kill_ideology_leader=synthetic_group",
@@ -472,7 +473,7 @@ fn kill_ideology_leader() {
 // An authored advisor role with activation disabled.
 #[test]
 fn add_advisor_role() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     text(
         "add_advisor_role={activate=no advisor={idea_token=synthetic_advisor traits={synthetic_trait} cost=83 can_be_fired=yes slot=synthetic_slot} character=synthetic_character}",
@@ -482,7 +483,7 @@ fn add_advisor_role() {
 
 #[test]
 fn advisor_role_sums_trait_and_authored_modifiers_before_formatting() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     text(
         "add_advisor_role={character=synthetic_character advisor={slot=synthetic_slot traits={synthetic_numeric} modifier={political_power_gain=0.2}} activate=yes}",
@@ -493,7 +494,7 @@ fn advisor_role_sums_trait_and_authored_modifiers_before_formatting() {
 // Use the full 32-bit category mask rather than the core's default 24 bits.
 #[test]
 fn advisor_role_includes_the_high_category_bit() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::ModifierDefinitions(definitions)) =
@@ -518,7 +519,7 @@ fn advisor_role_includes_the_high_category_bit() {
 // It can complete an expression begun in the postfix.
 #[test]
 fn advisor_role_expands_modifiers_only_after_wrapper_substitution() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let mut localisation = fixture
@@ -536,7 +537,7 @@ fn advisor_role_expands_modifiers_only_after_wrapper_substitution() {
             ]
             .map(|(key, value)| (key.into(), value.into())),
         )
-        .collect::<installed_content::localisation::Localisation>();
+        .collect::<installed_content_localisation::localisation::Localisation>();
     localisation.language = fixture.catalogue.localisation.language.clone();
     fixture.catalogue.localisation = localisation.into();
     let TableView::Complete(TableRows::ModifierDefinitions(definitions)) =
@@ -560,7 +561,7 @@ fn advisor_role_expands_modifiers_only_after_wrapper_substitution() {
 // A character scope needs no explicit character selector.
 #[test]
 fn remove_advisor_role() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = render(
@@ -575,7 +576,7 @@ fn remove_advisor_role() {
 // An explicit character with no slot.
 #[test]
 fn set_can_be_fired_in_advisor_role() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     text(
         "set_can_be_fired_in_advisor_role={value=yes character=synthetic_character}",
@@ -585,7 +586,7 @@ fn set_can_be_fired_in_advisor_role() {
 
 #[test]
 fn current_character_omission_and_slot_parentheses_match_inverted_guard() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = render(
@@ -601,7 +602,7 @@ fn current_character_omission_and_slot_parentheses_match_inverted_guard() {
 // later rebuilds omit it.
 #[test]
 fn advisor_own_block_tooltips_refuse_both_lines_without_guessing_refresh_history() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (modifier, refuses) in [
         ("", false),
@@ -652,7 +653,7 @@ fn advisor_own_block_tooltips_refuse_both_lines_without_guessing_refresh_history
 
 #[test]
 fn advisor_cache_not_recorded_refuses_each_class() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::AdvisorRoles(rows)) =
@@ -681,7 +682,7 @@ fn advisor_cache_not_recorded_refuses_each_class() {
 
 #[test]
 fn complete_rosters_prove_absent_advisor_is_empty() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = render(
@@ -696,7 +697,7 @@ fn complete_rosters_prove_absent_advisor_is_empty() {
 // Look up the global character token.
 #[test]
 fn recruit_character() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     text(
         "recruit_character=synthetic_character",
@@ -707,7 +708,7 @@ fn recruit_character() {
 // Use literal name, surname and callsign fields.
 #[test]
 fn add_ace() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     text(
         "add_ace={callsign=Firefly name=Mira type=synthetic_ace surname=Vale}",
@@ -743,7 +744,7 @@ fn faction_fixture(name: &[u8], template_token: Option<u32>) -> (Fixture, Folder
 // A later faction member can become its leader.
 #[test]
 fn set_faction_leader() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = faction_fixture(b"Recorded faction", None);
     let out = render(&fixture, "set_faction_leader=yes", &mut country_scopes());
@@ -753,7 +754,7 @@ fn set_faction_leader() {
 
 #[test]
 fn empty_faction_name_uses_bound_template_with_empty_supplied_arguments() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (token, expected) in [
         (Some(601), "Lead Template AAA AAA\n"),
@@ -769,7 +770,7 @@ fn empty_faction_name_uses_bound_template_with_empty_supplied_arguments() {
 
 #[test]
 fn empty_display_name_uses_recorded_original_key() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::Characters.index()] =
@@ -787,7 +788,7 @@ fn empty_display_name_uses_recorded_original_key() {
 
 #[test]
 fn advisor_lookup_at_five_thousand_countries_without_character_roster_join() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     if let TableView::Complete(TableRows::CountryLinks(rows)) =
@@ -860,7 +861,7 @@ fn advisor_lookup_at_five_thousand_countries_without_character_roster_join() {
 
 #[test]
 fn advisor_roster_and_cache_capture_failures_are_named() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     if let TableView::Complete(TableRows::AdvisorRoles(rows)) =
@@ -891,7 +892,7 @@ fn advisor_roster_and_cache_capture_failures_are_named() {
 // roster and map ordinals break ties.
 #[test]
 fn advisor_primary_order_precedes_retired_case_folded_lookup() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     if let TableView::Complete(TableRows::Characters(rows)) =
@@ -959,7 +960,7 @@ fn advisor_primary_order_precedes_retired_case_folded_lookup() {
 // The shared character ID can lose the selected cache.
 #[test]
 fn advisor_cache_role_requires_unambiguous_pointer_identity() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for second_idea in ["synthetic_advisor", "SYNTHETIC_ADVISOR"] {
         let (mut fixture, _folder) = fixture();
@@ -1030,7 +1031,7 @@ fn advisor_cache_role_requires_unambiguous_pointer_identity() {
 // Omit the whole wrapper rather than draw a partial DESC.
 #[test]
 fn advisor_single_tooltip_is_derivable_but_several_need_recorded_slot_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     if let TableView::Complete(TableRows::ModifierDefinitions(rows)) =
@@ -1132,7 +1133,7 @@ fn advisor_single_tooltip_is_derivable_but_several_need_recorded_slot_order() {
 
 #[test]
 fn format99_advisor_cache_keeps_stored_tooltip_order_and_old_format_fallback() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::AdvisorRoles(rows)) =
@@ -1182,7 +1183,7 @@ fn format99_advisor_cache_keeps_stored_tooltip_order_and_old_format_fallback() {
 
 #[test]
 fn recorded_advisor_tooltip_keys_override_authored_blocks_and_failed_captures_refuse() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture_with_advisor_modifier("custom_modifier_tooltip=SYN_TIP");
     // Recorded-empty proves the stale cache has no keys even when authored

@@ -10,7 +10,7 @@
 //! and no hooked writer touched the status since that read registered it
 //! (same watch epoch and sequence; a load, gap, recovery, table change,
 //! poison, an unnamed receiver or a running writer revokes it). Every writer
-//! of a recorded field is a hooked site ([`engine::building_mutations`]), so
+//! of a recorded field is a hooked site ([`engine_mutations::building_mutations`]), so
 //! the fresh read would return the held rows. A status without buildings has
 //! no rows to carry: it is still staged so that its active vector is checked
 //! as every walk checks it. Each hour also reads the carryable statuses of
@@ -43,10 +43,10 @@ use crate::{
     building_changes::{Changes, Counts},
     sampled_verify::Check,
 };
-use engine::{
-    Memory, allocation, cbuilding,
-    cbuilding_status::{self, Carry, HEADER_BYTES, Location, Walk},
-    walk::Outcome,
+use engine_allocation as allocation;
+use engine_native::{
+    Memory, cbuilding, cbuilding_status, cbuilding_status::Carry, cbuilding_status::HEADER_BYTES,
+    cbuilding_status::Location, cbuilding_status::Walk, walk::Outcome,
 };
 use std::ops::Range;
 

@@ -286,7 +286,7 @@ fn configure(source: &Source, context: &LoadContext) {
 fn parts(
     classes: &BTreeSet<u32>,
     catalogue: &[ClassKey],
-    units: Option<&installed_content::unit_leader::SubUnits>,
+    units: Option<&installed_content_core::unit_leader::SubUnits>,
     grouping: NavyGrouping,
     localise: impl Fn(&str) -> Option<String>,
     cache: Option<&PartResults>,
@@ -302,7 +302,7 @@ fn parts(
             let mut refusal = None;
             let resolved = spelling.as_ref().zip(units).and_then(|(spelling, units)| {
                 let registered = match units.get(spelling) {
-                    installed_content::unit_leader::SubUnit::Index(index) => {
+                    installed_content_core::unit_leader::SubUnit::Index(index) => {
                         units.name(index).and_then(Result::ok)
                     }
                     _ => None,
@@ -313,7 +313,7 @@ fn parts(
                     }
                     NavyGrouping::Type => {
                         let mask = units.category(registered.as_bytes()).ok()?;
-                        let types = match installed_content::equipment::category_names(mask) {
+                        let types = match installed_content_core::equipment::category_names(mask) {
                             Ok(types) => types,
                             Err(bits) => {
                                 refusal = Some(format!("unknown native category bits {bits:#x}"));
@@ -402,7 +402,7 @@ fn parts(
 fn reply(
     scanned: &ScannedNavy,
     params: &NavyParams,
-    units: Option<&installed_content::unit_leader::SubUnits>,
+    units: Option<&installed_content_core::unit_leader::SubUnits>,
     localise: impl Fn(&str) -> Option<String>,
     warnings: Vec<String>,
     cancelled: &AtomicBool,
@@ -414,7 +414,7 @@ fn reply(
 fn reply_cached(
     scanned: &ScannedNavy,
     params: &NavyParams,
-    units: Option<&installed_content::unit_leader::SubUnits>,
+    units: Option<&installed_content_core::unit_leader::SubUnits>,
     localise: impl Fn(&str) -> Option<String>,
     warnings: Vec<String>,
     cancelled: &AtomicBool,
@@ -440,7 +440,7 @@ fn reply_cached(
 fn selected(
     scanned: &ScannedNavy,
     params: &NavyParams,
-    units: Option<&installed_content::unit_leader::SubUnits>,
+    units: Option<&installed_content_core::unit_leader::SubUnits>,
     localise: impl Fn(&str) -> Option<String>,
     mut warnings: Vec<String>,
     cancelled: &AtomicBool,
@@ -640,12 +640,13 @@ mod tests;
 fn content_units(
     catalogue: &Arc<Catalogue>,
     warnings: &mut Vec<String>,
-) -> Option<Arc<installed_content::unit_leader::SubUnits>> {
+) -> Option<Arc<installed_content_core::unit_leader::SubUnits>> {
     let database = catalogue
         .content
         .layers
-        .derived::<catalogue::CachedResult<installed_content::unit_leader::SubUnits>>();
-    match database.get_or_init(|| installed_content::unit_leader::sub_units(&catalogue.content.layers)) {
+        .derived::<catalogue::CachedResult<installed_content_core::unit_leader::SubUnits>>();
+    match database.get_or_init(|| installed_content_core::unit_leader::sub_units(&catalogue.content.layers))
+    {
         Ok(units) => {
             warnings.extend(units.warnings().iter().cloned());
             Some(units)
@@ -668,7 +669,7 @@ fn present(
     membership: Option<BTreeMap<String, Vec<HourSpan>>>,
 ) -> io::Result<NavyReply> {
     let build = |selection: &NavyParams,
-                 units: Option<&installed_content::unit_leader::SubUnits>,
+                 units: Option<&installed_content_core::unit_leader::SubUnits>,
                  localise: &dyn Fn(&str) -> Option<String>,
                  warnings,
                  cache: Option<&PartResults>| match membership {

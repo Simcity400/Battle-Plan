@@ -209,7 +209,7 @@ fn unit(
 
 fn army(memory: &impl Memory, pointer: usize, sink: &mut Sink<'_>) -> Result<(), &'static str> {
     // Experience uses `carmy::EXPERIENCE` and sums the signed manpower array
-        // (`carmy::MANPOWER_VALUES`),
+    // (`carmy::MANPOWER_VALUES`),
     // without deduplication.
     for offset in [0x420, 0x428, 0x430] {
         sink.push(ARMY, offset as u32, field(memory, pointer, offset)?)?;

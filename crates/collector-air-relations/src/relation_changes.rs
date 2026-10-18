@@ -1,5 +1,5 @@
 //! Allocation-free notifications from the native writers of the country
-//! vectors AirCountryRelations records ([`engine::diplomacy_mutations`]). A
+//! vectors AirCountryRelations records ([`engine_events::diplomacy_mutations`]). A
 //! detour only notifies the shared watch registry ([`WatchRegistry`]) and
 //! calls the original; it never changes game behaviour. Receivers are
 //! diplomacy status or country object addresses the collector registered; a
@@ -10,7 +10,8 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{Memory, diplomacy_mutations::MUTATIONS};
+use engine_events::diplomacy_mutations::MUTATIONS;
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -134,7 +135,7 @@ impl Hooks {
                 remove as *const () as usize,
             ];
             for (index, site) in MUTATIONS.iter().enumerate() {
-                if engine::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+                if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
                     return Err("relation hook sentinel differs");
                 }
                 let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }

@@ -1,8 +1,8 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{CountryLinkRow, LandCombatExileInputs, TableId, TableRows},
+use replay_data::{
+    rows::CountryLinkRow, rows::LandCombatExileInputs, rows::TableId, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 
 const BONUSES: [i64; 2] = [10_000, 10_000];
 

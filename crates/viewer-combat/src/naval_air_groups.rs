@@ -5,15 +5,15 @@
 //! fill of the air bases it flies from (`air-base aircraft counting`). The authored screening
 //! sortie bonuses and the naval defines come from matching content.
 use super::keyed::Keyed;
-use engine::modifier_keys as keys;
-use installed_content::{
-    ResolvedLayers,
-    naval_combat_defines::Defines,
-    static_modifiers::{self, Request, Resolved},
+use engine_executable::modifier_keys as keys;
+use installed_content_core::{
+    ResolvedLayers, static_modifiers, static_modifiers::Request, static_modifiers::Resolved,
 };
-use replay::rows::{
-    AirBaseRow, AirWingRow, NavalCombatAirBaseWingHandlesRow, NavalCombatAirEfficiency,
-    NavalCombatPlane, NavalCombatShipRow, NavalCombatSideDetails, ShipModelRow, ShipRow,
+use installed_content_naval_combat_defines::naval_combat_defines::Defines;
+use replay_data::{
+    rows::AirBaseRow, rows::AirWingRow, rows::NavalCombatAirBaseWingHandlesRow,
+    rows::NavalCombatAirEfficiency, rows::NavalCombatPlane, rows::NavalCombatShipRow,
+    rows::NavalCombatSideDetails, rows::ShipModelRow, rows::ShipRow,
 };
 use std::collections::{BTreeMap, btree_map::Entry};
 
@@ -33,7 +33,7 @@ pub(super) struct Content {
     screening: [[Option<i64>; 2]; 2],
     /// Equipment registration order, including generated types. Air entries
     /// group by the first variant's model ID.
-    equipment: Option<installed_content::equipment::Database>,
+    equipment: Option<installed_content_core::equipment::Database>,
 }
 
 impl Content {
@@ -44,7 +44,7 @@ impl Content {
     pub(super) fn load(
         layers: &ResolvedLayers,
         warnings: &mut Vec<String>,
-        equipment: installed_content::equipment::Database,
+        equipment: installed_content_core::equipment::Database,
     ) -> Self {
         let requests: Vec<_> = SCREENING_MODIFIERS
             .iter()
@@ -83,7 +83,7 @@ impl Content {
         content
     }
 
-    pub(super) fn equipment(&self) -> Option<&installed_content::equipment::Database> {
+    pub(super) fn equipment(&self) -> Option<&installed_content_core::equipment::Database> {
         self.equipment.as_ref()
     }
 
@@ -575,7 +575,7 @@ impl<'a> DenseBases<'a> {
 /// order: 0x22, 0x23, 0x24, 0x1B6): a feature-gated key reads zero unless the
 /// authenticated flags getter admits it, and flag 0x10 clamps to [0, 1].
 ///
-/// [`naval_air_efficiency_inputs`]: engine::naval_air_efficiency_inputs::METADATA_KEYS
+/// [`naval_air_efficiency_inputs`]: engine_native::naval_air_efficiency_inputs::METADATA_KEYS
 pub(super) fn metadata_value(e: &NavalCombatAirEfficiency, row: usize, raw: i64) -> Option<i64> {
     let [flags, selector] = e.modifier_metadata[row];
     if selector != 0 {

@@ -6,14 +6,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use replay::rows::{DivisionStatusRow, Recorded};
+use replay_data::{rows::DivisionStatusRow, rows::Recorded};
 
 use super::*;
 
 pub fn compare(
     frame: &DecodedFrame,
     save: &Save,
-    geometry: ContentRead<'_, installed_content::province_geometry::ProvinceGeometry>,
+    geometry: ContentRead<'_, installed_content_core::province_geometry::ProvinceGeometry>,
     report: &mut Report,
 ) {
     report.attempt("Provinces selected route areas", |r| {
@@ -34,7 +34,7 @@ pub fn compare(
 /// difference. None of it is saved.
 fn areas(
     frame: &DecodedFrame,
-    geometry: ContentRead<'_, installed_content::province_geometry::ProvinceGeometry>,
+    geometry: ContentRead<'_, installed_content_core::province_geometry::ProvinceGeometry>,
     report: &mut Report,
 ) -> io::Result<()> {
     let rows = frame.complete::<tables::Provinces>()?;
@@ -206,7 +206,7 @@ fn current<'a, T>(
     name: &str,
     label: &str,
     hour: i32,
-    sample_hour: impl FnOnce(&T) -> replay::rows::PacketHour,
+    sample_hour: impl FnOnce(&T) -> replay_data::rows::PacketHour,
 ) -> Option<&'a T> {
     let value = report.recorded(field, name, label)?;
     let Some(value) = value else {

@@ -1,15 +1,13 @@
 use dashboard_base::test_fixtures::{CAMPAIGN, records, stability_frame, stability_inputs};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 #[test]
 fn appearance_projection_visits_only_changed_naming_rows() {
     use super::*;
     use dashboard_base::prepared::frame_changes::field_mask;
-    use replay::rows::{CountryAppearanceRow, DeltaRow};
+    use replay_data::{rows::CountryAppearanceRow, rows::DeltaRow};
     let mut scan = Scan {
         appearances_read: true,
         appearances_complete: true,
@@ -35,7 +33,7 @@ fn appearance_projection_visits_only_changed_naming_rows() {
     let row = DeltaRow {
         key: 7,
         mask: field_mask(TableId::CountryAppearance, &["cosmetic_tag"]),
-        format: replay::format::FormatVersion::CURRENT.version(),
+        format: replay_data::format::FormatVersion::CURRENT.version(),
         recorded_fields: 0,
         values: Vec::new(),
     };
@@ -56,7 +54,7 @@ fn appearance_projection_visits_only_changed_naming_rows() {
 fn stability_parts_add_up_to_the_value_and_are_known_only_where_recorded() {
     use crate::products::stability_parts::scan_parts;
     use dashboard_base::products::country_groups::HourSpan;
-    use replay::rows::CountryStabilityLineRow as Line;
+    use replay_data::rows::CountryStabilityLineRow as Line;
     let line = |line, kind, identity: &[u8], value, text: &[u8]| Line {
         country: 9001,
         line,
@@ -213,7 +211,7 @@ fn stability_parts_add_up_to_the_value_and_are_known_only_where_recorded() {
 #[test]
 fn stability_parts_name_a_read_s_characters_as_recorded_at_that_read() {
     use crate::products::stability_parts::scan_parts;
-    use replay::rows::CountryStabilityLineRow as Line;
+    use replay_data::rows::CountryStabilityLineRow as Line;
     let leader = vec![Line {
         country: 9001,
         line: 0,
@@ -225,12 +223,14 @@ fn stability_parts_name_a_read_s_characters_as_recorded_at_that_read() {
     }];
     let named = |mut frame: DecodedFrame, saved: &str| {
         *frame.tables[TableId::Characters.index()] =
-            TableView::Complete(TableRows::Characters(vec![replay::rows::CharacterRow {
-                id: 7,
-                token: saved.as_bytes().to_vec(),
-                name_token_id: -1,
-                ..Default::default()
-            }]));
+            TableView::Complete(TableRows::Characters(vec![
+                replay_data::rows::CharacterRow {
+                    id: 7,
+                    token: saved.as_bytes().to_vec(),
+                    name_token_id: -1,
+                    ..Default::default()
+                },
+            ]));
         frame
     };
     // Read 100's lines are missing at hour 100 and arrive at 101, after a rename.
@@ -274,11 +274,11 @@ fn prepared_parts_match_the_product_with_missing_lines_character_reads_and_resum
     use super::*;
     use dashboard_base::prepared::series::tests::Fixture;
     use serde_json::json;
-    let leader = replay::rows::CountryStabilityLineRow {
+    let leader = replay_data::rows::CountryStabilityLineRow {
         country: 9001,
         line: 0,
         key: 0x8d,
-        kind: replay::rows::CountryStabilityLineRow::COUNTRY_LEADER,
+        kind: replay_data::rows::CountryStabilityLineRow::COUNTRY_LEADER,
         identity_id: 7,
         value: 30_000,
         ..Default::default()
@@ -286,12 +286,14 @@ fn prepared_parts_match_the_product_with_missing_lines_character_reads_and_resum
     let make = |hour, read, lines: Vec<_>, name: &str| {
         let mut frame = stability_frame(hour, stability_inputs(), read, lines);
         *frame.tables[TableId::Characters.index()] =
-            TableView::Complete(TableRows::Characters(vec![replay::rows::CharacterRow {
-                id: 7,
-                token: name.as_bytes().to_vec(),
-                name_token_id: -1,
-                ..Default::default()
-            }]));
+            TableView::Complete(TableRows::Characters(vec![
+                replay_data::rows::CharacterRow {
+                    id: 7,
+                    token: name.as_bytes().to_vec(),
+                    name_token_id: -1,
+                    ..Default::default()
+                },
+            ]));
         frame
     };
     let mut first = make(0, 0, vec![leader.clone()], "Old name");
@@ -547,11 +549,11 @@ fn dynamic_part_naming_keeps_hour_dependent_native_refusals_on_held_tables() {
         100,
         stability_inputs(),
         100,
-        vec![replay::rows::CountryStabilityLineRow {
+        vec![replay_data::rows::CountryStabilityLineRow {
             country: 9001,
             line: 0,
             key: 0x8d,
-            kind: replay::rows::CountryStabilityLineRow::IDEA,
+            kind: replay_data::rows::CountryStabilityLineRow::IDEA,
             identity: b"mod_a".to_vec(),
             value: 10_000,
             ..Default::default()
@@ -559,7 +561,7 @@ fn dynamic_part_naming_keeps_hour_dependent_native_refusals_on_held_tables() {
     );
     *frame.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(vec![
-            replay::rows::CountryAppearanceRow {
+            replay_data::rows::CountryAppearanceRow {
                 country: 9001,
                 name_tag: b"DYN".to_vec(),
                 ..Default::default()
@@ -567,7 +569,7 @@ fn dynamic_part_naming_keeps_hour_dependent_native_refusals_on_held_tables() {
         ]));
     *frame.tables[TableId::CountryCivilWars.index()] =
         TableView::Complete(TableRows::CountryCivilWars(vec![
-            replay::rows::CountryCivilWarRow {
+            replay_data::rows::CountryCivilWarRow {
                 country: 9001,
                 target: 44,
                 ..Default::default()
@@ -630,14 +632,14 @@ fn prepared_parts_visit_no_unchanged_native_rows_or_history_at_scale() {
                 ));
             *frame.tables[TableId::CountryStabilityLines.index()] =
                 TableView::Complete(TableRows::CountryStabilityLines(vec![]));
-            let format = replay::format::FormatVersion::CURRENT;
+            let format = replay_data::format::FormatVersion::CURRENT;
             let mut tracker = FrameChangeTracker::new();
             let mut prepared = Prepared::default();
             for _ in 0..=history {
                 *frame.tables[TableId::SliceReads.index()] =
                     TableView::Complete(TableRows::SliceReads(
                         (0..5_000)
-                            .map(|id| replay::rows::SliceReadRow {
+                            .map(|id| replay_data::rows::SliceReadRow {
                                 owner: 100_000 + id,
                                 table: TableId::CountryStabilityInputs as u32,
                                 sample_hour: frame.hour,
@@ -683,7 +685,7 @@ fn prepared_parts_visit_no_unchanged_native_rows_or_history_at_scale() {
 #[test]
 fn five_thousand_country_continuation_saves_equal_fresh_naming_reads_once() {
     use super::*;
-    use replay::frame::{FrameEncoder, READ_TIME_NOT_RECORDED};
+    use replay_frame::{frame::FrameEncoder, frame::READ_TIME_NOT_RECORDED};
     let mut frame = dashboard_base::test_fixtures::scale_frame(1, 0, 5_000);
     *frame.tables[TableId::CountryStabilityInputs.index()] =
         TableView::Complete(TableRows::CountryStabilityInputs(
@@ -699,7 +701,7 @@ fn five_thousand_country_continuation_saves_equal_fresh_naming_reads_once() {
         TableView::Complete(TableRows::CountryStabilityLines(vec![]));
     *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(
         (0..5_000)
-            .map(|id| replay::rows::SliceReadRow {
+            .map(|id| replay_data::rows::SliceReadRow {
                 owner: 100_000 + id,
                 table: TableId::CountryStabilityInputs as u32,
                 sample_hour: 0,
@@ -708,7 +710,7 @@ fn five_thousand_country_continuation_saves_equal_fresh_naming_reads_once() {
     ));
     *frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(
         (0..5_000)
-            .map(|id| replay::rows::CharacterRow {
+            .map(|id| replay_data::rows::CharacterRow {
                 id: 100_000 + id,
                 token: format!("Saved character / {id}").into_bytes(),
                 name_token_id: -1,
@@ -718,7 +720,7 @@ fn five_thousand_country_continuation_saves_equal_fresh_naming_reads_once() {
     ));
     *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(
         (0..5_000)
-            .map(|id| replay::rows::LexicalTokenRow {
+            .map(|id| replay_data::rows::LexicalTokenRow {
                 token: id,
                 literal: format!("Recorded character script / {id}").into_bytes(),
             })
@@ -802,11 +804,11 @@ fn five_thousand_country_continuation_saves_equal_fresh_naming_reads_once() {
 /// recorded or not, and its CountryAppearance row with this cosmetic tag (None:
 /// no row).
 fn appearance_frame(hour: i32, lined: bool, cosmetic: Option<&str>) -> DecodedFrame {
-    let idea = replay::rows::CountryStabilityLineRow {
+    let idea = replay_data::rows::CountryStabilityLineRow {
         country: 9001,
         line: 0,
         key: 0x8d,
-        kind: replay::rows::CountryStabilityLineRow::IDEA,
+        kind: replay_data::rows::CountryStabilityLineRow::IDEA,
         identity: b"idea_a".to_vec(),
         value: 10_000,
         ..Default::default()
@@ -821,7 +823,7 @@ fn appearance_frame(hour: i32, lined: bool, cosmetic: Option<&str>) -> DecodedFr
         TableView::Complete(TableRows::CountryAppearance(
             cosmetic
                 .into_iter()
-                .map(|cosmetic| replay::rows::CountryAppearanceRow {
+                .map(|cosmetic| replay_data::rows::CountryAppearanceRow {
                     country: 9001,
                     cosmetic_tag: cosmetic.as_bytes().to_vec(),
                     ..Default::default()
@@ -837,7 +839,7 @@ fn assert_parts_restore_continues(frames: &[DecodedFrame]) {
     use super::*;
     let flag = AtomicBool::new(false);
     dashboard_base::prepared::observer_tests::assert_restore_continues(
-        replay::format::FormatVersion::CURRENT,
+        replay_data::format::FormatVersion::CURRENT,
         &[&frames[..4], &frames[4..]],
         Prepared::default,
         |prepared, frame, changes, _| prepared.observe_changes(frame, changes).unwrap(),

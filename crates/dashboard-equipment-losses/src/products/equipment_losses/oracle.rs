@@ -137,7 +137,7 @@ pub fn scan(
 
 /// Native identity comes from the origin read, never from a later holder of its tag.
 pub(super) fn selected_country<'a>(
-    countries: &'a [replay::rows::CountryRow],
+    countries: &'a [replay_data::rows::CountryRow],
     links: &[CountryLinkRow],
     tag: &str,
     selected: Option<LossCountry>,
@@ -280,7 +280,7 @@ fn combat_log(
         .filter(|link| link.canonical_slot == slot)
         .map(|link| link.id)
         .filter(|&raw| {
-            replay::sliced::read_hour(reads, TableId::CombatLogEquipment, raw) == Some(hour)
+            replay_data::sliced::read_hour(reads, TableId::CombatLogEquipment, raw) == Some(hour)
         });
     let unresolved = &reads[first_read..last_read];
     let unresolved = unresolved
@@ -290,11 +290,11 @@ fn combat_log(
         return Ok(());
     }
     let rows = match &*decoded.tables[TableId::CombatLogEquipment.index()] {
-        replay::frame::TableView::Complete(rows)
-        | replay::frame::TableView::Truncated { rows, .. } => {
+        replay_frame::frame::TableView::Complete(rows)
+        | replay_frame::frame::TableView::Truncated { rows, .. } => {
             rows.rows::<tables::CombatLogEquipment>().unwrap_or(&[])
         }
-        replay::frame::TableView::Unavailable { .. } => return Ok(()),
+        replay_frame::frame::TableView::Unavailable { .. } => return Ok(()),
     };
     for read in unresolved {
         let first = rows.partition_point(|row| row.country < read.owner);
@@ -307,7 +307,7 @@ fn combat_log(
         }
     }
     // Decoding validates strictly ascending keys, including after delta/slice
-    // merges. Country is the key's high prefix (replay::rows), so only visit
+    // merges. Country is the key's high prefix (replay_data::rows), so only visit
     // the selected country's ranges, never the observer's entire merged log.
     for country in countries {
         let first = rows.partition_point(|row| row.country < country);

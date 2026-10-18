@@ -10,14 +10,14 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-engine.workspace = true
+engine-executable.workspace = true
+engine-native.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
 installed-content-core.workspace = true
 installed-content-states.workspace = true
-replay.workspace = true
-
 [dev-dependencies]
 installed-content-core = { workspace = true, features = ["layer-fixtures"] }
-engine-executable.workspace = true
 
 [features]
 test-support = ["installed-content-core/test-support"]

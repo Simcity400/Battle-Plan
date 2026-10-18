@@ -446,7 +446,10 @@ fn a_province_accumulator_with_duplicate_unordered_or_zero_keys_is_refused() {
     ] {
         let malformed = row(entries.clone());
         assert!(malformed.check_key_fields().is_err(), "{entries:?}");
-        assert!(encode_row(&malformed, 0, &mut Vec::new()).is_err(), "{entries:?}");
+        assert!(
+            encode_row(&malformed, 0, &mut Vec::new()).is_err(),
+            "{entries:?}"
+        );
         assert!(malformed.delta(None).is_err(), "{entries:?}");
         assert!(valid.delta(Some(&malformed)).is_err(), "{entries:?}");
     }

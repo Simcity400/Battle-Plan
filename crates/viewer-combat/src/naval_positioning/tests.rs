@@ -1,5 +1,5 @@
 use super::*;
-use replay::rows::{NavalCombatPlane, NavalCombatSummaryModifier};
+use replay_data::{rows::NavalCombatPlane, rows::NavalCombatSummaryModifier};
 use std::time::Instant;
 
 fn displayed(input: &Inputs<'_>, defines: &Defines) -> Option<i64> {
@@ -343,7 +343,7 @@ fn adapter_requires_dense_witness_only_for_a_side_that_uses_its_air() {
         group_index: 0,
         air_base: 9,
         current_planes: 10,
-        efficiency: replay::rows::NavalCombatAirEfficiency {
+        efficiency: replay_data::rows::NavalCombatAirEfficiency {
             source: 2,
             ..Default::default()
         },
@@ -363,7 +363,7 @@ fn adapter_requires_dense_witness_only_for_a_side_that_uses_its_air() {
         ),
         [Some(40_000), None]
     );
-    let dense_rows = [replay::rows::NavalCombatAirBaseWingHandlesRow {
+    let dense_rows = [replay_data::rows::NavalCombatAirBaseWingHandlesRow {
         base: 9,
         wings: Vec::new(),
     }];
@@ -384,11 +384,12 @@ fn adapter_requires_dense_witness_only_for_a_side_that_uses_its_air() {
 
 #[test]
 fn relation_scopes_preserve_zero_sortie_carrier_air_defender_positioning_and_aa() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{
-        AirWingRow, NavalCombatAirBaseWingHandlesRow, NavalCombatAirEfficiency,
-        NavalCombatAirEfficiencyModifier, NavalShipModifierSource, ShipCounterInputs,
+    use replay_data::{
+        rows::AirWingRow, rows::NavalCombatAirBaseWingHandlesRow, rows::NavalCombatAirEfficiency,
+        rows::NavalCombatAirEfficiencyModifier, rows::NavalShipModifierSource,
+        rows::ShipCounterInputs,
     };
     let root = std::env::temp_dir().join(format!(
         "hoi4_naval_zero_sortie_{}_{:?}",
@@ -405,12 +406,12 @@ fn relation_scopes_preserve_zero_sortie_carrier_air_defender_positioning_and_aa(
         ),
     )
     .unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
     let mut warnings = Vec::new();
     let content = naval_air_groups::Content::load(
         &layers,
         &mut warnings,
-        installed_content::equipment::Database::default(),
+        installed_content_core::equipment::Database::default(),
     );
     std::fs::remove_dir_all(root).unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
@@ -424,7 +425,7 @@ fn relation_scopes_preserve_zero_sortie_carrier_air_defender_positioning_and_aa(
             state: 2,
             live_ship: 1,
             formation_flags: if index < 4 { 1 << 22 } else { 1 << 8 },
-            weapon_context: replay::rows::NavalShipWeaponContext {
+            weapon_context: replay_data::rows::NavalShipWeaponContext {
                 sources: vec![NavalShipModifierSource {
                     scope: 26,
                     ..Default::default()
@@ -566,8 +567,8 @@ struct World {
     bases: Vec<AirBaseRow>,
     live_ships: Vec<ShipRow>,
     models: Vec<ShipModelRow>,
-    dense: Vec<replay::rows::NavalCombatAirBaseWingHandlesRow>,
-    wings: Vec<replay::rows::AirWingRow>,
+    dense: Vec<replay_data::rows::NavalCombatAirBaseWingHandlesRow>,
+    wings: Vec<replay_data::rows::AirWingRow>,
     detail: NavalCombatDetailsRow,
     definitions: Defines,
 }
@@ -578,9 +579,9 @@ struct World {
 /// the same ships again and combat 9 every other ship; the other bases
 /// share the remaining wings.
 fn world(carriers: u32) -> World {
-    use replay::rows::{
-        AirWingRow, NavalCombatAirBaseWingHandlesRow, NavalCombatAirEfficiency,
-        NavalShipModifierSource, ShipCounterInputs,
+    use replay_data::{
+        rows::AirWingRow, rows::NavalCombatAirBaseWingHandlesRow, rows::NavalCombatAirEfficiency,
+        rows::NavalShipModifierSource, rows::ShipCounterInputs,
     };
     let ship_id = |ship: u32| 1_000 + u64::from(ship);
     let base_id = |ship: u32| 100_000 + u64::from(ship);
@@ -706,7 +707,7 @@ fn carrier_air_joins_are_indexed_at_country_scale() {
     for carriers in [1_500_u32, 5_000] {
         let w = world(carriers);
         let content = naval_air_groups::Content::default();
-        let refresh = |models: &[ShipModelRow], wings: &[replay::rows::AirWingRow]| {
+        let refresh = |models: &[ShipModelRow], wings: &[replay_data::rows::AirWingRow]| {
             let models = Keyed::new(models, |model| model.ship);
             let values = positioning_values(
                 &w.detail,

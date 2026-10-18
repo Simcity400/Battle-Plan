@@ -27,10 +27,10 @@ use crate::{
     Artwork, ResearchBonus, ResearchCoverage, ResearchDetails, ResearchEntry, ResearchHistory,
     ResearchOutcome, ResearchProgress, ResearchSlotHistory, ResearchSlotState, Source,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{ResearchSlotRow, ResearchTechnologyRow, TableId, tables},
+use replay_data::{
+    rows::ResearchSlotRow, rows::ResearchTechnologyRow, rows::TableId, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
@@ -43,7 +43,9 @@ use ts_rs::TS;
 #[cfg(test)]
 use crate::metadata::validate_campaign;
 #[cfg(test)]
-use replay::{container::Replay, frame::FrameDecoder};
+use replay::container::Replay;
+#[cfg(test)]
+use replay_frame::frame::FrameDecoder;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
 
@@ -334,10 +336,10 @@ impl Country {
         &mut self,
         identity: (u32, u32),
         hour: i32,
-        inputs: &[&replay::rows::ResearchInputRow],
+        inputs: &[&replay_data::rows::ResearchInputRow],
         inventory: Option<&Inventory<'_>>,
-        bonuses: Option<&[replay::rows::ResearchAppliedBonusRow]>,
-        modifier_rows: Option<&[replay::rows::ResearchModifierRow]>,
+        bonuses: Option<&[replay_data::rows::ResearchAppliedBonusRow]>,
+        modifier_rows: Option<&[replay_data::rows::ResearchModifierRow]>,
     ) {
         let before = history_mark(&self.history);
         self.observe_inputs_inner(identity, hour, inputs, inventory, bonuses, modifier_rows);
@@ -349,7 +351,7 @@ impl Country {
     fn carries(&self, identity: (u32, u32), hour: i32) -> bool {
         self.identity == Some(identity)
             && self.last_read.is_some_and(|read| {
-                i64::from(hour) - i64::from(read) < i64::from(replay::cadence::STAGGER_PERIOD)
+                i64::from(hour) - i64::from(read) < i64::from(replay_data::cadence::STAGGER_PERIOD)
             })
             && self
                 .history
@@ -386,10 +388,10 @@ impl Country {
         &mut self,
         identity: (u32, u32),
         hour: i32,
-        inputs: &[&replay::rows::ResearchInputRow],
+        inputs: &[&replay_data::rows::ResearchInputRow],
         inventory: Option<&Inventory<'_>>,
-        bonuses: Option<&[replay::rows::ResearchAppliedBonusRow]>,
-        modifier_rows: Option<&[replay::rows::ResearchModifierRow]>,
+        bonuses: Option<&[replay_data::rows::ResearchAppliedBonusRow]>,
+        modifier_rows: Option<&[replay_data::rows::ResearchModifierRow]>,
     ) {
         // Any number of slots: content and effects set how many a country has.
         // A recorded occurrence must be a template index. One that was not
@@ -398,7 +400,7 @@ impl Country {
             r.index as usize != i
                 || r.technology_present > 1
                 || (r.technology_present != 0
-                    && (matches!(r.database_index, replay::rows::Recorded::Value(index) if index <= 0)
+                    && (matches!(r.database_index, replay_data::rows::Recorded::Value(index) if index <= 0)
                         || r.token.is_empty()
                         || r.token.len() > 512
                         || std::str::from_utf8(&r.token).is_err()))
@@ -443,7 +445,7 @@ impl Country {
             .retain(|index, _| inputs.iter().any(|r| r.index == *index));
         for &input in inputs {
             let occurrence = match input.database_index {
-                replay::rows::Recorded::Value(index) if input.technology_present != 0 => {
+                replay_data::rows::Recorded::Value(index) if input.technology_present != 0 => {
                     Some(index as u32)
                 }
                 _ => None,
@@ -608,7 +610,7 @@ impl Country {
                         .or_else(|| previous_assignments.get(&input.index))
                         .is_some_and(|&(occurrence, _, _)| {
                             input.database_index
-                                == replay::rows::Recorded::Value(occurrence as i32)
+                                == replay_data::rows::Recorded::Value(occurrence as i32)
                         })
             }) else {
                 continue;
@@ -636,7 +638,7 @@ impl Country {
         // progress at its read; the slot's state at the same hour names it.
         for input in inputs.iter().filter(|input| {
             input.technology_present != 0
-                && !matches!(input.database_index, replay::rows::Recorded::Value(_))
+                && !matches!(input.database_index, replay_data::rows::Recorded::Value(_))
         }) {
             let Some(slot) = self
                 .history
@@ -710,7 +712,7 @@ impl Country {
         }
         self.pending
             .retain(|&(index, entry_index, occurrence, level, ended)| {
-                if hour.saturating_sub(ended) > replay::cadence::STAGGER_PERIOD
+                if hour.saturating_sub(ended) > replay_data::cadence::STAGGER_PERIOD
                     || slots.iter().any(|s| {
                         s.technology_present != 0
                             && s.database_index
@@ -727,7 +729,7 @@ impl Country {
                 if technologies.get(&occurrence).is_some_and(|t| {
                     t.level > level
                         || (level == 0 && t.researched != 0)
-                        || t.classifier == engine::ctechnology::CLASSIFIER_COMPLETED
+                        || t.classifier == engine_research::ctechnology::CLASSIFIER_COMPLETED
                 }) {
                     let entry = &mut self
                         .history
@@ -761,7 +763,7 @@ impl Country {
                     t.level > level
                         || (!researched && t.researched != 0)
                         || (!transferred
-                            && t.classifier == engine::ctechnology::CLASSIFIER_COMPLETED)
+                            && t.classifier == engine_research::ctechnology::CLASSIFIER_COMPLETED)
                 });
                 let same = current.is_some_and(|s| {
                     s.technology_present != 0
@@ -818,16 +820,16 @@ impl Country {
             }
             // Without its recorded occurrence a technology cannot start or
             // continue an assignment; the slot's state still shows it.
-            let replay::rows::Recorded::Value(occurrence) = row.database_index else {
+            let replay_data::rows::Recorded::Value(occurrence) = row.database_index else {
                 continue;
             };
             let occurrence = occurrence as u32;
             let technology = technologies[&occurrence];
             // A completed assignment can remain linked for an observation. Do not
             // invent a new assignment until its recorded state becomes active again.
-            if technology.classifier == engine::ctechnology::CLASSIFIER_COMPLETED
+            if technology.classifier == engine_research::ctechnology::CLASSIFIER_COMPLETED
                 || (technology.researched != 0
-                    && technology.classifier != engine::ctechnology::CLASSIFIER_ACTIVE)
+                    && technology.classifier != engine_research::ctechnology::CLASSIFIER_ACTIVE)
             {
                 continue;
             }
@@ -857,7 +859,7 @@ impl Country {
                 .find(|slot| slot.index == row.index)
                 .unwrap();
             let occurrence = match row.database_index {
-                replay::rows::Recorded::Value(index) if row.technology_present != 0 => {
+                replay_data::rows::Recorded::Value(index) if row.technology_present != 0 => {
                     Some(index as u32)
                 }
                 _ => None,
@@ -898,8 +900,9 @@ impl Country {
             // assignment joined to it, is not being researched.
             let held = held.filter(|&(_, classifier, researched, _)| {
                 entry_first_observed_hour.is_some()
-                    || !(classifier == engine::ctechnology::CLASSIFIER_COMPLETED
-                        || (researched && classifier != engine::ctechnology::CLASSIFIER_ACTIVE))
+                    || !(classifier == engine_research::ctechnology::CLASSIFIER_COMPLETED
+                        || (researched
+                            && classifier != engine_research::ctechnology::CLASSIFIER_ACTIVE))
             });
             let (token, ahead_reduction_years_raw) = held.map_or((None, None), |held| {
                 (Some(held.0), Some(held.3.to_string()))
@@ -1037,8 +1040,8 @@ struct ProgressSample {
     progress_raw: i64,
     applied_days_raw: i64,
 }
-impl From<&replay::rows::ResearchInputRow> for ProgressSample {
-    fn from(row: &replay::rows::ResearchInputRow) -> Self {
+impl From<&replay_data::rows::ResearchInputRow> for ProgressSample {
+    fn from(row: &replay_data::rows::ResearchInputRow) -> Self {
         Self {
             owner: row.country,
             present: row.technology_present,
@@ -1056,7 +1059,7 @@ impl From<&replay::rows::ResearchInputRow> for ProgressSample {
     }
 }
 impl ProgressSample {
-    fn same_assignment(&self, row: &replay::rows::ResearchInputRow) -> bool {
+    fn same_assignment(&self, row: &replay_data::rows::ResearchInputRow) -> bool {
         self.owner == row.country
             && self.present == row.technology_present
             && (self.present == 0 || self.occurrence.is_some())
@@ -1072,7 +1075,7 @@ impl ProgressSample {
     }
 }
 
-fn base_cost(row: &replay::rows::ResearchInputRow) -> Option<i128> {
+fn base_cost(row: &replay_data::rows::ResearchInputRow) -> Option<i128> {
     let cost = if row.cost_debug != 0 {
         100_000
     } else {
@@ -1081,7 +1084,7 @@ fn base_cost(row: &replay::rows::ResearchInputRow) -> Option<i128> {
     (cost > 0 && cost <= i128::from(i64::MAX)).then_some(cost)
 }
 
-fn remaining(row: &replay::rows::ResearchInputRow, rate: i128) -> Option<u32> {
+fn remaining(row: &replay_data::rows::ResearchInputRow, rate: i128) -> Option<u32> {
     if rate <= 0 || row.progress_raw < 0 {
         return None;
     }
@@ -1207,10 +1210,10 @@ fn joined<'a, T: Clone>(parts: &[&'a [T]]) -> Cow<'a, [T]> {
 /// the hour), the bonuses and modifiers read with them, and the owners'
 /// technology inventory.
 pub(crate) struct FreshRead<'a> {
-    inputs: Vec<&'a replay::rows::ResearchInputRow>,
+    inputs: Vec<&'a replay_data::rows::ResearchInputRow>,
     read: Option<i32>,
-    bonuses: Option<Cow<'a, [replay::rows::ResearchAppliedBonusRow]>>,
-    modifiers: Option<Cow<'a, [replay::rows::ResearchModifierRow]>>,
+    bonuses: Option<Cow<'a, [replay_data::rows::ResearchAppliedBonusRow]>>,
+    modifiers: Option<Cow<'a, [replay_data::rows::ResearchModifierRow]>>,
     inventory: Option<Inventory<'a>>,
 }
 
@@ -1255,11 +1258,11 @@ pub(crate) trait Reads {
 /// An hour's research rows and read hours, read from its frame.
 pub(crate) struct FrameReads<'a> {
     hour: i32,
-    inputs: &'a [replay::rows::ResearchInputRow],
-    reads: &'a [replay::rows::SliceReadRow],
+    inputs: &'a [replay_data::rows::ResearchInputRow],
+    reads: &'a [replay_data::rows::SliceReadRow],
     inventory: Option<&'a [ResearchTechnologyRow]>,
-    bonuses: Option<&'a [replay::rows::ResearchAppliedBonusRow]>,
-    modifiers: Option<&'a [replay::rows::ResearchModifierRow]>,
+    bonuses: Option<&'a [replay_data::rows::ResearchAppliedBonusRow]>,
+    modifiers: Option<&'a [replay_data::rows::ResearchModifierRow]>,
 }
 
 impl<'a> FrameReads<'a> {
@@ -1276,7 +1279,7 @@ impl<'a> FrameReads<'a> {
     }
 
     fn read_hour_of(&self, table: TableId, owner: u32) -> Option<i32> {
-        replay::sliced::read_hour(self.reads, table, owner)
+        replay_data::sliced::read_hour(self.reads, table, owner)
     }
 
     /// The fresh read of owners `owners`, with the whole inventory.
@@ -1472,9 +1475,9 @@ impl Scan {
             frame,
             selected_tag,
             &crate::prepared::frame_changes::FrameChanges {
-                rows_changed: [true; replay::frame::TABLE_COUNT],
-                table_read: [true; replay::frame::TABLE_COUNT],
-                slot_read: [true; replay::frame::TABLE_COUNT],
+                rows_changed: [true; replay_data::rows::TABLE_COUNT],
+                table_read: [true; replay_data::rows::TABLE_COUNT],
+                slot_read: [true; replay_data::rows::TABLE_COUNT],
                 updates: None,
             },
             false,
@@ -1682,7 +1685,7 @@ impl Scan {
             self.ready = false;
             return None;
         };
-        let read_hour = |table, owner| replay::sliced::read_hour(reads, table, owner);
+        let read_hour = |table, owner| replay_data::sliced::read_hour(reads, table, owner);
         let forced = !self.ready;
         let links_changed = forced || changes.rows_changed[TableId::CountryLinks.index()];
         // The indexes hold the previous hour's rows, with the same links, so a
@@ -2004,7 +2007,7 @@ impl Scan {
                     if proof && state.carries((*country_id, canonical), hour) {
                         if deferred {
                             state.carry_until = state.last_read.and_then(|read| {
-                                read.checked_add(replay::cadence::STAGGER_PERIOD - 1)
+                                read.checked_add(replay_data::cadence::STAGGER_PERIOD - 1)
                             });
                         } else {
                             state.carry((*country_id, canonical), hour);
@@ -2055,7 +2058,7 @@ impl Scan {
             state.read_after = state.last_read.filter(|&last| {
                 self.last_bad.is_none_or(|bad| bad <= last)
                     && i64::from(read) - i64::from(last)
-                        <= i64::from(replay::cadence::STAGGER_PERIOD)
+                        <= i64::from(replay_data::cadence::STAGGER_PERIOD)
             });
             state.observe_inputs(
                 (*country_id, canonical),
@@ -2074,7 +2077,7 @@ impl Scan {
                 .coverage
                 .last()
                 .filter(|span| span.last_hour == read)
-                .and_then(|_| read.checked_add(replay::cadence::STAGGER_PERIOD - 1));
+                .and_then(|_| read.checked_add(replay_data::cadence::STAGGER_PERIOD - 1));
             if let Some(due) = state.carry_until.and_then(|until| until.checked_add(1)) {
                 self.deadlines.insert((due, tag.to_owned()));
             }
@@ -2108,14 +2111,14 @@ fn research_branch_selected(
 ) -> io::Result<BTreeMap<String, (ResearchHistory, usize)>> {
     check_cancel(cancelled)?;
     let selected = [
-        replay::rows::TableId::Campaign,
-        replay::rows::TableId::Countries,
-        replay::rows::TableId::CountryLinks,
-        replay::rows::TableId::ResearchTechnologies,
-        replay::rows::TableId::ResearchInputs,
-        replay::rows::TableId::ResearchAppliedBonuses,
-        replay::rows::TableId::ResearchModifiers,
-        replay::rows::TableId::SliceReads,
+        replay_data::rows::TableId::Campaign,
+        replay_data::rows::TableId::Countries,
+        replay_data::rows::TableId::CountryLinks,
+        replay_data::rows::TableId::ResearchTechnologies,
+        replay_data::rows::TableId::ResearchInputs,
+        replay_data::rows::TableId::ResearchAppliedBonuses,
+        replay_data::rows::TableId::ResearchModifiers,
+        replay_data::rows::TableId::SliceReads,
     ];
     let mut scan = Scan::default();
     crate::blocks::scan_blocks(

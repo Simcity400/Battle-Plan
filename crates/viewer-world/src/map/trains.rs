@@ -48,19 +48,15 @@
 //! Positive window time samples visible idle-state wheels and retained move-state
 //! exhaust through `entity_animation`; time-zero dumps retain the default pose.
 
-use installed_content::image::native::Decode;
-use installed_content::{
-    ResolvedLayers,
-    defines::Defines,
-    train_gfx::{self, Consist, Wagon},
+use installed_content_core::{
+    ResolvedLayers, defines::Defines, train_gfx, train_gfx::Consist, train_gfx::Wagon,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        CountryAppearanceRow, CountryLinkRow, CountryRow, ProvinceRow, SupplyNodeRow,
-        TrainAllocation, VariantDefinitionRow, tables,
-    },
+use installed_content_image::native::Decode;
+use replay_data::{
+    rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow, rows::ProvinceRow,
+    rows::SupplyNodeRow, rows::TrainAllocation, rows::VariantDefinitionRow, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 #[cfg(test)]
 use std::cell::Cell;
 #[cfg(test)]
@@ -171,7 +167,7 @@ pub struct TrainAssets {
     pub cultures: Cultures,
     database: train_gfx::Database,
     /// The declared equipment types by the lexer's token identity.
-    equipment: installed_content::equipment::Database,
+    equipment: installed_content_core::equipment::Database,
     pub defines: TrainDefines,
 }
 
@@ -182,7 +178,7 @@ impl TrainAssets {
         layers: &ResolvedLayers,
         decode: Decode,
         defines: &Defines,
-        warnings: &mut Vec<installed_content::Diagnostic>,
+        warnings: &mut Vec<installed_content_core::Diagnostic>,
     ) -> io::Result<Self> {
         let defines = TrainDefines::load(defines)?;
         let roster = layers.descriptor_roster()?;
@@ -190,7 +186,7 @@ impl TrainAssets {
         warnings.extend(
             index
                 .warning()
-                .map(|message| (installed_content::DiagnosticKind::Warning, message)),
+                .map(|message| (installed_content_core::DiagnosticKind::Warning, message)),
         );
         let tags = index.files;
         let cultures = Cultures::read(layers)?;
@@ -206,14 +202,14 @@ impl TrainAssets {
         )?;
         if !database.diagnostics.is_empty() {
             warnings.push((
-                installed_content::DiagnosticKind::Refused,
+                installed_content_core::DiagnosticKind::Refused,
                 format!(
                     "Train database entries the engine also rejects: {}.",
                     database.diagnostics.join("; ")
                 ),
             ));
         }
-        let equipment = installed_content::equipment::Database::load_complete(layers)?;
+        let equipment = installed_content_core::equipment::Database::load_complete(layers)?;
         let names: Vec<String> = database
             .wagons
             .iter()
@@ -237,7 +233,7 @@ impl TrainAssets {
         let at = self.equipment.get(spelling).ok_or_else(|| {
             format!(
                 "equipment {spelling} is not declared in {}",
-                installed_content::equipment::DIRECTORY
+                installed_content_core::equipment::DIRECTORY
             )
         })?;
         self.name(at)
@@ -275,8 +271,8 @@ impl TrainAssets {
     }
 }
 
-/// The country tag index, shared through `installed_content::country_tags`.
-pub use installed_content::country_tags::country_tag_index;
+/// The country tag index, shared through `installed_content_core::country_tags`.
+pub use installed_content_core::country_tags::country_tag_index;
 
 /// The names the game registers from the recorded content stack, including
 /// null object. Resolve the recorded runtime culture source into a content entry by exact length and bytes, returning null
@@ -360,7 +356,8 @@ impl CreatorLookup<'_> {
         };
         // The game gates both tables on the selected raw word, independently
         // of tag-string length. A positive-empty original retains this gate.
-        if installed_content::country_names::original_or_own_reference(self.frame, slot)? <= 0 {
+        if installed_content_country_names::country_names::original_or_own_reference(self.frame, slot)? <= 0
+        {
             return Ok(default());
         }
         let (tag, appearance) = if let Some(creator) = creator {
@@ -372,12 +369,12 @@ impl CreatorLookup<'_> {
                 }
             })?;
             (
-                installed_content::country_names::original_tag(creator, appearance)?,
+                installed_content_country_names::country_names::original_tag(creator, appearance)?,
                 Some(*appearance),
             )
         } else {
             (
-                installed_content::country_names::original_or_own_tag(self.frame, 0)?,
+                installed_content_country_names::country_names::original_or_own_tag(self.frame, 0)?,
                 None,
             )
         };
@@ -444,8 +441,8 @@ pub struct TrainPlan {
     /// The reasons of [`Self::token_refusals`] a departure selected.
     refused: BTreeSet<String>,
     fleet_cap: i32,
-    branch: replay::BranchId,
-    hour: replay::Hour,
+    branch: replay_data::BranchId,
+    hour: replay_data::Hour,
     country: u32,
     services: Vec<Service>,
     next_departure: f64,
@@ -1176,10 +1173,10 @@ fn land_portions(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{Recorded, ReservedCountryNamingRow, TableId, TableRows},
+    use replay_data::{
+        rows::Recorded, rows::ReservedCountryNamingRow, rows::TableId, rows::TableRows,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
     use viewer_foundation::map::presentation::Continuity;
 
     fn creator_frame(original_tag: Recorded<Option<Vec<u8>>>) -> DecodedFrame {
@@ -1873,7 +1870,7 @@ pub(crate) mod tests {
                 }],
                 ..Default::default()
             },
-            equipment: installed_content::equipment::Database::default(),
+            equipment: installed_content_core::equipment::Database::default(),
             defines: DEFINES,
         }
     }
@@ -2010,7 +2007,7 @@ pub(crate) mod tests {
 
     #[test]
     fn frame_partition_and_backward_seek_do_not_change_departures() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = assets();
         let mut direct = plan();
@@ -2053,7 +2050,7 @@ pub(crate) mod tests {
 
     #[test]
     fn token_spellings_name_declared_equipment_under_the_lexers_fold() {
-        let (equipment, _) = installed_content::equipment::fixture::load(&[(
+        let (equipment, _) = installed_content_core::equipment::fixture::load(&[(
             "common/units/equipment/trains.txt",
             "equipments = { train_equipment = { is_archetype = yes }
                 train_equipment_1 = { archetype = TRAIN_EQUIPMENT } orphan = { } }",
@@ -2069,7 +2066,7 @@ pub(crate) mod tests {
             assets.equipment_key("armored_train"),
             Err(format!(
                 "equipment armored_train is not declared in {}",
-                installed_content::equipment::DIRECTORY
+                installed_content_core::equipment::DIRECTORY
             ))
         );
         // The null object's token, which the lookup would try, is unknown.

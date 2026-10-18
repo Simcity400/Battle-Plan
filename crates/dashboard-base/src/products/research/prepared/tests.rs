@@ -1,11 +1,12 @@
 use super::*;
 use crate::prepared::series::tests::Fixture;
 use crate::products::research::test_fixtures::sliced_research_frame;
-use replay::frame::TableView;
-use replay::rows::{
-    CountryLinkRow, CountryRow, ResearchAppliedBonusRow, ResearchInputRow, ResearchModifierRow,
-    ResearchTechnologyRow, SliceReadRow, TableId, TableRows,
+use replay_data::{
+    rows::CountryLinkRow, rows::CountryRow, rows::ResearchAppliedBonusRow, rows::ResearchInputRow,
+    rows::ResearchModifierRow, rows::ResearchTechnologyRow, rows::SliceReadRow, rows::TableId,
+    rows::TableRows,
 };
+use replay_frame::frame::TableView;
 use std::sync::Arc;
 
 #[cfg(feature = "slow-tests")]
@@ -15,7 +16,7 @@ fn cold_and_prefix_research_states_match_prepared_values_at_the_supplying_read()
         prepared::coverage,
         test_fixtures::{file_source, source_with_content},
     };
-    engine::executable_tables::initialize_for_tests().unwrap();
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
     let (_catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[]);
     let frames: Vec<_> = (100..=149)
         .map(|hour| {
@@ -404,10 +405,10 @@ fn scale(hour: i32, count: u32) -> DecodedFrame {
                     country: 100_000 + index,
                     index: 0,
                     technology_handle: 1,
-                    database_index: replay::rows::Recorded::Value(1),
+                    database_index: replay_data::rows::Recorded::Value(1),
                     technology_present: 1,
                     token: b"synthetic_project".to_vec(),
-                    classifier: engine::ctechnology::CLASSIFIER_ACTIVE,
+                    classifier: engine_research::ctechnology::CLASSIFIER_ACTIVE,
                     cost_raw: 10_000_000,
                     cost_scale_raw: 100_000,
                     progress_raw: i64::from(hour),
@@ -554,10 +555,10 @@ fn research_world(count: u32, hour: i32) -> DecodedFrame {
                     country: owner(index),
                     index: 0,
                     technology_handle: 1,
-                    database_index: replay::rows::Recorded::Value(1),
+                    database_index: replay_data::rows::Recorded::Value(1),
                     technology_present: 1,
                     token: b"synthetic_project".to_vec(),
-                    classifier: engine::ctechnology::CLASSIFIER_ACTIVE,
+                    classifier: engine_research::ctechnology::CLASSIFIER_ACTIVE,
                     cost_raw: 10_000_000,
                     cost_scale_raw: 100_000,
                     research_speed_raw: 100_000,
@@ -573,7 +574,7 @@ fn research_world(count: u32, hour: i32) -> DecodedFrame {
                     country: owner(index),
                     database_index: 1,
                     technology_handle: 1,
-                    classifier: engine::ctechnology::CLASSIFIER_ACTIVE,
+                    classifier: engine_research::ctechnology::CLASSIFIER_ACTIVE,
                     ..Default::default()
                 })
                 .collect(),
@@ -651,21 +652,21 @@ fn read_at(frame: &mut DecodedFrame, index: u32, hour: i32) {
 /// The recording codec: each input hour is encoded and decoded as the
 /// preparation pipeline reads it, with its recorded updates.
 struct Recorded {
-    encoder: replay::frame::FrameEncoder,
-    decoder: replay::frame::FrameDecoder,
+    encoder: replay_frame::frame::FrameEncoder,
+    decoder: replay_frame::frame::FrameDecoder,
 }
 impl Recorded {
     fn new() -> Self {
         Self {
-            encoder: replay::frame::FrameEncoder::new(),
-            decoder: replay::frame::FrameDecoder::new(),
+            encoder: replay_frame::frame::FrameEncoder::new(),
+            decoder: replay_frame::frame::FrameDecoder::new(),
         }
     }
     fn next(
         &mut self,
         input: &DecodedFrame,
         keyframe: bool,
-    ) -> (DecodedFrame, Arc<replay::frame::Frame>) {
+    ) -> (DecodedFrame, Arc<replay_frame::frame::Frame>) {
         let wire = self.encoder.encode(input.clone(), keyframe).unwrap();
         let decoded = self.decoder.advance(&wire).unwrap().clone();
         (decoded, Arc::new(wire))
@@ -674,7 +675,7 @@ impl Recorded {
 
 fn assert_one_read_observes_one_country(count: u32) {
     use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests::Work};
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let mut recorded = Recorded::new();
     let mut tracker = FrameChangeTracker::new();
     let mut step = |prepared: &mut Prepared, frame: &DecodedFrame| {
@@ -795,7 +796,7 @@ fn published(
 #[test]
 fn research_rows_observation_matches_whole_tables_and_reference_across_keyframe_gap_and_resume() {
     use crate::prepared::frame_changes::FrameChangeTracker;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let count = 6;
     let owner = |index: u32| FIRST_OWNER + index;
@@ -865,7 +866,7 @@ fn research_rows_observation_matches_whole_tables_and_reference_across_keyframe_
                     .find(|row| row.country == owner(2))
                     .unwrap();
                 row.technology_handle = 2;
-                row.database_index = replay::rows::Recorded::Value(2);
+                row.database_index = replay_data::rows::Recorded::Value(2);
                 row.token = b"synthetic_other".to_vec();
                 row.progress_raw = 0;
                 let technologies = technologies(&mut frame);
@@ -877,7 +878,7 @@ fn research_rows_observation_matches_whole_tables_and_reference_across_keyframe_
                         country: owner(2),
                         database_index: 2,
                         technology_handle: 2,
-                        classifier: engine::ctechnology::CLASSIFIER_ACTIVE,
+                        classifier: engine_research::ctechnology::CLASSIFIER_ACTIVE,
                         ..Default::default()
                     },
                 );
@@ -920,12 +921,12 @@ fn research_rows_observation_matches_whole_tables_and_reference_across_keyframe_
                     .iter_mut()
                     .find(|row| row.country == owner(5))
                     .unwrap()
-                    .classifier = engine::ctechnology::CLASSIFIER_COMPLETED;
+                    .classifier = engine_research::ctechnology::CLASSIFIER_COMPLETED;
                 let technology = technologies(&mut frame)
                     .iter_mut()
                     .find(|row| row.country == owner(5))
                     .unwrap();
-                technology.classifier = engine::ctechnology::CLASSIFIER_COMPLETED;
+                technology.classifier = engine_research::ctechnology::CLASSIFIER_COMPLETED;
                 technology.researched = 1;
             }
             // Another read the hour after, so the whole tables observe every
@@ -994,7 +995,7 @@ fn research_rows_observation_matches_whole_tables_and_reference_across_keyframe_
 #[test]
 fn cold_research_keeps_unavailable_slots_instead_of_reporting_no_slots() {
     use crate::test_fixtures::{file_source, source_with_content};
-    engine::executable_tables::initialize_for_tests().unwrap();
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
     let (_catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[(
         "common/terrain/mod.txt",
         "categories={mod_ground={movement_cost=1}}",

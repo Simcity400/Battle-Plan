@@ -1,18 +1,13 @@
 //! Land combat hover text rebuilt from simulation operands and matching content.
 //!
 //! Combat details supply tactic, terrain, width and commander hovers.
-use installed_content::{
-    gui::native::{self, Element},
-    localisation::{Argument, Localisation},
-    unit_leader::Skills,
+use installed_content_core::{gui::native, gui::native::Element, unit_leader::Skills};
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use replay_data::{
+    rows::LandCombatDetailsRow, rows::LandCombatSideDetails, rows::LandCombatSideInputs,
+    rows::LandCombatSideRow, rows::tables,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        LandCombatDetailsRow, LandCombatSideDetails, LandCombatSideInputs, LandCombatSideRow,
-        tables,
-    },
-};
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 use viewer_foundation::land_combat_math::side_scores;
 use viewer_foundation::table_access::TokenNames;
@@ -213,7 +208,7 @@ fn authored_key<'a>(
     if hash == 0 {
         return Ok(None);
     }
-    std::str::from_utf8(installed_content::parser::c_string(key))
+    std::str::from_utf8(installed_content_core::parser::c_string(key))
         .map(Some)
         .map_err(|_| {
             format!("authored_tooltip_undecodable_key: {path}'s {field} key {key:?} is not UTF-8")
@@ -535,7 +530,7 @@ const SKILL_LINES_UNRECORDED: &str = "the skill hover's offence and defence line
 const SKILL_LINES_UNREAD: &str = "the skill hover's offence and defence lines (keys 0x5F and 0x60 of the leader block selected for the chosen unit) could not be read at capture";
 
 /// Nor the CAS hover's operands, unless an older recording's side details
-/// hold them ([`replay::rows::LandCombatDetailsRow::cas_inputs`]).
+/// hold them ([`replay_data::rows::LandCombatDetailsRow::cas_inputs`]).
 const CAS_UNRECORDED: &str = "the CAS hover's prevented damage and anti-air effectiveness (STR_PREVENT, ORG_PREVENT, AA_EFFECTIVENESS over the side's anti-air cache and prevented-damage fields) are not recorded in this recording";
 
 /// The side commander's skill hover: the skill line, a newline, then the
@@ -592,7 +587,7 @@ fn skill_tooltip(
         let definitions = definitions
             .map_err(|refusal| format!("the skill hover's offence and defence lines: {refusal}"))?;
         let block = Block {
-            values: engine::cland_combat::SKILL_HOVER_KEYS
+            values: engine_native::cland_combat::SKILL_HOVER_KEYS
                 .into_iter()
                 .zip(values)
                 .collect(),
@@ -619,7 +614,7 @@ fn anti_air_effectiveness(
     anti_air: i64,
     defines: &super::defines::LandDefines,
 ) -> Result<i64, String> {
-    let defence = engine::csub_unit_definition::movement_air_defense_value(
+    let defence = engine_native::csub_unit_definition::movement_air_defense_value(
         anti_air,
         defines.air_superiority[0],
         defines.air_superiority[1],
@@ -634,7 +629,7 @@ struct Cas<'a> {
     own: &'a LandCombatSideDetails,
     opponent: &'a LandCombatSideDetails,
     /// The opposing side's anti-air cache and prevented strength and
-    /// organisation damage ([`replay::rows::LandCombatDetailsRow::cas_inputs`]).
+    /// organisation damage ([`replay_data::rows::LandCombatDetailsRow::cas_inputs`]).
     opponent_cas: (i64, [i64; 2]),
     attacking: bool,
 }
@@ -688,7 +683,7 @@ fn cas_tooltip(
             ("ORG", Argument::Fixed5(cas.opponent.damage[1])),
             ("ORG_MAX", Argument::Fixed5(organisation)),
             ("KILL", Argument::Int32(cas.opponent.air_kills as i32)),
-            // Recorded at the display step `|R0` prints (replay::display).
+            // Recorded at the display step `|R0` prints (replay_data::display).
             ("STR_PREVENT", Argument::Fixed5(prevent_strength)),
             ("ORG_PREVENT", Argument::Fixed5(prevent_organisation)),
             ("AA_EFFECTIVENESS", Argument::Fixed5(effectiveness)),
@@ -1228,7 +1223,7 @@ fn naval_carrier_penalty_hovers(
 }
 
 fn naval_flag_country(
-    detail: &replay::rows::NavalCombatDetailsRow,
+    detail: &replay_data::rows::NavalCombatDetailsRow,
     aliases: &BTreeMap<u32, u32>,
     viewer: u32,
 ) -> Result<u32, String> {
@@ -1278,7 +1273,10 @@ fn naval_flag_hovers(
         .iter()
         .map(|row| (row.id, row.canonical_slot))
         .collect();
-    let names = installed_content::country_names::CountryNames::read(frame, &static_content.localisation);
+    let names = installed_content_country_names::country_names::CountryNames::read(
+        frame,
+        &static_content.localisation,
+    );
     let viewing_tag = tooltip_text_viewing_tag(countries.rows(), vision);
     let tokens = TokenNames::new(frame).map_err(|error| error.to_string());
     let sub_units = static_content.assets.commander_tooltips.sub_units();
@@ -1449,7 +1447,7 @@ fn naval_commander_hovers(
 fn naval_commander_portrait(
     icons: &dyn TextIcons,
     loc: &Localisation,
-    commander: &replay::rows::NavalCommanderInputs,
+    commander: &replay_data::rows::NavalCommanderInputs,
     own_country: Result<bool, String>,
     viewing_tag: Result<&str, &str>,
 ) -> Result<(String, String), String> {

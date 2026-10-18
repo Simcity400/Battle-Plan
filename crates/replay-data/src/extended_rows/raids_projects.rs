@@ -84,7 +84,7 @@ value_struct!(RaidScope {province: u32, state: u32, leader_reference: u64, leade
 /// Selected active-raid wing names use the WING_NAME family: byte length at
 /// key u32::MAX and little-endian eight-byte chunks at zero-based keys (last
 /// chunk zero padded), like existing name-group/custom operands. A negative
-/// length is an engine::raid_tooltip_operands::NameReadError code, with no
+/// length is an engine_native::raid_tooltip_operands::NameReadError code, with no
 /// chunks. Empty names retain zero length. Engine owns the family/error codes.
 /// Lost naming provenance requires the shared stored-text language rule; see
 /// the viewer's raid tooltip README for capture behavior and oracle limits.

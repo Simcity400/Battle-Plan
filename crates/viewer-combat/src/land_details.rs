@@ -1,9 +1,7 @@
 //! Derived land-window operands from recorded combat state.
-use installed_content::localisation::Argument;
-use replay::{
-    frame::DecodedFrame,
-    rows::{LandCombatDetailsRow, LandCombatDivisionRow, tables},
-};
+use installed_content_localisation::localisation::Argument;
+use replay_data::{rows::LandCombatDetailsRow, rows::LandCombatDivisionRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 use viewer_foundation::engagement_progress::Progresses;
 use viewer_foundation::land_combat_math::{Divisions, conditions, modifier, side_scores};

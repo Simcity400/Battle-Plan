@@ -28,11 +28,10 @@ use std::{
     sync::Arc,
 };
 
-use installed_content::{ResolvedLayers, localisation::Localisation};
-use replay::{
-    frame::DecodedFrame,
-    rows::{OperationRow, OperativeMissionRow, tables},
-};
+use installed_content_core::ResolvedLayers;
+use installed_content_localisation::localisation::Localisation;
+use replay_data::{rows::OperationRow, rows::OperativeMissionRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use viewer_foundation::{map::native_gui, tooltip_text::Tooltip};
 
 use super::raids::{RaidAssets, script::World};
@@ -122,7 +121,7 @@ pub struct IntelDefines {
 }
 
 impl IntelDefines {
-    pub fn read(d: &installed_content::defines::Defines) -> io::Result<Self> {
+    pub fn read(d: &installed_content_core::defines::Defines) -> io::Result<Self> {
         let named =
             |group: &str, name: &str, error: io::Error| format!("NDefines.{group}.{name}: {error}");
         let fixed = |group: &'static str, name: &'static str| {
@@ -219,8 +218,8 @@ impl IntelDefines {
 /// Everything static the layer reads, from the recorded content stack.
 pub struct IntelAssets {
     pub defines: Result<IntelDefines, String>,
-    operations: Result<installed_content::intelligence::Intelligence, String>,
-    phases: Result<installed_content::intelligence::OperationPhases, String>,
+    operations: Result<installed_content_core::intelligence::Intelligence, String>,
+    phases: Result<installed_content_core::intelligence::OperationPhases, String>,
     /// The nationality modifier's root-out effectiveness factor, fixed5.
     nationality: Result<i64, String>,
     /// What the content refuses, once.
@@ -240,7 +239,7 @@ impl std::fmt::Debug for IntelAssets {
 impl IntelAssets {
     /// Reads the defines, the operation and phase definitions and the nationality modifier.
     /// Each read that fails refuses only what reads it, named in [`Self::warnings`].
-    pub fn load(layers: &ResolvedLayers, defines: &installed_content::defines::Defines) -> Self {
+    pub fn load(layers: &ResolvedLayers, defines: &installed_content_core::defines::Defines) -> Self {
         let mut warnings = Vec::new();
         let defines = IntelDefines::read(defines).map_err(|error| error.to_string());
         if let Err(why) = &defines {
@@ -248,7 +247,8 @@ impl IntelAssets {
                 "Operatives map icons are not drawn: their defines cannot be read ({why})."
             ));
         }
-        let operations = installed_content::intelligence::read(layers).map_err(|error| error.to_string());
+        let operations =
+            installed_content_core::intelligence::read(layers).map_err(|error| error.to_string());
         match &operations {
             Ok(read) => warnings.extend(
                 read.warnings
@@ -259,7 +259,7 @@ impl IntelAssets {
                 "Operatives map icons: the operation definitions cannot be read ({why}); operation icons are hidden."
             )),
         }
-        let phases = installed_content::intelligence::read_operation_phases(layers)
+        let phases = installed_content_core::intelligence::read_operation_phases(layers)
             .map_err(|error| error.to_string());
         match &phases {
             Ok(read) => warnings.extend(
@@ -271,9 +271,9 @@ impl IntelAssets {
                 "Operatives map icons: the operation phase definitions cannot be read ({why}); phase icons are hidden."
             )),
         }
-        let nationality = installed_content::static_modifiers::read(
+        let nationality = installed_content_core::static_modifiers::read(
             layers,
-            &[installed_content::static_modifiers::Request {
+            &[installed_content_core::static_modifiers::Request {
                 modifier: NATIONALITY_MODIFIER,
                 key: NATIONALITY_KEY,
             }],
@@ -310,20 +310,20 @@ impl IntelAssets {
     #[cfg(any(test, feature = "test-support"))]
     pub fn test(
         defines: IntelDefines,
-        operations: Vec<installed_content::intelligence::Operation>,
-        phases: Vec<installed_content::intelligence::OperationPhase>,
+        operations: Vec<installed_content_core::intelligence::Operation>,
+        phases: Vec<installed_content_core::intelligence::OperationPhase>,
         nationality: i64,
     ) -> Self {
         Self {
             defines: Ok(defines),
-            operations: Ok(installed_content::intelligence::Intelligence {
+            operations: Ok(installed_content_core::intelligence::Intelligence {
                 operations: operations
                     .into_iter()
                     .map(|operation| (operation.token.to_ascii_lowercase(), operation))
                     .collect(),
                 ..Default::default()
             }),
-            phases: Ok(installed_content::intelligence::OperationPhases {
+            phases: Ok(installed_content_core::intelligence::OperationPhases {
                 definitions: phases
                     .into_iter()
                     .map(|phase| (phase.token.to_ascii_lowercase(), phase))
@@ -339,7 +339,7 @@ impl IntelAssets {
     /// phase's map sprite, as `registry` declares them.
     pub fn gui_assets(
         &self,
-        registry: &installed_content::gui::native::resources::Registry,
+        registry: &installed_content_core::gui::native::resources::Registry,
     ) -> native_gui::Assets {
         let mut assets = native_gui::Assets::default();
         let declared = |name: &str| registry.sprite(name.as_bytes()).is_some();
@@ -358,7 +358,7 @@ impl IntelAssets {
                 phases
                     .definitions
                     .values()
-                    .map(installed_content::intelligence::OperationPhase::map_sprite)
+                    .map(installed_content_core::intelligence::OperationPhase::map_sprite)
                     .filter(|name| declared(name))
                     .map(|name| name.as_bytes().to_vec()),
             );
@@ -374,7 +374,7 @@ impl IntelAssets {
     fn operation(
         &self,
         token: &str,
-    ) -> Result<Option<&installed_content::intelligence::Operation>, String> {
+    ) -> Result<Option<&installed_content_core::intelligence::Operation>, String> {
         self.operations
             .as_ref()
             .map_err(Clone::clone)?
@@ -384,7 +384,7 @@ impl IntelAssets {
     fn phase(
         &self,
         token: &str,
-    ) -> Result<Option<&installed_content::intelligence::OperationPhase>, String> {
+    ) -> Result<Option<&installed_content_core::intelligence::OperationPhase>, String> {
         self.phases.as_ref().map_err(Clone::clone)?.phase(token)
     }
 }
@@ -495,7 +495,7 @@ pub struct IntelIcons {
     pub states: Vec<StateIcon>,
     pub report: IntelReport,
     /// The branch, hour and canonical country they were built for.
-    pub built_for: Option<(replay::BranchId, replay::Hour, u32)>,
+    pub built_for: Option<(replay_data::BranchId, replay_data::Hour, u32)>,
 }
 
 /// One view-level omission; the number of cached offers itself is unrecorded.
@@ -555,7 +555,7 @@ pub fn icons(
 }
 
 /// A complete table's rows, or why the parts that read it are hidden.
-fn complete<'a, T: replay::rows::TableSchema>(
+fn complete<'a, T: replay_data::rows::TableSchema>(
     frame: &'a DecodedFrame,
     name: &str,
 ) -> Result<&'a [T::Row], String> {
@@ -568,15 +568,15 @@ fn complete<'a, T: replay::rows::TableSchema>(
 struct Tables<'a> {
     missions: Result<&'a [OperativeMissionRow], String>,
     operations: Result<&'a [OperationRow], String>,
-    buffers: Result<&'a [replay::rows::AgencyOperationBuffersRow], String>,
-    strategic: Result<&'a [replay::rows::StrategicOperativeRow], String>,
-    defense: Result<&'a [replay::rows::RaidIntelInputRow], String>,
-    networks: Result<&'a [replay::rows::IntelNetworkRow], String>,
-    stability: Result<&'a [replay::rows::CountryStabilityInputRow], String>,
-    parties: Result<&'a [replay::rows::PoliticalPartyRow], String>,
-    characters: Result<&'a [replay::rows::CharacterOperativeRow], String>,
-    portraits: Result<&'a [replay::rows::CharacterPortraitRow], String>,
-    states: Result<&'a [replay::rows::StateRow], String>,
+    buffers: Result<&'a [replay_data::rows::AgencyOperationBuffersRow], String>,
+    strategic: Result<&'a [replay_data::rows::StrategicOperativeRow], String>,
+    defense: Result<&'a [replay_data::rows::RaidIntelInputRow], String>,
+    networks: Result<&'a [replay_data::rows::IntelNetworkRow], String>,
+    stability: Result<&'a [replay_data::rows::CountryStabilityInputRow], String>,
+    parties: Result<&'a [replay_data::rows::PoliticalPartyRow], String>,
+    characters: Result<&'a [replay_data::rows::CharacterOperativeRow], String>,
+    portraits: Result<&'a [replay_data::rows::CharacterPortraitRow], String>,
+    states: Result<&'a [replay_data::rows::StateRow], String>,
 }
 
 impl<'a> Tables<'a> {

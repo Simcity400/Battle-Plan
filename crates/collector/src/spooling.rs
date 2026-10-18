@@ -12,22 +12,25 @@ use crate::sampling::{Captured, LossBatch, LostObservation, qpc as current_qpc};
 use crate::status::{
     Choice, DebugValue, LossyBytes, map as status_map, owned_sequence, sequence, status,
 };
-use engine::{
+use engine_native::{
     cgame_state::Clock, memory::ReadCounts, save_allocation_counters::AllocationCounters,
     walk::Outcome,
 };
 use replay::{
-    BranchId,
-    branches::{BranchStart, BranchTracker, Gap},
-    codec::invalid_static as invalid,
-    frame::{BaselineToken, FrameEncoder, FrameInput, Metrics, TABLE_COUNT, TableInput, TableView},
-    identity::{SessionStart, is_campaign_uuid},
-    rows::{
-        BorderConflictRow, CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow,
-        FactionMemberRow, FactionRow, ProvinceRow, ScriptVariablesRow, StateRow, TableId,
-        TableRows, WarRelationRow, tables,
-    },
-    spool::{ControlRecord, FileBackend, Record, SegmentBackend, SegmentedSpool},
+    spool::ControlRecord, spool::FileBackend, spool::Record, spool::SegmentBackend,
+    spool::SegmentedSpool,
+};
+use replay_data::rows::TABLE_COUNT;
+use replay_data::{
+    BranchId, codec::invalid_static as invalid, identity::SessionStart, identity::is_campaign_uuid,
+    rows::BorderConflictRow, rows::CampaignRow, rows::ClockRow, rows::CountryLinkRow,
+    rows::CountryRow, rows::DivisionRow, rows::FactionMemberRow, rows::FactionRow,
+    rows::ProvinceRow, rows::ScriptVariablesRow, rows::StateRow, rows::TableId, rows::TableRows,
+    rows::WarRelationRow, rows::tables,
+};
+use replay_frame::{
+    branches::BranchStart, branches::BranchTracker, branches::Gap, frame::BaselineToken,
+    frame::FrameEncoder, frame::FrameInput, frame::Metrics, frame::TableInput, frame::TableView,
 };
 use serde::Serialize;
 #[cfg(test)]
@@ -58,7 +61,7 @@ pub(crate) struct SpoolConversion<'a, 'cache> {
 /// cached rows the encoder shares.
 enum Merged {
     Rows(TableRows),
-    Update(BaselineToken, replay::sliced::SliceUpdate),
+    Update(BaselineToken, replay_data::sliced::SliceUpdate),
 }
 
 struct TableCache<T>([Option<T>; TABLE_COUNT]);
@@ -130,7 +133,7 @@ impl Campaigns {
         match self.position(&id) {
             Ok(index) => self.0[index].1 = campaign,
             Err(index) => {
-                engine::allocation::reserve(&mut self.0, 1)?;
+                engine_allocation::reserve(&mut self.0, 1)?;
                 self.0.insert(index, (id, campaign));
             }
         }
@@ -163,7 +166,7 @@ fn error_reason(error: &io::Error) -> Cow<'static, str> {
         io::ErrorKind::InvalidData => {
             // Retained by the spool worker, after the original error is dropped.
             // Checked formatting keeps allocation failure on its existing path.
-            replay::codec::try_format(format_args!("spool validation failed: {error}"))
+            replay_data::codec::try_format(format_args!("spool validation failed: {error}"))
                 .map(Cow::Owned)
                 .unwrap_or(Cow::Borrowed("collector allocation failed"))
         }
@@ -243,7 +246,7 @@ impl CachedTable {
                 missing: *missing,
             }),
             Self::Unavailable { reason } => TableInput::Sampled(TableView::Unavailable {
-                reason: engine::allocation::string(reason)?,
+                reason: engine_allocation::string(reason)?,
             }),
         })
     }
@@ -275,7 +278,7 @@ fn lexical_cache(
     if cached_branch != Some(branch) {
         return None;
     }
-    match cache.get(&replay::rows::TableId::LexicalTokens) {
+    match cache.get(&replay_data::rows::TableId::LexicalTokens) {
         Some(CachedTable::Complete(rows)) => Some(rows),
         _ => None,
     }
@@ -385,7 +388,7 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     staggered_cache: TableCache<CachedTable>,
     staggered_branch: Option<BranchId>,
     /// Paired with the latest CountryIntel cache, even before durable publication.
-    country_intel_sample: Option<replay::rows::ReservedCountryIntelSample>,
+    country_intel_sample: Option<replay_data::rows::ReservedCountryIntelSample>,
     /// Acquisition hour of the latest CountryIntel cache when it is complete,
     /// the sample certified spotting navy lanes cite.
     country_intel_hour: Option<i32>,
@@ -397,9 +400,9 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     /// This frame's slice updates of `sliced_cache` rows, held until the
     /// frame's write succeeds (the encoder then holds the updated rows) or
     /// fails (the cache then takes the merged rows).
-    pending_slices: Vec<(TableId, Arc<replay::sliced::SliceUpdate>)>,
+    pending_slices: Vec<(TableId, Arc<replay_data::sliced::SliceUpdate>)>,
     /// What this campaign's commits no longer hold, for freeing elsewhere.
-    retired: Vec<replay::frame::Retired>,
+    retired: Vec<replay_frame::frame::Retired>,
     /// Each production line's output on the current branch.
     line_output: crate::extended::line_output::Totals,
     operation_outcomes: crate::extended::operation_outcomes::Ledger,
@@ -428,7 +431,7 @@ impl Campaign {
         // history from the tracker and could assign existing branch ids again.
         if directory.exists()
             && fs::read_dir(&directory)
-                .map_err(engine::allocation::allocation_error)?
+                .map_err(engine_allocation::allocation_error)?
                 .any(|entry| {
                     entry.is_ok_and(|entry| {
                         entry.file_name().to_string_lossy().starts_with("spool.")
@@ -440,7 +443,7 @@ impl Campaign {
             ));
         }
         let mut spool = SegmentedSpool::new(FileBackend::new(&directory)?);
-        if engine::allocation::capture_active() {
+        if engine_allocation::capture_active() {
             spool.set_commit_hook(committed_spool_record);
             spool.set_write_start_hook(crate::allocation::record_start);
         }
@@ -494,7 +497,7 @@ impl<B: SegmentBackend> Campaign<B> {
                 .branch_start(branch)
                 .expect("observed branch exists")
                 .clone();
-            engine::allocation::reserve(&mut self.pending, 1)?;
+            engine_allocation::reserve(&mut self.pending, 1)?;
             self.pending.push(PendingBranch {
                 start,
                 gaps: Vec::new(),
@@ -518,7 +521,7 @@ impl<B: SegmentBackend> Campaign<B> {
         {
             previous.last_hour = last_hour;
         } else {
-            engine::allocation::reserve(gaps, 1)?;
+            engine_allocation::reserve(gaps, 1)?;
             gaps.push(Gap {
                 branch,
                 first_hour,
@@ -599,13 +602,13 @@ impl<B: SegmentBackend> Campaign<B> {
         let mut frame_reads: [Option<Vec<(u32, i32)>>; TABLE_COUNT] = std::array::from_fn(|_| None);
         let hour = source.hour;
         for table in TableId::ALL {
-            if !replay::cadence::is_sliced(table) {
+            if !replay_data::cadence::is_sliced(table) {
                 continue;
             }
             let input = &mut source.tables[table.index()];
             if walked(table)
                 && matches!(input, TableInput::Sampled(TableView::Unavailable { reason })
-                    if *reason != replay::cadence::SKIPPED_REASON)
+                    if *reason != replay_data::cadence::SKIPPED_REASON)
                 && let Some(family) = crate::slicing::family_of(table)
             {
                 unpublished |= 1 << family;
@@ -620,8 +623,8 @@ impl<B: SegmentBackend> Campaign<B> {
                 TableInput::Sampled(TableView::Complete(rows)) => {
                     let fresh = std::mem::replace(rows, TableRows::empty(table));
                     let update = (!selection.force_full
-                        && !replay::sliced::is_keyed(table)
-                        && !replay::sliced::replaces_whole(&fresh))
+                        && !replay_data::sliced::is_keyed(table)
+                        && !replay_data::sliced::replaces_whole(&fresh))
                     .then(|| self.sliced_cache.get(&table))
                     .flatten()
                     .and_then(|previous| {
@@ -631,7 +634,8 @@ impl<B: SegmentBackend> Campaign<B> {
                             .map(|(token, _)| (token, previous))
                     });
                     let merged = if let Some((token, previous)) = update {
-                        match replay::sliced::SliceUpdate::new(previous, fresh, captured, live) {
+                        match replay_data::sliced::SliceUpdate::new(previous, fresh, captured, live)
+                        {
                             Ok(update) => Merged::Update(token, update),
                             Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
                                 return Err(error);
@@ -646,10 +650,10 @@ impl<B: SegmentBackend> Campaign<B> {
                                 continue;
                             }
                         }
-                    } else if selection.force_full || replay::sliced::replaces_whole(&fresh) {
+                    } else if selection.force_full || replay_data::sliced::replaces_whole(&fresh) {
                         Merged::Rows(fresh)
                     } else if let Some(previous) = self.sliced_cache.get(&table) {
-                        match replay::sliced::merge_slice(previous, fresh, captured, live) {
+                        match replay_data::sliced::merge_slice(previous, fresh, captured, live) {
                             Ok(merged) => Merged::Rows(merged),
                             Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
                                 return Err(error);
@@ -671,9 +675,9 @@ impl<B: SegmentBackend> Campaign<B> {
                         retry = true;
                         continue;
                     };
-                    if !replay::sliced::is_keyed(table) {
+                    if !replay_data::sliced::is_keyed(table) {
                         let owners = match &merged {
-                            Merged::Rows(rows) => replay::sliced::try_owners(rows)?,
+                            Merged::Rows(rows) => replay_data::sliced::try_owners(rows)?,
                             Merged::Update(_, update) => update.owners_after(
                                 self.sliced_cache
                                     .get(&table)
@@ -685,8 +689,8 @@ impl<B: SegmentBackend> Campaign<B> {
                             .len()
                             .checked_add(selection.read_owners().count())
                             .and_then(|count| count.checked_add(previous.len()))
-                            .ok_or_else(engine::allocation::oom)?;
-                        let mut reads = engine::allocation::vec(capacity)?;
+                            .ok_or_else(engine_allocation::oom)?;
+                        let mut reads = engine_allocation::vec(capacity)?;
                         for &owner in &owners {
                             let read = if selection.force_full || captured(owner) {
                                 Some(hour)
@@ -725,7 +729,7 @@ impl<B: SegmentBackend> Campaign<B> {
                         }
                         Merged::Update(token, update) => {
                             let update = Arc::new(update);
-                            engine::allocation::reserve(&mut self.pending_slices, 1)?;
+                            engine_allocation::reserve(&mut self.pending_slices, 1)?;
                             self.pending_slices.push((table, Arc::clone(&update)));
                             *input = TableInput::SliceUpdate { token, update };
                         }
@@ -734,16 +738,16 @@ impl<B: SegmentBackend> Campaign<B> {
                 TableInput::Sampled(TableView::Truncated { rows, missing }) => {
                     let missing = *missing;
                     let fresh = std::mem::replace(rows, TableRows::empty(table));
-                    let returned = replay::sliced::try_owners(&fresh)?;
+                    let returned = replay_data::sliced::try_owners(&fresh)?;
                     let replaced =
                         |owner: u32| captured(owner) && returned.binary_search(&owner).is_ok();
-                    if !replay::sliced::is_keyed(table) {
+                    if !replay_data::sliced::is_keyed(table) {
                         let previous = &self.sliced_reads.0[table.index()];
                         let capacity = previous
                             .len()
                             .checked_add(returned.len())
-                            .ok_or_else(engine::allocation::oom)?;
-                        let mut reads = engine::allocation::vec(capacity)?;
+                            .ok_or_else(engine_allocation::oom)?;
+                        let mut reads = engine_allocation::vec(capacity)?;
                         let mut old = previous.iter().peekable();
                         for &owner in returned.iter().filter(|&&owner| captured(owner)) {
                             while old.peek().is_some_and(|entry| entry.0 < owner) {
@@ -759,7 +763,8 @@ impl<B: SegmentBackend> Campaign<B> {
                     }
                     if let Some(previous) = self.sliced_cache.get(&table) {
                         *input = TableInput::Sampled(
-                            match replay::sliced::merge_slice(previous, fresh, replaced, live) {
+                            match replay_data::sliced::merge_slice(previous, fresh, replaced, live)
+                            {
                                 Ok(rows) => TableView::Truncated { rows, missing },
                                 Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
                                     return Err(error);
@@ -803,14 +808,14 @@ impl<B: SegmentBackend> Campaign<B> {
             .try_fold(0_usize, |count, (view, base)| {
                 count.checked_add(view.as_ref().unwrap_or(base).len())
             })
-            .ok_or_else(engine::allocation::oom)?;
-        let mut reads = engine::allocation::vec(count)?;
+            .ok_or_else(engine_allocation::oom)?;
+        let mut reads = engine_allocation::vec(count)?;
         for (table, (view, base)) in frame_reads.iter().zip(&self.sliced_reads.0).enumerate() {
             reads.extend(
                 view.as_ref()
                     .unwrap_or(base)
                     .iter()
-                    .map(|&(owner, sample_hour)| replay::rows::SliceReadRow {
+                    .map(|&(owner, sample_hour)| replay_data::rows::SliceReadRow {
                         table: table as u32,
                         owner,
                         sample_hour,
@@ -905,7 +910,7 @@ impl<B: SegmentBackend> Campaign<B> {
     fn try_apply_staggered_inputs(
         &mut self,
         source: &mut FrameInput,
-        intel_sample: Option<Result<replay::rows::ReservedCountryIntelSample, &'static str>>,
+        intel_sample: Option<Result<replay_data::rows::ReservedCountryIntelSample, &'static str>>,
     ) -> io::Result<[bool; TABLE_COUNT]> {
         if self.staggered_branch != Some(source.branch) {
             self.staggered_cache.clear();
@@ -914,9 +919,9 @@ impl<B: SegmentBackend> Campaign<B> {
             self.staggered_branch = Some(source.branch);
         }
         let mut skipped = [false; TABLE_COUNT];
-        for table in replay::rows::TableId::ALL {
+        for table in replay_data::rows::TableId::ALL {
             let index = table.index();
-            let may_carry = replay::cadence::is_staggered(table);
+            let may_carry = replay_data::cadence::is_staggered(table);
             let conversion_cache = table == TableId::LexicalTokens
                 || crate::extended::characters::SHADOW_TABLES.contains(&table);
             if !may_carry && !conversion_cache {
@@ -926,7 +931,7 @@ impl<B: SegmentBackend> Campaign<B> {
             let is_skip = matches!(
                 &*input,
                 TableInput::Sampled(TableView::Unavailable { reason })
-                if reason == replay::cadence::SKIPPED_REASON
+                if reason == replay_data::cadence::SKIPPED_REASON
             );
             if is_skip {
                 skipped[index] = true;
@@ -935,7 +940,7 @@ impl<B: SegmentBackend> Campaign<B> {
                     self.staggered_cache.insert(
                         table,
                         CachedTable::Unavailable {
-                            reason: engine::allocation::string("hourly table was not acquired")?,
+                            reason: engine_allocation::string("hourly table was not acquired")?,
                         },
                     );
                     continue;
@@ -950,7 +955,7 @@ impl<B: SegmentBackend> Campaign<B> {
                     *input = cached.input()?;
                 } else {
                     *input = TableInput::Sampled(TableView::Unavailable {
-                        reason: engine::allocation::string(
+                        reason: engine_allocation::string(
                             "staggered cache empty on new branch; full refresh required",
                         )?,
                     });
@@ -971,14 +976,14 @@ impl<B: SegmentBackend> Campaign<B> {
                     }
                     TableInput::Sampled(TableView::Unavailable { reason }) => {
                         CachedTable::Unavailable {
-                            reason: engine::allocation::string(reason)?,
+                            reason: engine_allocation::string(reason)?,
                         }
                     }
                     // Only hourly tables are compared natively.
                     TableInput::ComparedEqual(_)
                     | TableInput::ComparedChanges { .. }
                     | TableInput::SliceUpdate { .. } => CachedTable::Unavailable {
-                        reason: engine::allocation::string(
+                        reason: engine_allocation::string(
                             "a native comparison cannot supply a shared recovery snapshot",
                         )?,
                     },
@@ -1012,7 +1017,8 @@ impl<B: SegmentBackend> Campaign<B> {
             return;
         };
         if let [row] = rows.as_mut_slice() {
-            row.country_intel_sample = replay::rows::Recorded::Value(self.country_intel_sample);
+            row.country_intel_sample =
+                replay_data::rows::Recorded::Value(self.country_intel_sample);
         }
     }
 
@@ -1024,7 +1030,7 @@ impl<B: SegmentBackend> Campaign<B> {
     #[cfg(test)]
     fn apply_staggered_cache(
         &mut self,
-        source: &mut replay::frame::DecodedFrame,
+        source: &mut replay_frame::frame::DecodedFrame,
     ) -> [bool; TABLE_COUNT] {
         let mut input = source.clone().into();
         let skipped = self.apply_staggered_inputs(&mut input);
@@ -1064,7 +1070,7 @@ impl<B: SegmentBackend> Campaign<B> {
                 branch,
                 loss.first_hour,
                 loss.last_hour - 1,
-                engine::allocation::string("collector queue overflow")?,
+                engine_allocation::string("collector queue overflow")?,
             )?;
             crate::allocation::set_context(crate::allocation::Context {
                 campaign_id: loss.campaign_id.as_bytes().try_into().ok(),
@@ -1083,14 +1089,14 @@ impl<B: SegmentBackend> Campaign<B> {
                 branch,
                 loss.last_hour,
                 loss.last_hour,
-                engine::allocation::string("collector queue overflow")?,
+                engine_allocation::string("collector queue overflow")?,
             )?;
         } else {
             self.gap(
                 branch,
                 loss.first_hour,
                 loss.last_hour,
-                engine::allocation::string("collector queue overflow")?,
+                engine_allocation::string("collector queue overflow")?,
             )?;
         }
         Ok(())
@@ -1106,8 +1112,8 @@ impl<B: SegmentBackend> Campaign<B> {
                     .checked_add(pending.gaps.len())?
                     .checked_add(usize::from(pending.event_loss.is_some()))
             })
-            .ok_or_else(engine::allocation::oom)?;
-        let mut records = engine::allocation::vec(count)?;
+            .ok_or_else(engine_allocation::oom)?;
+        let mut records = engine_allocation::vec(count)?;
         let mut active = self.disk_branch;
         if restarting {
             records.push(Record::SessionStart(self.session.try_clone()?));
@@ -1156,7 +1162,7 @@ impl<B: SegmentBackend> Campaign<B> {
         work: &mut WorkSample,
         helpers: Option<crate::spool_helper::Helpers<'_>>,
     ) -> io::Result<()> {
-        let _details = replay::codec::error_details_scope();
+        let _details = replay_data::codec::error_details_scope();
         let (branch, hour) = (source.branch, source.hour);
         let held_line_output = crate::extended::line_output::holds_publication(
             &source.tables[TableId::ProductionLineOutput.index()],
@@ -1187,7 +1193,7 @@ impl<B: SegmentBackend> Campaign<B> {
                     branch,
                     hour,
                     hour,
-                    engine::allocation::string("spool write failed")?,
+                    engine_allocation::string("spool write failed")?,
                 )?;
             }
         }
@@ -1236,7 +1242,7 @@ impl<B: SegmentBackend> Campaign<B> {
                 context.push(Record::Control(ControlRecord::GapSummary {
                     session: self.session.id,
                     dropped_frames: unknown,
-                    reason: engine::allocation::string(
+                    reason: engine_allocation::string(
                         "collector lost clock metadata; campaign and hour range are unknown",
                     )?,
                 }));
@@ -1278,7 +1284,7 @@ impl<B: SegmentBackend> Campaign<B> {
                 let released = self.release_slices();
                 let retired = self.encoder.commit_retiring(prepared)?;
                 self.adopt_slices(released);
-                engine::allocation::reserve(&mut self.retired, 1)?;
+                engine_allocation::reserve(&mut self.retired, 1)?;
                 self.retired.push(retired);
                 self.disk_branch = Some(branch);
                 self.last_written = Some(hour);
@@ -1310,7 +1316,7 @@ impl<B: SegmentBackend> Campaign<B> {
                 .append(&Record::Control(ControlRecord::GapSummary {
                     session: self.session.id,
                     dropped_frames: unknown,
-                    reason: engine::allocation::string(
+                    reason: engine_allocation::string(
                         "collector lost clock metadata; campaign and hour range are unknown",
                     )?,
                 }))?;
@@ -1327,7 +1333,7 @@ impl<B: SegmentBackend> Campaign<B> {
 #[derive(Default)]
 struct OrderCounterWitness {
     sample: Option<BoundOrderCounterSample>,
-    rows: Vec<engine::ccountry::OrderInstanceCounter>,
+    rows: Vec<engine_native::ccountry::OrderInstanceCounter>,
 }
 
 struct BoundOrderCounterSample {
@@ -1339,10 +1345,10 @@ struct BoundOrderCounterSample {
     end: i64,
     elapsed_ns: u64,
     allocation_counters: Option<AllocationCounters>,
-    read: Option<engine::ccountry::OrderInstanceCounterRead>,
+    read: Option<engine_native::ccountry::OrderInstanceCounterRead>,
     source_range_valid: bool,
     source_capacity_bytes: usize,
-    cache_status: engine::country_memory::SeedStatus,
+    cache_status: engine_native::country_memory::SeedStatus,
     frame_write_succeeded: bool,
     frame_write_error: Option<Cow<'static, str>>,
     subsequent_io_error: Option<Cow<'static, str>>,
@@ -1385,7 +1391,7 @@ impl OrderCounterWitness {
         self.rows.clear();
         let source_range_valid = rows.is_some();
         let rows = rows.unwrap_or_default();
-        if engine::allocation::reserve(&mut self.rows, rows.len()).is_err() {
+        if engine_allocation::reserve(&mut self.rows, rows.len()).is_err() {
             return;
         }
         self.rows.extend_from_slice(rows);
@@ -1425,14 +1431,14 @@ impl OrderCounterWitness {
     }
 
     fn status(&self) -> impl Serialize + '_ {
-        let capacity =
-            self.rows.capacity() * std::mem::size_of::<engine::ccountry::OrderInstanceCounter>();
+        let capacity = self.rows.capacity()
+            * std::mem::size_of::<engine_native::ccountry::OrderInstanceCounter>();
         let Some(sample) = &self.sample else {
             return Choice::First(
                 status!({"sample": Option::<()>::None, "retained_capacity_bytes": capacity}),
             );
         };
-        let cache_valid = sample.cache_status == engine::country_memory::SeedStatus::Ready;
+        let cache_valid = sample.cache_status == engine_native::country_memory::SeedStatus::Ready;
         let read_complete = sample.source_range_valid
             && sample.read.is_some_and(|read| {
                 read.complete()
@@ -1519,8 +1525,8 @@ struct WarSnapshotWork {
     max_required: [usize; 3],
     peak_frame_bytes: usize,
     last: Option<(
-        engine::cwar_relation::OwnedSnapshotStats,
-        engine::cwar_relation::OwnedSnapshotCapacity,
+        engine_native::cwar_relation::OwnedSnapshotStats,
+        engine_native::cwar_relation::OwnedSnapshotCapacity,
     )>,
 }
 
@@ -1528,8 +1534,8 @@ impl WarSnapshotWork {
     fn observe(
         &mut self,
         sampled: bool,
-        stats: engine::cwar_relation::OwnedSnapshotStats,
-        capacity: engine::cwar_relation::OwnedSnapshotCapacity,
+        stats: engine_native::cwar_relation::OwnedSnapshotStats,
+        capacity: engine_native::cwar_relation::OwnedSnapshotCapacity,
     ) {
         if !sampled {
             return;
@@ -1666,18 +1672,18 @@ impl SliceWork {
 fn needs_retry(tables: &[TableInput; TABLE_COUNT]) -> bool {
     TableId::ALL.into_iter().any(|table| {
         let input = &tables[table.index()];
-        match replay::cadence::cadence(table) {
-            replay::cadence::Cadence::Static => !matches!(
+        match replay_data::cadence::cadence(table) {
+            replay_data::cadence::Cadence::Static => !matches!(
                 input,
                 TableInput::Sampled(TableView::Complete(_)) | TableInput::SharedComplete(_)
-            ) && !matches!(input, TableInput::Sampled(TableView::Unavailable { reason }) if reason == replay::cadence::SKIPPED_REASON),
-            replay::cadence::Cadence::Daily(_) => {
+            ) && !matches!(input, TableInput::Sampled(TableView::Unavailable { reason }) if reason == replay_data::cadence::SKIPPED_REASON),
+            replay_data::cadence::Cadence::Daily(_) => {
                 matches!(input, TableInput::Sampled(TableView::Truncated { .. }))
             }
             // A failed, truncated or dropped slice read is read again at the
             // next hour (SliceSelection::invalidate); the merge requests a full
             // refresh only when it has no earlier rows to merge into.
-            replay::cadence::Cadence::Hourly | replay::cadence::Cadence::Sliced => false,
+            replay_data::cadence::Cadence::Hourly | replay_data::cadence::Cadence::Sliced => false,
         }
     })
 }
@@ -1695,29 +1701,29 @@ struct ViewedFlag {
 }
 
 impl ViewedFlag {
-    fn same(&self, operands: &replay::country_flags::FlagOperands<'_>) -> bool {
+    fn same(&self, operands: &replay_data::country_flags::FlagOperands<'_>) -> bool {
         self.tag == operands.tag
             && self.cosmetic == operands.cosmetic
             && self.original.as_deref() == operands.original
             && self.group == operands.group
     }
 
-    fn copy(operands: &replay::country_flags::FlagOperands<'_>) -> io::Result<Self> {
+    fn copy(operands: &replay_data::country_flags::FlagOperands<'_>) -> io::Result<Self> {
         Ok(Self {
-            tag: engine::allocation::string(operands.tag)?,
-            cosmetic: engine::allocation::string(operands.cosmetic)?,
+            tag: engine_allocation::string(operands.tag)?,
+            cosmetic: engine_allocation::string(operands.cosmetic)?,
             original: operands
                 .original
-                .map(engine::allocation::string)
+                .map(engine_allocation::string)
                 .transpose()?,
-            group: engine::allocation::string(operands.group)?,
+            group: engine_allocation::string(operands.group)?,
         })
     }
 }
 
 /// The viewed country's flag operands from the encoder's committed baselines.
-fn viewed_flag(encoder: &FrameEncoder) -> Option<replay::country_flags::FlagOperands<'_>> {
-    replay::country_flags::viewed_country(
+fn viewed_flag(encoder: &FrameEncoder) -> Option<replay_data::country_flags::FlagOperands<'_>> {
+    replay_data::country_flags::viewed_country(
         encoder.committed::<tables::LocalPlayer>()?.1,
         encoder.committed::<tables::CountryLinks>()?.1,
         encoder.committed::<tables::Countries>()?.1,
@@ -1731,7 +1737,7 @@ fn viewed_flag(encoder: &FrameEncoder) -> Option<replay::country_flags::FlagOper
 /// Keep the published viewed country current, copying only when it changes.
 fn set_viewed(
     slot: &mut Option<ViewedFlag>,
-    operands: Option<replay::country_flags::FlagOperands<'_>>,
+    operands: Option<replay_data::country_flags::FlagOperands<'_>>,
 ) -> io::Result<()> {
     match operands {
         None => *slot = None,
@@ -1776,7 +1782,7 @@ struct Statistics {
     truncated_tables: usize,
     country_cache_fallbacks: u64,
     country_cache_entries: usize,
-    country_cache_status: engine::country_memory::SeedStatus,
+    country_cache_status: engine_native::country_memory::SeedStatus,
     country_cache_cost: Distribution,
     pool_bytes: u64,
     sampled_buffer_bytes: usize,
@@ -1838,7 +1844,7 @@ impl Default for Statistics {
             truncated_tables: 0,
             country_cache_fallbacks: 0,
             country_cache_entries: 0,
-            country_cache_status: engine::country_memory::SeedStatus::Unavailable {
+            country_cache_status: engine_native::country_memory::SeedStatus::Unavailable {
                 reason: "no observation",
             },
             country_cache_cost: Distribution::default(),
@@ -1937,7 +1943,7 @@ struct CapturedStatistics {
     sampled_buffer_bytes: usize,
     sampled_buffer_parts: Vec<(&'static str, usize)>,
     truncated_tables: usize,
-    country_cache_status: engine::country_memory::SeedStatus,
+    country_cache_status: engine_native::country_memory::SeedStatus,
     country_cache_entries: usize,
     country_cache_ns: u64,
     raid_reads: crate::extended::RaidReadCounts,
@@ -1951,7 +1957,7 @@ impl CapturedStatistics {
         let mut sampled_buffer_parts = captured.extended.allocated_by_pack()?;
         let extended_bytes = captured.extended.allocated_bytes();
         let map_bytes = captured.map.allocated_bytes();
-        engine::allocation::reserve(&mut sampled_buffer_parts, 2)?;
+        engine_allocation::reserve(&mut sampled_buffer_parts, 2)?;
         sampled_buffer_parts.push(("map", map_bytes));
         sampled_buffer_parts.push(("core", sampled_buffer_bytes - extended_bytes - map_bytes));
         let raid_reads = captured.extended.raid_reads();
@@ -2011,8 +2017,9 @@ impl CapturedStatistics {
         stats.sampled_buffer_bytes = self.sampled_buffer_bytes;
         stats.sampled_buffer_parts = self.sampled_buffer_parts;
         stats.dropped_frames = self.dropped_frames;
-        stats.country_cache_fallbacks +=
-            u64::from(self.country_cache_status != engine::country_memory::SeedStatus::Ready);
+        stats.country_cache_fallbacks += u64::from(
+            self.country_cache_status != engine_native::country_memory::SeedStatus::Ready,
+        );
         stats.country_cache_entries = self.country_cache_entries;
         stats.country_cache_status = self.country_cache_status;
         stats.country_cache_cost.record_ns(self.country_cache_ns);
@@ -2103,15 +2110,15 @@ pub struct Processor {
 impl Processor {
     pub(crate) fn observe_game_score_sizing(
         &mut self,
-        sizing: &engine::game_score_inputs::ArenaSizing,
+        sizing: &engine_native::game_score_inputs::ArenaSizing,
     ) -> io::Result<()> {
-        let _details = replay::codec::error_details_scope();
+        let _details = replay_data::codec::error_details_scope();
         self.stats.game_score.observe_sizing(sizing)
     }
     pub fn new(root: &Path, history: PreparedCampaigns, session: SessionStart) -> io::Result<Self> {
-        let _details = replay::codec::error_details_scope();
+        let _details = replay_data::codec::error_details_scope();
         session.validate()?;
-        fs::create_dir_all(root).map_err(engine::allocation::allocation_error)?;
+        fs::create_dir_all(root).map_err(engine_allocation::allocation_error)?;
         Ok(Self {
             root: root.into(),
             history,
@@ -2155,7 +2162,7 @@ impl Processor {
         if !self.campaigns.contains_key(id) {
             let campaign = Campaign::open(&self.root, &mut self.history, id, &self.session)?;
             self.campaigns
-                .insert(engine::allocation::string(id)?, campaign)?;
+                .insert(engine_allocation::string(id)?, campaign)?;
         }
         Ok(self.campaigns.get_mut(id).unwrap())
     }
@@ -2196,7 +2203,7 @@ impl Processor {
     /// do I/O, but this preflight never observes or acknowledges a callback.
     /// Once prepared, consume its loss witnesses and then call `frame` once.
     pub fn prepare(&mut self, captured: &Captured) -> io::Result<()> {
-        let _details = replay::codec::error_details_scope();
+        let _details = replay_data::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
         if crate::allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
@@ -2233,7 +2240,7 @@ impl Processor {
 
     /// Quiescent detach uses the same preflight before consuming its final batch.
     pub fn prepare_losses(&mut self, losses: &LossBatch) -> io::Result<()> {
-        let _details = replay::codec::error_details_scope();
+        let _details = replay_data::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Teardown);
         if crate::allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
@@ -2258,7 +2265,7 @@ impl Processor {
     }
 
     pub fn lost(&mut self, loss: &LostObservation) -> io::Result<()> {
-        let _details = replay::codec::error_details_scope();
+        let _details = replay_data::codec::error_details_scope();
         if crate::allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
@@ -2297,7 +2304,7 @@ impl Processor {
     }
 
     pub(crate) fn prepare_frame(&mut self, captured: &Captured) -> io::Result<PreparedFrame> {
-        let _details = replay::codec::error_details_scope();
+        let _details = replay_data::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
         if crate::allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
@@ -2498,10 +2505,10 @@ impl Processor {
         campaign.assemble_line_output(&mut source, captured);
         let event_feed_publication = captured.extended.event_feed().prepare_pack()?;
         if let Some(publication) = &event_feed_publication {
-            let mut rows = engine::allocation::vec(1)?;
-            rows.push(replay::rows::RowCodec::try_clone(publication.row())?);
+            let mut rows = engine_allocation::vec(1)?;
+            rows.push(replay_data::rows::RowCodec::try_clone(publication.row())?);
             source.tables[TableId::EventFeedHistory.index()] = TableInput::Sampled(
-                TableView::Complete(replay::rows::TableRows::EventFeedHistory(rows)),
+                TableView::Complete(replay_data::rows::TableRows::EventFeedHistory(rows)),
             );
         }
         let operation_publication = campaign
@@ -2567,7 +2574,7 @@ impl Processor {
     }
 
     pub(crate) fn write_prepared(&mut self, prepared: PreparedFrame) -> io::Result<()> {
-        let _details = replay::codec::error_details_scope();
+        let _details = replay_data::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
         if crate::allocation::failed() {
             if let Some(publication) = &prepared.event_feed_publication {
@@ -2639,9 +2646,9 @@ impl Processor {
         if let Err(error) = &result {
             self.error(error);
         }
-        for table in replay::rows::TableId::ALL {
+        for table in replay_data::rows::TableId::ALL {
             let index = table.index();
-            if replay::cadence::is_staggered(table) {
+            if replay_data::cadence::is_staggered(table) {
                 if skipped[index] {
                     self.stats.staggered_skipped[index] += 1;
                 } else {
@@ -2686,7 +2693,7 @@ impl Processor {
         set_viewed(&mut self.stats.player, viewed)?;
         let stats = &mut self.stats;
         stats.hours += 1;
-        stats.campaign = Some(engine::allocation::string(&id)?);
+        stats.campaign = Some(engine_allocation::string(&id)?);
         stats.last_hour = Some(clock.hour);
         sampled.record(stats);
         if let Some((old_id, old_branch, hour, previous_qpc)) = &stats.previous
@@ -2706,7 +2713,7 @@ impl Processor {
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
-        let _details = replay::codec::error_details_scope();
+        let _details = replay_data::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
         crate::allocation::attempted_hour(None);
         if crate::allocation::failed() {
@@ -2736,7 +2743,7 @@ impl Processor {
     }
 
     pub fn detach(&mut self) -> io::Result<()> {
-        let _details = replay::codec::error_details_scope();
+        let _details = replay_data::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Teardown);
         crate::allocation::attempted_hour(None);
         if crate::allocation::failed() {
@@ -2789,12 +2796,12 @@ impl Processor {
     }
 
     /// What the campaigns' commits no longer hold, for freeing off this thread.
-    pub(crate) fn take_retired(&mut self) -> Vec<replay::frame::Retired> {
+    pub(crate) fn take_retired(&mut self) -> Vec<replay_frame::frame::Retired> {
         let mut retired = Vec::new();
         for (_, campaign) in &mut self.campaigns {
             if retired.is_empty() {
                 retired = std::mem::take(&mut campaign.retired);
-            } else if engine::allocation::reserve(&mut retired, campaign.retired.len()).is_ok() {
+            } else if engine_allocation::reserve(&mut retired, campaign.retired.len()).is_ok() {
                 retired.append(&mut campaign.retired);
             } else {
                 campaign.retired.clear();
@@ -2816,8 +2823,8 @@ impl Processor {
     /// The campaign directories whose `spool.*` files `status.json` reports
     /// as `spool_bytes`. The status writer measures them off this thread.
     pub fn spool_directories(&self) -> io::Result<Vec<std::path::PathBuf>> {
-        let _details = replay::codec::error_details_scope();
-        let mut directories = engine::allocation::vec(self.campaigns.0.len())?;
+        let _details = replay_data::codec::error_details_scope();
+        let mut directories = engine_allocation::vec(self.campaigns.0.len())?;
         for campaign in self.campaigns.values() {
             directories.push(campaign.directory.clone());
         }
@@ -2854,7 +2861,7 @@ impl Processor {
         &'a self,
         work: crate::status::Object<T>,
     ) -> io::Result<impl Serialize + 'a> {
-        let _details = replay::codec::error_details_scope();
+        let _details = replay_data::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Status);
         crate::allocation::attempted_hour(None);
         if crate::allocation::failed() {
@@ -2871,9 +2878,9 @@ impl Processor {
         // Per-family copy-only mirrors, built outside the status `json!` so
         // the macro stays under its recursion limit as families move over.
         let research_walk_ns = [
-            stats.table_ns[replay::rows::TableId::ResearchTechnologies.index()],
-            stats.table_ns[replay::rows::TableId::ResearchSlots.index()],
-            stats.table_ns[replay::rows::TableId::TechnologyDefinitions.index()],
+            stats.table_ns[replay_data::rows::TableId::ResearchTechnologies.index()],
+            stats.table_ns[replay_data::rows::TableId::ResearchSlots.index()],
+            stats.table_ns[replay_data::rows::TableId::TechnologyDefinitions.index()],
         ];
         let stability_walk_ns = stats.stability_walk_ticks.map(|ticks| {
             (u128::from(ticks) * 1_000_000_000)
@@ -2882,33 +2889,33 @@ impl Processor {
                 .min(u128::from(u64::MAX)) as u64
         });
         let relations_copy_ns = [
-            stats.table_ns[replay::rows::TableId::RelationOpinions.index()],
-            stats.table_ns[replay::rows::TableId::RelationTuples.index()],
+            stats.table_ns[replay_data::rows::TableId::RelationOpinions.index()],
+            stats.table_ns[replay_data::rows::TableId::RelationTuples.index()],
         ];
         let characters_copy_ns = [
-            stats.table_ns[replay::rows::TableId::Characters.index()],
-            stats.table_ns[replay::rows::TableId::CountryLeaderRoles.index()],
-            stats.table_ns[replay::rows::TableId::AdvisorRoles.index()],
-            stats.table_ns[replay::rows::TableId::UnitLeaders.index()],
-            stats.table_ns[replay::rows::TableId::UnitLeaderTraits.index()],
+            stats.table_ns[replay_data::rows::TableId::Characters.index()],
+            stats.table_ns[replay_data::rows::TableId::CountryLeaderRoles.index()],
+            stats.table_ns[replay_data::rows::TableId::AdvisorRoles.index()],
+            stats.table_ns[replay_data::rows::TableId::UnitLeaders.index()],
+            stats.table_ns[replay_data::rows::TableId::UnitLeaderTraits.index()],
         ];
         let projects_copy_ns = decode::PROJECTS.map(|table| stats.table_ns[table.index()]);
-        let lexical_copy_ns = [stats.table_ns[replay::rows::TableId::LexicalTokens.index()]];
+        let lexical_copy_ns = [stats.table_ns[replay_data::rows::TableId::LexicalTokens.index()]];
         let variants_walk_ns = [
-            stats.table_ns[replay::rows::TableId::VariantDefinitions.index()],
-            stats.table_ns[replay::rows::TableId::VariantModules.index()],
-            stats.table_ns[replay::rows::TableId::VariantStats.index()],
-            stats.table_ns[replay::rows::TableId::VariantUpgrades.index()],
+            stats.table_ns[replay_data::rows::TableId::VariantDefinitions.index()],
+            stats.table_ns[replay_data::rows::TableId::VariantModules.index()],
+            stats.table_ns[replay_data::rows::TableId::VariantStats.index()],
+            stats.table_ns[replay_data::rows::TableId::VariantUpgrades.index()],
         ];
         // The shared state/province walk is charged to StateBuildings; the
         // hourly detection walk beside it is the third entry.
         let buildings_walk_ns = [
-            stats.table_ns[replay::rows::TableId::StateBuildings.index()],
-            stats.table_ns[replay::rows::TableId::ProvinceBuildings.index()],
-            stats.table_ns[replay::rows::TableId::RaidTargetStatuses.index()],
+            stats.table_ns[replay_data::rows::TableId::StateBuildings.index()],
+            stats.table_ns[replay_data::rows::TableId::ProvinceBuildings.index()],
+            stats.table_ns[replay_data::rows::TableId::RaidTargetStatuses.index()],
         ];
         // The owned war-vector acquisition is charged to WarRelations.
-        let wars_walk_ns = [stats.table_ns[replay::rows::TableId::WarRelations.index()]];
+        let wars_walk_ns = [stats.table_ns[replay_data::rows::TableId::WarRelations.index()]];
         let divisions_copy_ns = [
             stats.table_ns[decode::DIVISIONS[0].index()],
             stats.table_ns[decode::DIVISIONS[1].index()],
@@ -2945,14 +2952,14 @@ impl Processor {
         // families; `decode_ns` lives in the decode calibration, so this is
         // not comparable across threads — see the PLAN appendix).
         let map_walk_ns = [
-            stats.table_ns[replay::rows::TableId::LandCombats.index()],
-            stats.table_ns[replay::rows::TableId::Fleets.index()],
-            stats.table_ns[replay::rows::TableId::TaskForces.index()],
-            stats.table_ns[replay::rows::TableId::Ships.index()],
-            stats.table_ns[replay::rows::TableId::NavalCombats.index()],
-            stats.table_ns[replay::rows::TableId::NavalCombatParticipants.index()],
-            stats.table_ns[replay::rows::TableId::AirWings.index()],
-            stats.table_ns[replay::rows::TableId::ArmyOrders.index()],
+            stats.table_ns[replay_data::rows::TableId::LandCombats.index()],
+            stats.table_ns[replay_data::rows::TableId::Fleets.index()],
+            stats.table_ns[replay_data::rows::TableId::TaskForces.index()],
+            stats.table_ns[replay_data::rows::TableId::Ships.index()],
+            stats.table_ns[replay_data::rows::TableId::NavalCombats.index()],
+            stats.table_ns[replay_data::rows::TableId::NavalCombatParticipants.index()],
+            stats.table_ns[replay_data::rows::TableId::AirWings.index()],
+            stats.table_ns[replay_data::rows::TableId::ArmyOrders.index()],
         ];
         let air_wing_copy_ns = [
             stats.table_ns[decode::AIR_WING[0].index()],
@@ -2979,7 +2986,7 @@ impl Processor {
             stats.table_ns[decode::SESSION[1].index()],
             stats.table_ns[decode::SESSION[2].index()],
         ];
-        let mut background_sync = engine::allocation::vec(self.campaigns.0.len())?;
+        let mut background_sync = engine_allocation::vec(self.campaigns.0.len())?;
         for (id, campaign) in self.campaigns.iter() {
             if let Some(work) = campaign.spool.background_sync_work() {
                 background_sync.push(status!({
@@ -3033,10 +3040,10 @@ impl Processor {
             "table_reads_recorded": stats.hours != 0,
             "table_reads_frames": stats.hours,
             "cadence_policy": "hourly map tables; daily slots; static once per branch",
-            "static_tables": sequence(TableId::ALL.into_iter().filter(|table| replay::cadence::cadence(*table) == replay::cadence::Cadence::Static).map(DebugValue)),
+            "static_tables": sequence(TableId::ALL.into_iter().filter(|table| replay_data::cadence::cadence(*table) == replay_data::cadence::Cadence::Static).map(DebugValue)),
             "daily_slots": sequence((0..24).map(|slot| status!({
                 "slot": slot,
-                "tables": sequence(TableId::ALL.into_iter().filter(move |table| replay::cadence::refresh_slot(*table) == Some(slot)).map(DebugValue))
+                "tables": sequence(TableId::ALL.into_iter().filter(move |table| replay_data::cadence::refresh_slot(*table) == Some(slot)).map(DebugValue))
             }))),
             "table_reads_scope": "exact per-table native acquisition read work for the latest successfully processed frame; indexed by TableId like table_ns; no observation until table_reads_recorded is true; skipped tables contribute zero; shared native work is charged once to its capture anchor; table failures can still incur reads",
             "table_read_counts_semantics": "native API calls include empty and faulted calls; spans and bytes count nonempty requested source ranges for the executed prefix plus the first failed or rejected source span; empty spans and unexecuted suffixes excluded; invalid destination layouts and short plan buffers count the call only; a plan ControlChanged stop excludes the next unattempted span; bytes are requested lengths, not claimed successfully transferred partial-fault bytes",
@@ -3174,7 +3181,7 @@ fn prepare_campaigns<'a>(
         };
         if !seen.iter().any(|previous: &String| previous == &id) {
             open(&id)?;
-            engine::allocation::reserve(&mut seen, 1)?;
+            engine_allocation::reserve(&mut seen, 1)?;
             seen.push(id);
         }
     }
@@ -3188,19 +3195,19 @@ pub(super) fn campaign_name(bytes: &[u8]) -> io::Result<String> {
         ));
     }
     // Preserve the engine's spelling, including case, in both the path and row.
-    engine::allocation::string(std::str::from_utf8(bytes).expect("validated UUID is ASCII"))
+    engine_allocation::string(std::str::from_utf8(bytes).expect("validated UUID is ASCII"))
 }
 
 pub(crate) use crate::table_conversion::{table, table_iter, unavailable};
 
 /// The controller-area node a province row holds
-/// ([`engine::cprovince::Row::area_node`]): the area it labels.
+/// ([`engine_native::cprovince::Row::area_node`]): the area it labels.
 fn area_node(
-    nodes: &engine::controller_areas::Output,
-    province: &engine::cprovince::Row,
-) -> Option<replay::rows::ControllerAreaNode> {
+    nodes: &engine_native::controller_areas::Output,
+    province: &engine_native::cprovince::Row,
+) -> Option<replay_data::rows::ControllerAreaNode> {
     let node = nodes.nodes.get(province.area_node? as usize)?;
-    Some(replay::rows::ControllerAreaNode {
+    Some(replay_data::rows::ControllerAreaNode {
         first_land: node.first_land,
         neighbours: nodes.neighbours(node).map(<[u32]>::to_vec),
     })
@@ -3208,16 +3215,16 @@ fn area_node(
 
 /// [`area_node`] compared with a baseline row without building it.
 fn area_node_equal(
-    nodes: &engine::controller_areas::Output,
-    province: &engine::cprovince::Row,
+    nodes: &engine_native::controller_areas::Output,
+    province: &engine_native::cprovince::Row,
     previous: &ProvinceRow,
 ) -> bool {
     let current = province
         .area_node
         .and_then(|index| nodes.nodes.get(index as usize));
     match (&previous.area_node, current) {
-        (replay::rows::Recorded::Value(None), None) => true,
-        (replay::rows::Recorded::Value(Some(previous)), Some(node)) => {
+        (replay_data::rows::Recorded::Value(None), None) => true,
+        (replay_data::rows::Recorded::Value(Some(previous)), Some(node)) => {
             previous.first_land == node.first_land
                 && previous.neighbours.as_deref() == nodes.neighbours(node)
         }
@@ -3230,7 +3237,7 @@ fn area_node_equal(
 fn state_table(
     captured: &Captured,
     projection: Option<&mut crate::projection::Projection<'_>>,
-) -> replay::frame::TableInput {
+) -> replay_frame::frame::TableInput {
     let copied = captured
         .state_names
         .get(..captured.state_names_len)
@@ -3238,7 +3245,7 @@ fn state_table(
     let Some(names) = copied else {
         return unavailable("state name arena length invalid").into();
     };
-    let text = |span: engine::cstate::NameSpan| {
+    let text = |span: engine_native::cstate::NameSpan| {
         span.start
             .checked_add(span.len)
             .and_then(|end| names.get(span.start..end))
@@ -3259,17 +3266,17 @@ fn state_table(
             owner: state.owner,
             controller: state.controller,
             movement_infrastructure: state.movement_infrastructure,
-            continent: replay::rows::Recorded::Value(state.continent),
+            continent: replay_data::rows::Recorded::Value(state.continent),
             manpower_available: state.manpower_available,
-            population: replay::rows::Recorded::Value(state.population),
-            category: replay::rows::Recorded::Value(state.category),
-            railway_infrastructure: replay::rows::Recorded::Value(
+            population: replay_data::rows::Recorded::Value(state.population),
+            category: replay_data::rows::Recorded::Value(state.category),
+            railway_infrastructure: replay_data::rows::Recorded::Value(
                 captured.state_inputs.fraction(state.id),
             ),
-            custom_name: engine::allocation::owned_vec(engine::allocation::copy_vec(
+            custom_name: engine_allocation::owned_vec(engine_allocation::copy_vec(
                 text(state.custom_name).unwrap_or_default(),
             )),
-            owner_name: engine::allocation::owned_vec(engine::allocation::copy_vec(
+            owner_name: engine_allocation::owned_vec(engine_allocation::copy_vec(
                 text(state.owner_name).unwrap_or_default(),
             )),
         },
@@ -3292,7 +3299,7 @@ fn faction_table(captured: &Captured) -> TableView {
     table::<tables::Factions, _>(captured.factions_result, &captured.factions, |faction| {
         FactionRow {
             id: faction.id,
-            name: engine::allocation::owned_vec(engine::allocation::copy_vec(
+            name: engine_allocation::owned_vec(engine_allocation::copy_vec(
                 &captured.faction_names[faction.name_start..faction.name_start + faction.name_len],
             )),
             template_token: faction.template_token,
@@ -3306,8 +3313,8 @@ fn faction_table(captured: &Captured) -> TableView {
 }
 
 #[cfg(test)]
-fn sampled_frame(source: FrameInput) -> replay::frame::DecodedFrame {
-    replay::frame::DecodedFrame {
+fn sampled_frame(source: FrameInput) -> replay_frame::frame::DecodedFrame {
+    replay_frame::frame::DecodedFrame {
         branch: source.branch,
         hour: source.hour,
         metrics: source.metrics,
@@ -3327,7 +3334,11 @@ fn sampled_frame(source: FrameInput) -> replay::frame::DecodedFrame {
 }
 
 #[cfg(test)]
-fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> replay::frame::DecodedFrame {
+fn decoded(
+    captured: &Captured,
+    clock: Clock,
+    branch: BranchId,
+) -> replay_frame::frame::DecodedFrame {
     sampled_frame(
         decoded_with_costs(
             captured,
@@ -3400,7 +3411,7 @@ fn decoded_with_costs(
         metrics,
     };
     // Every converted table's stepped fields are rounded to their display
-    // steps (replay::display) before merges, carries and comparisons read
+    // steps (replay_data::display) before merges, carries and comparisons read
     // them, so a row that drifted only below the game's display precision
     // equals its baseline. Projected rows arrive rounded (crate::projection);
     // a table still shared with its producer's cache is rounded only while
@@ -3448,7 +3459,7 @@ fn core_tables(
             Outcome::Rows { len: 1 },
             std::slice::from_ref(clock),
             |clock| CampaignRow {
-                id: engine::allocation::owned_vec(engine::allocation::copy_vec(clock.campaign_id)),
+                id: engine_allocation::owned_vec(engine_allocation::copy_vec(clock.campaign_id)),
             },
         )
         .into(),
@@ -3467,14 +3478,14 @@ fn core_tables(
                     && country.war_support_raw == previous.war_support_raw
                     && country.convoys_raw == previous.convoys_raw
                     && country.manpower_residual == previous.manpower_residual
-                    && replay::rows::Recorded::Value(country.border_land_doctrine_level)
+                    && replay_data::rows::Recorded::Value(country.border_land_doctrine_level)
                         == previous.border_land_doctrine_level
                     && country.peace_conference_participant == previous.peace_conference_participant
             },
             |country| CountryRow {
                 id: country.id,
                 canonical_slot: country.canonical_slot,
-                tag: engine::allocation::owned_vec(engine::allocation::copy_vec(
+                tag: engine_allocation::owned_vec(engine_allocation::copy_vec(
                     country.tag.as_bytes(),
                 )),
                 political_power_raw: country.political_power_raw,
@@ -3484,7 +3495,7 @@ fn core_tables(
                 convoys_raw: country.convoys_raw,
                 peace_conference_participant: country.peace_conference_participant,
                 manpower_residual: country.manpower_residual,
-                border_land_doctrine_level: replay::rows::Recorded::Value(
+                border_land_doctrine_level: replay_data::rows::Recorded::Value(
                     country.border_land_doctrine_level,
                 ),
             },
@@ -3513,14 +3524,16 @@ fn core_tables(
                     && province.fort_positive == previous.fort_positive
                     && province.move_gate == previous.move_gate
                     && province.port_sea == previous.port_sea
-                    && replay::rows::Recorded::Value(province.fort_bunker) == previous.fort_bunker
+                    && replay_data::rows::Recorded::Value(province.fort_bunker)
+                        == previous.fort_bunker
                     && previous.selected_areas
-                        == replay::rows::Recorded::Value(replay::rows::Retired)
+                        == replay_data::rows::Recorded::Value(replay_data::rows::Retired)
                     && previous.attack
-                        == replay::rows::Recorded::Value(replay::rows::Witnessed(None))
+                        == replay_data::rows::Recorded::Value(replay_data::rows::Witnessed(None))
                     && previous.controller_area
-                        == replay::rows::Recorded::Value(province.controller_area)
-                    && previous.owner_area == replay::rows::Recorded::Value(province.owner_area)
+                        == replay_data::rows::Recorded::Value(province.controller_area)
+                    && previous.owner_area
+                        == replay_data::rows::Recorded::Value(province.owner_area)
                     && area_node_equal(&captured.provinces.area_nodes, province, previous)
             },
             |province| ProvinceRow {
@@ -3532,13 +3545,13 @@ fn core_tables(
                 fort_positive: province.fort_positive,
                 move_gate: province.move_gate,
                 port_sea: province.port_sea,
-                fort_bunker: replay::rows::Recorded::Value(province.fort_bunker),
-                selected_areas: replay::rows::Recorded::Value(replay::rows::Retired),
+                fort_bunker: replay_data::rows::Recorded::Value(province.fort_bunker),
+                selected_areas: replay_data::rows::Recorded::Value(replay_data::rows::Retired),
                 // No province operand is witnessed; current writers leave it empty.
-                attack: replay::rows::Recorded::Value(replay::rows::Witnessed(None)),
-                controller_area: replay::rows::Recorded::Value(province.controller_area),
-                owner_area: replay::rows::Recorded::Value(province.owner_area),
-                area_node: replay::rows::Recorded::Value(area_node(
+                attack: replay_data::rows::Recorded::Value(replay_data::rows::Witnessed(None)),
+                controller_area: replay_data::rows::Recorded::Value(province.controller_area),
+                owner_area: replay_data::rows::Recorded::Value(province.owner_area),
+                area_node: replay_data::rows::Recorded::Value(area_node(
                     &captured.provinces.area_nodes,
                     province,
                 )),
@@ -3776,7 +3789,7 @@ fn border_conflicts_table(captured: &Captured) -> TableView {
     let Some(groups) = province.groups.get(..province.conflict_walk.groups_len) else {
         return unavailable("border conflict group arena length invalid");
     };
-    let list = |r: &engine::cprovince::ConflictRow| {
+    let list = |r: &engine_native::cprovince::ConflictRow| {
         r.groups_start
             .checked_add(r.groups_len)
             .and_then(|end| groups.get(r.groups_start..end))
@@ -3787,7 +3800,7 @@ fn border_conflicts_table(captured: &Captured) -> TableView {
     }
     table::<tables::BorderConflicts, _>(outcome, &province.conflicts, |r| BorderConflictRow {
         province: r.province,
-        groups: engine::allocation::owned_vec(engine::allocation::copy_vec(list(r).unwrap())),
+        groups: engine_allocation::owned_vec(engine_allocation::copy_vec(list(r).unwrap())),
     })
 }
 
@@ -3805,11 +3818,11 @@ fn unavailable_tables(reason: &'static str) -> [TableInput; TABLE_COUNT] {
 fn retired_reason(table: TableId) -> Option<&'static str> {
     static REASONS: std::sync::OnceLock<[Option<String>; TABLE_COUNT]> = std::sync::OnceLock::new();
     REASONS.get_or_init(|| {
-        let current = replay::format::FormatVersion::CURRENT.version();
+        let current = replay_data::format::FormatVersion::CURRENT.version();
         std::array::from_fn(|index| {
             let table = TableId::ALL[index];
             (!table.last_change().present(current))
-                .then(|| replay::format::FormatVersion::CURRENT.table_refusal(table))
+                .then(|| replay_data::format::FormatVersion::CURRENT.table_refusal(table))
                 .flatten()
         })
     })[table.index()]
@@ -3828,10 +3841,10 @@ pub(crate) fn allocation_failure_frame(hour: i32) -> Captured {
     let uuid = b"01234567-89ab-cdef-0123-456789abcdef";
     clock.campaign_id.len = uuid.len();
     clock.campaign_id.bytes[..uuid.len()].copy_from_slice(uuid);
-    engine::allocation::resize_default(&mut frame.map.land_combats.rows, 1).unwrap();
-    engine::allocation::resize_default(&mut frame.map.land_participants, 2).unwrap();
-    engine::allocation::resize_default(&mut frame.map.land_classes, 2).unwrap();
-    frame.map.land_combats.rows[0] = engine::cland_combat::Row {
+    engine_allocation::resize_default(&mut frame.map.land_combats.rows, 1).unwrap();
+    engine_allocation::resize_default(&mut frame.map.land_participants, 2).unwrap();
+    engine_allocation::resize_default(&mut frame.map.land_classes, 2).unwrap();
+    frame.map.land_combats.rows[0] = engine_native::cland_combat::Row {
         id: 1,
         attacker_start: 0,
         attacker_len: 1,
@@ -3851,13 +3864,13 @@ mod byte_identity_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::container::{Replay, SeekResult};
-    use replay::frame::DecodedFrame;
-    use replay::rows::{Recorded, TableId};
+    use replay::{container::Replay, container::SeekResult};
+    use replay_data::{rows::Recorded, rows::TableId};
+    use replay_frame::frame::DecodedFrame;
 
     #[test]
     fn the_viewed_country_is_published_from_committed_rows_and_copied_only_on_change() {
-        use replay::country_flags::FlagOperands;
+        use replay_data::country_flags::FlagOperands;
         // No committed rows: nothing to publish.
         assert_eq!(viewed_flag(&FrameEncoder::new()), None);
         let germany = FlagOperands {
@@ -3895,7 +3908,9 @@ mod tests {
 
     #[test]
     fn war_snapshot_work_only_counts_sampled_passes_and_keeps_capacity_scope() {
-        use engine::cwar_relation::{OwnedSnapshotCapacity, OwnedSnapshotStats};
+        use engine_native::{
+            cwar_relation::OwnedSnapshotCapacity, cwar_relation::OwnedSnapshotStats,
+        };
         let first = OwnedSnapshotStats {
             queries: 8,
             hits: 5,
@@ -3981,7 +3996,9 @@ mod tests {
 
     #[test]
     fn war_snapshot_work_saturates_cumulative_counters() {
-        use engine::cwar_relation::{OwnedSnapshotCapacity, OwnedSnapshotStats};
+        use engine_native::{
+            cwar_relation::OwnedSnapshotCapacity, cwar_relation::OwnedSnapshotStats,
+        };
         let mut work = WarSnapshotWork {
             passes: u64::MAX,
             totals: [u64::MAX - 1; 6],
@@ -4180,7 +4197,7 @@ mod tests {
             first,
             &json!({
                 "hour": -3, "qpc": 6_000_000_000_017_i64,
-                "daily_slot": (-3_i32).rem_euclid(replay::cadence::STAGGER_PERIOD),
+                "daily_slot": (-3_i32).rem_euclid(replay_data::cadence::STAGGER_PERIOD),
                 "callback_ns": 512_000_000, "entry_ns": 117, "buffer_wait_ns": 217,
                 "setup_ns": 128_000_000, "parallel_ns": 256_000_000, "residual_ns": 128_000_000,
                 "segments_ns": vec![17; crate::sampling::SEGMENTS],
@@ -4591,17 +4608,17 @@ mod tests {
             backlogged: false,
             comparison: Box::default(),
         };
-        processor.stats.table_ns[replay::rows::TableId::ResearchTechnologies.index()] = 11;
-        processor.stats.table_ns[replay::rows::TableId::ResearchSlots.index()] = 22;
-        processor.stats.table_ns[replay::rows::TableId::TechnologyDefinitions.index()] = 33;
-        processor.stats.table_ns[replay::rows::TableId::LandCombats.index()] = 101;
-        processor.stats.table_ns[replay::rows::TableId::WingEquipment.index()] = 201;
-        processor.stats.table_ns[replay::rows::TableId::LandTheatres.index()] = 301;
-        processor.stats.table_ns[replay::rows::TableId::Players.index()] = 401;
-        processor.stats.table_ns[replay::rows::TableId::WorldTension.index()] = 501;
-        processor.stats.table_ns[replay::rows::TableId::WarRelations.index()] = 601;
-        processor.stats.table_ns[replay::rows::TableId::StateBuildings.index()] = 701;
-        processor.stats.table_ns[replay::rows::TableId::RaidTargetStatuses.index()] = 703;
+        processor.stats.table_ns[replay_data::rows::TableId::ResearchTechnologies.index()] = 11;
+        processor.stats.table_ns[replay_data::rows::TableId::ResearchSlots.index()] = 22;
+        processor.stats.table_ns[replay_data::rows::TableId::TechnologyDefinitions.index()] = 33;
+        processor.stats.table_ns[replay_data::rows::TableId::LandCombats.index()] = 101;
+        processor.stats.table_ns[replay_data::rows::TableId::WingEquipment.index()] = 201;
+        processor.stats.table_ns[replay_data::rows::TableId::LandTheatres.index()] = 301;
+        processor.stats.table_ns[replay_data::rows::TableId::Players.index()] = 401;
+        processor.stats.table_ns[replay_data::rows::TableId::WorldTension.index()] = 501;
+        processor.stats.table_ns[replay_data::rows::TableId::WarRelations.index()] = 601;
+        processor.stats.table_ns[replay_data::rows::TableId::StateBuildings.index()] = 701;
+        processor.stats.table_ns[replay_data::rows::TableId::RaidTargetStatuses.index()] = 703;
         processor.stats.observe_stability_walk_ticks([1, 2, 3, 4]);
         processor
             .stats
@@ -4636,12 +4653,10 @@ mod tests {
         );
     }
 
-    use engine::msvc_string::Text;
-    use replay::{
-        branches::{BranchReason, Parentage},
-        identity::{Identity, Verification},
-        spool::{SegmentSink, recover_prefix},
-    };
+    use engine_native::msvc_string::Text;
+    use replay::{spool::SegmentSink, spool::recover_prefix};
+    use replay_data::{identity::Identity, identity::Verification};
+    use replay_frame::{branches::BranchReason, branches::Parentage};
     use std::{cell::RefCell, io::Write, rc::Rc};
 
     const ID: &[u8] = b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a6";
@@ -4655,8 +4670,8 @@ mod tests {
         result
     }
 
-    fn owned_text(bytes: &[u8]) -> engine::capture_text::Owned {
-        engine::capture_text::Owned {
+    fn owned_text(bytes: &[u8]) -> engine_native::capture_text::Owned {
+        engine_native::capture_text::Owned {
             bytes: bytes.to_vec(),
             len: bytes.len(),
         }
@@ -4712,14 +4727,14 @@ mod tests {
         source.capture_seq = seq;
         source.clock = Some(clock(hour));
         source.qpc = 1000;
-        source.country_cache_status = engine::country_memory::SeedStatus::Ready;
+        source.country_cache_status = engine_native::country_memory::SeedStatus::Ready;
         source.order_counters.forced = true;
-        source.order_counters.read = Some(engine::ccountry::OrderInstanceCounterRead {
+        source.order_counters.read = Some(engine_native::ccountry::OrderInstanceCounterRead {
             len: 1,
             required: 1,
             unreadable: 0,
         });
-        source.order_counters.rows[0] = engine::ccountry::OrderInstanceCounter {
+        source.order_counters.rows[0] = engine_native::ccountry::OrderInstanceCounter {
             pointer: 0x2000,
             country: 3,
             canonical_slot: 1,
@@ -4780,7 +4795,9 @@ mod tests {
         } = prepared;
         let mut encoder = FrameEncoder::new();
         let encoded = encoder.encode_input(owned, true).unwrap();
-        let actual = replay::frame::FrameDecoder::new().apply(&encoded).unwrap();
+        let actual = replay_frame::frame::FrameDecoder::new()
+            .apply(&encoded)
+            .unwrap();
         assert_eq!(actual.tables, expected.tables);
         assert_eq!(actual.metrics, expected.metrics);
         let mut stats = Statistics::default();
@@ -4866,7 +4883,9 @@ mod tests {
         assert!(prepared.witness.forced.is_some());
         let static_table = TableId::ALL
             .into_iter()
-            .find(|table| replay::cadence::cadence(*table) == replay::cadence::Cadence::Static)
+            .find(|table| {
+                replay_data::cadence::cadence(*table) == replay_data::cadence::Cadence::Static
+            })
             .unwrap();
         prepared.source.tables[static_table.index()] =
             unavailable("synthetic static failure").into();
@@ -4902,7 +4921,8 @@ mod tests {
         );
         assert_eq!(
             first["retained_capacity_bytes"],
-            witness.rows.capacity() * std::mem::size_of::<engine::ccountry::OrderInstanceCounter>()
+            witness.rows.capacity()
+                * std::mem::size_of::<engine_native::ccountry::OrderInstanceCounter>()
         );
         prepare_order_counter_sample(&mut source, 11, 1);
         source.order_counters.forced = false;
@@ -5008,9 +5028,10 @@ mod tests {
             match case {
                 0 => source.clock = None,
                 1 => {
-                    source.country_cache_status = engine::country_memory::SeedStatus::Unavailable {
-                        reason: "no roster",
-                    }
+                    source.country_cache_status =
+                        engine_native::country_memory::SeedStatus::Unavailable {
+                            reason: "no roster",
+                        }
                 }
                 2 => source.order_counters.read = None,
                 3 => source.order_counters.read.as_mut().unwrap().required = 2,
@@ -5106,7 +5127,7 @@ mod tests {
     #[test]
     fn conversion_keeps_native_values_aliases_and_raw_text() {
         let mut captured = captured(10);
-        captured.countries[0] = engine::ccountry::Row {
+        captured.countries[0] = engine_native::ccountry::Row {
             politics_witness: None,
             id: 7,
             canonical_slot: 1,
@@ -5121,12 +5142,12 @@ mod tests {
             border_land_doctrine_level: None,
         };
         captured.countries_result = Outcome::Rows { len: 1 };
-        captured.links[0] = engine::ccountry::LinkRow {
+        captured.links[0] = engine_native::ccountry::LinkRow {
             id: 2,
             canonical_slot: 1,
         };
         captured.links_result = Outcome::Rows { len: 1 };
-        captured.provinces.rows[0] = engine::cprovince::Row {
+        captured.provinces.rows[0] = engine_native::cprovince::Row {
             id: 6,
             state: 4,
             owner: 7,
@@ -5135,7 +5156,7 @@ mod tests {
             ..Default::default()
         };
         captured.provinces_result = Outcome::Rows { len: 1 };
-        captured.states[0] = engine::cstate::Row {
+        captured.states[0] = engine_native::cstate::Row {
             id: 4,
             owner: 7,
             controller: u32::MAX,
@@ -5144,7 +5165,7 @@ mod tests {
         captured.states_result = Outcome::Rows { len: 1 };
         // Equal numeric ids in different native type namespaces remain separate
         // rows. Their roster order is intentionally opposite to wire key order.
-        captured.divisions[0] = engine::carmy::Row {
+        captured.divisions[0] = engine_native::carmy::Row {
             id: (u64::from(u32::MAX) << 32) | 4713,
             roster_owner: 7,
             logical_owner: 2,
@@ -5156,7 +5177,7 @@ mod tests {
             orders_group: (57_u64 << 32) | 53,
             reveal_skip: 0,
         };
-        captured.divisions[1] = engine::carmy::Row {
+        captured.divisions[1] = engine_native::carmy::Row {
             id: (u64::from(u32::MAX) << 32) | 51,
             ..captured.divisions[0]
         };
@@ -5165,7 +5186,7 @@ mod tests {
         assert_eq!(
             frame.tables[2],
             TableView::Complete(TableRows::Countries(vec![CountryRow {
-                border_land_doctrine_level: replay::rows::Recorded::Value(None),
+                border_land_doctrine_level: replay_data::rows::Recorded::Value(None),
                 id: 7,
                 canonical_slot: 1,
                 tag: b"GER".to_vec(),
@@ -5195,7 +5216,7 @@ mod tests {
         );
         for division in divisions.rows::<tables::Divisions>().unwrap() {
             // Capture stores organisation at its display step, a tenth
-            // truncated toward zero (replay::display); the sentinel stays.
+            // truncated toward zero (replay_data::display); the sentinel stays.
             assert_eq!(division.hit_points, i64::MIN);
             assert_eq!(division.organisation, 9_007_199_254_740_000);
             assert_eq!(division.template, u64::MAX);
@@ -5220,7 +5241,7 @@ mod tests {
                 fort_positive: 0,
                 move_gate: 0,
                 port_sea: 0,
-                attack: Recorded::Value(replay::rows::Witnessed(None)),
+                attack: Recorded::Value(replay_data::rows::Witnessed(None)),
                 selected_areas: Default::default(),
                 fort_bunker: Recorded::Value(None),
                 controller_area: Default::default(),
@@ -5237,8 +5258,8 @@ mod tests {
                 owner: 7,
                 controller: u32::MAX,
                 movement_infrastructure: 0,
-                railway_infrastructure: replay::rows::Recorded::Value(None),
-                continent: replay::rows::Recorded::Value(None),
+                railway_infrastructure: replay_data::rows::Recorded::Value(None),
+                continent: replay_data::rows::Recorded::Value(None),
                 ..Default::default()
             }]))
         );
@@ -5346,7 +5367,7 @@ mod tests {
             len: 0,
             unread_rows: 3,
         };
-        source.factions[0] = engine::cfaction::Row {
+        source.factions[0] = engine_native::cfaction::Row {
             id: 88,
             name_start: 0,
             name_len: 3,
@@ -5389,7 +5410,7 @@ mod tests {
 
     #[test]
     fn healthy_hours_restore_failed_baselines_and_keep_new_values() {
-        use replay::frame::{FrameDecoder, TableUpdate};
+        use replay_frame::{frame::FrameDecoder, frame::TableUpdate};
 
         let mut source = captured(10);
         source.states_result = Outcome::Unavailable {
@@ -5406,14 +5427,14 @@ mod tests {
         decoder.apply(&failed).unwrap();
 
         source.states_result = Outcome::Rows { len: 1 };
-        source.states[0] = engine::cstate::Row {
+        source.states[0] = engine_native::cstate::Row {
             id: 4,
             owner: 7,
             controller: 7,
             ..Default::default()
         };
         source.factions_result = Outcome::Rows { len: 1 };
-        source.factions[0] = engine::cfaction::Row {
+        source.factions[0] = engine_native::cfaction::Row {
             id: 88,
             name_start: 0,
             name_len: 3,
@@ -5446,7 +5467,7 @@ mod tests {
     #[test]
     fn relation_and_faction_conversion_preserves_native_fields_and_member_order() {
         let mut source = captured(10);
-        source.wars[0] = engine::cwar_relation::Row {
+        source.wars[0] = engine_native::cwar_relation::Row {
             first_country: u32::MAX,
             second_country: 1,
             start_hour: i32::MIN,
@@ -5459,7 +5480,7 @@ mod tests {
             first_was_instigator: 254,
         };
         source.wars_result = Outcome::Rows { len: 1 };
-        source.factions[0] = engine::cfaction::Row {
+        source.factions[0] = engine_native::cfaction::Row {
             id: u64::MAX,
             name_start: 2,
             name_len: 4,
@@ -5468,12 +5489,12 @@ mod tests {
         source.factions_result = Outcome::Rows { len: 1 };
         source.faction_names[..6].copy_from_slice(&[0, 0, b'A', 0, 255, b'B']);
         source.faction_names_len = 6;
-        source.faction_members[0] = engine::cfaction_system::MemberRow {
+        source.faction_members[0] = engine_native::cfaction_system::MemberRow {
             country: 9,
             faction: u64::MAX,
             ordinal: 0,
         };
-        source.faction_members[1] = engine::cfaction_system::MemberRow {
+        source.faction_members[1] = engine_native::cfaction_system::MemberRow {
             country: 1,
             faction: u64::MAX,
             ordinal: 1,
@@ -5516,14 +5537,16 @@ mod tests {
             ]))
         );
         let encoded = FrameEncoder::new().encode(frame.clone(), true).unwrap();
-        let decoded = replay::frame::FrameDecoder::new().apply(&encoded).unwrap();
+        let decoded = replay_frame::frame::FrameDecoder::new()
+            .apply(&encoded)
+            .unwrap();
         assert_eq!(decoded.tables, frame.tables);
     }
 
     #[test]
     fn faction_byte_ranges_and_primary_failures_cannot_publish_partial_values_as_complete() {
         let mut source = captured(10);
-        source.factions[0] = engine::cfaction::Row {
+        source.factions[0] = engine_native::cfaction::Row {
             id: 88,
             name_start: usize::MAX,
             name_len: 1,
@@ -5675,7 +5698,7 @@ mod tests {
             process_id: 100,
             process_start_time: 1000,
             qpc_frequency: 10_000_000,
-            sample_boundary: replay::identity::SampleBoundary::EndOfHour,
+            sample_boundary: replay_data::identity::SampleBoundary::EndOfHour,
             identity: Identity {
                 game_version: "fixture".into(),
                 exe_hash: [1; 32],
@@ -5874,7 +5897,7 @@ mod tests {
         assert_eq!(replay.recorded_hours(reloaded).unwrap(), vec![11]);
         assert_eq!(
             replay.sessions[0].sample_boundary,
-            replay::identity::SampleBoundary::EndOfHour
+            replay_data::identity::SampleBoundary::EndOfHour
         );
         let last_detach = replay
             .controls
@@ -6124,7 +6147,7 @@ mod tests {
         TableRows::ResearchInputs(
             rows.iter()
                 .map(
-                    |&(country, index, progress_raw, _read)| replay::rows::ResearchInputRow {
+                    |&(country, index, progress_raw, _read)| replay_data::rows::ResearchInputRow {
                         country,
                         index,
                         progress_raw,
@@ -6197,7 +6220,7 @@ mod tests {
             1,
             1,
             TableView::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON.into(),
+                reason: replay_data::cadence::SKIPPED_REASON.into(),
             },
         );
         let (_, unpublished) =
@@ -6301,18 +6324,20 @@ mod tests {
             TableId::ResearchInputs => TableRows::ResearchInputs(
                 values
                     .iter()
-                    .map(|&(country, progress_raw)| replay::rows::ResearchInputRow {
-                        country,
-                        progress_raw,
-                        ..Default::default()
-                    })
+                    .map(
+                        |&(country, progress_raw)| replay_data::rows::ResearchInputRow {
+                            country,
+                            progress_raw,
+                            ..Default::default()
+                        },
+                    )
                     .collect(),
             ),
             TableId::StateResourceInputs => TableRows::StateResourceInputs(
                 values
                     .iter()
                     .map(
-                        |&(state, global_factor)| replay::rows::StateResourceInputRow {
+                        |&(state, global_factor)| replay_data::rows::StateResourceInputRow {
                             state,
                             global_factor,
                             ..Default::default()
@@ -6411,7 +6436,7 @@ mod tests {
         assert_eq!(unpublished, 1 << family);
         for candidate in TableId::ALL
             .into_iter()
-            .filter(|&id| replay::cadence::is_sliced(id))
+            .filter(|&id| replay_data::cadence::is_sliced(id))
         {
             let affected = FAMILIES[family].tables.contains(&candidate);
             assert_eq!(
@@ -6424,7 +6449,7 @@ mod tests {
                     .sliced_reads
                     .keys()
                     .any(|(id, _)| id == candidate.index() as u32),
-                !affected && !replay::sliced::is_keyed(candidate),
+                !affected && !replay_data::sliced::is_keyed(candidate),
                 "{candidate:?} read hours"
             );
         }
@@ -6480,7 +6505,7 @@ mod tests {
     #[test]
     fn supply_trains_merge_each_countrys_nodes_and_inventory_at_its_read_hour() {
         use crate::slicing::SliceSelection;
-        use replay::rows::{SupplyNodeRow, TrainInventoryRow};
+        use replay_data::{rows::SupplyNodeRow, rows::TrainInventoryRow};
         const VERTEX: u32 = SupplyNodeRow::VERTEX;
         let nodes = |rows: &[(u32, u32, i64)]| {
             TableRows::SupplyNodes(
@@ -6808,11 +6833,13 @@ mod tests {
             TableRows::TechnologyDefinitions(
                 handles
                     .iter()
-                    .map(|&technology_handle| replay::rows::TechnologyDefinitionRow {
-                        technology_handle,
-                        database_index: technology_handle as i32,
-                        ..Default::default()
-                    })
+                    .map(
+                        |&technology_handle| replay_data::rows::TechnologyDefinitionRow {
+                            technology_handle,
+                            database_index: technology_handle as i32,
+                            ..Default::default()
+                        },
+                    )
                     .collect(),
             )
         };
@@ -6843,7 +6870,7 @@ mod tests {
     #[test]
     fn periodic_keyframes_re_encode_held_sliced_rows_and_merging_continues_across_them() {
         use crate::slicing::SliceSelection;
-        use replay::frame::FrameDecoder;
+        use replay_frame::frame::FrameDecoder;
         let (mut campaign, store) = campaign();
         let owners = 1..=48_u32;
         let slice = |hour: i32, full: bool| {
@@ -6851,7 +6878,7 @@ mod tests {
                 &owners
                     .clone()
                     .filter(|&owner| {
-                        full || replay::cadence::slice_of(owner) == hour.rem_euclid(24) as u32
+                        full || replay_data::cadence::slice_of(owner) == hour.rem_euclid(24) as u32
                     })
                     .map(|owner| (owner, 0, i64::from(hour), hour))
                     .collect::<Vec<_>>(),
@@ -6864,7 +6891,7 @@ mod tests {
             let branch = campaign.observe(None, hour, Some(1)).unwrap();
             let full = hour == 0;
             let fresh = slice(hour, full);
-            for owner in replay::sliced::owners(&fresh) {
+            for owner in replay_data::sliced::owners(&fresh) {
                 held.insert(owner, (i64::from(hour), hour));
             }
             let mut input = sliced_input(branch, hour, TableView::Complete(fresh));
@@ -6942,7 +6969,7 @@ mod tests {
             };
             // Each owner was read at its own slot, or at the full hour 0.
             for row in reads {
-                let slot = replay::cadence::slice_of(row.owner) as i32;
+                let slot = replay_data::cadence::slice_of(row.owner) as i32;
                 let expected_read = (0..=decoded.hour)
                     .rev()
                     .find(|hour| hour % 24 == slot)
@@ -6962,7 +6989,7 @@ mod tests {
         assert_eq!(keyframes, [0, 720]);
     }
 
-    fn frames_of(store: &Rc<RefCell<Store>>) -> Vec<replay::frame::Frame> {
+    fn frames_of(store: &Rc<RefCell<Store>>) -> Vec<replay_frame::frame::Frame> {
         store
             .borrow()
             .segments
@@ -6981,7 +7008,7 @@ mod tests {
     #[test]
     fn a_failed_slice_update_write_caches_the_merged_rows_of_its_hour() {
         use crate::slicing::SliceSelection;
-        use replay::frame::{FrameDecoder, TableUpdate};
+        use replay_frame::{frame::FrameDecoder, frame::TableUpdate};
         for fail_encoding in [false, true] {
             let (mut campaign, store) = campaign();
             let write = |campaign: &mut Campaign<MemoryBackend>,
@@ -7063,8 +7090,9 @@ mod tests {
     }
 
     fn staggered_frame(branch: BranchId, hour: i32, skip: bool) -> DecodedFrame {
-        use replay::rows::{
-            CampaignRow, ClockRow, SunkShipsRow, TableId, TableRows, WorldTensionRow,
+        use replay_data::{
+            rows::CampaignRow, rows::ClockRow, rows::SunkShipsRow, rows::TableId, rows::TableRows,
+            rows::WorldTensionRow,
         };
         let mut tables =
             std::array::from_fn(|index| TableView::Complete(TableRows::empty(TableId::ALL[index])));
@@ -7084,19 +7112,19 @@ mod tests {
             TableView::Complete(TableRows::LocalPlayer(vec![Default::default()]));
         tables[TableId::SimulationFeatures.index()] =
             TableView::Complete(TableRows::SimulationFeatures(vec![
-                replay::rows::SimulationFeatureRow::default(),
+                replay_data::rows::SimulationFeatureRow::default(),
             ]));
         tables[TableId::CombatLogState.index()] =
             TableView::Complete(TableRows::CombatLogState(vec![
-                replay::rows::CombatLogStateRow::default(),
+                replay_data::rows::CombatLogStateRow::default(),
             ]));
         tables[TableId::AirSortieModifierMetadata.index()] =
             TableView::Complete(TableRows::AirSortieModifierMetadata(vec![
-                replay::rows::AirSortieModifierMetadataRow::default(),
+                replay_data::rows::AirSortieModifierMetadataRow::default(),
             ]));
         tables[TableId::ReservedCountryNaming.index()] =
             TableView::Complete(TableRows::ReservedCountryNaming(vec![
-                replay::rows::ReservedCountryNamingRow::default(),
+                replay_data::rows::ReservedCountryNamingRow::default(),
             ]));
         tables[TableId::MapEvents.index()] =
             TableView::Complete(TableRows::MapEvents(vec![Default::default()]));
@@ -7108,9 +7136,9 @@ mod tests {
         };
         if skip {
             for table in TableId::ALL {
-                if replay::cadence::is_staggered(table) {
+                if replay_data::cadence::is_staggered(table) {
                     tables[table.index()] = TableView::Unavailable {
-                        reason: replay::cadence::SKIPPED_REASON.into(),
+                        reason: replay_data::cadence::SKIPPED_REASON.into(),
                     };
                 }
             }
@@ -7136,8 +7164,8 @@ mod tests {
 
     /// Rows of [`DAILY`].
     fn daily_rows(value: u8) -> TableRows {
-        assert!(replay::cadence::is_staggered(DAILY));
-        TableRows::AirAces(vec![replay::rows::AirAceRow {
+        assert!(replay_data::cadence::is_staggered(DAILY));
+        TableRows::AirAces(vec![replay_data::rows::AirAceRow {
             id: 7,
             name: vec![0, 0xff, value],
             ..Default::default()
@@ -7146,13 +7174,13 @@ mod tests {
 
     fn reserved_intel_rows(army: i64) -> TableRows {
         TableRows::CountryIntel(vec![
-            replay::rows::CountryIntelRow {
+            replay_data::rows::CountryIntelRow {
                 owner_country: 0,
                 target_index: 0,
                 army,
                 ..Default::default()
             },
-            replay::rows::CountryIntelRow {
+            replay_data::rows::CountryIntelRow {
                 owner_country: 0,
                 target_index: 2,
                 ..Default::default()
@@ -7162,13 +7190,13 @@ mod tests {
 
     fn reserved_intel_sample(
         source: &FrameInput,
-    ) -> Option<replay::rows::ReservedCountryIntelSample> {
+    ) -> Option<replay_data::rows::ReservedCountryIntelSample> {
         let TableInput::Sampled(TableView::Complete(TableRows::ReservedCountryNaming(rows))) =
             &source.tables[TableId::ReservedCountryNaming.index()]
         else {
             panic!("complete RCN fixture")
         };
-        let replay::rows::Recorded::Value(sample) = rows[0].country_intel_sample else {
+        let replay_data::rows::Recorded::Value(sample) = rows[0].country_intel_sample else {
             panic!("assembled field")
         };
         sample
@@ -7176,7 +7204,7 @@ mod tests {
 
     #[test]
     fn reserved_intel_certificate_carries_advances_equal_rows_and_clears_fresh_refusal() {
-        use replay::rows::ReservedCountryIntelSample;
+        use replay_data::rows::ReservedCountryIntelSample;
         let (mut campaign, _) = campaign();
         let branch = campaign.observe(None, 0, Some(1)).unwrap();
         let mut first: FrameInput = staggered_frame(branch, 0, false).into();
@@ -7215,7 +7243,7 @@ mod tests {
         let mut refused: FrameInput = staggered_frame(branch, 3, false).into();
         refused.tables[TableId::CountryIntel.index()] =
             TableView::Complete(TableRows::CountryIntel(vec![
-                replay::rows::CountryIntelRow {
+                replay_data::rows::CountryIntelRow {
                     owner_country: 1,
                     target_index: 2,
                     ..Default::default()
@@ -7241,7 +7269,7 @@ mod tests {
 
     #[test]
     fn reserved_intel_empty_certificate_prefix_refusal_and_branch_reset_are_distinct() {
-        use replay::rows::ReservedCountryIntelSample;
+        use replay_data::rows::ReservedCountryIntelSample;
         let (mut campaign, _) = campaign();
         let branch = campaign.observe(None, 0, Some(1)).unwrap();
         let empty = ReservedCountryIntelSample {
@@ -7287,7 +7315,7 @@ mod tests {
             let (mut campaign, _) = campaign();
             let branch = campaign.observe(None, 0, Some(1)).unwrap();
             let mut first: FrameInput = staggered_frame(branch, 0, false).into();
-            let sample = replay::rows::ReservedCountryIntelSample {
+            let sample = replay_data::rows::ReservedCountryIntelSample {
                 sample_hour: 0,
                 vector_count: 0,
             };
@@ -7306,8 +7334,8 @@ mod tests {
 
     #[test]
     fn reserved_intel_latest_pair_survives_encoding_or_write_failure_recovery() {
-        use replay::frame::{FrameDecoder, TableUpdate};
-        use replay::rows::ReservedCountryIntelSample;
+        use replay_data::rows::ReservedCountryIntelSample;
+        use replay_frame::{frame::FrameDecoder, frame::TableUpdate};
         for fail_encoding in [false, true] {
             let (mut campaign, store) = campaign();
             let branch = campaign.observe(None, 0, Some(1)).unwrap();
@@ -7376,28 +7404,28 @@ mod tests {
             );
             let decoded = FrameDecoder::new().apply(frame).unwrap();
             let rcn = decoded
-                .complete::<replay::rows::tables::ReservedCountryNaming>()
+                .complete::<replay_data::rows::tables::ReservedCountryNaming>()
                 .unwrap();
             assert_eq!(
                 rcn[0].country_intel_sample,
-                replay::rows::Recorded::Value(Some(latest))
+                replay_data::rows::Recorded::Value(Some(latest))
             );
         }
     }
 
     #[test]
     fn fixed_layout_refusal_survives_daily_carry_and_independent_keyframes() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
-        use replay::frame::FrameDecoder;
+        use replay_frame::frame::FrameDecoder;
         let (mut campaign, _) = campaign();
         let branch = campaign.observe(None, 0, Some(1)).unwrap();
-        let key = engine::modifier_keys::POWER_BALANCE_DAILY;
-        let mut report = engine::fixed_layout::Report {
+        let key = engine_executable::modifier_keys::POWER_BALANCE_DAILY;
+        let mut report = engine_fixed_layout::fixed_layout::Report {
             static_token_maximum: 0x6000,
             gap: Ok(()),
-            modifiers: [Ok(()); engine::fixed_layout::GAP as usize],
-            tokens: [Ok(()); engine::fixed_layout::TOKEN_IDS.len()],
+            modifiers: [Ok(()); engine_fixed_layout::fixed_layout::GAP as usize],
+            tokens: [Ok(()); engine_fixed_layout::fixed_layout::TOKEN_IDS.len()],
         };
         report.modifiers[key as usize] = Err("definition token spells a different script name");
         let mut decoder = FrameDecoder::new();
@@ -7414,7 +7442,7 @@ mod tests {
                 .encode_input(source, force_keyframe)
                 .unwrap();
             let decoded = decoder.apply(&frame).unwrap();
-            for &table in replay::fixed_layout::POWER_BALANCE.tables {
+            for &table in replay_derive::fixed_layout::POWER_BALANCE.tables {
                 assert!(
                     matches!(&*decoded.tables[table.index()], TableView::Unavailable { reason } if reason.contains("power_balance_daily"))
                 );
@@ -7433,10 +7461,8 @@ mod tests {
     #[test]
     fn line_output_totals_publish_with_the_census_and_carry_off_its_slot() {
         use crate::line_output::{Drained, Entry};
-        use replay::{
-            frame::FrameDecoder,
-            rows::{ProductionLineRow, TableRows},
-        };
+        use replay_data::{rows::ProductionLineRow, rows::TableRows};
+        use replay_frame::frame::FrameDecoder;
         const LINE: u64 = 0x10_0000_0021;
         const VARIANT: u64 = 0x5_0000_0046;
         let (mut campaign, _) = campaign();
@@ -7491,7 +7517,7 @@ mod tests {
         }
         // The first frame's ticks came before the observation began; hour 1
         // carries hour 0's publication; hour 2 publishes hour 1's two ticks.
-        let retired = replay::rows::RetiredI64::default();
+        let retired = replay_data::rows::RetiredI64::default();
         assert_eq!(
             published,
             [(0, retired, 0), (0, retired, 0), (4, retired, 0)]
@@ -7504,10 +7530,10 @@ mod tests {
     #[test]
     fn construction_output_publishes_with_the_queues_and_carries_off_their_slot() {
         use crate::construction_ic::{Drained, Entry};
-        use replay::{
-            frame::FrameDecoder,
-            rows::{BuildingConstructionRow, RailwayConstructionRow, TableRows},
+        use replay_data::{
+            rows::BuildingConstructionRow, rows::RailwayConstructionRow, rows::TableRows,
         };
+        use replay_frame::frame::FrameDecoder;
         const LINE: u64 = 0x10_0000_003b;
         const RAIL: u64 = 0x11_0000_1269;
         let (mut campaign, _) = campaign();
@@ -7591,10 +7617,8 @@ mod tests {
     #[test]
     fn a_failed_write_keeps_the_final_totals_of_ended_lines() {
         use crate::line_output::{Drained, Entry};
-        use replay::{
-            frame::FrameDecoder,
-            rows::{ProductionLineRow, TableRows},
-        };
+        use replay_data::{rows::ProductionLineRow, rows::TableRows};
+        use replay_frame::frame::FrameDecoder;
         const LINE_A: u64 = 0x10_0000_0021;
         const LINE_B: u64 = 0x11_0000_0021;
         const VARIANT: u64 = 0x5_0000_0046;
@@ -7903,7 +7927,7 @@ mod tests {
 
     #[test]
     fn intel_shadow_reuses_exact_hourly_rows_through_keyframes_failed_writes_and_new_branches() {
-        use replay::frame::TableUpdate;
+        use replay_frame::frame::TableUpdate;
         for fail_encoding in [false, true] {
             let (mut campaign, store) = campaign();
             let branch = campaign.observe(None, 0, Some(1)).unwrap();
@@ -8204,7 +8228,7 @@ mod tests {
                 }
             } else {
                 assert!(
-                    matches!(&input.tables[table.index()], TableInput::Sampled(TableView::Unavailable { reason }) if reason == replay::cadence::SKIPPED_REASON)
+                    matches!(&input.tables[table.index()], TableInput::Sampled(TableView::Unavailable { reason }) if reason == replay_data::cadence::SKIPPED_REASON)
                 );
             }
             campaign
@@ -8252,7 +8276,7 @@ mod tests {
 
     #[test]
     fn latest_shared_sample_survives_encoding_or_write_failure_and_recovery_snapshots_it() {
-        use replay::frame::TableUpdate;
+        use replay_frame::frame::TableUpdate;
         let table = DAILY;
         for fail_encoding in [false, true] {
             let (mut campaign, store) = campaign();
@@ -8320,7 +8344,7 @@ mod tests {
 
     #[test]
     fn open_spool_carries_skip_marker_but_restart_materializes_cached_rows() {
-        use replay::frame::{FrameDecoder, TableUpdate};
+        use replay_frame::{frame::FrameDecoder, frame::TableUpdate};
         let (mut campaign, _) = campaign();
         let branch = campaign.observe(None, 0, Some(1)).unwrap();
         let mut first = staggered_frame(branch, 0, false);
@@ -8337,7 +8361,7 @@ mod tests {
         let mut second = staggered_frame(branch, 1, true);
         campaign.apply_staggered_cache(&mut second);
         assert!(
-            matches!(&*second.tables[DAILY.index()], TableView::Unavailable { reason } if reason == replay::cadence::SKIPPED_REASON)
+            matches!(&*second.tables[DAILY.index()], TableView::Unavailable { reason } if reason == replay_data::cadence::SKIPPED_REASON)
         );
         let encoded = campaign.encoder.encode(second, false).unwrap();
         assert_eq!(
@@ -8354,8 +8378,8 @@ mod tests {
 
     #[test]
     fn staggered_off_hours_emit_unchanged_and_hold_last_refresh() {
-        use replay::frame::{FrameDecoder, TableUpdate};
-        use replay::rows::TableId;
+        use replay_data::rows::TableId;
+        use replay_frame::{frame::FrameDecoder, frame::TableUpdate};
         let (mut campaign, _) = campaign();
         let branch = 1;
         let mut encoder = FrameEncoder::new();
@@ -8391,7 +8415,7 @@ mod tests {
             let mut next = self.clone();
             next.hour = hour;
             if let TableView::Complete(TableRows::Clock(rows)) =
-                &mut *next.tables[replay::rows::TableId::Clock.index()]
+                &mut *next.tables[replay_data::rows::TableId::Clock.index()]
             {
                 rows[0].hour = hour;
             }
@@ -8401,8 +8425,8 @@ mod tests {
 
     #[test]
     fn refresh_hour_decode_equals_hourly_baseline() {
-        use replay::frame::FrameDecoder;
-        use replay::rows::TableId;
+        use replay_data::rows::TableId;
+        use replay_frame::frame::FrameDecoder;
         let branch = 7;
         let mut hourly_encoder = FrameEncoder::new();
         let mut hourly_decoder = FrameDecoder::new();
@@ -8421,11 +8445,11 @@ mod tests {
                 // A retired table is never walked; both recordings decode
                 // its catalogued refusal every hour.
                 let retired = super::retired_reason(table).is_some();
-                if retired || replay::cadence::should_walk(table, hour, hour == 0) {
+                if retired || replay_data::cadence::should_walk(table, hour, hour == 0) {
                     expected_tables[index] = Some((*hourly_decoded.tables[index]).clone());
                 } else {
                     *staggered.tables[index] = TableView::Unavailable {
-                        reason: replay::cadence::SKIPPED_REASON.into(),
+                        reason: replay_data::cadence::SKIPPED_REASON.into(),
                     };
                 }
             }
@@ -8468,8 +8492,8 @@ mod tests {
         // never unchanged/delta off a cleared baseline. Extends the
         // hand-built-frame pattern with decode-payload shapes: first frame
         // carries Truncated (rows + missing), second carries the full rows.
-        use replay::frame::{FrameDecoder, TableUpdate};
-        use replay::rows::TableId;
+        use replay_data::rows::TableId;
+        use replay_frame::{frame::FrameDecoder, frame::TableUpdate};
         let (mut campaign, _) = campaign();
         let branch = 3;
         let mut encoder = FrameEncoder::new();
@@ -8484,7 +8508,7 @@ mod tests {
         decoder.apply(&base_frame).unwrap();
         let mut first = staggered_frame(branch, 11, false);
         *first.tables[TableId::WorldTension.index()] = TableView::Truncated {
-            rows: TableRows::WorldTension(vec![replay::rows::WorldTensionRow::default()]),
+            rows: TableRows::WorldTension(vec![replay_data::rows::WorldTensionRow::default()]),
             missing: 2,
         };
         campaign.apply_staggered_cache(&mut first);

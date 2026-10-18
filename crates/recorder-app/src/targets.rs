@@ -2,7 +2,7 @@
 //! in its folder: the save folder itself, or the folder its last New file
 //! started. File names never change; a new recording of a campaign keeps the
 //! campaign's name in a new folder beside the earlier one.
-use replay::recorder_settings::{NextLoad, RecorderSettings};
+use replay::{recorder_settings::NextLoad, recorder_settings::RecorderSettings};
 use std::path::{Component, Path, PathBuf};
 
 /// A folder name the settings may hold: one plain path component.

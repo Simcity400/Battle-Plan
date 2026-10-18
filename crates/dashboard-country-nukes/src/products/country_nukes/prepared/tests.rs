@@ -2,7 +2,8 @@ use super::*;
 #[cfg(feature = "slow-tests")]
 use dashboard_base::test_fixtures::continuation_records;
 use dashboard_base::test_fixtures::{CAMPAIGN, records, scale_frame};
-use replay::{frame::TableView, rows::TableRows};
+use replay_data::rows::TableRows;
+use replay_frame::frame::TableView;
 
 fn frame(hour: i32, count: u32) -> DecodedFrame {
     let mut frame = scale_frame(1, hour, count);
@@ -160,7 +161,7 @@ fn progressive_nukes_sampler_preserves_prefix_holes_duplicates_and_absence() {
     assert_eq!(samples[&requested[2]], (Some((1, 100_001)), None));
     assert_eq!(samples[&requested[3]], (None, None));
     assert_eq!(
-        supplying_read(&frame, replay::format::FormatVersion::CURRENT),
+        supplying_read(&frame, replay_data::format::FormatVersion::CURRENT),
         Some(false),
         "a refused array cannot prove a complete empty census"
     );
@@ -322,11 +323,11 @@ fn global_nuclear_increases_keep_the_feed_total_rule_unknowns_segments_and_metad
                 .collect(),
         ));
         let mut lexical = vec![
-            replay::rows::LexicalTokenRow {
+            replay_data::rows::LexicalTokenRow {
                 token: NUCLEAR_BOMB_TOKEN,
                 literal: b"synthetic counter".to_vec(),
             },
-            replay::rows::LexicalTokenRow {
+            replay_data::rows::LexicalTokenRow {
                 token: THERMONUCLEAR_BOMB_TOKEN,
                 literal: b"synthetic alternative".to_vec(),
             },
@@ -515,11 +516,11 @@ fn nuclear_feed_catalogue_preserves_strike_only_types_reads_and_refusals_after_t
         };
         if hour == 0 {
             let mut tokens = vec![
-                replay::rows::LexicalTokenRow {
+                replay_data::rows::LexicalTokenRow {
                     token: NUCLEAR_BOMB_TOKEN,
                     literal: b"synthetic strike type".to_vec(),
                 },
-                replay::rows::LexicalTokenRow {
+                replay_data::rows::LexicalTokenRow {
                     token: THERMONUCLEAR_BOMB_TOKEN,
                     literal: b"synthetic strike alternative".to_vec(),
                 },
@@ -530,10 +531,10 @@ fn nuclear_feed_catalogue_preserves_strike_only_types_reads_and_refusals_after_t
         }
         *frame.tables[TableId::NuclearStrikes.index()] =
             TableView::Complete(TableRows::NuclearStrikes(vec![
-                replay::rows::NuclearStrikeRow {
+                replay_data::rows::NuclearStrikeRow {
                     id: 7,
                     hour: 0,
-                    launcher: replay::event_feed_rows::EventFeedCountry {
+                    launcher: replay_data::event_feed_rows::EventFeedCountry {
                         reference: 100_000,
                         id: 100_000,
                         instance: 0,
@@ -541,7 +542,7 @@ fn nuclear_feed_catalogue_preserves_strike_only_types_reads_and_refusals_after_t
                     nuke_type: 1,
                     province: 13_000,
                     state: 2,
-                    owner: replay::event_feed_rows::EventFeedCountry {
+                    owner: replay_data::event_feed_rows::EventFeedCountry {
                         reference: 100_000,
                         id: 100_000,
                         instance: 0,
@@ -734,11 +735,11 @@ fn phase_b_deferred_native_runs_match_eager_after_two_checkpoints_resume_append_
                 reason: "synthetic refusal".into(),
             };
         }
-        oracle.observe(&next, replay::format::FormatVersion::CURRENT);
+        oracle.observe(&next, replay_data::format::FormatVersion::CURRENT);
         lazy.observe_changes(
             &next,
-            replay::format::FormatVersion::CURRENT,
-            Some(&tracker.observe(&next, replay::format::FormatVersion::CURRENT)),
+            replay_data::format::FormatVersion::CURRENT,
+            Some(&tracker.observe(&next, replay_data::format::FormatVersion::CURRENT)),
         );
         if hour == 103 || hour == 108 {
             lazy.seal();

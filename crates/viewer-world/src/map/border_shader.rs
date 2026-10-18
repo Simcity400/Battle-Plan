@@ -3,11 +3,11 @@ use std::cell::RefCell;
 use std::{collections::BTreeMap, io, sync::Arc};
 
 use eframe::wgpu;
-use installed_content::{
-    ResolvedLayers,
-    image::native::Decode,
-    pdxshader::{DepthStencilState, RasterizerState, program::Stage},
+use installed_content_core::{
+    ResolvedLayers, pdxshader::DepthStencilState, pdxshader::RasterizerState,
+    pdxshader::program::Stage,
 };
+use installed_content_image::native::Decode;
 use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
 
 fn refuse(reason: impl Into<String>) -> io::Error {

@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn native_raid_draw_and_hover_follow_the_map_anchor() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = draw_resources();
         let windows = gui::windows(DRAW_GUI);
@@ -360,7 +360,7 @@ mod tests {
 
     #[test]
     fn raid_tooltip_regression_overlap_tracks_paint_order_after_camera_move() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = draw_resources();
         let windows = gui::windows(DRAW_GUI);
@@ -452,11 +452,11 @@ mod tests {
 
     #[test]
     fn raid_tooltip_regression_overlapping_buildings_keep_the_hovered_targets_native_state() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use super::super::test_support::{frame, put, registered_command_power};
-        use installed_content::localisation::Localisation;
-        use replay::rows::Recorded;
+        use installed_content_localisation::localisation::Localisation;
+        use replay_data::rows::Recorded;
 
         let resources = draw_resources();
         let windows = gui::windows(DRAW_GUI);
@@ -481,7 +481,7 @@ mod tests {
             .need_detection = false;
         assets.trigger_content.buildings.types.insert(
             "facility".into(),
-            installed_content::buildings::BuildingType {
+            installed_content_core::buildings::BuildingType {
                 name: "facility".into(),
                 ..Default::default()
             },
@@ -489,7 +489,7 @@ mod tests {
         assets.catalog.types[0].command_power_raw = 200_000;
         let mut frame = frame();
         let mut tokens = frame.complete::<tables::LexicalTokens>().unwrap().to_vec();
-        tokens.push(replay::rows::LexicalTokenRow {
+        tokens.push(replay_data::rows::LexicalTokenRow {
             token: 201,
             literal: b"facility".to_vec(),
         });
@@ -498,7 +498,7 @@ mod tests {
         put::<tables::CountryAppearance>(
             &mut frame,
             [10, 11]
-                .map(|country| replay::rows::CountryAppearanceRow {
+                .map(|country| replay_data::rows::CountryAppearanceRow {
                     country,
                     original_tag_reference: Recorded::Value(Some(0)),
                     original_tag: Recorded::Value(Some(Vec::new())),
@@ -509,7 +509,7 @@ mod tests {
         put::<tables::Politics>(
             &mut frame,
             [10, 11]
-                .map(|country| replay::rows::PoliticsRow {
+                .map(|country| replay_data::rows::PoliticsRow {
                     country,
                     ruling_party: Some(1),
                     ..Default::default()
@@ -519,7 +519,7 @@ mod tests {
         put::<tables::PoliticalParties>(
             &mut frame,
             [10, 11]
-                .map(|country| replay::rows::PoliticalPartyRow {
+                .map(|country| replay_data::rows::PoliticalPartyRow {
                     country,
                     id: 1,
                     is_ruling: 1,
@@ -653,7 +653,7 @@ mod tests {
 
     #[test]
     fn missing_native_raid_controls_are_named_and_counted_for_each_owner() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = draw_resources();
         let windows = gui::windows(
@@ -709,7 +709,7 @@ mod tests {
 
     #[test]
     fn a_reused_raid_window_withholds_a_missing_or_undecided_glyph() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = draw_resources();
         let windows = gui::windows(DRAW_GUI);
@@ -771,7 +771,7 @@ mod tests {
 
     #[test]
     fn native_raid_bindings_find_nested_inherited_controls() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = draw_resources();
         let windows = gui::windows(br#"guiTypes = { containerWindowType = {

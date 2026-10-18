@@ -1,16 +1,17 @@
 use super::*;
-use replay::{
-    frame::{Metrics, SharedView, TableView},
-    rows::{CampaignRow, CountryLinkRow, CountryRow, ProvinceRow, StateRow, TableRows},
+use replay_data::{
+    rows::CampaignRow, rows::CountryLinkRow, rows::CountryRow, rows::ProvinceRow, rows::StateRow,
+    rows::TableRows,
 };
+use replay_frame::{frame::Metrics, frame::SharedView, frame::TableView};
 use std::sync::atomic::Ordering;
 
 #[test]
 fn country_read_keys_use_the_recorded_mask_for_balance_only_changes() {
     use crate::prepared::frame_changes::FrameChangeTracker;
     let mut frame = frame(0, 200, 3);
-    let mut encoder = replay::frame::FrameEncoder::new();
-    let mut decoder = replay::frame::FrameDecoder::new();
+    let mut encoder = replay_frame::frame::FrameEncoder::new();
+    let mut decoder = replay_frame::frame::FrameDecoder::new();
     let mut tracker = FrameChangeTracker::new();
     let mut held = None;
     for hour in 0..=2 {
@@ -28,7 +29,7 @@ fn country_read_keys_use_the_recorded_mask_for_balance_only_changes() {
         let wire = Arc::new(encoder.encode(frame.clone(), hour == 0).unwrap());
         let decoded = decoder.advance(&wire).unwrap();
         let changes =
-            tracker.observe_updates(decoded, wire, replay::format::FormatVersion::CURRENT);
+            tracker.observe_updates(decoded, wire, replay_data::format::FormatVersion::CURRENT);
         let countries = decoded.complete::<tables::Countries>().unwrap();
         if let Some(reads) = &held {
             let reads: &CountryReads = reads;
@@ -500,7 +501,7 @@ fn null_and_unresolved_links_are_distinct_and_unknown_references_never_understat
         .collect();
     let mut totals = Vec::new();
     super::sample_rows(
-        replay::format::FormatVersion::CURRENT,
+        replay_data::format::FormatVersion::CURRENT,
         &decoded,
         Some(&areas(4)),
         &slots,
@@ -953,7 +954,7 @@ fn dense_totals_count_aliases_once_and_keep_unresolved_slot_identities_unknown()
     let slots = HashMap::from([(100_000, 3), (100_001, 3), (999_999, 3)]);
     let mut sums = Vec::new();
     sample_rows(
-        replay::format::FormatVersion::CURRENT,
+        replay_data::format::FormatVersion::CURRENT,
         &decoded,
         Some(&areas(4)),
         &slots,
@@ -995,8 +996,8 @@ fn dense_totals_count_aliases_once_and_keep_unresolved_slot_identities_unknown()
 #[test]
 fn settings_and_widgets_build_the_area_raster_once_per_content_source_even_when_refused() {
     let content = || {
-        Arc::new(installed_content::ResolvedContent {
-            layers: installed_content::ResolvedLayers::from_folders(&[]).unwrap(),
+        Arc::new(installed_content_core::ResolvedContent {
+            layers: installed_content_core::ResolvedLayers::from_folders(&[]).unwrap(),
             stats: Default::default(),
         })
     };
@@ -1302,8 +1303,8 @@ fn an_unowned_out_of_range_province_warns_only_for_affected_hours() {
 #[test]
 fn raster_builds_release_the_cache_lock_keep_first_insert_and_never_cache_cancellation() {
     let cache = Mutex::new(Cache::default());
-    let resolved = Arc::new(installed_content::ResolvedContent {
-        layers: installed_content::ResolvedLayers::from_folders(&[]).unwrap(),
+    let resolved = Arc::new(installed_content_core::ResolvedContent {
+        layers: installed_content_core::ResolvedLayers::from_folders(&[]).unwrap(),
         stats: Default::default(),
     });
     let cancelled = AtomicBool::new(false);
@@ -1716,7 +1717,7 @@ fn territory_totals_cache_tracks_measured_fields_lineage_and_unavailable_reads()
     decoded.hour += 1;
     assert!(
         slot_read(
-            replay::format::FormatVersion::CURRENT,
+            replay_data::format::FormatVersion::CURRENT,
             &decoded.metrics,
             TableId::Provinces,
             decoded.hour

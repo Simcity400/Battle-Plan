@@ -80,18 +80,15 @@ use viewer_foundation::table_access::TokenKeys;
 use viewer_foundation::table_access::rows as table_access_rows;
 use viewer_foundation::unit_handle::Unit;
 
-use installed_content::{
-    ResolvedLayers,
-    buildings::Slot,
-    defines::Defines,
-    flags::{self, FlagSet},
-    gfx::SpriteSet,
-    gui::native,
-    image::dds,
-    map::{MapData, ProvinceKind},
-    positions, regions,
+use installed_content_core::{
+    ResolvedLayers, buildings::Slot, defines::Defines, flags, flags::FlagSet, gui::native,
+    map::MapData, map::ProvinceKind, positions,
 };
-use replay::{frame::DecodedFrame, rows::tables};
+use installed_content_gfx::gfx::SpriteSet;
+use installed_content_image::dds;
+use installed_content_regions::regions;
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 
 use viewer_foundation::map::icon_windows::on_screen;
 use {
@@ -136,7 +133,7 @@ mod naval_markers;
 mod naval_mission_inputs;
 mod naval_missions;
 mod naval_port_hovers;
-pub type MissionMemo = Recent<(replay::BranchId, replay::Hour, u32), MissionIcons>;
+pub type MissionMemo = Recent<(replay_data::BranchId, replay_data::Hour, u32), MissionIcons>;
 pub mod naval_windows;
 pub mod type_tint;
 
@@ -161,13 +158,13 @@ pub const LAND_WINDOW: &str = "unit_counter";
 use viewer_foundation::map::native_windows::NAVY_WINDOW;
 pub const STACK_WINDOW: &str = "unit_mapicon";
 use viewer_foundation::map::native_windows::AIR_BASE_WINDOW;
-use viewer_foundation::map::native_windows::{
-    GUN_EMPLACEMENT_WINDOW, RADAR_WINDOW, ROCKET_SITE_WINDOW, STRATEGIC_LOCATION_WINDOW,
-};
 /// its `bg_btn` is replaced per facility.
 use viewer_foundation::map::native_windows::FACILITY_WINDOW;
 use viewer_foundation::map::native_windows::NAVAL_BASE_WINDOW;
 use viewer_foundation::map::native_windows::NAVAL_HEADQUARTER_WINDOW;
+use viewer_foundation::map::native_windows::{
+    GUN_EMPLACEMENT_WINDOW, RADAR_WINDOW, ROCKET_SITE_WINDOW, STRATEGIC_LOCATION_WINDOW,
+};
 /// this prefix and the building's first specialization token.
 pub const FACILITY_SPRITE_PREFIX: &str = "GFX_mapicon_facility_";
 use viewer_foundation::map::native_windows::LAND_COMBAT_WINDOW;
@@ -293,7 +290,7 @@ pub struct CounterDefines {
 }
 
 impl CounterDefines {
-    pub fn read(defines: &installed_content::defines::Defines) -> io::Result<Self> {
+    pub fn read(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
         let number = |name| defines.number("NGraphics", name).map(|value| value as f32);
         let fixed = |name| {
             defines
@@ -367,7 +364,9 @@ impl CounterDefines {
         // The default table's: units, groups, victory points, air and naval bases, naval
         // headquarters, facilities, land and naval combats, naval results and missions, capitals,
         // rocket sites, gun emplacements, strategic locations, adjacency rules and resources.
-        priorities: Priorities::uniform([10, 11, 5, 3, 3, 3, 3, 20, 20, 19, 13, 5, 3, 3, 10, 3, 10]),
+        priorities: Priorities::uniform([
+            10, 11, 5, 3, 3, 3, 3, 20, 20, 19, 13, 5, 3, 3, 10, 3, 10,
+        ]),
         groups: GroupDefines::VANILLA,
         split_selected_limit: 12,
         naval_counts: viewer_foundation::map::naval_count_approx::Defines::VANILLA,
@@ -674,7 +673,7 @@ pub struct CounterAssets {
     pub layouts: Layouts,
     /// The naval counter, the naval combat icon, its convoy addition, the port window and the
     /// other natively drawn map-icon windows, read by the shared native reader
-    /// (`installed_content::gui::native`) over every `.gui` file of the content stack, templates found
+    /// (`installed_content_core::gui::native`) over every `.gui` file of the content stack, templates found
     /// as the game finds them, independently of the legacy readers
     /// ([`Layouts`], the `.gfx` sprite map), and drawn through [`crate::map::native_gui`]
     /// ([`gui_windows`]).
@@ -707,7 +706,7 @@ pub struct CounterAssets {
     /// carrier glyph. Loaded after every other counter texture, and absent ones are warned about.
     recorded_sheets: BTreeMap<String, SpriteSheet>,
     /// Content ability token to its map-counter sprite.
-    pub ability_sprites: Arc<installed_content::abilities::AbilitySprites>,
+    pub ability_sprites: Arc<installed_content_abilities::abilities::AbilitySprites>,
     /// Presentation limitations found while loading, stated once.
     pub warnings: Vec<String>,
 }
@@ -716,7 +715,7 @@ pub struct CounterAssets {
 pub fn gui_assets(
     windows: &NativeWindows,
     registry: &native::resources::Registry,
-    localisation: &installed_content::localisation::Localisation,
+    localisation: &installed_content_localisation::localisation::Localisation,
     tooltip_assets: Assets,
 ) -> Assets {
     let mut assets = gui_windows::window_assets(windows, registry, localisation);
@@ -740,7 +739,7 @@ impl CounterAssets {
         (layouts, windows): (Layouts, SharedNativeWindows),
         defines: &Defines,
         (sprites, registry): (&SpriteSet, &native::resources::Registry),
-        (language, map_size, decode): (&str, [u32; 2], installed_content::image::native::Decode),
+        (language, map_size, decode): (&str, [u32; 2], installed_content_image::native::Decode),
         images: &mut Vec<dds::Texture>,
         lazy: &Arc<LazyTextures>,
     ) -> io::Result<Self> {
@@ -878,7 +877,7 @@ impl CounterAssets {
         // Every sprite the content's abilities name, loaded once whatever the hour holds;
         // an ability whose sprite does not load draws no grid item, as in the game.
         let ability_sprites = if layouts.abilities.is_some() {
-            installed_content::abilities::read(layers).unwrap_or_else(|error| {
+            installed_content_abilities::abilities::read(layers).unwrap_or_else(|error| {
                 warnings.push(format!(
                     "common/abilities cannot be read ({error}); the counter ability grid is not drawn"
                 ));
@@ -954,7 +953,7 @@ impl CounterAssets {
     pub fn load_gui(
         &mut self,
         layers: &ResolvedLayers,
-        localisation: &installed_content::localisation::Localisation,
+        localisation: &installed_content_localisation::localisation::Localisation,
         tooltip_assets: Assets,
         images: &mut Vec<dds::Texture>,
     ) -> io::Result<Vec<String>> {
@@ -1249,7 +1248,7 @@ pub struct CounterContent {
     pub subunit_tokens: Result<TokenKeys, String>,
     /// The ideology groups whose icon frame a detailed at-sea naval counter shows on
     /// `counter_ideology` ([`naval::ideology_frame`]); set when the document is read.
-    pub ideologies: installed_content::ideologies::Ideologies,
+    pub ideologies: installed_content_core::ideologies::Ideologies,
 }
 
 impl CounterContent {
@@ -1260,7 +1259,7 @@ impl CounterContent {
         layers: &ResolvedLayers,
         artwork: &ResolvedLayers,
         map: &MapData,
-        defines: &installed_content::defines::Defines,
+        defines: &installed_content_core::defines::Defines,
         regions: &BTreeMap<u32, regions::StrategicRegion>,
     ) -> io::Result<Self> {
         let mut anchors = BTreeMap::new();
@@ -1270,7 +1269,7 @@ impl CounterContent {
             stack_scales.insert((stack.province, stack.kind), stack.scale);
         }
         let mut ports = BTreeMap::new();
-        let definitions = installed_content::buildings::read(layers)?;
+        let definitions = installed_content_core::buildings::read(layers)?;
         let port_slots = port_slot_names(&definitions);
         let provinces = ProvinceMap {
             width: map.width,
@@ -1280,10 +1279,10 @@ impl CounterContent {
         let building_slots = positions::read_buildings(layers)?;
         // The icons anchor only at slots the loader admits, by the building layer's own rules;
         // document.rs reports the state id conflicts once.
-        let (states, _) = installed_content::states::read(layers, defines, &map.definitions)?;
+        let (states, _) = installed_content_states::states::read(layers, defines, &map.definitions)?;
         let roster = artwork.descriptor_roster()?;
-        let admit = |spawn: &installed_content::buildings::SpawnPoint,
-                     slot: &installed_content::positions::BuildingPosition,
+        let admit = |spawn: &installed_content_core::buildings::SpawnPoint,
+                     slot: &installed_content_core::positions::BuildingPosition,
                      province: Option<u32>| {
             viewer_foundation::map::building_facts::admit_slot(
                 spawn,
@@ -1302,13 +1301,15 @@ impl CounterContent {
             |x, z| provinces.at(x, z),
             |spawn, slot, province| admit(spawn, slot, province) == SlotAdmission::Admitted,
         );
-        let site_icons = Arc::new([
-            building_facts::AIR_BASE,
-            building_facts::ROCKET_SITE,
-            building_facts::GUN_EMPLACEMENT,
-            building_facts::RADAR,
-        ]
-        .map(|kind| sites.site_icons(kind).clone()));
+        let site_icons = Arc::new(
+            [
+                building_facts::AIR_BASE,
+                building_facts::ROCKET_SITE,
+                building_facts::GUN_EMPLACEMENT,
+                building_facts::RADAR,
+            ]
+            .map(|kind| sites.site_icons(kind).clone()),
+        );
         let building_icons = BuildingIconContent::load(
             &definitions,
             &building_slots,
@@ -1339,11 +1340,11 @@ impl CounterContent {
             }
             region_provinces.insert(id, members);
         }
-        let (terrain, default_map) = installed_content::terrain::read(layers)?;
+        let (terrain, default_map) = installed_content_core::terrain::read(layers)?;
         let attrition = viewer_foundation::map::counter_attrition::Content::read(
             defines,
             &terrain,
-            installed_content::unit_leader::sub_units(layers)
+            installed_content_core::unit_leader::sub_units(layers)
                 .map(Arc::new)
                 .map_err(|error| error.to_string()),
         )
@@ -1413,7 +1414,7 @@ impl CounterContent {
             subunit_tokens: viewer_foundation::map::subunit_files::subunit_keys(layers)
                 .map(|keys| TokenKeys::new(&keys))
                 .map_err(|error| error.to_string()),
-            ideologies: installed_content::ideologies::Ideologies::default(),
+            ideologies: installed_content_core::ideologies::Ideologies::default(),
         })
     }
 
@@ -1570,10 +1571,10 @@ fn default_anchor([x, z]: [f32; 2], heights: &HeightField<'_>) -> [f32; 3] {
 }
 
 /// Each province's terrain name as the definition reader stores it
-/// ([`installed_content::map::province_terrains`]); a combat icon's background sprite
+/// ([`installed_content_core::map::province_terrains`]); a combat icon's background sprite
 /// is named after it.
 fn combat_terrains(bytes: &[u8]) -> io::Result<BTreeMap<u32, String>> {
-    installed_content::map::province_terrains(bytes)?
+    installed_content_core::map::province_terrains(bytes)?
         .into_iter()
         .map(|(id, terrain)| {
             String::from_utf8(terrain)
@@ -1585,7 +1586,7 @@ fn combat_terrains(bytes: &[u8]) -> io::Result<BTreeMap<u32, String>> {
 
 /// Build eligible anchor buckets from port templates, following their
 /// authored spawn-point redirects.
-fn port_slot_names(definitions: &installed_content::buildings::Buildings) -> BTreeSet<&str> {
+fn port_slot_names(definitions: &installed_content_core::buildings::Buildings) -> BTreeSet<&str> {
     definitions
         .types
         .values()
@@ -1598,14 +1599,14 @@ fn port_slot_names(definitions: &installed_content::buildings::Buildings) -> BTr
 pub struct CounterInputs<'a> {
     pub content: &'a CounterContent,
     /// Already loaded recorded equipment; demanded only by reached variant ties.
-    pub equipment: Result<&'a installed_content::equipment::Database, &'a str>,
+    pub equipment: Result<&'a installed_content_core::equipment::Database, &'a str>,
     pub assets: &'a CounterAssets,
     /// The windows as read in this view's GUI viewport ([`WindowCache::at`]).
     pub windows: &'a SharedNativeWindows,
     pub fonts: &'a text::Fonts,
     /// The content stack's localisation in the viewer's language, which a natively laid-out
     /// window's authored text key is shown through.
-    pub localisation: &'a installed_content::localisation::Localisation,
+    pub localisation: &'a installed_content_localisation::localisation::Localisation,
     pub map: &'a MapData,
     pub camera: Camera,
     /// The frame in device pixels, which the projection uses.
@@ -1723,10 +1724,10 @@ pub struct CounterSettings {
     pub nato: bool,
 }
 
-impl From<installed_content::settings::Counters> for CounterSettings {
+impl From<installed_content_settings::settings::Counters> for CounterSettings {
     /// `counter_color_mode == 1` selects the allegiance palette;
     /// `template_counter == 1` selects the NATO frame.
-    fn from(settings: installed_content::settings::Counters) -> Self {
+    fn from(settings: installed_content_settings::settings::Counters) -> Self {
         Self {
             color_mode: if settings.color_mode == 1 {
                 CounterColorMode::Allegiance
@@ -1739,9 +1740,9 @@ impl From<installed_content::settings::Counters> for CounterSettings {
 }
 
 impl Default for CounterSettings {
-    /// The constructed options ([`installed_content::settings::Counters::default`]).
+    /// The constructed options ([`installed_content_settings::settings::Counters::default`]).
     fn default() -> Self {
-        installed_content::settings::Counters::default().into()
+        installed_content_settings::settings::Counters::default().into()
     }
 }
 
@@ -2549,7 +2550,7 @@ pub struct HourTables {
     /// [`hq_portraits`].
     portraits: BTreeMap<u64, counter_order::Portrait>,
     /// `ArmyIconInputs` by division.
-    icon_inputs: BTreeMap<u64, replay::rows::ArmyIconInputRow>,
+    icon_inputs: BTreeMap<u64, replay_data::rows::ArmyIconInputRow>,
     task_forces: TaskForceMotions,
     base_icons: BaseIcons,
     missions: Arc<MissionIcons>,
@@ -2572,7 +2573,7 @@ impl HourTables {
 
 /// Fill no land or naval unit source while the viewing country's peace-conference
 /// flag is set. Other countries' flags do not matter.
-fn peace_conference_hides_units(countries: &[replay::rows::CountryRow], ours: u32) -> bool {
+fn peace_conference_hides_units(countries: &[replay_data::rows::CountryRow], ours: u32) -> bool {
     countries
         .iter()
         .any(|country| country.canonical_slot == ours && country.peace_conference_participant != 0)
@@ -2596,8 +2597,8 @@ pub fn hour_tables(
     reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
     mission_topology: Result<
         (
-            &installed_content::province_graph::ProvinceGraph,
-            &installed_content::province_geometry::ProvinceGeometry,
+            &installed_content_core::province_graph::ProvinceGraph,
+            &installed_content_core::province_geometry::ProvinceGeometry,
         ),
         String,
     >,
@@ -2644,7 +2645,8 @@ pub fn hour_tables(
                         std::str::from_utf8(&row.cosmetic_tag)
                             .map(str::to_owned)
                             .map_err(|_| "country cosmetic tag is not UTF-8".into()),
-                        installed_content::country_names::original_tag(country, row).map(str::to_owned),
+                        installed_content_country_names::country_names::original_tag(country, row)
+                            .map(str::to_owned),
                     ),
                 ))
             })
@@ -2732,12 +2734,9 @@ pub fn hour_tables(
                 .collect();
             let mut icons =
                 MissionIcons::read(frame, &vision, &links, &country_ids, &native, &forces)?;
-            if icons
-                .regions
-                .values()
-                .flatten()
-                .any(|entry| engine::naval_mission_inputs::MISSION_KINDS.contains(&entry.kind))
-            {
+            if icons.regions.values().flatten().any(|entry| {
+                engine_native::naval_mission_inputs::MISSION_KINDS.contains(&entry.kind)
+            }) {
                 let world =
                     dashboard_text::triggers::World::new(frame, reads.trigger_content.facts())
                         .map_err(|error| error.to_string());
@@ -3087,7 +3086,7 @@ struct Geography<'a> {
 /// The flag's ruling ideology group of every country slot, including refusals.
 fn ideology_groups(
     frame: &DecodedFrame,
-    countries: &BTreeMap<u32, &replay::rows::CountryRow>,
+    countries: &BTreeMap<u32, &replay_data::rows::CountryRow>,
 ) -> io::Result<BTreeMap<u32, Result<Option<String>, String>>> {
     let groups = dashboard_text::flag_choices::ruling_groups(frame)?;
     Ok(countries
@@ -3276,7 +3275,7 @@ impl Countries {
         let (cosmetic, original) = self.flag_tags.get(&slot)?;
         let cosmetic = cosmetic.as_ref().ok()?;
         let group = self.groups.get(&slot)?.as_ref().ok()?;
-        let keys = installed_content::country_names::flag_keys(
+        let keys = installed_content_country_names::country_names::flag_keys(
             original.as_deref().ok(),
             cosmetic,
             group.as_deref(),

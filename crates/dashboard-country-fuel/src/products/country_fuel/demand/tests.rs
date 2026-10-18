@@ -1,11 +1,13 @@
 use super::super::tests::{award_row, fuel_frame, replay_source, reply_read};
 use super::*;
-use replay::frame::TableView;
-use replay::rows::{FuelDemandFleet, FuelDemandGroup, Recorded, TableId, TableRows};
+use replay_data::{
+    rows::FuelDemandFleet, rows::FuelDemandGroup, rows::Recorded, rows::TableId, rows::TableRows,
+};
+use replay_frame::frame::TableView;
 
 fn pack(hour: i32) -> FuelDemandRead {
     FuelDemandRead {
-        hour: replay::rows::FuelDemandHour::Stamped(hour),
+        hour: replay_data::rows::FuelDemandHour::Stamped(hour),
         country_instance: Some(9),
         divisions: vec![FuelDemandUnit {
             reference: 7 << 32 | 29,
@@ -29,7 +31,7 @@ fn consumption(row: &CountryFuelRow) -> FuelConsumptionRead {
 
 #[test]
 fn occurrence_history_follows_native_rename_but_refuses_reuse_changed_keys_gaps_and_instances() {
-    use replay::rows::{CountryLinkRow, CountryRow};
+    use replay_data::{rows::CountryLinkRow, rows::CountryRow};
     let frames = (100..=220)
         .filter(|hour| ![160, 161].contains(hour))
         .map(|hour| {
@@ -141,7 +143,7 @@ fn current_required_rows_keep_signed_wrapping_separate_from_burn_and_widened_sum
     });
     let row = row(pack);
     let summary = consumption(&row);
-    let individual = engine::fuel_demand::daily_required(5_000_000_000_000);
+    let individual = engine_fuel::fuel_demand::daily_required(5_000_000_000_000);
     assert!(individual < 0);
     assert_eq!(
         summary.known_daily_raw[0],
@@ -151,7 +153,7 @@ fn current_required_rows_keep_signed_wrapping_separate_from_burn_and_widened_sum
     assert_eq!(
         summary.native_daily_raw[0].as_deref(),
         Some(
-            engine::fuel_demand::daily_required(10_000_000_000_000)
+            engine_fuel::fuel_demand::daily_required(10_000_000_000_000)
                 .to_string()
                 .as_str()
         )
@@ -176,7 +178,7 @@ fn repeated_air_occurrences_and_partial_names_do_not_discard_known_quantities() 
         reference: 9 << 32 | 29,
         owner_reason: b"synthetic owner unavailable".to_vec(),
         name: None,
-        inputs: Some(engine::fuel_demand::AirInputs::default()),
+        inputs: Some(engine_fuel::fuel_demand::AirInputs::default()),
         ..Default::default()
     };
     pack.sites = (0..2)

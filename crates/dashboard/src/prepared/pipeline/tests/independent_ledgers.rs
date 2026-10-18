@@ -7,11 +7,12 @@ use super::family_lanes::{assert_payloads_equal, payloads};
 use super::*;
 use crate::prepared::prepass;
 use independent::economy::{self, CONSTRUCTION, EXPERIENCE, FUEL, PRODUCTION, STOCKPILE};
-use replay::rows::{
-    BuildingConstructionRow, BuildingRow, ConstructionLineOutputRow, CountryAppearanceRow,
-    CountryExperienceGainRow, CountryExperienceRow, CountryFuelRow, LexicalTokenRow,
-    ProductionLineOutputRow, ProductionLineRow, ProvinceRow, Recorded, StateRow, StockpileRow,
-    VariantDefinitionRow,
+use replay_data::{
+    rows::BuildingConstructionRow, rows::BuildingRow, rows::ConstructionLineOutputRow,
+    rows::CountryAppearanceRow, rows::CountryExperienceGainRow, rows::CountryExperienceRow,
+    rows::CountryFuelRow, rows::LexicalTokenRow, rows::ProductionLineOutputRow,
+    rows::ProductionLineRow, rows::ProvinceRow, rows::Recorded, rows::StateRow, rows::StockpileRow,
+    rows::VariantDefinitionRow,
 };
 
 type Payloads = BTreeMap<(String, u64), Vec<u8>>;
@@ -118,7 +119,7 @@ fn ledger_frame(branch: u64, hour: i32) -> DecodedFrame {
                 amount: 1,
                 created_hour: BASE - 100,
                 building_type: FACTORY,
-                target_flags: engine::cbuilding_status::STATE_FLAG,
+                target_flags: engine_native::cbuilding_status::STATE_FLAG,
                 target_location: 40,
                 target_state: 40,
                 ..Default::default()
@@ -207,7 +208,7 @@ fn ledger_frame(branch: u64, hour: i32) -> DecodedFrame {
     set(
         &mut observed,
         TableId::RocketProductionOutput,
-        TableRows::RocketProductionOutput(vec![replay::rows::RocketProductionOutputRow {
+        TableRows::RocketProductionOutput(vec![replay_data::rows::RocketProductionOutputRow {
             since_hour: BASE - 100,
             exact: true,
             units_exact: true,
@@ -927,7 +928,7 @@ fn production_selections_answer_the_prepared_prefix_with_the_hours_still_pending
 fn commit_experience(
     writer: &mut store::Writer,
     accumulator: &mut crate::prepared_stability::ExperienceAccumulator,
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
     offsets: impl IntoIterator<Item = i32>,
     last: i32,
     complete: bool,

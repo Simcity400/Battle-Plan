@@ -1,6 +1,6 @@
 use super::*;
 use crate::raw::{RawLog, Recorded};
-use engine::{Memory, carmy_group, corders_group, memory::SliceMemory};
+use engine_native::{Memory, carmy_group, corders_group, memory::SliceMemory};
 use std::sync::atomic::AtomicUsize;
 
 const GROUP: usize = 0x30000;
@@ -27,7 +27,7 @@ fn request(count: i32) -> OrdersRequest {
         assert!(payload.log.take(&source, at, bytes.len(), MASK).is_some());
     }
     OrdersRequest {
-        countries: Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap()),
+        countries: Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap()),
         base: 0,
         game_state: 0,
         orders: map_capture::Orders::vacant(),

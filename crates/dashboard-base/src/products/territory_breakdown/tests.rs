@@ -1,13 +1,14 @@
 use super::*;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{CampaignRow, CountryLinkRow, CountryRow, ProvinceRow, StateRow, TableId, TableRows},
+use replay_data::{
+    rows::CampaignRow, rows::CountryLinkRow, rows::CountryRow, rows::ProvinceRow, rows::StateRow,
+    rows::TableId, rows::TableRows,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 
 #[test]
 fn territory_breakdown_country_operand_refresh_retains_the_link_map() {
     use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let mut read = frame(100, 3);
     read.metrics = Default::default();
     let region_inputs = regions(3);
@@ -80,7 +81,7 @@ fn territory_breakdown_country_operand_refresh_retains_the_link_map() {
 #[test]
 fn territory_breakdown_shared_driver_defers_regions_and_publishes_exact_endpoints() {
     use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let work = observer_tests::scaled_work(10, |hours| {
         let mut read = frame(100, 64);
         read.metrics = Default::default();
@@ -122,7 +123,7 @@ fn territory_breakdown_shared_driver_defers_regions_and_publishes_exact_endpoint
 #[test]
 fn territory_breakdown_one_changed_province_skips_closed_region_history() {
     use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let work = observer_tests::scaled_work(10, |history| {
         let mut read = frame(100, 2);
         read.metrics = Default::default();
@@ -168,7 +169,7 @@ fn territory_breakdown_one_changed_province_skips_closed_region_history() {
 #[cfg(feature = "slow-tests")]
 fn territory_breakdown_shared_driver_keeps_all_5000_country_region_keys_without_hourly_work() {
     use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let mut read = frame(100, 5_000);
     read.metrics = Default::default();
     let mut prepared = Prepared {
@@ -678,7 +679,7 @@ fn state_terms_combine_by_denominator_without_rounding_or_lcm_limits() {
 #[test]
 fn restored_breakdown_closes_a_column_unknown_at_the_first_hour_after_a_commit() {
     use crate::prepared::observer_tests;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     // States are unreadable at hour 102, the first hour after a commit.
     let frames: Vec<_> = (100..104)
@@ -824,7 +825,7 @@ fn regional_totals() -> super::super::territory::TerritoryReply {
 fn prepare_regional(
     fixture: &crate::prepared::series::tests::Fixture,
     commits: &[&[i32]],
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
 ) {
     let flag = AtomicBool::new(false);
     let mut prepared = Prepared {
@@ -1078,7 +1079,7 @@ fn regional_hours_answer_beyond_preparation_from_one_frame_as_preparation_does()
 #[test]
 fn regional_sample_matches_the_continuous_scan_for_5000_countries() {
     const COUNT: u32 = 5_000;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let inputs = regions(COUNT);
     let frames: Vec<_> = (100..=102)
         .map(|hour| {

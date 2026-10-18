@@ -59,7 +59,7 @@ use crate::{
     map_capture::PlayersJob,
     sampling::{self, BUFFERS, DivisionsJob, Shared},
 };
-use replay::rows::TableId;
+use replay_data::rows::TableId;
 
 use crossbeam_queue::ArrayQueue;
 use std::cell::UnsafeCell;
@@ -539,30 +539,33 @@ pub fn worker_finished() -> bool {
 pub fn relations_refresh_hour(hour: i32, force_full: bool) -> bool {
     RELATIONS
         .iter()
-        .any(|table| replay::cadence::should_walk(*table, hour, force_full))
+        .any(|table| replay_data::cadence::should_walk(*table, hour, force_full))
 }
 
 /// Admit a character payload whenever any family table is active.
 pub fn characters_refresh_hour(hour: i32, force_full: bool) -> bool {
     CHARACTERS
         .iter()
-        .any(|table| replay::cadence::should_walk(*table, hour, force_full))
+        .any(|table| replay_data::cadence::should_walk(*table, hour, force_full))
 }
 
-/// Projects refresh together on their daily slot (`replay::cadence`); full
+/// Projects refresh together on their daily slot (`replay_data::cadence`); full
 /// hours (branch start, load, gap or an explicit refresh request) force their
 /// complete acquisition.
 pub fn projects_refresh_hour(hour: i32, force_full: bool) -> bool {
-    let walk = replay::cadence::should_walk(PROJECTS[0], hour, force_full);
+    let walk = replay_data::cadence::should_walk(PROJECTS[0], hour, force_full);
     for table in PROJECTS.iter().skip(1) {
-        debug_assert_eq!(walk, replay::cadence::should_walk(*table, hour, force_full));
+        debug_assert_eq!(
+            walk,
+            replay_data::cadence::should_walk(*table, hour, force_full)
+        );
     }
     walk
 }
 
 /// Admit the dictionary according to its authoritative replay cadence.
 pub fn lexical_refresh_hour(hour: i32, force_full: bool) -> bool {
-    replay::cadence::should_walk(LEXICAL[0], hour, force_full)
+    replay_data::cadence::should_walk(LEXICAL[0], hour, force_full)
 }
 
 /// Monotonic frame sequence for FIFO order proofs. Gaps in the sequence are
@@ -1074,7 +1077,7 @@ fn publish_ready(
 
 #[cfg(test)]
 pub(crate) fn allocation_exercise(shared: &Shared, index: usize, hour: i32) -> bool {
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     let bytes = [7_u8; 64];
     let memory = SliceMemory {
         base: 0x1000,
@@ -1162,7 +1165,7 @@ fn fail_missing_payloads(frame: &mut sampling::Captured, job: &DecodeJob) {
             .fail_lexical_capture(MISSING_PAYLOAD_REASON);
     }
     if job.divisions_refresh && job.divisions_payload.is_none() {
-        frame.divisions_result = engine::walk::Outcome::Unavailable {
+        frame.divisions_result = engine_native::walk::Outcome::Unavailable {
             reason: MISSING_PAYLOAD_REASON,
         };
         frame

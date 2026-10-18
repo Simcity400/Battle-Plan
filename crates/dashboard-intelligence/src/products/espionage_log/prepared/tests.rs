@@ -1,10 +1,8 @@
 use super::super::tests::frame;
 use super::*;
 use dashboard_base::{prepared::series::tests::Fixture, test_fixtures};
-use replay::{
-    frame::TableView,
-    rows::{OperationCompletionRow, TableRows},
-};
+use replay_data::{rows::OperationCompletionRow, rows::TableRows};
+use replay_frame::frame::TableView;
 
 fn source(chunks: &[Vec<DecodedFrame>]) -> Source {
     let first = Replay::from_records(

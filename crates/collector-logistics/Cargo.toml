@@ -10,7 +10,9 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-engine.workspace = true
+engine-allocation.workspace = true
+engine-land-inputs.workspace = true
+engine-native.workspace = true
 serde = { workspace = true, features = ["derive"] }
 collector-primitives.workspace = true
 collector-status.workspace = true

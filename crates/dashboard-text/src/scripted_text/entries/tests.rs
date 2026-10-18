@@ -62,16 +62,16 @@ pub(super) fn geography_catalogue() -> (crate::catalogue::Catalogue, crate::cata
     ] {
         std::fs::write(folder.0.join("map/logs").join(name), bytes).unwrap();
     }
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&folder.0, &[])]).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&folder.0, &[])]).unwrap();
     let _reads = layers.report_uncovered_reads();
     (crate::catalogue::tests::layers_catalogue(layers), folder)
 }
 
 pub(super) fn geography_frame() -> DecodedFrame {
-    use replay::{
-        frame::TableView,
-        rows::{PoliticalPartyRow, ProvinceRow, StateRow, TableId, TableRows},
+    use replay_data::{
+        rows::PoliticalPartyRow, rows::ProvinceRow, rows::StateRow, rows::TableId, rows::TableRows,
     };
+    use replay_frame::frame::TableView;
     let mut frame = crate::scripted_text::tests::complete_frame();
     *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
         [64, 65]
@@ -264,7 +264,7 @@ fn reached_geography_caches_missing_and_malformed_map_refusals_without_refusing_
 
 #[test]
 fn description_append_preserves_active_cursor_graph_and_guard_state() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut graph = EventScopes::new(vec![
         EventScope {
@@ -324,28 +324,28 @@ fn description_append_preserves_active_cursor_graph_and_guard_state() {
 
 #[test]
 fn scripted_text_cached_state_diagnostics_are_filtered_and_reported_once() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use installed_content::states::{Diagnostic, MisreadCause};
+    use installed_content_states::{states::Diagnostic, states::MisreadCause};
     let (cat, _folder) = crate::scripted_text::tests::catalogue("", "");
     let warnings = vec![
         Diagnostic {
-            kind: installed_content::DiagnosticKind::Warning,
+            kind: installed_content_core::DiagnosticKind::Warning,
             message: "native template skip".into(),
             cause: None,
         },
         Diagnostic {
-            kind: installed_content::DiagnosticKind::Misread,
+            kind: installed_content_core::DiagnosticKind::Misread,
             message: "proven state recovery".into(),
             cause: Some(MisreadCause::InvalidImpassable),
         },
         Diagnostic {
-            kind: installed_content::DiagnosticKind::Misread,
+            kind: installed_content_core::DiagnosticKind::Misread,
             message: "unproven state recovery".into(),
             cause: None,
         },
         Diagnostic {
-            kind: installed_content::DiagnosticKind::Unsupported,
+            kind: installed_content_core::DiagnosticKind::Unsupported,
             message: "unsupported state content".into(),
             cause: None,
         },
@@ -353,7 +353,7 @@ fn scripted_text_cached_state_diagnostics_are_filtered_and_reported_once() {
     assert!(
         cat.state_content
             .set(Ok(StateContent {
-                defines: installed_content::defines::read(&cat.content.layers).unwrap(),
+                defines: installed_content_core::defines::read(&cat.content.layers).unwrap(),
                 states: Default::default(),
                 names: StateNames::new(),
                 warnings: warnings.clone(),
@@ -388,7 +388,7 @@ fn scripted_text_cached_state_diagnostics_are_filtered_and_reported_once() {
 
 #[test]
 fn scripted_text_state_display_shares_precedence_language_and_cached_failures() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut cat, _folder) =
         crate::scripted_text::tests::catalogue("", " MOD_STATE:0 \"Mod state\"\n");
@@ -398,7 +398,7 @@ fn scripted_text_state_display_shares_precedence_language_and_cached_failures() 
     assert!(content.state_content.get().is_some());
     assert_eq!(cat.cached_states().err().unwrap(), first_error);
     let names = BTreeMap::from([(64, Ok("MOD_STATE".into()))]);
-    let mut state = replay::rows::StateRow {
+    let mut state = replay_data::rows::StateRow {
         id: 64,
         ..Default::default()
     };

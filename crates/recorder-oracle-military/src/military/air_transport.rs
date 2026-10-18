@@ -1,12 +1,10 @@
 //! Saved pool identity and the transport wing's independently captured raid link.
 use std::{collections::BTreeMap, io};
 
-use installed_content::{tokens::Token, unit_leader::SubUnits};
+use installed_content_core::{tokens::Token, unit_leader::SubUnits};
 use installed_content_save as save;
-use replay::{
-    frame::DecodedFrame,
-    rows::{AirWingRow, Recorded, tables},
-};
+use replay_data::{rows::AirWingRow, rows::Recorded, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::super::{
     ContentRead, Report, Spellings, TokenNames, invalid, required_context, reverse_spellings,
@@ -143,7 +141,7 @@ fn pool(
         return Ok(Some(false));
     };
     let mask = sub_units.category(name.as_bytes()).map_err(invalid)?;
-    let transport = installed_content::equipment::category_mask("air_transport")
+    let transport = installed_content_core::equipment::category_mask("air_transport")
         .expect("the transport category exists");
     Ok(Some(mask & transport != 0))
 }

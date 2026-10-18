@@ -7,8 +7,8 @@
 //! for, the hour carries the last sample, and the next hour walks instead.
 
 use crate::table_capture::{CaptureRows, grow_capacity};
-use engine::allocation::{filled, oom};
-use engine::country_intel_row::Row;
+use engine_allocation::{filled, oom};
+use engine_native::country_intel_row::Row;
 use std::sync::{
     Arc, Mutex, MutexGuard, PoisonError,
     atomic::{AtomicUsize, Ordering},
@@ -192,7 +192,7 @@ impl Drop for Loan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::walk::Outcome;
+    use engine_native::walk::Outcome;
 
     #[test]
     fn a_due_walk_never_waits_for_a_held_buffer_and_the_next_hour_walks_instead() {

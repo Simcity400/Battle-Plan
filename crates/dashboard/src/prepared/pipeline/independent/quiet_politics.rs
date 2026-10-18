@@ -328,7 +328,7 @@ impl IdeasBranch {
     /// content that cannot be read classifies nothing, and a cancelled read
     /// stops preparation.
     fn content(&mut self, block: &Block<'_>) -> io::Result<Option<Arc<PoliticsContent>>> {
-        let _cpu = ::replay::cpu::scope("fold binds", None);
+        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
         if let Some(content) = &self.content {
             return Ok(content.clone());
         }

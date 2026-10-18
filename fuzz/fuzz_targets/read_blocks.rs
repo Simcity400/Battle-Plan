@@ -1,7 +1,9 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use replay::{container::Replay, frame::FrameDecoder, rows::TableId};
+use replay::container::Replay;
+use replay_data::rows::TableId;
+use replay_frame::frame::FrameDecoder;
 
 fn read(replay: &Replay) {
     for block in &replay.index {

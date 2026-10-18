@@ -1,7 +1,8 @@
 use super::*;
 use dashboard_base::prepared::frame_changes::FrameChanges;
 use dashboard_base::prepared::series::{self, Accumulator, Catalogue as KeyCatalogue, Reader};
-use replay::{codec::Decoder, frame::SharedView};
+use replay_data::codec::Decoder;
+use replay_frame::frame::SharedView;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -85,7 +86,7 @@ impl Observer {
         let changes = self
             .test_changes
             .get_or_insert_with(dashboard_base::prepared::frame_changes::FrameChangeTracker::new)
-            .observe(frame, replay::format::FormatVersion::CURRENT);
+            .observe(frame, replay_data::format::FormatVersion::CURRENT);
         self.observe_changed(frame, &changes)
     }
     pub fn observe_changed(&mut self, frame: &DecodedFrame, fact: &FrameChanges) -> io::Result<()> {
@@ -686,7 +687,7 @@ fn read_query_counters(
     branch: u64,
     structure_only: bool,
 ) -> io::Result<Option<KeyCatalogue<QueryCounters>>> {
-    let _cpu = replay::cpu::scope_phase("wars:query_catalogue");
+    let _cpu = replay_frame::cpu::scope_phase("wars:query_catalogue");
     if structure_only {
         return series::read_catalogue::<serde::de::IgnoredAny>(store, key, "wars", branch)
             .map(|catalogue| catalogue.map(|_| (BTreeMap::new(), QueryCounters::default())));
@@ -726,7 +727,7 @@ pub(crate) fn projection(
     let bounds = branch_bounds(source.replay_ref(), branch_info);
     let mut reader = Reader::new(store, key, format!("wars-series-{branch}"), cancelled)?;
     let mut casualties: HashMap<usize, Vec<WarCasualtyRun>> = HashMap::new();
-    let cpu = replay::cpu::scope_phase("wars:query_walk");
+    let cpu = replay_frame::cpu::scope_phase("wars:query_walk");
     let mut reply = super::walks::walk(
         source,
         store,
@@ -784,7 +785,7 @@ pub(crate) fn projection(
         },
     )?;
     drop(cpu);
-    let _cpu = replay::cpu::scope_phase("wars:query_finish");
+    let _cpu = replay_frame::cpu::scope_phase("wars:query_finish");
     for (index, war) in reply.wars.iter_mut().enumerate() {
         war.casualties.clear();
         let mut runs = casualties.remove(&index).unwrap_or_default();
@@ -834,7 +835,7 @@ fn hydrate_losses(
     span: series::Run,
     hours: &BTreeSet<i32>,
 ) -> io::Result<Vec<Vec<WarCasualtyRun>>> {
-    let _cpu = replay::cpu::scope_phase("wars:query_losses");
+    let _cpu = replay_frame::cpu::scope_phase("wars:query_losses");
     let hours: Vec<_> = hours
         .range(span.first_hour..=span.last_hour)
         .copied()

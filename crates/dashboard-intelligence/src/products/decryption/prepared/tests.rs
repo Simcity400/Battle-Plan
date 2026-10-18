@@ -1,10 +1,8 @@
 use super::*;
 use crate::products::decryption::tests::{DEFINES, frame};
 use dashboard_base::prepared::series::tests::Fixture;
-use replay::{
-    frame::TableView,
-    rows::{TableId, TableRows},
-};
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::frame::TableView;
 
 fn reference(scan: &Scan) -> DecryptionReply {
     DecryptionReply {
@@ -192,7 +190,7 @@ fn intel_shared_driver_cipher_equal_rows_are_flat_and_exact() {
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
     let scaled = observer_tests::scaled_work(8, |hours| {
         let first = frame(100, 2, 400_000, 1);
-        let format = replay::format::FormatVersion::default();
+        let format = replay_data::format::FormatVersion::default();
         let mut fixture = Fixture::new();
         let flag = AtomicBool::new(false);
         let mut state = Accumulator::default();

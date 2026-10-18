@@ -2,7 +2,9 @@
 //! completed updates and receipts cached by divisions and task forces.
 //! Raw arithmetic/topology belongs to the supplying FuelDemandRead.
 use super::*;
-use replay::rows::{FuelDemandRead, FuelDemandSite, FuelDemandUnit, FuelDemandWing};
+use replay_data::{
+    rows::FuelDemandRead, rows::FuelDemandSite, rows::FuelDemandUnit, rows::FuelDemandWing,
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -180,13 +182,13 @@ fn reason(bytes: &[u8]) -> Option<String> {
     })
 }
 fn pack_of(row: &CountryFuelRow, hour: i32) -> Result<&FuelDemandRead, String> {
-    let replay::rows::Recorded::Value(pack) = &row.demand else {
+    let replay_data::rows::Recorded::Value(pack) = &row.demand else {
         return Err("Individual current fuel consumption was not recorded".into());
     };
     // A pack read with its row was read at the row's read hour, `hour`.
     if pack.hour.at(hour) != hour
         || pack.country_instance.is_none()
-        || !matches!(row.country_instance, replay::rows::Recorded::Value(instance) if instance == pack.country_instance)
+        || !matches!(row.country_instance, replay_data::rows::Recorded::Value(instance) if instance == pack.country_instance)
     {
         return Err(
             "Current fuel consumption supplying read or native country identity does not match"
@@ -319,14 +321,14 @@ pub(super) fn summary_of(
             let causes = [&pack.army_reason, &pack.air_reason, &pack.navy_reason];
             let native = std::array::from_fn(|index| {
                 rates[index]
-                    .map(engine::fuel_demand::daily_required)
+                    .map(engine_fuel::fuel_demand::daily_required)
                     .map_err(|message| {
                         reasons.intern(&reason(causes[index]).unwrap_or_else(|| message.into()))
                     })
             });
             for row in occurrences(pack) {
                 if let Ok(rate) = row.rate {
-                    let value = i128::from(engine::fuel_demand::daily_required(rate));
+                    let value = i128::from(engine_fuel::fuel_demand::daily_required(rate));
                     known[row.kind as usize] += value;
                     positive[row.kind as usize] += value.max(0);
                 }
@@ -341,7 +343,7 @@ pub(super) fn summary_of(
         segment_start_hour: segment,
         country: row.country,
         country_instance: match row.country_instance {
-            replay::rows::Recorded::Value(value) => value,
+            replay_data::rows::Recorded::Value(value) => value,
             _ => None,
         },
         native_daily,
@@ -403,7 +405,7 @@ fn part_of(
     let (recorded_name, name_reason) = stored_name(row.name, row.name_reason, format);
     let (amount_raw, quantity_reason) = match row.rate {
         Ok(rate) => (
-            Some(engine::fuel_demand::daily_required(rate).to_string()),
+            Some(engine_fuel::fuel_demand::daily_required(rate).to_string()),
             None,
         ),
         Err(reason) => (None, Some(reason)),

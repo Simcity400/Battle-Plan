@@ -1,9 +1,9 @@
 use super::*;
-use engine::memory::SliceMemory;
+use engine_native::memory::SliceMemory;
 
 #[test]
 fn reserved_certificate_readiness_uses_only_the_projectable_naming_prefix() {
-    use engine::csubject_relation::Name;
+    use engine_native::csubject_relation::Name;
     let mut capture = Captured::vacant();
     assert!(!capture.reserved_land_certificate_ready());
     capture.reserved.outcome = Outcome::Rows { len: 1 };
@@ -51,7 +51,7 @@ fn reserved_certificate_readiness_uses_only_the_projectable_naming_prefix() {
 
 #[test]
 fn reserved_naming_keeps_exact_bytes_and_does_not_withhold_existing_appearance() {
-    use engine::csubject_relation::Name;
+    use engine_native::csubject_relation::Name;
     let mut capacity = Capacities {
         rows: 1,
         subjects: 0,
@@ -67,7 +67,7 @@ fn reserved_naming_keeps_exact_bytes_and_does_not_withhold_existing_appearance()
     };
     capture.naming.required = 1025;
     let [
-        TableView::Complete(replay::rows::TableRows::CountryAppearance(rows)),
+        TableView::Complete(replay_data::rows::TableRows::CountryAppearance(rows)),
         TableView::Truncated { missing: 1, .. },
         ..,
     ] = capture.tables()
@@ -91,7 +91,7 @@ fn reserved_naming_keeps_exact_bytes_and_does_not_withhold_existing_appearance()
     capture.reserved.outcome = Outcome::Rows { len: 1 };
     let [
         _,
-        TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+        TableView::Complete(replay_data::rows::TableRows::ReservedCountryNaming(rows)),
         ..,
     ] = capture.tables()
     else {
@@ -104,16 +104,16 @@ fn reserved_naming_keeps_exact_bytes_and_does_not_withhold_existing_appearance()
     assert_eq!(rows[0].built, 5);
     assert_eq!(
         rows[0].original_tag_reference,
-        replay::rows::Recorded::Value(Some(i32::MIN))
+        replay_data::rows::Recorded::Value(Some(i32::MIN))
     );
     assert_eq!(
         rows[0].original_tag,
-        replay::rows::Recorded::Value(Some(vec![0xff, 0]))
+        replay_data::rows::Recorded::Value(Some(vec![0xff, 0]))
     );
     capture.reserved.row.original_tag = Some(Name { start: 4, len: 0 });
     let [
         _,
-        TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+        TableView::Complete(replay_data::rows::TableRows::ReservedCountryNaming(rows)),
         ..,
     ] = capture.tables()
     else {
@@ -121,19 +121,22 @@ fn reserved_naming_keeps_exact_bytes_and_does_not_withhold_existing_appearance()
     };
     assert_eq!(
         rows[0].original_tag,
-        replay::rows::Recorded::Value(Some(Vec::new()))
+        replay_data::rows::Recorded::Value(Some(Vec::new()))
     );
     for original in [None, Some(Name { start: 4, len: 1 })] {
         capture.reserved.row.original_tag = original;
         let [
             _,
-            TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+            TableView::Complete(replay_data::rows::TableRows::ReservedCountryNaming(rows)),
             ..,
         ] = capture.tables()
         else {
             panic!("optional getter refusal preserves naming operands");
         };
-        assert_eq!(rows[0].original_tag, replay::rows::Recorded::Value(None));
+        assert_eq!(
+            rows[0].original_tag,
+            replay_data::rows::Recorded::Value(None)
+        );
         assert_eq!(rows[0].tag, [0xff, 0]);
         assert_eq!(rows[0].group, Some(Vec::new()));
         assert_eq!(rows[0].built, 5);
@@ -141,15 +144,15 @@ fn reserved_naming_keeps_exact_bytes_and_does_not_withhold_existing_appearance()
     for faction in [Some(0), Some((u64::from(u32::MAX) << 32) | 88), None] {
         capture.reserved.row.faction = faction;
         let [
-            TableView::Complete(replay::rows::TableRows::CountryAppearance(positive)),
-            TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+            TableView::Complete(replay_data::rows::TableRows::CountryAppearance(positive)),
+            TableView::Complete(replay_data::rows::TableRows::ReservedCountryNaming(rows)),
             ..,
         ] = capture.tables()
         else {
             panic!("independent faction refusal preserves both naming and positive appearance");
         };
         assert_eq!(positive[0].country, 7);
-        assert_eq!(rows[0].faction, replay::rows::Recorded::Value(faction));
+        assert_eq!(rows[0].faction, replay_data::rows::Recorded::Value(faction));
         assert_eq!(rows[0].tag, [0xff, 0]);
         assert_eq!(rows[0].built, 5);
     }
@@ -162,13 +165,13 @@ fn reserved_naming_keeps_exact_bytes_and_does_not_withhold_existing_appearance()
 
 #[test]
 fn the_singleton_publishes_no_retired_transport_tables_or_packet() {
-    use engine::csubject_relation::Name;
+    use engine_native::csubject_relation::Name;
     // The retired split tables are no longer this pack's tables.
     assert_eq!(
         TABLES,
         [TableId::CountryAppearance, TableId::ReservedCountryNaming]
     );
-    for table in replay::rows::RESERVED_SPLIT_TABLES {
+    for table in replay_data::rows::RESERVED_SPLIT_TABLES {
         assert!(!TABLES.contains(&table), "{table:?}");
     }
     let mut capture = Captured::with_capacities(&Capacities {
@@ -190,7 +193,7 @@ fn the_singleton_publishes_no_retired_transport_tables_or_packet() {
     };
     capture.reserved.outcome = Outcome::Rows { len: 1 };
     let tables = capture.tables();
-    let TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)) = &tables[1]
+    let TableView::Complete(replay_data::rows::TableRows::ReservedCountryNaming(rows)) = &tables[1]
     else {
         panic!("complete singleton");
     };
@@ -203,12 +206,12 @@ fn the_singleton_publishes_no_retired_transport_tables_or_packet() {
     ] {
         assert_eq!(
             *retired,
-            replay::rows::Recorded::Value(replay::rows::Retired)
+            replay_data::rows::Recorded::Value(replay_data::rows::Retired)
         );
     }
     assert_eq!(
         rows[0].attack,
-        replay::rows::Recorded::Value(replay::rows::Witnessed(None))
+        replay_data::rows::Recorded::Value(replay_data::rows::Witnessed(None))
     );
 }
 
@@ -236,7 +239,7 @@ fn unreadable_census_is_unavailable_and_raw_colors_preserve_primary_values() {
     capture.rows.rows[0].leader_character = Some(0);
     capture.rows.outcome = Outcome::Rows { len: 1 };
     let [
-        TableView::Complete(replay::rows::TableRows::CountryAppearance(rows)),
+        TableView::Complete(replay_data::rows::TableRows::CountryAppearance(rows)),
         _,
         ..,
     ] = capture.tables()
@@ -263,10 +266,7 @@ fn unreadable_census_is_unavailable_and_raw_colors_preserve_primary_values() {
 
 #[test]
 fn subject_payload_demand_is_positive_count_only_and_keeps_raw_order() {
-    use engine::{
-        cpdx_array::Array,
-        memory::{CountedMemory, ReadCounts},
-    };
+    use engine_native::{cpdx_array::Array, memory::CountedMemory, memory::ReadCounts};
     let bytes = [9_i32, -1, 9]
         .into_iter()
         .flat_map(i32::to_le_bytes)
@@ -292,7 +292,7 @@ fn subject_payload_demand_is_positive_count_only_and_keeps_raw_order() {
     capture.capture_subjects(&memory);
     assert_eq!(ReadCounts::take_current().bytes, 12);
     let [
-        TableView::Complete(replay::rows::TableRows::CountryAppearance(rows)),
+        TableView::Complete(replay_data::rows::TableRows::CountryAppearance(rows)),
         _,
         ..,
     ] = capture.tables()
@@ -305,7 +305,7 @@ fn subject_payload_demand_is_positive_count_only_and_keeps_raw_order() {
 
 #[test]
 fn positive_original_tag_projection_preserves_binary_absence_and_local_refusal() {
-    use engine::csubject_relation::Name;
+    use engine_native::csubject_relation::Name;
     let mut capture = Captured::with_capacities(&Capacities {
         rows: 1,
         subjects: 0,
@@ -325,7 +325,7 @@ fn positive_original_tag_projection_preserves_binary_absence_and_local_refusal()
     ] {
         capture.rows.rows[0].original_tag = span;
         let [
-            TableView::Complete(replay::rows::TableRows::CountryAppearance(rows)),
+            TableView::Complete(replay_data::rows::TableRows::CountryAppearance(rows)),
             _,
             ..,
         ] = capture.tables()
@@ -335,12 +335,12 @@ fn positive_original_tag_projection_preserves_binary_absence_and_local_refusal()
         assert_eq!(rows[0].country, 7);
         assert_eq!(
             rows[0].original_tag,
-            replay::rows::Recorded::Value(expected)
+            replay_data::rows::Recorded::Value(expected)
         );
         assert_eq!(rows[0].name_tag, Vec::<u8>::new());
         assert_eq!(
             rows[0].original_tag_reference,
-            replay::rows::Recorded::Value(Some(i32::MAX))
+            replay_data::rows::Recorded::Value(Some(i32::MAX))
         );
     }
 }
@@ -359,7 +359,8 @@ fn actual_original_tag_buckets_project_order_and_refuse_independently() {
     let mut capture = Captured::with_capacities(&capacities);
     capture.reserved.outcome = Outcome::Rows { len: 1 };
     capture.reserved.row.original_tag_reference = 7;
-    capture.reserved.row.original_tag = Some(engine::csubject_relation::Name { start: 0, len: 0 });
+    capture.reserved.row.original_tag =
+        Some(engine_native::csubject_relation::Name { start: 0, len: 0 });
     capture.naming.len = 0;
     for (index, (start, len)) in [(0, 0), (0, 4), (4, 0)].into_iter().enumerate() {
         capture.original_tag_buckets.first[index].start = start;
@@ -374,7 +375,7 @@ fn actual_original_tag_buckets_project_order_and_refuse_independently() {
     capture.country_array.len = 4;
     let [
         _,
-        TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+        TableView::Complete(replay_data::rows::TableRows::ReservedCountryNaming(rows)),
         ..,
     ] = capture.tables()
     else {
@@ -382,19 +383,19 @@ fn actual_original_tag_buckets_project_order_and_refuse_independently() {
     };
     assert_eq!(
         rows[0].original_tag_buckets,
-        replay::rows::Recorded::Value(Some(vec![vec![], vec![9, 0, 9, u32::MAX], vec![]]))
+        replay_data::rows::Recorded::Value(Some(vec![vec![], vec![9, 0, 9, u32::MAX], vec![]]))
     );
     assert_eq!(
         rows[0].original_tag_reference,
-        replay::rows::Recorded::Value(Some(7))
+        replay_data::rows::Recorded::Value(Some(7))
     );
     assert_eq!(
         rows[0].original_tag,
-        replay::rows::Recorded::Value(Some(vec![]))
+        replay_data::rows::Recorded::Value(Some(vec![]))
     );
     assert_eq!(
         rows[0].country_array,
-        replay::rows::Recorded::Value(Some(vec![0, 9, 0, 9]))
+        replay_data::rows::Recorded::Value(Some(vec![0, 9, 0, 9]))
     );
     for count in [
         Some(i32::MIN),
@@ -407,7 +408,7 @@ fn actual_original_tag_buckets_project_order_and_refuse_independently() {
         capture.reserved.row.owned_state_count = count;
         let [
             _,
-            TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+            TableView::Complete(replay_data::rows::TableRows::ReservedCountryNaming(rows)),
             ..,
         ] = capture.tables()
         else {
@@ -415,23 +416,23 @@ fn actual_original_tag_buckets_project_order_and_refuse_independently() {
         };
         assert_eq!(
             rows[0].owned_state_count,
-            replay::rows::Recorded::Value(count)
+            replay_data::rows::Recorded::Value(count)
         );
         assert_eq!(
             rows[0].original_tag_reference,
-            replay::rows::Recorded::Value(Some(7))
+            replay_data::rows::Recorded::Value(Some(7))
         );
         assert_eq!(
             rows[0].original_tag,
-            replay::rows::Recorded::Value(Some(vec![]))
+            replay_data::rows::Recorded::Value(Some(vec![]))
         );
         assert_eq!(
             rows[0].original_tag_buckets,
-            replay::rows::Recorded::Value(Some(vec![vec![], vec![9, 0, 9, u32::MAX], vec![]]))
+            replay_data::rows::Recorded::Value(Some(vec![vec![], vec![9, 0, 9, u32::MAX], vec![]]))
         );
         assert_eq!(
             rows[0].country_array,
-            replay::rows::Recorded::Value(Some(vec![0, 9, 0, 9]))
+            replay_data::rows::Recorded::Value(Some(vec![0, 9, 0, 9]))
         );
     }
 
@@ -439,7 +440,7 @@ fn actual_original_tag_buckets_project_order_and_refuse_independently() {
         capture.original_tag_bucket_len = invalid;
         let [
             _,
-            TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+            TableView::Complete(replay_data::rows::TableRows::ReservedCountryNaming(rows)),
             ..,
         ] = capture.tables()
         else {
@@ -447,19 +448,19 @@ fn actual_original_tag_buckets_project_order_and_refuse_independently() {
         };
         assert_eq!(
             rows[0].original_tag_buckets,
-            replay::rows::Recorded::Value(None)
+            replay_data::rows::Recorded::Value(None)
         );
         assert_eq!(
             rows[0].original_tag_reference,
-            replay::rows::Recorded::Value(Some(7))
+            replay_data::rows::Recorded::Value(Some(7))
         );
         assert_eq!(
             rows[0].original_tag,
-            replay::rows::Recorded::Value(Some(vec![]))
+            replay_data::rows::Recorded::Value(Some(vec![]))
         );
         assert_eq!(
             rows[0].country_array,
-            replay::rows::Recorded::Value(Some(vec![0, 9, 0, 9]))
+            replay_data::rows::Recorded::Value(Some(vec![0, 9, 0, 9]))
         );
     }
     capture.original_tag_bucket_len = Ok(3);
@@ -470,20 +471,23 @@ fn actual_original_tag_buckets_project_order_and_refuse_independently() {
         capture.country_array_len = invalid;
         let [
             _,
-            TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+            TableView::Complete(replay_data::rows::TableRows::ReservedCountryNaming(rows)),
             ..,
         ] = capture.tables()
         else {
             panic!("array refusal preserves other fields")
         };
-        assert_eq!(rows[0].country_array, replay::rows::Recorded::Value(None));
+        assert_eq!(
+            rows[0].country_array,
+            replay_data::rows::Recorded::Value(None)
+        );
         assert_eq!(
             rows[0].original_tag_buckets,
-            replay::rows::Recorded::Value(Some(vec![vec![], vec![9, 0, 9, u32::MAX], vec![]]))
+            replay_data::rows::Recorded::Value(Some(vec![vec![], vec![9, 0, 9, u32::MAX], vec![]]))
         );
         assert_eq!(
             rows[0].original_tag_reference,
-            replay::rows::Recorded::Value(Some(7))
+            replay_data::rows::Recorded::Value(Some(7))
         );
     }
     capture.original_tag_buckets.required = 5000;
@@ -502,7 +506,7 @@ fn actual_original_tag_buckets_project_order_and_refuse_independently() {
 
 #[test]
 fn subject_growth_keeps_all_rows_and_payload_fault_omits_only_affected_countries() {
-    use engine::cpdx_array::Array;
+    use engine_native::cpdx_array::Array;
     let bytes = [9_i32, -1, 9, 17]
         .into_iter()
         .flat_map(i32::to_le_bytes)
@@ -546,7 +550,7 @@ fn subject_growth_keeps_all_rows_and_payload_fault_omits_only_affected_countries
         assert_eq!(capture.subjects.required, 4);
         let [
             TableView::Truncated {
-                rows: replay::rows::TableRows::CountryAppearance(rows),
+                rows: replay_data::rows::TableRows::CountryAppearance(rows),
                 missing: actual_missing,
             },
             _,
@@ -586,7 +590,7 @@ fn subject_growth_keeps_all_rows_and_payload_fault_omits_only_affected_countries
 
 #[test]
 fn subject_arena_grows_first_and_later_mod_sized_5000_country_lists() {
-    use engine::cpdx_array::Array;
+    use engine_native::cpdx_array::Array;
     let countries = 5_000;
     let mut capture = Captured::with_capacities(&Capacities {
         rows: countries,
@@ -615,7 +619,7 @@ fn subject_arena_grows_first_and_later_mod_sized_5000_country_lists() {
         assert_eq!(capture.rows.outcome, Outcome::Rows { len: countries });
         assert_eq!(capture.subjects.len, countries * count);
         let [
-            TableView::Complete(replay::rows::TableRows::CountryAppearance(rows)),
+            TableView::Complete(replay_data::rows::TableRows::CountryAppearance(rows)),
             _,
             ..,
         ] = capture.tables()
@@ -631,7 +635,7 @@ fn subject_arena_grows_first_and_later_mod_sized_5000_country_lists() {
 
 #[test]
 fn subject_arena_presizes_from_live_country_slots_without_a_cap() {
-    use engine::cpdx_array::Array;
+    use engine_native::cpdx_array::Array;
     let slots = 5_001;
     let mut capacity = Capacities::default();
     capacity.raise_for_countries(slots);
@@ -662,7 +666,7 @@ fn deferred_reserved_table_retains_the_already_guarded_signed_boundary() {
         captured.reserved.row.dynamic_tag_boundary = boundary;
         let [
             _,
-            TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+            TableView::Complete(replay_data::rows::TableRows::ReservedCountryNaming(rows)),
             ..,
         ] = captured.tables()
         else {
@@ -670,7 +674,7 @@ fn deferred_reserved_table_retains_the_already_guarded_signed_boundary() {
         };
         assert_eq!(
             rows[0].dynamic_tag_boundary,
-            replay::rows::Recorded::Value(Some(boundary))
+            replay_data::rows::Recorded::Value(Some(boundary))
         );
     }
 }

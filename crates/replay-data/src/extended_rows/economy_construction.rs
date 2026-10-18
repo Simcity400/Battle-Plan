@@ -5,7 +5,7 @@ use super::*;
 /// `produced_raw` is progress toward the next unit (fixed5), not a count of units produced.
 /// `efficiency_raw` is the current efficiency the production view shows, i64 Q15 (x32768, so 100%
 /// is 3276800): the game's average of the first min(`active_factories`, `max_factories`)
-/// per-factory efficiencies, truncated as `engine::cequipment_production_line::efficiency_average`
+/// per-factory efficiencies, truncated as `engine_native::cequipment_production_line::efficiency_average`
 /// computes it; the row shows it rounded to a whole percent, `(efficiency_raw + (1 << 14)) >> 15`.
 /// `max_factories` is the line's maximum factories, the count that average is clamped to; the
 /// per-factory values are not recorded.
@@ -655,7 +655,7 @@ value_struct!(FuelAwardDayRecipient { kind: u32, reference: u64, owner: u32, hos
 /// The 24 applied fuel updates before a supplying read, summed as the Fuel
 /// widget shows them: its day's sources, transfers, consumption and receipts
 /// by consumer, the sum of each update's own gain converted to a quantity
-/// (`engine::fuel_awards::quantity`, which no day sum can reproduce) and its
+/// (`engine_fuel::fuel_awards::quantity`, which no day sum can reproduce) and its
 /// recipients. The collector sums the updates it observed; an update's
 /// amounts and recipients, and the hourly source witness only the fresh-save
 /// oracle compared, are not recorded.
@@ -1009,7 +1009,7 @@ typed_codec!(RailwayConstructionRow, 64, |row| row.id as u128, |key| Self { id: 
 /// update rewrites every hour and no writer names: it is the value at the state's read
 /// hour, up to a day old. Every read state has a row here, so this table is the family's
 /// hour source: its owners' read hours are the ones in `SliceReads`
-/// (`replay::sliced::read_hour`); an unread owner's rows are current.
+/// (`replay_data::sliced::read_hour`); an unread owner's rows are current.
 ///
 /// A controlled state that bears no resources has neither
 /// `infrastructure_level` nor `supply_route` (nor `origin`) read, and no icon can depend on any of them. For each resource

@@ -7,16 +7,14 @@ use std::{
     io,
 };
 
-use engine::{
+use engine_native::{
     cair_base_access_relation, cattache_relation, cdocking_rights_relation,
     cmilitary_access_relation, coffer_air_base_access_relation, coffer_docking_rights_relation,
     coffer_military_access_relation,
 };
 use installed_content_save::Save;
-use replay::{
-    frame::DecodedFrame,
-    rows::{RelationLinkRow, tables},
-};
+use replay_data::{rows::RelationLinkRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::{CountryContext, Report, TokenNames, complete, invalid, required_country_tag};
 
@@ -29,7 +27,7 @@ pub fn compare(
     report: &mut Report,
 ) -> io::Result<()> {
     let mut complete_comparison = report
-        .attempt_table(replay::rows::TableId::LocalPlayer, |report| {
+        .attempt_table(replay_data::rows::TableId::LocalPlayer, |report| {
             compare_local_player(frame, save, countries, report)
         });
     complete_comparison &= report.attempt("visibility RelationLinks", |report| {
@@ -223,10 +221,8 @@ fn compare_transport_subject_access(
 #[cfg(test)]
 mod transport_subject_tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{Recorded, TransportSubjectAccess},
-    };
+    use replay_data::{rows::Recorded, rows::TransportSubjectAccess};
+    use replay_frame::{frame::Metrics, frame::TableView};
     fn frame() -> DecodedFrame {
         DecodedFrame {
             branch: 1,
@@ -246,7 +242,7 @@ mod transport_subject_tests {
             country: 11,
             target_index: 1,
             transport_subject: Recorded::Value(Some(TransportSubjectAccess {
-                sample_hour: replay::rows::PacketHour::Host,
+                sample_hour: replay_data::rows::PacketHour::Host,
                 complete_owner: true,
                 ..Default::default()
             })),
@@ -732,10 +728,8 @@ fn record_inputs(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::TableView,
-        rows::{LocalPlayerRow, TableId, TableRows},
-    };
+    use replay_data::{rows::LocalPlayerRow, rows::TableId, rows::TableRows};
+    use replay_frame::frame::TableView;
 
     /// The save names the tag of the playing reference when positive, else of
     /// the observer's; an alias reference resolves through the links.

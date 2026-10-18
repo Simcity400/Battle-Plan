@@ -1,6 +1,7 @@
 use super::{Capture, Playhead, Viewer, VisualStale, seek_open_target};
 use eframe::{egui, wgpu};
-use replay::{frame::TableView, rows::TableId};
+use replay_data::rows::TableId;
+use replay_frame::frame::TableView;
 use std::collections::HashSet;
 use std::path::Path;
 use std::{path::PathBuf, sync::Arc, time::Instant};
@@ -407,7 +408,10 @@ impl Viewer {
     /// changed status.
     fn poll_fly_aircraft(&mut self, ctx: &egui::Context) {
         let repaint = ctx.clone();
-        let assets = self.document.as_ref().map(|document| &document.content.aircraft);
+        let assets = self
+            .document
+            .as_ref()
+            .map(|document| &document.content.aircraft);
         if let Some(status) = self
             .fly_aircraft
             .poll(assets, move || repaint.request_repaint())
@@ -439,7 +443,7 @@ impl Viewer {
     }
 
     /// Off the UI thread: reads saved preferences again when asked, then the revision of the
-    /// visual mods each open map shows ([`installed_content::content::visual::revision`]). The maps
+    /// visual mods each open map shows ([`installed_content_core::content::visual::revision`]). The maps
     /// whose mods changed since they loaded come back through `visual_check`.
     fn check_visual_mods(&mut self, reload_settings: bool, ctx: &egui::Context) {
         let Some(embedded) = &self.embedded else {
@@ -455,7 +459,7 @@ impl Viewer {
                 .identity
                 .mods
                 .iter()
-                .map(|recorded| installed_content::content::visual::RecordedMod {
+                .map(|recorded| installed_content_core::content::visual::RecordedMod {
                     id: recorded.id.clone(),
                     name: recorded.display_name.clone(),
                 })
@@ -487,8 +491,8 @@ impl Viewer {
                 }
                 let cancel = std::sync::atomic::AtomicBool::new(false);
                 let failures = std::cell::RefCell::new(Vec::new());
-                let changed = |selected: &[installed_content::content::visual::Choice],
-                               recorded: &[installed_content::content::visual::RecordedMod],
+                let changed = |selected: &[installed_content_core::content::visual::Choice],
+                               recorded: &[installed_content_core::content::visual::RecordedMod],
                                revision: &str| {
                     let Some(options) = &options else {
                         failures
@@ -496,8 +500,9 @@ impl Viewer {
                             .push("the content folders are not set".to_owned());
                         return false;
                     };
-                    match installed_content::content::visual::revision(options, selected, recorded, &cancel)
-                    {
+                    match installed_content_core::content::visual::revision(
+                        options, selected, recorded, &cancel,
+                    ) {
                         Ok(now) => now != revision,
                         Err(error) => {
                             failures.borrow_mut().push(error.to_string());

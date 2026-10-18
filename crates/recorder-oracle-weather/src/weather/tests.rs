@@ -1,8 +1,8 @@
 use super::*;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{TableId, TableRows, WeatherProvinceRow, WeatherRegionRow},
+use replay_data::{
+    rows::TableId, rows::TableRows, rows::WeatherProvinceRow, rows::WeatherRegionRow,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 
 #[test]
 fn typed_weather_comparison_keeps_exact_words_and_refuses_unavailable_rows() {
@@ -19,7 +19,7 @@ regions={0={region=0 temperature=-90071992547.40993
     )
     .unwrap();
     let hour = saved.date.engine_hour().unwrap();
-    let content = replay::temperature::Content::default();
+    let content = replay_data::temperature::Content::default();
     let mut frame = DecodedFrame {
         branch: 1,
         hour,
@@ -36,27 +36,31 @@ regions={0={region=0 temperature=-90071992547.40993
             permanent_snow: 4_000_000,
             display_snow: 128,
             display_mud: 255,
-            temperature: replay::rows::ProvinceTemperature::anchored(replay::temperature::State {
-                temperature: 100_000,
-                ..Default::default()
-            }),
-            raw_mud: replay::rows::Recorded::Value(7),
-            clock: replay::rows::DayNightClock::held(replay::day_night::Clock {
+            temperature: replay_data::rows::ProvinceTemperature::anchored(
+                replay_data::temperature::State {
+                    temperature: 100_000,
+                    ..Default::default()
+                },
+            ),
+            raw_mud: replay_data::rows::Recorded::Value(7),
+            clock: replay_data::rows::DayNightClock::held(replay_data::day_night::Clock {
                 local_hour: 0,
                 night_factor: 100_000,
             }),
-            display: replay::rows::Recorded::Value(Some(replay::rows::WeatherDisplay {
+            display: replay_data::rows::Recorded::Value(Some(replay_data::rows::WeatherDisplay {
                 width: 1,
                 height: 1,
                 edges: vec![2, 3],
                 ..Default::default()
             })),
-            temperature_pass: replay::rows::Recorded::Value(Some(replay::rows::TemperaturePass {
-                anchor: hour,
-                checksum: replay::temperature::checksum([100_000]),
-                ..Default::default()
-            })),
-            modifiers: replay::rows::Recorded::Value(Some(Default::default())),
+            temperature_pass: replay_data::rows::Recorded::Value(Some(
+                replay_data::rows::TemperaturePass {
+                    anchor: hour,
+                    checksum: replay_data::temperature::checksum([100_000]),
+                    ..Default::default()
+                },
+            )),
+            modifiers: replay_data::rows::Recorded::Value(Some(Default::default())),
         }]));
     *frame.tables[TableId::WeatherRegions.index()] =
         TableView::Complete(TableRows::WeatherRegions(vec![WeatherRegionRow {
@@ -94,7 +98,7 @@ regions={0={region=0 temperature=-90071992547.40993
     if let TableView::Complete(TableRows::WeatherProvinces(rows)) =
         &mut *frame.tables[TableId::WeatherProvinces.index()]
     {
-        rows[0].modifiers = replay::rows::Recorded::NotRecorded;
+        rows[0].modifiers = replay_data::rows::Recorded::NotRecorded;
     }
 
     // Missing fields withhold temperature/mud comparisons and identify
@@ -103,10 +107,10 @@ regions={0={region=0 temperature=-90071992547.40993
     if let TableView::Complete(TableRows::WeatherProvinces(rows)) =
         &mut *frame.tables[TableId::WeatherProvinces.index()]
     {
-        rows[0].temperature = replay::rows::ProvinceTemperature::NOT_RECORDED;
-        rows[0].raw_mud = replay::rows::Recorded::NotRecorded;
-        rows[0].clock = replay::rows::DayNightClock::NOT_RECORDED;
-        rows[0].display = replay::rows::Recorded::NotRecorded;
+        rows[0].temperature = replay_data::rows::ProvinceTemperature::NOT_RECORDED;
+        rows[0].raw_mud = replay_data::rows::Recorded::NotRecorded;
+        rows[0].clock = replay_data::rows::DayNightClock::NOT_RECORDED;
+        rows[0].display = replay_data::rows::Recorded::NotRecorded;
     }
     let mut old = Report::default();
     compare(
@@ -202,16 +206,18 @@ regions={0={region=0 temperature=-90071992547.40993
     else {
         unreachable!();
     };
-    rows[0].temperature = replay::rows::ProvinceTemperature::anchored(replay::temperature::State {
-        temperature: 99_999,
-        ..Default::default()
-    });
-    rows[0].temperature_pass = replay::rows::Recorded::Value(Some(replay::rows::TemperaturePass {
-        anchor: hour,
-        checksum: replay::temperature::checksum([99_999]),
-        ..Default::default()
-    }));
-    rows[0].raw_mud = replay::rows::Recorded::Value(0);
+    rows[0].temperature =
+        replay_data::rows::ProvinceTemperature::anchored(replay_data::temperature::State {
+            temperature: 99_999,
+            ..Default::default()
+        });
+    rows[0].temperature_pass =
+        replay_data::rows::Recorded::Value(Some(replay_data::rows::TemperaturePass {
+            anchor: hour,
+            checksum: replay_data::temperature::checksum([99_999]),
+            ..Default::default()
+        }));
+    rows[0].raw_mud = replay_data::rows::Recorded::Value(0);
     let mut report = Report::default();
     compare(
         &frame,
@@ -237,14 +243,16 @@ regions={0={region=0 temperature=-90071992547.40993
         unreachable!();
     };
     rows[0].snow += 1;
-    rows[0].temperature =
-        replay::rows::ProvinceTemperature::anchored(replay::temperature::State::default());
-    rows[0].temperature_pass = replay::rows::Recorded::Value(Some(replay::rows::TemperaturePass {
-        anchor: hour,
-        checksum: replay::temperature::checksum([0]),
-        ..Default::default()
-    }));
-    rows[0].raw_mud = replay::rows::Recorded::Value(7);
+    rows[0].temperature = replay_data::rows::ProvinceTemperature::anchored(
+        replay_data::temperature::State::default(),
+    );
+    rows[0].temperature_pass =
+        replay_data::rows::Recorded::Value(Some(replay_data::rows::TemperaturePass {
+            anchor: hour,
+            checksum: replay_data::temperature::checksum([0]),
+            ..Default::default()
+        }));
+    rows[0].raw_mud = replay_data::rows::Recorded::Value(7);
     let expected = &mut saved.weather.provinces.as_mut().unwrap()[0];
     expected.temperature = Some(Decimal::parse(b"0").unwrap());
     let mut report = Report::default();
@@ -321,11 +329,11 @@ regions={0={region=0}}
     )
     .unwrap();
     let hour = saved.date.engine_hour().unwrap();
-    let state = replay::temperature::State {
+    let state = replay_data::temperature::State {
         temperature: 100_000,
         ..Default::default()
     };
-    let pass = |checksum| replay::rows::TemperaturePass {
+    let pass = |checksum| replay_data::rows::TemperaturePass {
         anchor: hour,
         checksum,
         ..Default::default()
@@ -342,19 +350,19 @@ regions={0={region=0}}
         };
         *frame.tables[TableId::WeatherProvinces.index()] =
             TableView::Complete(TableRows::WeatherProvinces(vec![WeatherProvinceRow {
-                temperature: replay::rows::ProvinceTemperature::anchored(state),
-                raw_mud: replay::rows::Recorded::Value(0),
-                temperature_pass: replay::rows::Recorded::Value(pass),
+                temperature: replay_data::rows::ProvinceTemperature::anchored(state),
+                raw_mud: replay_data::rows::Recorded::Value(0),
+                temperature_pass: replay_data::rows::Recorded::Value(pass),
                 // The modifier test covers the accumulator.
-                modifiers: replay::rows::Recorded::NotRecorded,
+                modifiers: replay_data::rows::Recorded::NotRecorded,
                 ..Default::default()
             }]));
         *frame.tables[TableId::WeatherRegions.index()] =
             TableView::Complete(TableRows::WeatherRegions(vec![WeatherRegionRow::default()]));
         frame
     };
-    let content = replay::temperature::Content {
-        provinces: vec![replay::temperature::Province {
+    let content = replay_data::temperature::Content {
+        provinces: vec![replay_data::temperature::Province {
             active: false,
             neighbours: Vec::new(),
             region: None,
@@ -362,7 +370,7 @@ regions={0={region=0}}
         }],
         ..Default::default()
     };
-    let checksum = replay::temperature::checksum([100_000]);
+    let checksum = replay_data::temperature::checksum([100_000]);
     let mut report = Report::default();
     compare(
         &frame(Some(pass(checksum))),
@@ -373,7 +381,11 @@ regions={0={region=0}}
     )
     .unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    assert!(report.failed_comparisons.is_empty(), "{:?}", report.failed_comparisons);
+    assert!(
+        report.failed_comparisons.is_empty(),
+        "{:?}",
+        report.failed_comparisons
+    );
     assert_eq!(report.scalar_checks, 2);
     // A refused derivation compares no saved temperature: one failed comparison, so
     // coverage is incomplete and the run fails.
@@ -388,10 +400,14 @@ regions={0={region=0}}
     .unwrap();
     assert!(report.differences.is_empty());
     assert_eq!(report.scalar_checks, 1);
-    assert_eq!(report.failed_comparisons.len(), 1, "{:?}", report.failed_comparisons);
+    assert_eq!(
+        report.failed_comparisons.len(),
+        1,
+        "{:?}",
+        report.failed_comparisons
+    );
     assert!(
-        report.failed_comparisons["WeatherProvinces.temperature"]
-            .contains("temperature refused")
+        report.failed_comparisons["WeatherProvinces.temperature"].contains("temperature refused")
             && report.failed_comparisons["WeatherProvinces.temperature"].contains("checksum")
     );
     assert!(report.coverage_line().contains(": incomplete;"));
@@ -414,11 +430,11 @@ regions={0={region=0}}
     assert!(report.outcome().is_err());
 }
 
-fn statics(values: &[(&str, i64)]) -> installed_content::modifiers::Modifiers {
-    let mut block = installed_content::modifiers::Modifiers::default();
+fn statics(values: &[(&str, i64)]) -> installed_content_core::modifiers::Modifiers {
+    let mut block = installed_content_core::modifiers::Modifiers::default();
     block.values = values
         .iter()
-        .map(|&(name, value)| installed_content::modifiers::Modifier {
+        .map(|&(name, value)| installed_content_core::modifiers::Modifier {
             key: name.to_owned(),
             name: name.to_ascii_lowercase(),
             text: String::new(),
@@ -428,18 +444,18 @@ fn statics(values: &[(&str, i64)]) -> installed_content::modifiers::Modifiers {
     block
 }
 
-fn entries(values: &[(u32, i64)]) -> replay::rows::Recorded<Option<ProvinceWeatherModifiers>> {
-    replay::rows::Recorded::Value(Some(ProvinceWeatherModifiers {
+fn entries(values: &[(u32, i64)]) -> replay_data::rows::Recorded<Option<ProvinceWeatherModifiers>> {
+    replay_data::rows::Recorded::Value(Some(ProvinceWeatherModifiers {
         entries: values
             .iter()
-            .map(|&(key, value)| replay::rows::ProvinceModifierEntry { key, value })
+            .map(|&(key, value)| replay_data::rows::ProvinceModifierEntry { key, value })
             .collect(),
     }))
 }
 
 #[test]
 fn province_modifier_accumulators_compare_with_their_rebuild_from_the_save() {
-    use replay::rows::{LexicalTokenRow, ModifierDefinitionRow};
+    use replay_data::{rows::LexicalTokenRow, rows::ModifierDefinitionRow};
 
     // Province 0: mud, a temperature both cold intervals hold and a list naming
     // flood twice. Province 1: snow both ground snow intervals hold once the
@@ -508,8 +524,8 @@ regions={}
         id,
         snow,
         permanent_snow,
-        raw_mud: replay::rows::Recorded::Value(mud),
-        temperature: replay::rows::ProvinceTemperature::NOT_RECORDED,
+        raw_mud: replay_data::rows::Recorded::Value(mud),
+        temperature: replay_data::rows::ProvinceTemperature::NOT_RECORDED,
         modifiers,
         ..Default::default()
     };
@@ -546,8 +562,8 @@ regions={}
         })
         .map(Into::into),
     };
-    *frame.tables[TableId::ModifierDefinitions.index()] = TableView::Complete(
-        TableRows::ModifierDefinitions(
+    *frame.tables[TableId::ModifierDefinitions.index()] =
+        TableView::Complete(TableRows::ModifierDefinitions(
             names
                 .iter()
                 .map(|&(index, _)| ModifierDefinitionRow {
@@ -557,18 +573,16 @@ regions={}
                     ..Default::default()
                 })
                 .collect(),
-        ),
-    );
-    *frame.tables[TableId::LexicalTokens.index()] =
-        TableView::Complete(TableRows::LexicalTokens(
-            names
-                .iter()
-                .map(|&(index, literal)| LexicalTokenRow {
-                    token: index + 10,
-                    literal: literal.to_vec(),
-                })
-                .collect(),
         ));
+    *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(
+        names
+            .iter()
+            .map(|&(index, literal)| LexicalTokenRow {
+                token: index + 10,
+                literal: literal.to_vec(),
+            })
+            .collect(),
+    ));
     let run = |frame: &mut DecodedFrame,
                rows: &[WeatherProvinceRow],
                content: Result<&ProvinceModifierContent, String>| {
@@ -653,8 +667,10 @@ regions={}
     // well as no ground snow does. With every other province consistent, the province is
     // uncovered and the comparison incomplete, never passed.
     let mut twin = content.clone();
-    twin.statics
-        .insert("weather_ground_snow_high".into(), Ok(statics(&[("supply", 0)])));
+    twin.statics.insert(
+        "weather_ground_snow_high".into(),
+        Ok(statics(&[("supply", 0)])),
+    );
     let mut twin_rows = rows.clone();
     twin_rows[1].modifiers = entries(&[(cold, 20_000), (supply, 0)]);
     let report = run(&mut frame, &twin_rows, Ok(&twin));
@@ -679,8 +695,7 @@ regions={}
         Ok(statics(&[("supply", 100_000_000_000_000)])),
     );
     let mut once = saved.clone();
-    once.weather.provinces.as_mut().unwrap()[0].custom_modifiers =
-        Some(vec![("flood".into(), 3)]);
+    once.weather.provinces.as_mut().unwrap()[0].custom_modifiers = Some(vec![("flood".into(), 3)]);
     let compare_once = |frame: &mut DecodedFrame, supply_total: i64| {
         let mut wrapped = rows.clone();
         wrapped[0].modifiers = entries(&[
@@ -704,12 +719,18 @@ regions={}
     };
     let report = compare_once(&mut frame, -84_467_440_737_095);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    assert!(report.failed_comparisons.is_empty(), "{:?}", report.failed_comparisons);
+    assert!(
+        report.failed_comparisons.is_empty(),
+        "{:?}",
+        report.failed_comparisons
+    );
     assert_eq!(report.compared_tables["WeatherProvinces modifiers"], 3);
     let report = compare_once(&mut frame, 100_000_000_000_000);
     assert_eq!(
         report.differences,
-        ["weather province 0.modifiers.supply (definition 4): replay 100000000000000, save -84467440737095"]
+        [
+            "weather province 0.modifiers.supply (definition 4): replay 100000000000000, save -84467440737095"
+        ]
     );
 
     // A changed value, a missing key and an extra key each differ, by name
@@ -732,7 +753,10 @@ regions={}
         "weather province 2.modifiers.definition 9: replay 1, save \"absent\"",
     ] {
         assert!(
-            report.differences.iter().any(|difference| difference == expected),
+            report
+                .differences
+                .iter()
+                .any(|difference| difference == expected),
             "{expected}: {:?}",
             report.differences
         );
@@ -758,7 +782,7 @@ regions={}
     // A refused row leaves that province's accumulator uncompared, and unread content
     // every one: each is a failed comparison, so coverage is incomplete and the run fails.
     let mut refused = rows.clone();
-    refused[2].modifiers = replay::rows::Recorded::Value(None);
+    refused[2].modifiers = replay_data::rows::Recorded::Value(None);
     let report = run(&mut frame, &refused, Ok(&content));
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["WeatherProvinces modifiers"], 2);
@@ -783,9 +807,10 @@ regions={}
     );
     assert!(report.coverage_line().contains(": incomplete;"));
     assert!(report.outcome().is_err());
-    content
-        .statics
-        .insert("flood".into(), Err("flood in common/modifiers/a.txt: refused".into()));
+    content.statics.insert(
+        "flood".into(),
+        Err("flood in common/modifiers/a.txt: refused".into()),
+    );
     content.statics.insert(
         "weather_ground_snow_medium".into(),
         Ok(statics(&[("unregistered", 1)])),
@@ -829,7 +854,7 @@ regions={}
 /// with no tooltip or child is empty.
 #[test]
 fn a_static_modifier_adds_its_own_categorised_entries() {
-    use replay::rows::{LexicalTokenRow, ModifierDefinitionRow};
+    use replay_data::{rows::LexicalTokenRow, rows::ModifierDefinitionRow};
     let definitions = [
         ModifierDefinitionRow {
             index: 1,
@@ -851,12 +876,11 @@ fn a_static_modifier_adds_its_own_categorised_entries() {
             ..Default::default()
         },
     ];
-    let tokens = [(11, b"open"), (12, b"gate"), (13, b"none")].map(|(token, literal)| {
-        LexicalTokenRow {
+    let tokens =
+        [(11, b"open"), (12, b"gate"), (13, b"none")].map(|(token, literal)| LexicalTokenRow {
             token,
             literal: literal.to_vec(),
-        }
-    });
+        });
     // The hour's features leave the gated definition off.
     let registry = Registry::new(&definitions, &tokens, Some(1)).unwrap();
     let mut names = BTreeMap::new();

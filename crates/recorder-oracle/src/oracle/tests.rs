@@ -3,16 +3,17 @@ use super::*;
 mod name_serialization;
 mod original_tag_refusal;
 mod template_display_name;
-use replay::rows::{
-    ClockRow, CountryLinkRow, DivisionRow, DivisionStatusRow, FactionMemberRow, FactionRow,
-    ProvinceRow, Recorded, StateRow, WarRelationRow,
+use replay_data::{
+    rows::ClockRow, rows::CountryLinkRow, rows::DivisionRow, rows::DivisionStatusRow,
+    rows::FactionMemberRow, rows::FactionRow, rows::ProvinceRow, rows::Recorded, rows::StateRow,
+    rows::WarRelationRow,
 };
 
 fn compare(
     frame: &DecodedFrame,
     save: &Save,
     membership: &save::PartialMapMembership,
-    equipment: &installed_content::equipment::Database,
+    equipment: &installed_content_core::equipment::Database,
 ) -> io::Result<Report> {
     compare_at(
         frame,
@@ -27,7 +28,7 @@ fn compare_at(
     frame: &DecodedFrame,
     save: &Save,
     membership: &save::PartialMapMembership,
-    equipment: &installed_content::equipment::Database,
+    equipment: &installed_content_core::equipment::Database,
     boundary: SampleBoundary,
 ) -> io::Result<Report> {
     compare_core(frame, boundary, save, Ok(membership), Ok(equipment), None)
@@ -58,8 +59,9 @@ fn comparison_error(result: io::Result<Report>) -> String {
 /// a province entry joins the census of its class.
 #[test]
 fn naval_combat_transfers_and_units_compare_in_writer_order() {
-    use replay::rows::{
-        NavalCombatRow, NavalCombatTransferRow, NavalProvinceCombatRow, NavalTransferUnitRow,
+    use replay_data::{
+        rows::NavalCombatRow, rows::NavalCombatTransferRow, rows::NavalProvinceCombatRow,
+        rows::NavalTransferUnitRow,
     };
     let (mut frame, mut saved, _, _) = fixture();
     let handle = |id: u64| (id << 32) | 4713;
@@ -171,11 +173,11 @@ fn naval_combat_transfers_and_units_compare_in_writer_order() {
 
 #[test]
 fn state_flags_compare_boolean_and_full_census_without_missing_field_defaults() {
-    use replay::rows::StateFlagRow;
+    use replay_data::rows::StateFlagRow;
     let (mut frame, mut saved, _, _) = fixture();
     let row = StateFlagRow {
-        border_conflict_active: replay::rows::Recorded::Value(0),
-        border_conflict_countries: replay::rows::Recorded::Value(Vec::new()),
+        border_conflict_active: replay_data::rows::Recorded::Value(0),
+        border_conflict_countries: replay_data::rows::Recorded::Value(Vec::new()),
         state: 1,
         demilitarized: 0,
     };
@@ -211,8 +213,8 @@ fn state_flags_compare_boolean_and_full_census_without_missing_field_defaults() 
         vec![
             row.clone(),
             StateFlagRow {
-                border_conflict_active: replay::rows::Recorded::Value(0),
-                border_conflict_countries: replay::rows::Recorded::Value(Vec::new()),
+                border_conflict_active: replay_data::rows::Recorded::Value(0),
+                border_conflict_countries: replay_data::rows::Recorded::Value(Vec::new()),
                 state: 978,
                 demilitarized: 1,
             },
@@ -245,7 +247,7 @@ fn state_flags_compare_boolean_and_full_census_without_missing_field_defaults() 
 
 #[test]
 fn state_border_flag_compares_saved_boolean_and_rejects_missing_witness() {
-    use replay::rows::StateFlagRow;
+    use replay_data::rows::StateFlagRow;
     let (mut frame, mut saved, _, _) = fixture();
     saved.states.get_mut(&1).unwrap().is_border_conflict = Some(true);
     let mut report = Report::default();
@@ -255,7 +257,7 @@ fn state_border_flag_compares_saved_boolean_and_rejects_missing_witness() {
         *frame.tables[TableId::StateFlags.index()] =
             TableView::Complete(TableRows::StateFlags(vec![StateFlagRow {
                 state: 1,
-                border_conflict_active: replay::rows::Recorded::Value(byte),
+                border_conflict_active: replay_data::rows::Recorded::Value(byte),
                 ..Default::default()
             }]));
         let mut report = Report::default();
@@ -278,7 +280,7 @@ fn province_names_compare_sparse_add_remove_and_exact_bytes() {
     save.provinces.get_mut(&2).unwrap().name = Some(b"G".to_vec());
     *frame.tables[TableId::ProvinceNames.index()] =
         TableView::Complete(TableRows::ProvinceNames(vec![
-            replay::rows::ProvinceNameRow {
+            replay_data::rows::ProvinceNameRow {
                 province: 2,
                 name: vec![b'G', 0, 255],
             },
@@ -304,7 +306,7 @@ fn province_names_compare_sparse_add_remove_and_exact_bytes() {
     assert!(
         !report
             .limitations
-            .contains_key(replay::cadence::STAGGER_LIMITATION)
+            .contains_key(replay_data::cadence::STAGGER_LIMITATION)
     );
 }
 
@@ -346,7 +348,7 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
             maximum: None,
         }),
     };
-    let movement = replay::rows::DivisionMovementRow {
+    let movement = replay_data::rows::DivisionMovementRow {
         division: id,
         target: 9,
         alternate_path: vec![9, 8, 9],
@@ -366,8 +368,8 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
     // A recording before `camouflage` compares its entries.
     let status = DivisionStatusRow {
         division: id,
-        supply: replay::rows::Recorded::NotRecorded,
-        camouflage: replay::rows::Recorded::NotRecorded,
+        supply: replay_data::rows::Recorded::NotRecorded,
+        camouflage: replay_data::rows::Recorded::NotRecorded,
         out_of_supply_days: Recorded::Value(Some(30)),
         supply_ratio_exact: Recorded::Value(Some(0)),
         supply_grace_exact: Recorded::Value(Some(0)),
@@ -375,11 +377,11 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
         entrenchment_cap: -100,
         acclimatization_maximum: Some(save::Acclimatization::OMITTED_MAXIMUM_RAW),
         acclimatization: vec![
-            replay::rows::DivisionAcclimatization {
+            replay_data::rows::DivisionAcclimatization {
                 category: 9,
                 weight: 0,
             },
-            replay::rows::DivisionAcclimatization {
+            replay_data::rows::DivisionAcclimatization {
                 category: 8,
                 weight: 848_376_000,
             },
@@ -604,9 +606,9 @@ fn division_camouflage_oracle_decides_again_from_the_saved_block() {
             maximum: maximum.map(|maximum| Decimal::parse(maximum.as_bytes()).unwrap()),
         })
     };
-    let check = |frame: &mut replay::frame::DecodedFrame,
+    let check = |frame: &mut replay_frame::frame::DecodedFrame,
                  saved: &Save,
-                 camouflage: Recorded<Option<replay::rows::DivisionCamouflage>>,
+                 camouflage: Recorded<Option<replay_data::rows::DivisionCamouflage>>,
                  show_at: Result<i64, String>| {
         *frame.tables[TableId::DivisionStatus.index()] =
             TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
@@ -622,11 +624,13 @@ fn division_camouflage_oracle_decides_again_from_the_saved_block() {
         report
     };
     let shown = |category| {
-        Recorded::Value(Some(replay::rows::DivisionCamouflage {
+        Recorded::Value(Some(replay_data::rows::DivisionCamouflage {
             category: Some(category),
         }))
     };
-    let none = Recorded::Value(Some(replay::rows::DivisionCamouflage { category: None }));
+    let none = Recorded::Value(Some(replay_data::rows::DivisionCamouflage {
+        category: None,
+    }));
     // (saved block, recorded camouflage, differences)
     let cases = [
         // The first of the greatest weights wins at half the maximum of 100.
@@ -845,7 +849,7 @@ fn division_status_naming_oracle_checks_generator_operands_and_absence() {
         .unwrap()
         .presentation
         .division_name = Some(save::DivisionName::default());
-    let naming = replay::rows::NameOperands {
+    let naming = replay_data::rows::NameOperands {
         ordered: 255,
         group: b"GROUP".to_vec(),
         ..Default::default()
@@ -867,27 +871,27 @@ fn division_status_naming_oracle_checks_generator_operands_and_absence() {
     compare_division_status(&frame, &saved, &tokens, &Ok(50_000), &Ok(72), &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     for changed in [
-        replay::rows::NameOperands {
+        replay_data::rows::NameOperands {
             kind: 1,
             ..naming.clone()
         },
-        replay::rows::NameOperands {
+        replay_data::rows::NameOperands {
             order: -1,
             ..naming.clone()
         },
-        replay::rows::NameOperands {
+        replay_data::rows::NameOperands {
             ordered: 0,
             ..naming.clone()
         },
-        replay::rows::NameOperands {
+        replay_data::rows::NameOperands {
             programmatic: 1,
             ..naming.clone()
         },
-        replay::rows::NameOperands {
+        replay_data::rows::NameOperands {
             custom: b"Renamed".to_vec(),
             ..naming.clone()
         },
-        replay::rows::NameOperands {
+        replay_data::rows::NameOperands {
             group: b"OTHER".to_vec(),
             ..naming.clone()
         },
@@ -962,11 +966,11 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
     saved
         .division_template_owners
         .insert(template, b"GER".to_vec());
-    let row = replay::rows::DivisionTemplateRow {
+    let row = replay_data::rows::DivisionTemplateRow {
         template,
         owner: 102,
         name: vec![b'A', 0, 255],
-        name_key: replay::rows::Recorded::Value(b"FALLBACK".to_vec()),
+        name_key: replay_data::rows::Recorded::Value(b"FALLBACK".to_vec()),
         ..Default::default()
     };
     *frame.tables[TableId::DivisionTemplates.index()] =
@@ -1005,7 +1009,7 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
     // The hourly inputs compare the saved icon choice, the template's
     // country operands and its composition.
     let tokens = BTreeMap::from([(7, b"infantry".as_slice())]);
-    let icons = replay::rows::DivisionTemplateIconRow {
+    let icons = replay_data::rows::DivisionTemplateIconRow {
         template,
         priority_unit: 7,
         priority_unit_name: b"infantry".to_vec(),
@@ -1013,13 +1017,13 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
         custom_icon_nato: 0,
         country: 102,
         foreign_country: -1,
-        subunits: vec![replay::rows::TemplateSubunit {
+        subunits: vec![replay_data::rows::TemplateSubunit {
             token: 7,
             local: 1,
             count: 1,
         }],
-        grids: replay::rows::Recorded::Value(replay::rows::TemplateGrids {
-            regiments: vec![replay::rows::TemplateSubunit {
+        grids: replay_data::rows::Recorded::Value(replay_data::rows::TemplateGrids {
+            regiments: vec![replay_data::rows::TemplateSubunit {
                 token: 7,
                 local: 1,
                 count: 1,
@@ -1051,7 +1055,7 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
     // A null template country is a stated limitation, never an assumed tag.
     hourly(
         &mut frame,
-        vec![replay::rows::DivisionTemplateIconRow {
+        vec![replay_data::rows::DivisionTemplateIconRow {
             country: -1,
             ..icons.clone()
         }],
@@ -1067,7 +1071,7 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
     );
     hourly(
         &mut frame,
-        vec![replay::rows::DivisionTemplateIconRow {
+        vec![replay_data::rows::DivisionTemplateIconRow {
             custom_icon: 3,
             custom_icon_nato: 1,
             subunits: Vec::new(),
@@ -1077,14 +1081,14 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
     assert_eq!(compare(&frame).differences.len(), 3);
     // Each grid compares with its own saved grid: a regiment recorded in
     // the support grid differs twice although the grouped entries agree.
-    let misfiled = replay::rows::TemplateGrids {
+    let misfiled = replay_data::rows::TemplateGrids {
         support: icons.grids.require("grids").unwrap().regiments.clone(),
         ..Default::default()
     };
     hourly(
         &mut frame,
-        vec![replay::rows::DivisionTemplateIconRow {
-            grids: replay::rows::Recorded::Value(misfiled),
+        vec![replay_data::rows::DivisionTemplateIconRow {
+            grids: replay_data::rows::Recorded::Value(misfiled),
             ..icons.clone()
         }],
     );
@@ -1100,8 +1104,8 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
     // Unrecorded grids are a limitation; the grouped entries still compare.
     hourly(
         &mut frame,
-        vec![replay::rows::DivisionTemplateIconRow {
-            grids: replay::rows::Recorded::NotRecorded,
+        vec![replay_data::rows::DivisionTemplateIconRow {
+            grids: replay_data::rows::Recorded::NotRecorded,
             ..icons.clone()
         }],
     );
@@ -1115,7 +1119,7 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
     // Unreadable model inputs are that row's limitation, not a difference.
     hourly(
         &mut frame,
-        vec![replay::rows::DivisionTemplateIconRow {
+        vec![replay_data::rows::DivisionTemplateIconRow {
             subunits: Vec::new(),
             model_unreadable: 1,
             ..icons.clone()
@@ -1126,7 +1130,7 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
     // Its country operands still compare: a wrong country is reported.
     hourly(
         &mut frame,
-        vec![replay::rows::DivisionTemplateIconRow {
+        vec![replay_data::rows::DivisionTemplateIconRow {
             country: 301,
             subunits: Vec::new(),
             model_unreadable: 1,
@@ -1148,7 +1152,7 @@ fn relations_fixture() -> (
     DecodedFrame,
     Save,
     save::PartialMapMembership,
-    installed_content::equipment::Database,
+    installed_content_core::equipment::Database,
 ) {
     let (mut frame, mut save, membership, equipment) = fixture();
     add_country(&mut frame, &mut save, 201, 8, b"ENG");
@@ -1237,11 +1241,11 @@ fn relations_fixture() -> (
     ]));
     *frame.tables[TableId::LexicalTokens.index()] =
         TableView::Complete(TableRows::LexicalTokens(vec![
-            replay::rows::LexicalTokenRow {
+            replay_data::rows::LexicalTokenRow {
                 token: TEMPLATE_TOKEN,
                 literal: b"faction_template_axis".to_vec(),
             },
-            replay::rows::LexicalTokenRow {
+            replay_data::rows::LexicalTokenRow {
                 token: super::fixtures::FIXTURE_CATEGORY_TOKEN,
                 literal: b"town".to_vec(),
             },
@@ -1337,7 +1341,7 @@ fn table_counts_collect_all_issues_and_unproved_sources_remain_incomplete() {
 
 #[test]
 fn lexical_dictionary_preserves_exact_bytes_and_rejects_duplicate_or_wrong_tables() {
-    use replay::rows::LexicalTokenRow;
+    use replay_data::rows::LexicalTokenRow;
 
     let (mut frame, _, _, _) = fixture();
     let entry = LexicalTokenRow {
@@ -1396,12 +1400,12 @@ fn nested_comparison_counts_assign_each_difference_once_and_retain_failure() {
 
 #[test]
 fn garrison_equipment_dispatch_skips_carried_rows_and_compares_actual_refreshes() {
-    use replay::rows::{
-        GarrisonEquipment, GarrisonEquipmentInputs, LexicalTokenRow, StateGarrisonRow,
-        VariantDefinitionRow,
+    use replay_data::{
+        rows::GarrisonEquipment, rows::GarrisonEquipmentInputs, rows::LexicalTokenRow,
+        rows::StateGarrisonRow, rows::VariantDefinitionRow,
     };
     let (mut frame, mut saved, membership, equipment) = fixture();
-    let parsed = installed_content::parser::parse(
+    let parsed = installed_content_core::parser::parse(
         br#"
         countries={GER={occupation_status={occupation={GER={state_garrison_data={
             1={equipment={equipment={id={id=9 type=70} amount=0.6} allow_zero_entries=no}
@@ -1442,8 +1446,8 @@ fn garrison_equipment_dispatch_skips_carried_rows_and_compares_actual_refreshes(
             ..Default::default()
         }]));
     let read_hour = 96
-        + match replay::cadence::cadence(TableId::StateGarrisons) {
-            replay::cadence::Cadence::Daily(slot) => slot as Hour,
+        + match replay_data::cadence::cadence(TableId::StateGarrisons) {
+            replay_data::cadence::Cadence::Daily(slot) => slot as Hour,
             other => panic!("StateGarrisons is {other:?}"),
         };
     let group = "construction equipment StateGarrisons";
@@ -1536,8 +1540,8 @@ fn failed_content_reads_preserve_independent_map_and_pack_diagnostics() {
             membership: Ok(&membership),
             base_resources: Err("history/states/101-Greenland.txt: malformed resource value".into()),
             railway_adjacency: Err("map/provinces.bmp: malformed adjacency input".into()),
-            buildings: Ok(&installed_content::buildings::Buildings::default()),
-            defines: Ok(&installed_content::defines::Defines::new().unwrap()),
+            buildings: Ok(&installed_content_core::buildings::Buildings::default()),
+            defines: Ok(&installed_content_core::defines::Defines::new().unwrap()),
             raid_graph: Err("map/adjacencies.csv: unused".into()),
             equipment: Err("common/units/equipment: unused".into()),
             leader_traits: Err("common/country_leader: unused".into()),
@@ -1606,19 +1610,20 @@ fn unavailable_sources_and_failed_groups_do_not_hide_later_independent_mismatche
         };
     }
     *frame.tables[TableId::Players.index()] =
-        TableView::Complete(TableRows::Players(vec![replay::rows::PlayerRow {
+        TableView::Complete(TableRows::Players(vec![replay_data::rows::PlayerRow {
             id: 1,
             country: 101,
             user: b"later-player".to_vec(),
             ..Default::default()
         }]));
-    let weather =
-        installed_content::parser::parse(b"weather={provinces={0={province=0 snow=0.00001}} regions={}}")
-            .unwrap();
+    let weather = installed_content_core::parser::parse(
+        b"weather={provinces={0={province=0 snow=0.00001}} regions={}}",
+    )
+    .unwrap();
     saved.weather = save::weather::parse(&weather.items).unwrap();
     *frame.tables[TableId::WeatherProvinces.index()] =
         TableView::Complete(TableRows::WeatherProvinces(vec![
-            replay::rows::WeatherProvinceRow {
+            replay_data::rows::WeatherProvinceRow {
                 id: 0,
                 snow: 2,
                 ..Default::default()
@@ -1641,8 +1646,8 @@ fn unavailable_sources_and_failed_groups_do_not_hide_later_independent_mismatche
             membership: Ok(&membership),
             base_resources: Ok(&save::construction::PartialBaseResources::default()),
             railway_adjacency: Err("railway content is outside this fixture".into()),
-            buildings: Ok(&installed_content::buildings::Buildings::default()),
-            defines: Ok(&installed_content::defines::Defines::new().unwrap()),
+            buildings: Ok(&installed_content_core::buildings::Buildings::default()),
+            defines: Ok(&installed_content_core::defines::Defines::new().unwrap()),
             raid_graph: Err("map/adjacencies.csv: unused".into()),
             equipment: Err("common/units/equipment: unused".into()),
             leader_traits: Err("common/country_leader: unused".into()),
@@ -1683,8 +1688,8 @@ fn unavailable_sources_and_failed_groups_do_not_hide_later_independent_mismatche
             membership: Ok(&membership),
             base_resources: Ok(&save::construction::PartialBaseResources::default()),
             railway_adjacency: Err("railway content is outside this fixture".into()),
-            buildings: Ok(&installed_content::buildings::Buildings::default()),
-            defines: Ok(&installed_content::defines::Defines::new().unwrap()),
+            buildings: Ok(&installed_content_core::buildings::Buildings::default()),
+            defines: Ok(&installed_content_core::defines::Defines::new().unwrap()),
             raid_graph: Err("map/adjacencies.csv: unused".into()),
             equipment: Err("common/units/equipment: unused".into()),
             leader_traits: Err("common/country_leader: unused".into()),
@@ -2298,7 +2303,7 @@ fn state_ownership_and_controller_differences_are_independent_of_provinces() {
 /// the unsaved owner name is a named limitation, never compared.
 #[test]
 fn state_rename_compares_with_the_saved_name_and_the_owner_name_is_a_limitation() {
-    fn first(frame: &mut replay::frame::DecodedFrame) -> &mut StateRow {
+    fn first(frame: &mut replay_frame::frame::DecodedFrame) -> &mut StateRow {
         let TableView::Complete(TableRows::States(rows)) =
             &mut *frame.tables[TableId::States.index()]
         else {
@@ -2649,7 +2654,7 @@ fn convoy_clamp_is_per_row_and_preserves_order() {
 /// module of the content can add the convoy bit.
 #[test]
 fn convoy_variants_follow_the_variant_category() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let equipment = "equipments = {
             Convoy = { is_archetype = yes type = convoy }
@@ -2660,7 +2665,7 @@ fn convoy_variants_follow_the_variant_category() {
             hull = { is_archetype = yes type = screen_ship module_slots = { main = { } } }
         }";
     let load = |module: &str| {
-        installed_content::equipment::fixture::load(&[
+        installed_content_core::equipment::fixture::load(&[
             (
                 "common/units/equipment/modules/m.txt",
                 &format!("equipment_modules = {{ gun = {{ add_equipment_type = {module} }} }}"),
@@ -2702,7 +2707,7 @@ fn save_checksum_suffix_does_not_hide_a_different_build() {
 fn player_oracle_compares_refreshed_fields_and_reports_header_limits() {
     let (mut frame, mut saved, membership, equipment) = fixture();
     *frame.tables[TableId::Players.index()] =
-        TableView::Complete(TableRows::Players(vec![replay::rows::PlayerRow {
+        TableView::Complete(TableRows::Players(vec![replay_data::rows::PlayerRow {
             id: i32::MIN,
             country: 102,
             flags: 0x81,
@@ -2751,13 +2756,13 @@ fn player_oracle_compares_refreshed_fields_and_reports_header_limits() {
 fn player_duplicate_user_collapse_never_certifies_every_current_player() {
     let (mut frame, mut saved, membership, equipment) = fixture();
     *frame.tables[TableId::Players.index()] = TableView::Complete(TableRows::Players(vec![
-        replay::rows::PlayerRow {
+        replay_data::rows::PlayerRow {
             id: 1,
             country: 101,
             user: Vec::new(),
             ..Default::default()
         },
-        replay::rows::PlayerRow {
+        replay_data::rows::PlayerRow {
             id: 2,
             country: 0,
             user: Vec::new(),
@@ -2808,7 +2813,7 @@ fn land_combat_sides_match_the_saved_combat_census() {
     let other = (8_u64 << 32) | 62;
     *frame.tables[TableId::LandCombatSides.index()] =
         TableView::Complete(TableRows::LandCombatSides(vec![
-            replay::rows::LandCombatSideRow {
+            replay_data::rows::LandCombatSideRow {
                 combat: other,
                 ..Default::default()
             },
@@ -2865,7 +2870,7 @@ fn land_combat_primary_sets_hold_every_saved_units_logical_owner() {
     // lacks it.
     *frame.tables[TableId::LandCombatSides.index()] =
         TableView::Complete(TableRows::LandCombatSides(vec![
-            replay::rows::LandCombatSideRow {
+            replay_data::rows::LandCombatSideRow {
                 combat,
                 attacker_primary: vec![0, 102],
                 ..Default::default()
@@ -2900,16 +2905,18 @@ fn map_combat_and_order_oracle_preserves_type_words_order_and_raw_fields() {
         },
     );
     *frame.tables[TableId::LandCombats.index()] =
-        TableView::Complete(TableRows::LandCombats(vec![replay::rows::LandCombatRow {
-            id: combat,
-            province: 1,
-            day: -1,
-            duration: 2,
-            attackers: vec![unit, unit + 1],
-            defenders: vec![],
-            attacker_classes: vec![0, 0],
-            defender_classes: vec![],
-        }]));
+        TableView::Complete(TableRows::LandCombats(vec![
+            replay_data::rows::LandCombatRow {
+                id: combat,
+                province: 1,
+                day: -1,
+                duration: 2,
+                attackers: vec![unit, unit + 1],
+                defenders: vec![],
+                attacker_classes: vec![0, 0],
+                defender_classes: vec![],
+            },
+        ]));
     let group = (u64::from(u32::MAX) << 32) | 53;
     saved.army_orders.insert(
         (group, u32::MAX),
@@ -2924,8 +2931,8 @@ fn map_combat_and_order_oracle_preserves_type_words_order_and_raw_fields() {
             target_states: vec![1],
         },
     );
-    *frame.tables[TableId::ArmyOrders.index()] =
-        TableView::Complete(TableRows::ArmyOrders(vec![replay::rows::ArmyOrderRow {
+    *frame.tables[TableId::ArmyOrders.index()] = TableView::Complete(TableRows::ArmyOrders(vec![
+        replay_data::rows::ArmyOrderRow {
             owner_group: group,
             instance: u32::MAX,
             country: 102,
@@ -2934,7 +2941,8 @@ fn map_combat_and_order_oracle_preserves_type_words_order_and_raw_fields() {
             paradrop_target: u32::MAX,
             path: vec![2, 1, 2],
             target_states: vec![1],
-        }]));
+        },
+    ]));
     let report = compare(&frame, &saved, &membership, &equipment).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!((report.land_combats, report.army_orders), (1, 1));
@@ -2958,9 +2966,10 @@ fn map_combat_and_order_oracle_preserves_type_words_order_and_raw_fields() {
 
 #[test]
 fn air_sortie_oracle_compares_the_saved_penalty_and_checks_operand_keys() {
-    use replay::rows::{
-        AirMissionInputRow, AirReferenceWitnessRow, AirRegionalMissionRow, AirSortieBaseCountryRow,
-        AirSortieModifierMetadataRow, AirSortieModifierRow, AirSortieSpecialBaseRow,
+    use replay_data::{
+        rows::AirMissionInputRow, rows::AirReferenceWitnessRow, rows::AirRegionalMissionRow,
+        rows::AirSortieBaseCountryRow, rows::AirSortieModifierMetadataRow,
+        rows::AirSortieModifierRow, rows::AirSortieSpecialBaseRow,
     };
     let (mut frame, mut saved, _, _) = fixture();
     let wing = (1_u64 << 32) | 54;
@@ -2994,7 +3003,7 @@ fn air_sortie_oracle_compares_the_saved_penalty_and_checks_operand_keys() {
     };
     set(
         &mut frame,
-        TableRows::AirWings(vec![replay::rows::AirWingRow {
+        TableRows::AirWings(vec![replay_data::rows::AirWingRow {
             id: wing,
             owner: 102,
             air_base: base,
@@ -3173,11 +3182,11 @@ fn air_and_naval_oracle_compares_native_values_and_slot_identity() {
         raid: None,
     });
     *frame.tables[TableId::AirWings.index()] =
-        TableView::Complete(TableRows::AirWings(vec![replay::rows::AirWingRow {
+        TableView::Complete(TableRows::AirWings(vec![replay_data::rows::AirWingRow {
             base_range_raw: 0,
             ace,
             id: wing,
-            name: replay::rows::Recorded::Value(Some(wing_name)),
+            name: replay_data::rows::Recorded::Value(Some(wing_name)),
             owner: 102,
             country_override: 0,
             air_base: 63,
@@ -3207,7 +3216,7 @@ fn air_and_naval_oracle_compares_native_values_and_slot_identity() {
     );
     *frame.tables[TableId::NavalCombats.index()] =
         TableView::Complete(TableRows::NavalCombats(vec![
-            replay::rows::NavalCombatRow {
+            replay_data::rows::NavalCombatRow {
                 id: combat,
                 province: 2,
                 attacker_positioning: 1,
@@ -3229,7 +3238,7 @@ fn air_and_naval_oracle_compares_native_values_and_slot_identity() {
     );
     *frame.tables[TableId::NavalCombatParticipants.index()] =
         TableView::Complete(TableRows::NavalCombatParticipants(vec![
-            replay::rows::NavalCombatParticipantRow {
+            replay_data::rows::NavalCombatParticipantRow {
                 combat,
                 side: 1,
                 battle_slot: u32::MAX,
@@ -3312,7 +3321,7 @@ fn naval_fixture() -> (
     DecodedFrame,
     Save,
     save::PartialMapMembership,
-    installed_content::equipment::Database,
+    installed_content_core::equipment::Database,
 ) {
     let (mut frame, mut saved, membership, equipment) = fixture();
     add_country(&mut frame, &mut saved, 201, 8, b"SOV");
@@ -3365,15 +3374,15 @@ fn naval_fixture() -> (
         },
     );
     *frame.tables[TableId::Fleets.index()] =
-        TableView::Complete(TableRows::Fleets(vec![replay::rows::FleetRow {
+        TableView::Complete(TableRows::Fleets(vec![replay_data::rows::FleetRow {
             id: fleet,
             owner: 102,
             home_base: 2,
-            name: replay::rows::Recorded::Value(Some(b"Fixture Fleet".to_vec())),
-            leader: replay::rows::Recorded::Value(Some(0)),
+            name: replay_data::rows::Recorded::Value(Some(b"Fixture Fleet".to_vec())),
+            leader: replay_data::rows::Recorded::Value(Some(0)),
         }]));
-    *frame.tables[TableId::TaskForces.index()] =
-        TableView::Complete(TableRows::TaskForces(vec![replay::rows::TaskForceRow {
+    *frame.tables[TableId::TaskForces.index()] = TableView::Complete(TableRows::TaskForces(vec![
+        replay_data::rows::TaskForceRow {
             id: force,
             fleet,
             roster_owner: 102,
@@ -3383,9 +3392,10 @@ fn naval_fixture() -> (
             mission: u32::MAX,
             route_count: 3,
             combat_references: 0,
-        }]));
+        },
+    ]));
     *frame.tables[TableId::Ships.index()] =
-        TableView::Complete(TableRows::Ships(vec![replay::rows::ShipRow {
+        TableView::Complete(TableRows::Ships(vec![replay_data::rows::ShipRow {
             id: ship,
             task_force: force,
             strength: 9_007_199_254_740_993,
@@ -3502,7 +3512,7 @@ fn relation_fixture() -> (
     DecodedFrame,
     Save,
     save::PartialMapMembership,
-    installed_content::equipment::Database,
+    installed_content_core::equipment::Database,
 ) {
     let (mut frame, mut save, membership, equipment) = fixture();
     // Tier-4 slot1 refresh hour: advance save and frame together to slot1.
@@ -3533,7 +3543,7 @@ fn relations_read_at(frame: &mut DecodedFrame, hour: i32) {
     let mut reads = Vec::new();
     for table in [TableId::RelationOpinions, TableId::RelationTuples] {
         for &owner in &owners {
-            reads.push(replay::rows::SliceReadRow {
+            reads.push(replay_data::rows::SliceReadRow {
                 table: table.index() as u32,
                 owner,
                 sample_hour: hour,
@@ -3614,18 +3624,18 @@ fn saved_relation(
     }
 }
 
-fn opinions(frame: &mut DecodedFrame, rows: Vec<replay::rows::RelationOpinionRow>) {
+fn opinions(frame: &mut DecodedFrame, rows: Vec<replay_data::rows::RelationOpinionRow>) {
     *frame.tables[TableId::RelationOpinions.index()] =
         TableView::Complete(TableRows::RelationOpinions(rows));
 }
 
-fn tuples(frame: &mut DecodedFrame, rows: Vec<replay::rows::RelationTupleRow>) {
+fn tuples(frame: &mut DecodedFrame, rows: Vec<replay_data::rows::RelationTupleRow>) {
     *frame.tables[TableId::RelationTuples.index()] =
         TableView::Complete(TableRows::RelationTuples(rows));
 }
 
-fn tuple_row(owner: u32, target: u32, ordinal: u16) -> replay::rows::RelationTupleRow {
-    replay::rows::RelationTupleRow {
+fn tuple_row(owner: u32, target: u32, ordinal: u16) -> replay_data::rows::RelationTupleRow {
+    replay_data::rows::RelationTupleRow {
         owner_country: owner,
         target_country: target,
         type_id: 0x28da,
@@ -3670,20 +3680,32 @@ fn tuple_report(frame: &DecodedFrame, save: &Save, tokens: &[(u32, &'static [u8]
 fn relation_links_match_the_saved_attache_and_air_access_relations() {
     let (frame, mut save, _, _) = relation_fixture();
     let names: TokenNames<'static> = [
-        (engine::cattache_relation::TYPE, b"attache".as_slice()),
-        (engine::cair_base_access_relation::TYPE, b"air_base_access"),
         (
-            engine::coffer_air_base_access_relation::TYPE,
+            engine_native::cattache_relation::TYPE,
+            b"attache".as_slice(),
+        ),
+        (
+            engine_native::cair_base_access_relation::TYPE,
+            b"air_base_access",
+        ),
+        (
+            engine_native::coffer_air_base_access_relation::TYPE,
             b"offer_air_base_access",
         ),
-        (engine::cmilitary_access_relation::TYPE, b"military_access"),
         (
-            engine::coffer_military_access_relation::TYPE,
+            engine_native::cmilitary_access_relation::TYPE,
+            b"military_access",
+        ),
+        (
+            engine_native::coffer_military_access_relation::TYPE,
             b"offer_military_access",
         ),
-        (engine::cdocking_rights_relation::TYPE, b"docking_rights"),
         (
-            engine::coffer_docking_rights_relation::TYPE,
+            engine_native::cdocking_rights_relation::TYPE,
+            b"docking_rights",
+        ),
+        (
+            engine_native::coffer_docking_rights_relation::TYPE,
             b"offer_docking_rights",
         ),
     ]
@@ -3697,7 +3719,7 @@ fn relation_links_match_the_saved_attache_and_air_access_relations() {
         target: b"D01".to_vec(),
         ..save.relation_tuples[0].clone()
     });
-    let run = |frame: &DecodedFrame, rows: Vec<replay::rows::RelationLinkRow>| {
+    let run = |frame: &DecodedFrame, rows: Vec<replay_data::rows::RelationLinkRow>| {
         let mut frame = frame.clone();
         *frame.tables[TableId::RelationLinks.index()] =
             TableView::Complete(TableRows::RelationLinks(rows));
@@ -3706,11 +3728,11 @@ fn relation_links_match_the_saved_attache_and_air_access_relations() {
         visibility::compare_links(&frame, &save, &context, &names, &mut report).unwrap();
         report
     };
-    let row = |country, target_index, links| replay::rows::RelationLinkRow {
+    let row = |country, target_index, links| replay_data::rows::RelationLinkRow {
         country,
         target_index,
         links,
-        transport_subject: replay::rows::Recorded::NotRecorded,
+        transport_subject: replay_data::rows::Recorded::NotRecorded,
     };
     // D01 is reference 201 at slot 8, SOV reference 301 at slot 9.
     let exact = vec![row(201, 9, 2), row(301, 8, 1)];
@@ -3733,20 +3755,32 @@ fn relation_links_match_the_saved_attache_and_air_access_relations() {
 fn relation_links_match_the_saved_military_access_relations() {
     let (frame, mut save, _, _) = relation_fixture();
     let names: TokenNames<'static> = [
-        (engine::cattache_relation::TYPE, b"attache".as_slice()),
-        (engine::cair_base_access_relation::TYPE, b"air_base_access"),
         (
-            engine::coffer_air_base_access_relation::TYPE,
+            engine_native::cattache_relation::TYPE,
+            b"attache".as_slice(),
+        ),
+        (
+            engine_native::cair_base_access_relation::TYPE,
+            b"air_base_access",
+        ),
+        (
+            engine_native::coffer_air_base_access_relation::TYPE,
             b"offer_air_base_access",
         ),
-        (engine::cmilitary_access_relation::TYPE, b"military_access"),
         (
-            engine::coffer_military_access_relation::TYPE,
+            engine_native::cmilitary_access_relation::TYPE,
+            b"military_access",
+        ),
+        (
+            engine_native::coffer_military_access_relation::TYPE,
             b"offer_military_access",
         ),
-        (engine::cdocking_rights_relation::TYPE, b"docking_rights"),
         (
-            engine::coffer_docking_rights_relation::TYPE,
+            engine_native::cdocking_rights_relation::TYPE,
+            b"docking_rights",
+        ),
+        (
+            engine_native::coffer_docking_rights_relation::TYPE,
             b"offer_docking_rights",
         ),
     ]
@@ -3761,20 +3795,20 @@ fn relation_links_match_the_saved_military_access_relations() {
         &[(b"offer_military_access", 1)],
     );
     let mut frame = frame;
-    let access = replay::rows::RelationLinkRow::MILITARY_ACCESS;
+    let access = replay_data::rows::RelationLinkRow::MILITARY_ACCESS;
     *frame.tables[TableId::RelationLinks.index()] =
         TableView::Complete(TableRows::RelationLinks(vec![
-            replay::rows::RelationLinkRow {
+            replay_data::rows::RelationLinkRow {
                 country: 201,
                 target_index: 9,
                 links: access,
-                transport_subject: replay::rows::Recorded::NotRecorded,
+                transport_subject: replay_data::rows::Recorded::NotRecorded,
             },
-            replay::rows::RelationLinkRow {
+            replay_data::rows::RelationLinkRow {
                 country: 301,
                 target_index: 8,
                 links: access,
-                transport_subject: replay::rows::Recorded::NotRecorded,
+                transport_subject: replay_data::rows::Recorded::NotRecorded,
             },
         ]));
     let context = country_context(&frame).unwrap();
@@ -3793,7 +3827,7 @@ fn naval_region_access_matches_the_saved_pairs() {
         .get_mut(b"D01".as_slice())
         .unwrap()
         .naval_region_access = Some(vec![(18, 1), (79, 2)]);
-    let row = |country, region, mode| replay::rows::NavalRegionAccessRow {
+    let row = |country, region, mode| replay_data::rows::NavalRegionAccessRow {
         country,
         region,
         mode,
@@ -3864,7 +3898,7 @@ fn naval_region_access_refuses_saved_nonpositive_or_duplicate_pairs_and_zero_row
         .naval_region_access = None;
     *frame.tables[TableId::NavalRegionAccess.index()] =
         TableView::Complete(TableRows::NavalRegionAccess(vec![
-            replay::rows::NavalRegionAccessRow {
+            replay_data::rows::NavalRegionAccessRow {
                 country: 201,
                 region: 18,
                 mode: 0,
@@ -3885,7 +3919,7 @@ fn naval_region_access_refuses_saved_nonpositive_or_duplicate_pairs_and_zero_row
 fn stockpile_archetypes_sum_the_saved_variant_amounts() {
     let (mut frame, mut save, _, _) = relation_fixture();
     save.production = save::production::parse(
-        &installed_content::parser::parse(
+        &installed_content_core::parser::parse(
             br#"countries={
                 GER={production={equipments={allow_zero_entries=no}}}
                 D01={production={equipments={
@@ -3907,7 +3941,7 @@ fn stockpile_archetypes_sum_the_saved_variant_amounts() {
             known
                 .iter()
                 .map(
-                    |&(id, archetype_token)| replay::rows::VariantDefinitionRow {
+                    |&(id, archetype_token)| replay_data::rows::VariantDefinitionRow {
                         id: variant(id),
                         archetype_token,
                         ..Default::default()
@@ -3916,7 +3950,7 @@ fn stockpile_archetypes_sum_the_saved_variant_amounts() {
                 .collect(),
         ))
     };
-    let row = |canonical_slot, archetype, units| replay::rows::StockpileArchetypeRow {
+    let row = |canonical_slot, archetype, units| replay_data::rows::StockpileArchetypeRow {
         canonical_slot,
         archetype,
         units,
@@ -4039,7 +4073,7 @@ fn ace_range_inputs_match_the_saved_rosters_and_wing_references() {
         ace: Some(assigned),
         raid: None,
     });
-    let row = |canonical_slot, ace, wing, alive| replay::rows::AceRangeInputRow {
+    let row = |canonical_slot, ace, wing, alive| replay_data::rows::AceRangeInputRow {
         canonical_slot,
         ace,
         wing,
@@ -4081,7 +4115,7 @@ fn relation_opinions_compare_exactly_and_report_both_one_sided_pairs() {
     saved_relation(&mut save, b"GER", b"D01", Some(-100), &[]);
     opinions(
         &mut frame,
-        vec![replay::rows::RelationOpinionRow {
+        vec![replay_data::rows::RelationOpinionRow {
             owner_country: 102,
             target_country: 201,
             opinion: -100,
@@ -4099,12 +4133,12 @@ fn relation_opinions_compare_exactly_and_report_both_one_sided_pairs() {
     opinions(
         &mut frame,
         vec![
-            replay::rows::RelationOpinionRow {
+            replay_data::rows::RelationOpinionRow {
                 owner_country: 102,
                 target_country: 201,
                 opinion: -100,
             },
-            replay::rows::RelationOpinionRow {
+            replay_data::rows::RelationOpinionRow {
                 owner_country: 201,
                 target_country: 301,
                 opinion: 5,
@@ -4133,12 +4167,12 @@ fn a_self_relation_opinion_is_compared_like_any_other_pair() {
     opinions(
         &mut frame,
         vec![
-            replay::rows::RelationOpinionRow {
+            replay_data::rows::RelationOpinionRow {
                 owner_country: 102,
                 target_country: 102,
                 opinion: -100,
             },
-            replay::rows::RelationOpinionRow {
+            replay_data::rows::RelationOpinionRow {
                 owner_country: 102,
                 target_country: 201,
                 opinion: -35,
@@ -4166,7 +4200,7 @@ fn a_recorded_zero_opinion_or_duplicate_pair_fails_the_comparison() {
     let (mut frame, save, membership, equipment) = relation_fixture();
     opinions(
         &mut frame,
-        vec![replay::rows::RelationOpinionRow {
+        vec![replay_data::rows::RelationOpinionRow {
             owner_country: 102,
             target_country: 201,
             opinion: 0,
@@ -4178,12 +4212,12 @@ fn a_recorded_zero_opinion_or_duplicate_pair_fails_the_comparison() {
     opinions(
         &mut frame,
         vec![
-            replay::rows::RelationOpinionRow {
+            replay_data::rows::RelationOpinionRow {
                 owner_country: 101,
                 target_country: 201,
                 opinion: 1,
             },
-            replay::rows::RelationOpinionRow {
+            replay_data::rows::RelationOpinionRow {
                 owner_country: 102,
                 target_country: 201,
                 opinion: 2,
@@ -4272,7 +4306,7 @@ fn forced_full_refresh_compares_every_owner_whatever_its_read_hour() {
     saved_relation(&mut save, b"GER", b"D01", Some(5), &[]);
     opinions(
         &mut frame,
-        vec![replay::rows::RelationOpinionRow {
+        vec![replay_data::rows::RelationOpinionRow {
             owner_country: 102,
             target_country: 201,
             opinion: 999,
@@ -4298,7 +4332,7 @@ fn owners_read_before_the_oracle_hour_are_not_compared() {
     saved_relation(&mut save, b"GER", b"D01", Some(5), &[]);
     opinions(
         &mut frame,
-        vec![replay::rows::RelationOpinionRow {
+        vec![replay_data::rows::RelationOpinionRow {
             owner_country: 102,
             target_country: 201,
             opinion: 999,
@@ -4335,7 +4369,7 @@ fn a_deferred_country_intel_walk_is_not_a_full_hour() {
     let (mut frame, mut save, _, _) = relation_fixture();
     frame.hour = 26;
     relations_read_at(&mut frame, 20);
-    assert!(!replay::cadence::is_refresh(
+    assert!(!replay_data::cadence::is_refresh(
         TableId::CountryIntel,
         frame.hour
     ));
@@ -4343,7 +4377,7 @@ fn a_deferred_country_intel_walk_is_not_a_full_hour() {
     saved_relation(&mut save, b"GER", b"D01", Some(5), &[]);
     opinions(
         &mut frame,
-        vec![replay::rows::RelationOpinionRow {
+        vec![replay_data::rows::RelationOpinionRow {
             owner_country: 102,
             target_country: 201,
             opinion: 999,
@@ -4364,31 +4398,32 @@ fn a_deferred_country_intel_walk_is_not_a_full_hour() {
 #[test]
 fn an_alias_slice_does_not_make_a_carried_owner_current() {
     let (mut frame, mut save, _, _) = relation_fixture();
-    assert_eq!(replay::cadence::slice_of(101), 5);
-    assert_eq!(replay::cadence::slice_of(102), 6);
+    assert_eq!(replay_data::cadence::slice_of(101), 5);
+    assert_eq!(replay_data::cadence::slice_of(102), 6);
     frame.hour = 6;
     opinions(
         &mut frame,
         vec![
-            replay::rows::RelationOpinionRow {
+            replay_data::rows::RelationOpinionRow {
                 owner_country: 101,
                 target_country: 201,
                 opinion: -100,
             },
             // A target reference no link names any more.
-            replay::rows::RelationOpinionRow {
+            replay_data::rows::RelationOpinionRow {
                 owner_country: 101,
                 target_country: 999,
                 opinion: 4,
             },
         ],
     );
-    *frame.tables[TableId::SliceReads.index()] =
-        TableView::Complete(TableRows::SliceReads(vec![replay::rows::SliceReadRow {
+    *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(vec![
+        replay_data::rows::SliceReadRow {
             table: TableId::RelationOpinions.index() as u32,
             owner: 101,
             sample_hour: 5,
-        }]));
+        },
+    ]));
     saved_relation(&mut save, b"GER", b"D01", Some(-35), &[]);
     let context = country_context(&frame).unwrap();
     let mut report = Report::default();
@@ -4407,29 +4442,30 @@ fn a_sliced_hour_compares_exactly_the_owners_it_read() {
     let d01 = 201_u32;
     // GER is read at this hour with one row; D01 has no rows and lies
     // outside this hour's slice; SOV has no rows and lies in it.
-    frame.hour = replay::cadence::slice_of(301) as i32;
+    frame.hour = replay_data::cadence::slice_of(301) as i32;
     assert_ne!(
-        replay::cadence::slice_of(d01),
-        replay::cadence::slice_of(301)
+        replay_data::cadence::slice_of(d01),
+        replay_data::cadence::slice_of(301)
     );
     assert_ne!(
-        replay::cadence::slice_of(ger),
-        replay::cadence::slice_of(301)
+        replay_data::cadence::slice_of(ger),
+        replay_data::cadence::slice_of(301)
     );
     opinions(
         &mut frame,
-        vec![replay::rows::RelationOpinionRow {
+        vec![replay_data::rows::RelationOpinionRow {
             owner_country: ger,
             target_country: d01,
             opinion: -100,
         }],
     );
-    *frame.tables[TableId::SliceReads.index()] =
-        TableView::Complete(TableRows::SliceReads(vec![replay::rows::SliceReadRow {
+    *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(vec![
+        replay_data::rows::SliceReadRow {
             table: TableId::RelationOpinions.index() as u32,
             owner: ger,
             sample_hour: frame.hour,
-        }]));
+        },
+    ]));
     saved_relation(&mut save, b"GER", b"D01", Some(-100), &[]);
     // D01 is not current: its saved pair is not compared.
     saved_relation(&mut save, b"D01", b"GER", Some(7), &[]);
@@ -4462,12 +4498,12 @@ fn country_intel_compares_every_positional_record_and_both_one_sided_lists() {
     );
     *frame.tables[TableId::CountryIntel.index()] =
         TableView::Complete(TableRows::CountryIntel(vec![
-            replay::rows::CountryIntelRow {
+            replay_data::rows::CountryIntelRow {
                 owner_country: 102,
                 target_index: 0,
                 ..Default::default()
             },
-            replay::rows::CountryIntelRow {
+            replay_data::rows::CountryIntelRow {
                 owner_country: 102,
                 target_index: 1,
                 army: -1_500_000,
@@ -4493,7 +4529,7 @@ fn country_intel_compares_every_positional_record_and_both_one_sided_lists() {
     else {
         unreachable!()
     };
-    rows.push(replay::rows::CountryIntelRow {
+    rows.push(replay_data::rows::CountryIntelRow {
         owner_country: 201,
         target_index: 0,
         ..Default::default()
@@ -4526,13 +4562,13 @@ fn country_intel_reads_absent_in_range_records_as_zero_and_keeps_the_count() {
     let set = |frame: &mut DecodedFrame, last: u32| {
         *frame.tables[TableId::CountryIntel.index()] =
             TableView::Complete(TableRows::CountryIntel(vec![
-                replay::rows::CountryIntelRow {
+                replay_data::rows::CountryIntelRow {
                     owner_country: 102,
                     target_index: 1,
                     army: -1_500_000,
                     ..Default::default()
                 },
-                replay::rows::CountryIntelRow {
+                replay_data::rows::CountryIntelRow {
                     owner_country: 102,
                     target_index: last,
                     ..Default::default()
@@ -4704,15 +4740,17 @@ fn strategic_action_oracle_names_unsaved_operands_and_keeps_saved_differences() 
     presentation.previous = Some(7);
     presentation.movement_progress = None;
     presentation.strategic_redeployment = true;
-    let row = replay::rows::DivisionMovementRow {
+    let row = replay_data::rows::DivisionMovementRow {
         division: id,
         source: 7,
         path_total: 2,
         path: vec![9, 8],
         strategic_redeployment: 1,
-        strategic_action: replay::rows::Recorded::Value(replay::rows::StrategicAction::Withheld(
-            replay::rows::StrategicActionFailure::CountryModifier,
-        )),
+        strategic_action: replay_data::rows::Recorded::Value(
+            replay_data::rows::StrategicAction::Withheld(
+                replay_data::rows::StrategicActionFailure::CountryModifier,
+            ),
+        ),
         withdrawal: Recorded::Value(Some(0)),
         movement_priority: Recorded::Value(Some(1)),
         base_speed: Recorded::Value(Some(400_000)),

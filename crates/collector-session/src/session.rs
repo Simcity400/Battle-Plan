@@ -20,12 +20,11 @@ use crate::{
     table_capture::{Arena, CaptureRows, bounded},
     table_conversion::{table, unavailable},
 };
-use engine::allocation::{copy_vec, owned_vec};
-use engine::{Memory, cthreat_source, cworld_threat, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{self, TableId, tables},
-};
+use engine_allocation::{copy_vec, owned_vec};
+use engine_native::{Memory, walk::Outcome};
+use engine_stability::{cthreat_source, cworld_threat};
+use replay_data::{rows, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 use std::sync::Mutex;
 
 pub const N: usize = 3;
@@ -171,7 +170,7 @@ impl Captured {
             self.fail_session_capture(if self.active {
                 reason
             } else {
-                replay::cadence::SKIPPED_REASON
+                replay_data::cadence::SKIPPED_REASON
             });
         }
     }
@@ -217,7 +216,7 @@ impl Captured {
     }
 
     pub fn prepare_hour(&mut self, hour: i32, force_full: bool) {
-        self.active = replay::cadence::should_walk(TableId::WorldTension, hour, force_full);
+        self.active = replay_data::cadence::should_walk(TableId::WorldTension, hour, force_full);
     }
 
     /// Acquire the manager and both vectors from one authenticated snapshot.
@@ -257,7 +256,7 @@ impl Captured {
         self.prepare_hour(hour, force_full);
         self.reset();
         if !self.active {
-            self.fail_session_capture(replay::cadence::SKIPPED_REASON);
+            self.fail_session_capture(replay_data::cadence::SKIPPED_REASON);
             return [0; N];
         }
         // On a scheduled refresh, the acquisition worker stages raw bytes via
@@ -296,8 +295,8 @@ impl Captured {
             // World-tension aggregates use the full current country census.
             // These are the original owned header extents.
             let grown = (|| {
-                engine::walk::Buffer::Growing(&mut self.manager.rows).ensure(1)?;
-                engine::walk::Buffer::Growing(&mut self.aggregates.rows)
+                engine_native::walk::Buffer::Growing(&mut self.manager.rows).ensure(1)?;
+                engine_native::walk::Buffer::Growing(&mut self.aggregates.rows)
                     .ensure(reader.counts()[1])?;
                 Ok::<(), &'static str>(())
             })();
@@ -497,7 +496,7 @@ fn pool_u64(log: &RawLog<3>, start: usize) -> u64 {
 /// walk's scattered reads.
 fn sspan(
     log: &mut RawLog<3>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     addr: Option<usize>,
     len: usize,
     mask: u32,
@@ -509,7 +508,7 @@ fn sspan(
 /// strings ride in the already-copied header span.
 fn copy_reason_literal(
     log: &mut RawLog<3>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     len: usize,
     source: usize,
     inline: bool,
@@ -526,8 +525,9 @@ fn copy_reason_literal(
 /// Mirror of one threat source's read set: head plus reason string header
 /// with heap payload. Takes are unconditional; the replay validates vtables
 /// and string headers itself.
-fn copy_source(log: &mut RawLog<3>, memory: &impl engine::Memory, pointer: usize) {
-    use engine::{cthreat_source, msvc_string};
+fn copy_source(log: &mut RawLog<3>, memory: &impl engine_native::Memory, pointer: usize) {
+    use engine_native::msvc_string;
+    use engine_stability::cthreat_source;
     let head = match sspan(log, memory, Some(pointer), 0x34, M_SOURCES) {
         Some(start) => start,
         None => return,
@@ -573,8 +573,14 @@ fn copy_source(log: &mut RawLog<3>, memory: &impl engine::Memory, pointer: usize
 /// One structural pass: manager pointer, manager header, sources with
 /// reasons and aggregates.
 /// Stops at the first typed abort point; later extras are harmless.
-fn copy_pass(memory: &impl engine::Memory, base: usize, game_state: usize, log: &mut RawLog<3>) {
-    use engine::{cgame_state, cpdx_array::Array, cworld_threat};
+fn copy_pass(
+    memory: &impl engine_native::Memory,
+    base: usize,
+    game_state: usize,
+    log: &mut RawLog<3>,
+) {
+    use engine_native::{cgame_state, cpdx_array::Array};
+    use engine_stability::cworld_threat;
     let _reads = read_accounting::table(TableId::WorldTension);
     let _ = base;
     log.has_bulk = true;
@@ -635,7 +641,7 @@ fn copy_pass(memory: &impl engine::Memory, base: usize, game_state: usize, log: 
 
 /// Acquire one refresh into its owned payload.
 pub fn copy_session_refresh_growing(
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     ctx: SessionCopyContext,
     first: &mut SessionJob,
 ) -> SessionCopyReport {
@@ -644,12 +650,13 @@ pub fn copy_session_refresh_growing(
 }
 
 pub fn copy_session_refresh(
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     ctx: SessionCopyContext,
     first: &mut SessionJob,
 ) -> SessionCopyReport {
     first.clear();
-    first.active = replay::cadence::should_walk(TableId::WorldTension, ctx.hour, ctx.force_full);
+    first.active =
+        replay_data::cadence::should_walk(TableId::WorldTension, ctx.hour, ctx.force_full);
     if !first.active {
         return SessionCopyReport::default();
     }
@@ -687,7 +694,7 @@ impl Captured {
         let reason = if self.active {
             reason
         } else {
-            replay::cadence::SKIPPED_REASON
+            replay_data::cadence::SKIPPED_REASON
         };
         self.manager.outcome = Outcome::Unavailable { reason };
         self.sources.outcome = Outcome::Unavailable { reason };
@@ -708,7 +715,7 @@ impl Captured {
     ) {
         self.active = job.active;
         if !job.active {
-            self.fail_session_capture(replay::cadence::SKIPPED_REASON);
+            self.fail_session_capture(replay_data::cadence::SKIPPED_REASON);
             return;
         }
         let started = qpc();
@@ -737,7 +744,7 @@ impl Captured {
         };
         let tension = held.carried(Domain::Tension);
         let grown = (|| {
-            use engine::walk::Buffer::Growing;
+            use engine_native::walk::Buffer::Growing;
             Growing(&mut self.manager.rows).ensure(tension.manager.len())?;
             Growing(&mut self.sources.rows).ensure(tension.sources.len())?;
             Growing(&mut self.aggregates.rows).ensure(tension.aggregates.len())?;

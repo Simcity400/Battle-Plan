@@ -2,9 +2,9 @@
 //! recorded content stack (mods first-class) with the same flag keys, search
 //! order and checked decoder the replay app uses. No flag is drawn when no
 //! candidate resolves.
-use installed_content::{ResolveOptions, ResolvedLayers, flags::FlagSet};
+use installed_content_core::{ResolveOptions, ResolvedLayers, flags::FlagSet};
 use installed_content_image::Rgba8Image;
-use replay::identity::Identity;
+use replay_data::identity::Identity;
 use serde::Serialize;
 use std::io;
 use windows_sys::Win32::System::Threading::{
@@ -48,7 +48,7 @@ pub fn flag_keys(player: &serde_json::Value) -> Option<Vec<String>> {
     let text = |key: &str| player[key].as_str();
     // The own tag only names the country; the keys use the original-or-own tag.
     text("tag")?;
-    let keys = installed_content::country_names::flag_keys(
+    let keys = installed_content_country_names::country_names::flag_keys(
         text("original"),
         text("cosmetic")?,
         Some(text("group")?),
@@ -73,8 +73,8 @@ pub struct FlagContent {
 
 impl FlagContent {
     pub fn load(identity: &Identity, options: &ResolveOptions) -> io::Result<Self> {
-        let content = installed_content::resolve(identity, options)?;
-        let defines = installed_content::defines::read(&content.layers)?;
+        let content = installed_content_core::resolve(identity, options)?;
+        let defines = installed_content_core::defines::read(&content.layers)?;
         Ok(Self {
             cell: FlagSet::Normal.cell(&defines)?,
             layers: content.layers,
@@ -87,7 +87,7 @@ impl FlagContent {
     /// falling past it would show a flag the game does not.
     pub fn find(&self, keys: &[String]) -> io::Result<Option<FlagImage>> {
         search(keys, |asset| match self.layers.read_uncovered(asset) {
-            Ok(bytes) => Ok(installed_content::flags::decode_checked(&bytes, self.cell).ok()),
+            Ok(bytes) => Ok(installed_content_core::flags::decode_checked(&bytes, self.cell).ok()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error),
         })

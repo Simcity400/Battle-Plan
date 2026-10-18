@@ -1,19 +1,19 @@
 use super::{
     Captured, Divisions, MISSING, active_abilities, air, army_icon_inputs, battle_sounds,
-    character_inputs,
-    characters, combat_details, combat_log, construction, country_appearance, country_counters,
-    country_factories, country_stability, country_tactic_unlocks, economy, faction_theatres, fog,
-    game_score, group_counters, hired_advisors, industrial_organisations, leader_paths,
-    leader_portraits, logistics, map_facilities, map_names, model_inputs, modifier_definitions,
-    naval_bases, naval_combat_sources, naval_counters, naval_details, naval_history,
-    naval_mission_inputs, naval_result_details, peace_bids, production, production_modifiers,
-    projects, raid_launch_inputs, raid_state_inputs, raid_target_statuses, railway_guns,
-    resource_map,
-    saved_event_targets, scatter, session, unpublished, visibility, war_overview,
+    character_inputs, characters, combat_details, combat_log, construction, country_appearance,
+    country_counters, country_factories, country_stability, country_tactic_unlocks, economy,
+    faction_theatres, fog, game_score, group_counters, hired_advisors, industrial_organisations,
+    leader_paths, leader_portraits, logistics, map_facilities, map_names, model_inputs,
+    modifier_definitions, naval_bases, naval_combat_sources, naval_counters, naval_details,
+    naval_history, naval_mission_inputs, naval_result_details, peace_bids, production,
+    production_modifiers, projects, raid_launch_inputs, raid_state_inputs, raid_target_statuses,
+    railway_guns, resource_map, saved_event_targets, scatter, session, unpublished, visibility,
+    war_overview,
 };
 use crate::{division_census::UnitInputs, map_capture::Orders};
-use engine::{Memory, walk::Outcome};
-use replay::{frame::TABLE_COUNT, rows::TableId};
+use engine_native::{Memory, walk::Outcome};
+use replay_data::rows::TABLE_COUNT;
+use replay_data::rows::TableId;
 use std::mem::size_of;
 use std::sync::Arc;
 
@@ -113,11 +113,11 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_countries_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
-        rows: &mut Vec<engine::ccountry::Row>,
-        links: &mut Vec<engine::ccountry::LinkRow>,
+        rows: &mut Vec<engine_native::ccountry::Row>,
+        links: &mut Vec<engine_native::ccountry::LinkRow>,
         clock: (i32, bool),
         appearance_store: Option<Box<country_appearance::AppearanceStore>>,
     ) -> crate::acquisition_jobs::CountriesRequest {
@@ -137,8 +137,8 @@ impl Captured {
     pub(crate) fn restore_countries_request(
         &mut self,
         request: crate::acquisition_jobs::CountriesRequest,
-        rows: &mut Vec<engine::ccountry::Row>,
-        links: &mut Vec<engine::ccountry::LinkRow>,
+        rows: &mut Vec<engine_native::ccountry::Row>,
+        links: &mut Vec<engine_native::ccountry::LinkRow>,
         failure: Option<&'static str>,
     ) -> Option<Box<country_appearance::AppearanceStore>> {
         request.restore_with_naming(rows, links, &mut self.country_appearance, failure)
@@ -149,7 +149,7 @@ impl Captured {
     /// ([`Captured::take_preacquired_templates`]).
     pub(crate) fn take_templates_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         clock: (i32, bool),
@@ -179,7 +179,7 @@ impl Captured {
     /// the navy part.
     pub(crate) fn take_ordinary_parts(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -210,7 +210,7 @@ impl Captured {
     /// restored the naming buffers its reserved visibility reads.
     pub(crate) fn take_ordinary_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -300,7 +300,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn capture_ordinary_inline(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         memory: &impl Memory,
         base: usize,
         state: usize,
@@ -357,7 +357,7 @@ impl Captured {
     /// Loan the slow packs with their advisor and local sub-unit stores.
     pub(crate) fn take_slow_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -408,7 +408,7 @@ impl Captured {
         }
         let read = |outcome: &Outcome| {
             matches!(outcome, Outcome::Rows { .. })
-                || matches!(outcome, Outcome::Unavailable { reason } if *reason == replay::cadence::SKIPPED_REASON)
+                || matches!(outcome, Outcome::Unavailable { reason } if *reason == replay_data::cadence::SKIPPED_REASON)
         };
         if let Some(fingerprints) = stores.available.as_mut()
             && !read(&packs.hired_advisors.outcomes()[4])
@@ -430,7 +430,7 @@ impl Captured {
     /// early reads for this hour.
     pub(crate) fn take_stability_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -478,7 +478,7 @@ impl Captured {
         if let Some(fingerprints) = store.as_mut()
             && packs.country_stability.outcomes().iter().any(|outcome| {
                 !matches!(outcome, Outcome::Rows { .. })
-                    && !matches!(outcome, Outcome::Unavailable { reason } if *reason == replay::cadence::SKIPPED_REASON)
+                    && !matches!(outcome, Outcome::Unavailable { reason } if *reason == replay_data::cadence::SKIPPED_REASON)
             })
         {
             packs.country_stability.selection().invalidate(fingerprints);
@@ -493,7 +493,7 @@ impl Captured {
     /// their own pool job of the first burst at that slot.
     pub(crate) fn take_production_daily_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -550,7 +550,7 @@ impl Captured {
     pub(crate) fn take_production_modifier_part(
         &mut self,
         part: usize,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -614,7 +614,7 @@ impl Captured {
     /// first burst, so it runs beside Slow.
     pub(crate) fn take_war_overview_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -660,7 +660,7 @@ impl Captured {
     /// beside the sliced raid families rather than after them.
     pub(crate) fn take_raid_targets_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -713,7 +713,7 @@ impl Captured {
     /// stores, to their own pool job.
     pub(crate) fn take_raid_state_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -785,7 +785,7 @@ impl Captured {
     /// Loan the sliced raid launch inputs and their store to their own job.
     pub(crate) fn take_raid_launch_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -877,7 +877,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_late_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         orders: &mut Orders,
         naval_raw: bool,
         base: usize,
@@ -963,12 +963,12 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_scores_rails_request(
         &mut self,
-        countries: &std::sync::Arc<engine::country_memory::Cache>,
+        countries: &std::sync::Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
         force_full: bool,
-        air_scores: Box<engine::raid_air_scores::Held>,
+        air_scores: Box<engine_raid_inputs::raid_air_scores::Held>,
         rail_store: Option<Box<naval_history::RailStore>>,
     ) -> crate::acquisition_jobs::ScoresRailsRequest {
         crate::acquisition_jobs::ScoresRailsRequest {
@@ -998,7 +998,7 @@ impl Captured {
         request: crate::acquisition_jobs::ScoresRailsRequest,
         completed: bool,
     ) -> (
-        Box<engine::raid_air_scores::Held>,
+        Box<engine_raid_inputs::raid_air_scores::Held>,
         Option<Box<naval_history::RailStore>>,
     ) {
         let mut parts = request.parts;
@@ -1035,7 +1035,7 @@ impl Captured {
         hour: i32,
         force_full: bool,
         project_fingerprints: Box<crate::slicing::SliceFingerprints>,
-        countries: Option<std::sync::Arc<engine::country_memory::Cache>>,
+        countries: Option<std::sync::Arc<engine_native::country_memory::Cache>>,
     ) -> crate::acquisition_jobs::GatedRequest {
         self.gated_ticks = None;
         let mut packs = self.gated_spare.take().expect("gated spare present");
@@ -1663,7 +1663,7 @@ impl RaidStateStores {
 /// industrial organisations, production modifiers and tactic unlocks). No
 /// defines are recorded: the viewer reads the movement defines from the
 /// content's `NDefines`. Each table keeps its own
-/// [`replay::cadence`]. The template dictionary is not here: its own job
+/// [`replay_data::cadence`]. The template dictionary is not here: its own job
 /// reads it beside the Countries job ([`Captured::take_preacquired_templates`]);
 /// nor are the stability tables and the war overview, which their own jobs
 /// read beside Slow ([`StabilityPacks`], [`WarOverviewPacks`]).
@@ -1819,8 +1819,8 @@ impl ProductionDailyPacks {
 
     /// Whether the slot's walks run this hour: the job is queued exactly then.
     pub(crate) fn due(hour: i32, force_full: bool) -> bool {
-        replay::cadence::should_walk(industrial_organisations::TABLES[0], hour, force_full)
-            || replay::cadence::should_walk(production_modifiers::TABLES[0], hour, force_full)
+        replay_data::cadence::should_walk(industrial_organisations::TABLES[0], hour, force_full)
+            || replay_data::cadence::should_walk(production_modifiers::TABLES[0], hour, force_full)
     }
 
     pub(crate) fn capture(
@@ -2220,7 +2220,7 @@ impl LatePacks {
         force_full: bool,
         inputs: Option<&UnitInputs>,
         divisions: Option<&Divisions>,
-        air_scores: Option<&mut engine::raid_air_scores::Held>,
+        air_scores: Option<&mut engine_raid_inputs::raid_air_scores::Held>,
         rails: Option<&mut naval_history::RailStore>,
     ) {
         let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
@@ -2432,7 +2432,7 @@ pub(crate) struct FinalInputsReport {
 }
 
 pub(crate) struct FinalInputsRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
+    pub countries: Arc<engine_native::country_memory::Cache>,
     base: usize,
     state: usize,
     hour: i32,
@@ -2557,7 +2557,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_final_inputs_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,

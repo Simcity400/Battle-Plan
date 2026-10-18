@@ -6,7 +6,7 @@
 //! job. Decode uses `Recorded::build` on this carrier log alone.
 
 use crate::raw::{RawLog, Span, is_canonical_range};
-use engine::{Memory, memory::SliceMemory, walk::Buffer};
+use engine_native::{Memory, memory::SliceMemory, walk::Buffer};
 use std::cell::{Cell, RefCell};
 
 const SHARED_MASK: u32 = 3;
@@ -56,7 +56,7 @@ impl<'a> ExactIndex<'a> {
             .ok_or("carrier exact index capacity overflow")?;
         self.required_slots = self.required_slots.max(required);
         if self.slots.is_growing() && required > self.slots.len() {
-            let old = engine::allocation::copy_vec(&self.slots)
+            let old = engine_allocation::copy_vec(&self.slots)
                 .map_err(|_| "capture buffer allocation failed")?;
             self.slots.ensure(required)?;
             self.slots.fill(usize::MAX);

@@ -22,12 +22,11 @@ use crate::map::test_support::GPU_TESTS;
 use std::{collections::BTreeMap, io};
 
 use eframe::wgpu;
-use installed_content::{
-    gui::native::resources::{self, NoTexture},
-    image::{IndexedImage, Rgba8Image, dds, native::Decode},
-    map::{MapData, ProvinceKind},
+use installed_content_core::{
+    gui::native::resources, gui::native::resources::NoTexture, map::MapData, map::ProvinceKind,
     terrain::TerrainDefinitions,
 };
+use installed_content_image::{IndexedImage, Rgba8Image, dds, native::Decode};
 
 use super::{camera::MapSize, gradient_math};
 
@@ -667,7 +666,7 @@ pub fn write_data(
 pub fn terrain_flag_mask(
     definitions: &TerrainDefinitions,
     terrain: &IndexedImage,
-    flag: impl Fn(&installed_content::terrain::TerrainType) -> bool,
+    flag: impl Fn(&installed_content_core::terrain::TerrainType) -> bool,
 ) -> Vec<bool> {
     let mut lookup = [false; 256];
     for (&index, kind) in &definitions.palette {

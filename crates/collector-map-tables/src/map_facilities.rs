@@ -5,12 +5,13 @@ use crate::{
     table_capture::CaptureRows,
     table_conversion::{table, table_iter, unavailable},
 };
-use engine::allocation::collect_vec;
-use engine::{Memory, ccountry_supply_system, special_facility_flags, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{FacilityMapFlagRow, FloatingHarborDeploymentRow, TableId, tables},
+use engine_allocation::collect_vec;
+use engine_native::{Memory, ccountry_supply_system, walk::Outcome};
+use engine_projects::special_facility_flags;
+use replay_data::{
+    rows::FacilityMapFlagRow, rows::FloatingHarborDeploymentRow, rows::TableId, rows::tables,
 };
+use replay_frame::frame::TableView;
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [
@@ -165,7 +166,7 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
 
     #[test]
     fn repeated_facility_provinces_collapse_and_deployments_convert() {

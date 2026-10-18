@@ -1,4 +1,4 @@
-use engine::air_kamikaze::TaskForceCombat;
+use engine_air_history::air_kamikaze::TaskForceCombat;
 
 fn combat(province: u32, region: u32) -> TaskForceCombat {
     TaskForceCombat { province, region }
@@ -211,8 +211,8 @@ fn worker_air_growth_hands_off_complete_mod_rosters_at_5000_countries() {
     job.names.resize(1, 0);
     let hour = (0..24)
         .find(|&hour| {
-            !replay::cadence::should_walk(TableId::WingCumulative, hour, false)
-                && !replay::cadence::should_walk(TableId::AirTheatreMembers, hour, false)
+            !replay_data::cadence::should_walk(TableId::WingCumulative, hour, false)
+                && !replay_data::cadence::should_walk(TableId::AirTheatreMembers, hour, false)
         })
         .unwrap();
     let report = copy_air_refresh_growing(
@@ -365,7 +365,7 @@ fn zero_hint_wing_worker_publishes_first_and_later_populations_for_5000_countrie
 fn zero_hint_wing_growth_preserves_fixed_original_read_order_and_first_faults() {
     use super::wing_test_kit as kit;
     struct Observed<'a> {
-        inner: engine::memory::SliceMemory<'a>,
+        inner: engine_native::memory::SliceMemory<'a>,
         fault: Option<(usize, usize)>,
         failed: std::cell::Cell<bool>,
         calls: std::cell::RefCell<Vec<(usize, usize)>>,
@@ -558,7 +558,7 @@ fn air_bases_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and
     job.required_census = job.census.capacity() + 1;
     job.required_links = job.seen_links.capacity() + 1;
     job.carrier.required_index = 3;
-    job.carrier.demand = engine::cair_base::CarrierDemand {
+    job.carrier.demand = engine_native::cair_base::CarrierDemand {
         bases: 3,
         registrations: 3,
         pools: 3,
@@ -590,7 +590,7 @@ fn air_bases_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and
     assert_eq!(LOCAL.snapshot().current, Capacity::default());
 }
 
-use replay::rows::TableSchema;
+use replay_data::rows::TableSchema;
 
 fn small() -> (Capacities, Captured) {
     let capacity = Capacities {
@@ -613,7 +613,7 @@ fn complete<S: TableSchema>(table: &TableView) -> &[S::Row] {
 
 #[test]
 fn equipment_capture_preserves_full_handles_order_and_exact_capacity() {
-    use engine::{cequipment_variant, cequipment_variant_pool, memory::SliceMemory};
+    use engine_native::{cequipment_variant, cequipment_variant_pool, memory::SliceMemory};
     const WING: usize = 0x1000;
     const ENTRIES: usize = 0x1400;
     const VARIANT: usize = 0x1480;
@@ -816,7 +816,7 @@ fn growth_counts_unread_rows_and_retains_primary_capacity() {
 fn wing_daily_private_fields_and_capacities_do_not_gate_hourly_equipment() {
     use super::wing_test_kit as kit;
     struct Guard<'a> {
-        inner: engine::memory::SliceMemory<'a>,
+        inner: engine_native::memory::SliceMemory<'a>,
         cumulative: bool,
         theatres: bool,
     }
@@ -942,15 +942,15 @@ fn daily_statistics_skip_reads_and_capacity_preflight() {
 
 #[test]
 fn wing_equipment_is_hourly_and_cumulative_uses_slot_16() {
-    use replay::rows::TableId;
+    use replay_data::rows::TableId;
     for table in [TableId::WingEquipment, TableId::WingCumulative] {
         assert_eq!(
-            replay::cadence::is_staggered(table),
+            replay_data::cadence::is_staggered(table),
             table == TableId::WingCumulative
         );
         for hour in -24_i32..48 {
             assert_eq!(
-                replay::cadence::is_refresh(table, hour),
+                replay_data::cadence::is_refresh(table, hour),
                 table == TableId::WingEquipment || hour.rem_euclid(24) == 16,
                 "{table:?} at {hour}"
             );
@@ -1017,7 +1017,7 @@ fn wing_truncation_matrix_matches_direct_with_same_caps() {
 #[test]
 fn wing_copy_includes_assigned_mission_region_and_skips_null_country_slots() {
     use super::wing_test_kit as kit;
-    use engine::{air_mission, cstrategic_region};
+    use engine_native::{air_mission, cstrategic_region};
     let mut bytes = kit::fixture();
     let region = 0x3a000;
     let put = |bytes: &mut [u8], address: usize, value: u64| {
@@ -1066,12 +1066,12 @@ fn wing_split_copy_matches_direct_walk_under_truncation() {
 #[test]
 fn wing_split_copy_matches_direct_walk_on_fault_matrix() {
     use super::wing_test_kit as kit;
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: std::ops::Range<usize>,
     }
-    impl engine::Memory for Fault<'_> {
+    impl engine_native::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let Some(end) = address.checked_add(output.len()) else {
                 return false;
@@ -1083,10 +1083,10 @@ fn wing_split_copy_matches_direct_walk_on_fault_matrix() {
         }
     }
     for fault in [
-        kit::GAME_STATE + engine::cgame_state::COUNTRIES,
+        kit::GAME_STATE + engine_native::cgame_state::COUNTRIES,
         kit::WING,
-        kit::WING + engine::cair_wing::EXPERIENCE,
-        kit::WING + engine::cair_wing::EQUIPMENT_POOL,
+        kit::WING + engine_native::cair_wing::EXPERIENCE,
+        kit::WING + engine_native::cair_wing::EQUIPMENT_POOL,
     ] {
         let bytes = kit::fixture();
         let memory = Fault {
@@ -1176,7 +1176,7 @@ fn shared_wing_naval_cap_keeps_tail_leaf_failure_local() {
 #[test]
 fn stats_split_copy_matches_direct_walk() {
     use super::stats_test_kit as kit;
-    use engine::memory::{CountedMemory, ReadCounts};
+    use engine_native::{memory::CountedMemory, memory::ReadCounts};
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let capacities = Capacities::fixture();
@@ -1207,7 +1207,7 @@ fn stats_split_copy_matches_direct_walk() {
     assert_eq!(counts, expected);
     let mut refreshes = 0;
     for hour in 0..24 {
-        if replay::cadence::is_refresh(anchor, hour) {
+        if replay_data::cadence::is_refresh(anchor, hour) {
             refreshes += 1;
             continue;
         }
@@ -1305,10 +1305,10 @@ fn stats_copy_sizes_cover_documented_read_set() {
     // (16), window byte (1), channel spans (8/32/40/72); the walk's
     // batched gathers decompose into these exact copies at replay.
     use super::stats_test_kit as kit;
-    use engine::Memory;
+    use engine_native::Memory;
     use std::collections::BTreeSet;
     struct Recorder<'a> {
-        inner: engine::memory::SliceMemory<'a>,
+        inner: engine_native::memory::SliceMemory<'a>,
         sizes: std::cell::RefCell<BTreeSet<usize>>,
     }
     impl Memory for Recorder<'_> {
@@ -1381,19 +1381,19 @@ fn air_bases_split_copy_matches_direct_walk_with_alias_and_rocket_vector() {
 
 #[test]
 fn bases_and_registrations_are_hourly_and_aces_use_slot_21() {
-    use replay::rows::TableId;
+    use replay_data::rows::TableId;
     for table in [
         TableId::AirBases,
         TableId::AirBaseRegistrations,
         TableId::AirAces,
     ] {
         assert_eq!(
-            replay::cadence::is_staggered(table),
+            replay_data::cadence::is_staggered(table),
             table == TableId::AirAces
         );
         for hour in -24_i32..48 {
             assert_eq!(
-                replay::cadence::is_refresh(table, hour),
+                replay_data::cadence::is_refresh(table, hour),
                 table != TableId::AirAces || hour.rem_euclid(24) == 21,
                 "{table:?} at {hour}"
             );
@@ -1473,12 +1473,12 @@ fn air_bases_split_copy_matches_direct_walk_on_fault_matrix() {
     // three slots, manager/vector faults block bases and registrations,
     // private faults block only their own slot.
     use super::air_bases_test_kit as kit;
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: std::ops::Range<usize>,
     }
-    impl engine::Memory for Fault<'_> {
+    impl engine_native::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let Some(end) = address.checked_add(output.len()) else {
                 return false;
@@ -1491,7 +1491,7 @@ fn air_bases_split_copy_matches_direct_walk_on_fault_matrix() {
     }
     for fault in [
         // Shared country census: every slot blocks.
-        kit::GAME_STATE + engine::cgame_state::COUNTRIES,
+        kit::GAME_STATE + engine_native::cgame_state::COUNTRIES,
         kit::C0,
         kit::LTAB + 4,
         // Shared manager and vectors: bases and registrations block.
@@ -1499,19 +1499,19 @@ fn air_bases_split_copy_matches_direct_walk_on_fault_matrix() {
         kit::SVEC,
         kit::B0,
         // Bases-private fields: only bases blocks.
-        kit::B0 + engine::cair_base::HOST_REFERENCE,
+        kit::B0 + engine_native::cair_base::HOST_REFERENCE,
         kit::S0,
         // Registrations-private spans: only registrations blocks.
         kit::CONT1,
-        kit::CONT1 + engine::ccountry_air_container::COUNTRY,
+        kit::CONT1 + engine_native::ccountry_air_container::COUNTRY,
         kit::POOL0,
         kit::W0,
-        kit::W0 + engine::cair_wing::POOL,
-        kit::W1 + engine::cair_wing::POOL + 7,
+        kit::W0 + engine_native::cair_wing::POOL,
+        kit::W1 + engine_native::cair_wing::POOL + 7,
         // Aces-private spans: only aces blocks.
-        kit::C0 + engine::ccountry::ACES,
+        kit::C0 + engine_native::ccountry::ACES,
         kit::A0,
-        kit::A0 + engine::cace::ALIVE,
+        kit::A0 + engine_native::cace::ALIVE,
         kit::NSTR,
     ] {
         let bytes = kit::fixture();
@@ -1621,9 +1621,9 @@ fn air_bases_registration_demand_counts_duplicate_occurrences_and_empty_rows() {
 #[test]
 fn air_base_container_chunks_preserve_null_slots_and_boundary_faults() {
     use super::air_bases_test_kit as kit;
-    use engine::Memory;
+    use engine_native::Memory;
     let mut bytes = kit::fixture();
-    let header = kit::B0 + engine::cair_base::COUNTRY_CONTAINERS;
+    let header = kit::B0 + engine_native::cair_base::COUNTRY_CONTAINERS;
     let array = u64::from_le_bytes(bytes[header..header + 8].try_into().unwrap()) as usize;
     // The fixture reserves space before the first container. Keep its one
     // nonnull slot, and extend the zero-filled pointer table across three
@@ -1664,13 +1664,13 @@ fn air_base_container_chunks_preserve_null_slots_and_boundary_faults() {
         assert!(report.raw_ok, "{bad_slot:?}");
         kit::assert_matches_direct(&split, &direct);
         if bad_slot.is_some_and(|slot| slot > 1) {
-            let mut registrations = [engine::cair_base::RegistrationRow::default(); 4];
+            let mut registrations = [engine_native::cair_base::RegistrationRow::default(); 4];
             let mut wings = [0; 8];
-            let prefix = engine::cair_base::walk_registrations(
+            let prefix = engine_native::cair_base::walk_registrations(
                 &memory,
                 kit::BASE,
                 kit::GAME_STATE,
-                engine::cair_base::RegistrationBuffers {
+                engine_native::cair_base::RegistrationBuffers {
                     registrations: &mut registrations,
                     wings: &mut wings,
                     resolved: &mut [],
@@ -2127,7 +2127,7 @@ fn air_bases_census_grows_once_to_five_thousand_countries() {
     // Sizes from the process-wide country hints; hold them at a fresh attachment's values.
     let _hint = crate::country_scale::hint_guard();
     use crate::extended::fog;
-    use engine::{
+    use engine_native::{
         cair_base, ccountry, ccountry_air_container, cgame_state, cstrategic_air_manager,
     };
     const COUNTRIES: u32 = 5_001;
@@ -2288,17 +2288,17 @@ fn air_bases_census_grows_once_to_five_thousand_countries() {
     }
 }
 
-fn kit_memory(bytes: &[u8]) -> engine::memory::SliceMemory<'_> {
-    engine::memory::SliceMemory { base: 0, bytes }
+fn kit_memory(bytes: &[u8]) -> engine_native::memory::SliceMemory<'_> {
+    engine_native::memory::SliceMemory { base: 0, bytes }
 }
 
 /// Every guarded copy's first address over a flat fixture.
 struct SlotReads<'a> {
-    inner: engine::memory::SliceMemory<'a>,
+    inner: engine_native::memory::SliceMemory<'a>,
     reads: std::cell::RefCell<Vec<usize>>,
 }
 
-impl engine::Memory for SlotReads<'_> {
+impl engine_native::Memory for SlotReads<'_> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         self.reads.borrow_mut().push(address);
         self.inner.copy(address, output)
@@ -2308,14 +2308,14 @@ impl engine::Memory for SlotReads<'_> {
 const SPARSE_GAME: usize = 0x10000;
 const SPARSE_SLOTS: usize = 0x70000;
 const SPARSE_COUNTRIES: u32 = 5_001;
-const SPARSE_HANDLE: u64 = (0x43_u64 << 32) | engine::cair_base::TYPE as u64;
+const SPARSE_HANDLE: u64 = (0x43_u64 << 32) | engine_native::cair_base::TYPE as u64;
 
 /// 5,001 countries; one host base whose country-container vector holds
 /// containers at slots 1, 2600 and 5000, its dense list naming them in that
 /// order, and optionally one more container at `stray`, which the list
 /// lacks.
 fn sparse_slot_world(stray: Option<u32>) -> Vec<u8> {
-    use engine::{ccountry, ccountry_air_container, cgame_state, cstrategic_air_manager};
+    use engine_native::{ccountry, ccountry_air_container, cgame_state, cstrategic_air_manager};
     const MANAGER: usize = 0x20000;
     const HOSTS: usize = 0x21000;
     const HOST: usize = 0x22000;
@@ -2366,22 +2366,30 @@ fn sparse_slot_world(stray: Option<u32>) -> Vec<u8> {
         1,
     );
     put64(&mut bytes, HOSTS, HOST as u64);
-    put64(&mut bytes, HOST, engine::cair_base::VTABLE_RVA as u64);
-    put64(&mut bytes, HOST + engine::cair_base::HANDLE, SPARSE_HANDLE);
     put64(
         &mut bytes,
-        HOST + engine::cair_base::HOST_REFERENCE,
+        HOST,
+        engine_native::cair_base::VTABLE_RVA as u64,
+    );
+    put64(
+        &mut bytes,
+        HOST + engine_native::cair_base::HANDLE,
+        SPARSE_HANDLE,
+    );
+    put64(
+        &mut bytes,
+        HOST + engine_native::cair_base::HOST_REFERENCE,
         (3 << 32) | 51,
     );
     header(
         &mut bytes,
-        HOST + engine::cair_base::COUNTRY_CONTAINERS,
+        HOST + engine_native::cair_base::COUNTRY_CONTAINERS,
         SPARSE_SLOTS,
         SPARSE_COUNTRIES,
     );
     header(
         &mut bytes,
-        HOST + engine::cair_base::REGISTERED_CONTAINERS,
+        HOST + engine_native::cair_base::REGISTERED_CONTAINERS,
         DENSE,
         3,
     );
@@ -2592,7 +2600,7 @@ fn air_bases_copy_sizes_cover_documented_read_set() {
     // pool/wing blocks (chunked 8s), wing identities (32), ace scattered
     // fields (16/4/1/12) and name bytes (1 + content).
     use super::air_bases_test_kit as kit;
-    use engine::Memory;
+    use engine_native::Memory;
     use std::collections::BTreeSet;
     struct Recorder<'a> {
         inner: kit::SyntheticMemory<'a>,

@@ -5,18 +5,15 @@ use crate::{
     table_conversion::unavailable,
 };
 use collector_observers::nuclear_strikes::{self as producer, Entry, Item, Phase};
-use engine::{
-    Memory, allocation, event_feed_sites::CountryIdentity, nuclear_strike_sites::Unit,
-    walk::Outcome,
+use engine_allocation as allocation;
+use engine_events::{event_feed_sites::CountryIdentity, nuclear_strike_sites::Unit};
+use engine_native::{Memory, walk::Outcome};
+use replay_data::{
+    rows::NuclearBuildingDamage, rows::NuclearEquipmentLoss, rows::NuclearStrikePart,
+    rows::NuclearStrikeRefusal, rows::NuclearStrikeRow, rows::NuclearUnitDamage,
+    rows::NuclearWarSupport, rows::NuclearWingLoss, rows::TableId, rows::TableRows,
 };
-use replay::{
-    frame::TableView,
-    rows::{
-        NuclearBuildingDamage, NuclearEquipmentLoss, NuclearStrikePart, NuclearStrikeRefusal,
-        NuclearStrikeRow, NuclearUnitDamage, NuclearWarSupport, NuclearWingLoss, TableId,
-        TableRows,
-    },
-};
+use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::NuclearStrikes];
@@ -88,8 +85,8 @@ fn push<T>(values: &mut Vec<T>, value: T) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn country(identity: CountryIdentity) -> replay::event_feed_rows::EventFeedCountry {
-    replay::event_feed_rows::EventFeedCountry {
+fn country(identity: CountryIdentity) -> replay_data::event_feed_rows::EventFeedCountry {
+    replay_data::event_feed_rows::EventFeedCountry {
         reference: identity.reference,
         id: identity.id,
         instance: identity.instance,
@@ -311,7 +308,7 @@ fn project(entries: &[Entry]) -> Result<Vec<NuclearStrikeRow>, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::nuclear_strike_sites::{RAILWAY_GUN_CLASS, Strike};
+    use engine_events::{nuclear_strike_sites::RAILWAY_GUN_CLASS, nuclear_strike_sites::Strike};
 
     fn identity(id: u32) -> CountryIdentity {
         CountryIdentity {

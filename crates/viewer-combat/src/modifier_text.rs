@@ -1,10 +1,8 @@
 //! Modifier descriptions from recorded definition tables and authored content.
 //! Names use localisation; numbers use fixed-point and percentage formatting.
-use installed_content::localisation::{Argument, Localisation};
-use replay::{
-    frame::DecodedFrame,
-    rows::{ModifierDefinitionRow, tables},
-};
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use replay_data::{rows::ModifierDefinitionRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::sync::Arc;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -56,9 +54,9 @@ impl std::fmt::Display for Refusal {
 /// The static tables the name index reads; the index is cached on their
 /// identities ([`viewer_foundation::map::memo::Keyed`]), so a playback hour whose frame
 /// shares them reuses it.
-pub(crate) const NAME_INDEX_TABLES: &[replay::rows::TableId] = &[
-    replay::rows::TableId::ModifierDefinitions,
-    replay::rows::TableId::LexicalTokens,
+pub(crate) const NAME_INDEX_TABLES: &[replay_data::rows::TableId] = &[
+    replay_data::rows::TableId::ModifierDefinitions,
+    replay_data::rows::TableId::LexicalTokens,
 ];
 
 /// Script name to definition index (`None` when two recorded tokens fold to
@@ -180,13 +178,13 @@ impl<'frame> Definitions<'frame> {
         Arc::clone(&self.names)
     }
 
-    /// Settles each [`Conditional`](installed_content::unit_leader::Conditional):
+    /// Settles each [`Conditional`](installed_content_core::unit_leader::Conditional):
     /// a name no definition carries was skipped with its block, a registered
     /// one left the content after it out of step. `Err` names the condition
     /// and why it holds or cannot be settled.
     pub(super) fn settle(
         definitions: Result<&Self, &Refusal>,
-        conditions: &[installed_content::unit_leader::Conditional],
+        conditions: &[installed_content_core::unit_leader::Conditional],
     ) -> Result<(), String> {
         for condition in conditions {
             let registered = definitions
@@ -267,12 +265,12 @@ pub(super) struct Block {
 
 impl Block {
     /// The block the reader built from authored entries
-    /// ([`installed_content::modifiers::Modifiers`]): one entry per
+    /// ([`installed_content_core::modifiers::Modifiers`]): one entry per
     /// modifier in source order, its last value, hidden by name); names
     /// without a definition are returned, dropped as the game drops them.
     pub(super) fn build(
         definitions: &Definitions<'_>,
-        authored: &installed_content::modifiers::Modifiers,
+        authored: &installed_content_core::modifiers::Modifiers,
     ) -> Result<(Self, Vec<String>), Refusal> {
         let mut block = Self {
             added: !authored.children.is_empty(),

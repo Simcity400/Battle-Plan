@@ -18,7 +18,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use installed_content::defines::Defines;
+use installed_content_core::defines::Defines;
 
 /// The grouping defines, `NDefines.NGraphics` of the matching content.
 #[derive(Clone, Copy, Debug, PartialEq)]

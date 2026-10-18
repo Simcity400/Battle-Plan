@@ -10,10 +10,8 @@ use super::{
     slice_owner_limitation,
 };
 use installed_content_save::{Save, characters as saved, governance};
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryRow, PartyLeaderRow, TableId, tables},
-};
+use replay_data::{rows::CountryRow, rows::PartyLeaderRow, rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -102,7 +100,7 @@ fn available_advisors(
         compared += 1;
         recorded.entry(tag.to_vec()).or_default().insert((
             row.character,
-            installed_content::parser::c_string(&row.idea).to_vec(),
+            installed_content_core::parser::c_string(&row.idea).to_vec(),
         ));
     }
     for (tag, records) in report.canonical_countries(&pack.character_status) {
@@ -344,7 +342,7 @@ fn advisor_token_key(token: &[u8]) -> (u32, Vec<u8>) {
     });
     (
         hash,
-        installed_content::parser::c_string(token).to_ascii_lowercase(),
+        installed_content_core::parser::c_string(token).to_ascii_lowercase(),
     )
 }
 
@@ -539,7 +537,7 @@ fn civil_wars(
 }
 
 fn character_handle(id: u32) -> u64 {
-    (u64::from(id) << 32) | u64::from(engine::ccharacter::REFERENCE_TYPE)
+    (u64::from(id) << 32) | u64::from(engine_native::ccharacter::REFERENCE_TYPE)
 }
 
 /// Each country's recorded rows grouped by tag, checking one raw reference per
@@ -588,7 +586,7 @@ fn character_records<T>(
     report: &mut Report,
 ) -> io::Result<()>
 where
-    T: replay::rows::TableSchema<Row = replay::rows::CountryCharacterRow>,
+    T: replay_data::rows::TableSchema<Row = replay_data::rows::CountryCharacterRow>,
 {
     let name = format!("{:?}", T::ID);
     let rows = complete::<T>(frame)?;
@@ -710,7 +708,7 @@ fn party_leaders(
                 let reference = (saved.character != (0, 0)).then_some(saved.character);
                 let recorded_reference = row
                     .character
-                    .map(|id| (id, engine::ccharacter::REFERENCE_TYPE));
+                    .map(|id| (id, engine_native::ccharacter::REFERENCE_TYPE));
                 if recorded_reference != reference {
                     report.difference(
                         format!("{label}.character"),
@@ -780,10 +778,8 @@ fn party_leaders(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{CountryCharacterRow, PoliticalPartyRow, TableRows},
-    };
+    use replay_data::{rows::CountryCharacterRow, rows::PoliticalPartyRow, rows::TableRows};
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     fn frame() -> DecodedFrame {
         DecodedFrame {
@@ -819,11 +815,11 @@ mod tests {
                     character_status={character={id=2 type=73} advisor=no}
                 }}}
             "#;
-        let pack = saved::parse(&installed_content::parser::parse(source).unwrap().items).unwrap();
+        let pack = saved::parse(&installed_content_core::parser::parse(source).unwrap().items).unwrap();
         let germany = germany();
         let links = BTreeMap::from([(102, &germany)]);
         let mut frame = frame();
-        let make = |ordinal, idea: &[u8]| replay::rows::AvailableAdvisorRow {
+        let make = |ordinal, idea: &[u8]| replay_data::rows::AvailableAdvisorRow {
             country: 102,
             ordinal,
             character: 1,
@@ -870,14 +866,14 @@ mod tests {
                     character_status={character={id=1 type=73} advisor=yes}
                 }}}
             "#;
-        let pack = saved::parse(&installed_content::parser::parse(source).unwrap().items).unwrap();
+        let pack = saved::parse(&installed_content_core::parser::parse(source).unwrap().items).unwrap();
         let germany = germany();
         let links = BTreeMap::from([(102, &germany)]);
         let mut frame = frame();
         // The held pool predates the save's: it lists another idea.
         *frame.tables[TableId::AvailableAdvisors.index()] =
             TableView::Complete(TableRows::AvailableAdvisors(vec![
-                replay::rows::AvailableAdvisorRow {
+                replay_data::rows::AvailableAdvisorRow {
                     country: 102,
                     ordinal: 0,
                     character: 1,
@@ -885,11 +881,13 @@ mod tests {
                 },
             ]));
         let read_at = |hour| {
-            TableView::Complete(TableRows::SliceReads(vec![replay::rows::SliceReadRow {
-                table: TableId::AvailableAdvisors.index() as u32,
-                owner: 102,
-                sample_hour: hour,
-            }]))
+            TableView::Complete(TableRows::SliceReads(vec![
+                replay_data::rows::SliceReadRow {
+                    table: TableId::AvailableAdvisors.index() as u32,
+                    owner: 102,
+                    sample_hour: hour,
+                },
+            ]))
         };
         *frame.tables[TableId::SliceReads.index()] = read_at(frame.hour - 3);
         let mut report = Report::default();
@@ -920,13 +918,13 @@ mod tests {
                 character_status={character={id=1 type=73} advisor=yes}
             }}}
         "#;
-        let pack = saved::parse(&installed_content::parser::parse(source).unwrap().items).unwrap();
+        let pack = saved::parse(&installed_content_core::parser::parse(source).unwrap().items).unwrap();
         let germany = germany();
         let links = BTreeMap::from([(102, &germany)]);
         let mut frame = frame();
         *frame.tables[TableId::AvailableAdvisors.index()] =
             TableView::Complete(TableRows::AvailableAdvisors(vec![
-                replay::rows::AvailableAdvisorRow {
+                replay_data::rows::AvailableAdvisorRow {
                     country: 102,
                     character: 1,
                     ..Default::default()
@@ -934,7 +932,7 @@ mod tests {
             ]));
         *frame.tables[TableId::AdvisorTokens.index()] =
             TableView::Complete(TableRows::AdvisorTokens(vec![
-                replay::rows::AdvisorTokenRow::default(),
+                replay_data::rows::AdvisorTokenRow::default(),
             ]));
         let mut report = Report::default();
         available_advisors(&frame, &pack, &links, &mut report).unwrap();
@@ -961,12 +959,12 @@ mod tests {
                 character_status={character={id=2 type=73} advisor=yes}
             }}}
         "#;
-        let pack = saved::parse(&installed_content::parser::parse(source).unwrap().items).unwrap();
+        let pack = saved::parse(&installed_content_core::parser::parse(source).unwrap().items).unwrap();
         let country = germany();
         let links = BTreeMap::from([(102, &country)]);
         let mut frame = frame();
         for (character, idea) in [(1, b"shared".as_slice()), (2, b"SHARED".as_slice())] {
-            let row = replay::rows::AvailableAdvisorRow {
+            let row = replay_data::rows::AvailableAdvisorRow {
                 country: 102,
                 ordinal: 0,
                 character,
@@ -975,7 +973,7 @@ mod tests {
             *frame.tables[TableId::AvailableAdvisors.index()] =
                 TableView::Complete(TableRows::AvailableAdvisors(vec![
                     row.clone(),
-                    replay::rows::AvailableAdvisorRow { ordinal: 1, ..row },
+                    replay_data::rows::AvailableAdvisorRow { ordinal: 1, ..row },
                 ]));
             let mut report = Report::default();
             available_advisors(&frame, &pack, &links, &mut report).unwrap();
@@ -989,7 +987,7 @@ mod tests {
         }
         *frame.tables[TableId::AvailableAdvisors.index()] =
             TableView::Complete(TableRows::AvailableAdvisors(vec![
-                replay::rows::AvailableAdvisorRow {
+                replay_data::rows::AvailableAdvisorRow {
                     country: 102,
                     character: 3,
                     idea: b"shared".to_vec(),
@@ -1165,19 +1163,19 @@ mod tests {
             ));
         *frame.tables[TableId::CountryLeaderRoles.index()] =
             TableView::Complete(TableRows::CountryLeaderRoles(vec![
-                replay::rows::CountryLeaderRoleRow {
+                replay_data::rows::CountryLeaderRoleRow {
                     character: 1482,
                     country: 102,
                     ideology: -7,
                     ..Default::default()
                 },
-                replay::rows::CountryLeaderRoleRow {
+                replay_data::rows::CountryLeaderRoleRow {
                     character: 1482,
                     country: 102,
                     ideology: 9,
                     ..Default::default()
                 },
-                replay::rows::CountryLeaderRoleRow {
+                replay_data::rows::CountryLeaderRoleRow {
                     character: 1451,
                     country: 102,
                     ideology: -7,
@@ -1203,7 +1201,7 @@ mod tests {
 
     fn saved_leaders() -> (governance::Pack, saved::Pack) {
         let characters = saved::parse(
-            &installed_content::parser::parse(
+            &installed_content_core::parser::parse(
                 br#"character_manager={ historical={
                     character={ id={ id=1482 type=73 } token="a"
                         country_leaders={ country_leader={ ideology=nazism id=12 }
@@ -1373,7 +1371,7 @@ mod tests {
                 targets
                     .iter()
                     .enumerate()
-                    .map(|(ordinal, &target)| replay::rows::CountryCivilWarRow {
+                    .map(|(ordinal, &target)| replay_data::rows::CountryCivilWarRow {
                         country: 102,
                         ordinal: ordinal as u32,
                         target,
@@ -1422,7 +1420,7 @@ mod tests {
         load_hour: bool,
     ) -> Report {
         let mut pack = saved::parse(
-            &installed_content::parser::parse(
+            &installed_content_core::parser::parse(
                 br#"character_manager={ historical={
                     character={ id={ id=1482 type=73 } token="a"
                         advisors={ advisor={ slot="political_advisor" idea_token="GER_a" }
@@ -1473,7 +1471,7 @@ mod tests {
                 tokens
                     .iter()
                     .enumerate()
-                    .map(|(ordinal, token)| replay::rows::AdvisorTokenRow {
+                    .map(|(ordinal, token)| replay_data::rows::AdvisorTokenRow {
                         ordinal: ordinal as u32,
                         token: token.to_vec(),
                     })
@@ -1491,22 +1489,22 @@ mod tests {
 
     #[test]
     fn advisor_tokens_merge_case_variants_from_different_mod_files() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let names = installed_content::key_names::KeyNames::default();
-        let mut authored = installed_content::characters::Characters::default();
+        let names = installed_content_core::key_names::KeyNames::default();
+        let mut authored = installed_content_core::characters::Characters::default();
         for file in [
             b"characters={AAA_first={advisor={slot=chief idea_token=mixed_advisor}}}".as_slice(),
             b"characters={AAA_second={advisor={slot=chief idea_token=MiXeD_Advisor}}}".as_slice(),
         ] {
-            authored.merge(installed_content::characters::parse(file, &names).unwrap());
+            authored.merge(installed_content_core::characters::parse(file, &names).unwrap());
         }
         let (tokens, gap) = authored.advisor_tokens();
         assert!(gap.is_none());
         let tokens = tokens.collect::<Vec<_>>();
         // The game keeps the first spelling when the game finds an ASCII case alias.
         assert_eq!(tokens, ["mixed_advisor"]);
-        let mut pack = saved::parse(&installed_content::parser::parse(br#"
+        let mut pack = saved::parse(&installed_content_core::parser::parse(br#"
             character_manager={historical={
                 character={id={id=1 type=73} token=first advisors={advisor={idea_token=mixed_advisor}}}
                 character={id={id=2 type=73} token=second advisors={advisor={idea_token=MiXeD_Advisor}}}
@@ -1648,7 +1646,7 @@ mod tests {
 
     fn run_faction_advisors(rows: &[(u32, &[u8])], slots: Vec<Option<&[u8]>>) -> Report {
         let characters = saved::parse(
-            &installed_content::parser::parse(
+            &installed_content_core::parser::parse(
                 br#"character_manager={ historical={
                     character={ id={ id=1482 type=73 } token="GER_a"
                         advisors={ advisor={ slot="political_advisor" idea_token="GER_a_idea" }
@@ -1683,7 +1681,7 @@ mod tests {
         *frame.tables[TableId::FactionAdvisors.index()] =
             TableView::Complete(TableRows::FactionAdvisors(
                 rows.iter()
-                    .map(|&(ordinal, token)| replay::rows::FactionAdvisorRow {
+                    .map(|&(ordinal, token)| replay_data::rows::FactionAdvisorRow {
                         faction: id,
                         ordinal,
                         token: token.to_vec(),

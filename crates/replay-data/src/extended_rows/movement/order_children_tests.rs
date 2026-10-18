@@ -1,7 +1,7 @@
 use super::*;
 
 fn row() -> ArmyOrderPlanRow {
-    let group = (7_u64 << 32) | engine::corders_group::REFERENCE_TYPE as u64;
+    let group = (7_u64 << 32) | engine_native::corders_group::REFERENCE_TYPE as u64;
     ArmyOrderPlanRow {
         owner_group: group,
         instance: 4,

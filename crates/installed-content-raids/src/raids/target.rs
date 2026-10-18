@@ -1,8 +1,6 @@
 //! Recorded raid target joins, shared by the dashboard and map hovers.
-use replay::{
-    frame::DecodedFrame,
-    rows::{ProvinceRow, RaidScope, StateRow, tables},
-};
+use replay_data::{rows::ProvinceRow, rows::RaidScope, rows::StateRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 type Result<T> = std::result::Result<T, String>;
 

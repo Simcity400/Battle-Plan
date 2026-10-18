@@ -28,10 +28,11 @@ use dashboard_text::{
 };
 #[cfg(test)]
 use replay::container::Replay;
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{CountryLinkRow, CountryRow, StateResistanceRow, StateRow, TableId, tables},
+use replay_data::{
+    rows::CountryLinkRow, rows::CountryRow, rows::StateResistanceRow, rows::StateRow,
+    rows::TableId, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::sync::atomic::Ordering;
@@ -288,7 +289,7 @@ fn law_for(
 
 fn occupation_law_valid(
     world: &dashboard_text::triggers::World<'_>,
-    law: &installed_content::occupation_laws::Law,
+    law: &installed_content_core::occupation_laws::Law,
     controller: u32,
     occupied: u32,
 ) -> Result<bool, String> {
@@ -397,7 +398,7 @@ fn append(runs: &mut Vec<OccupiedRun>, hour: i32, value: OccupiedValues) {
 
 pub fn law_content(
     cat: &Catalogue,
-    laws: &installed_content::occupation_laws::Laws,
+    laws: &installed_content_core::occupation_laws::Laws,
     token: &str,
 ) -> OccupationLawInfo {
     // Occupation laws localise the token itself.

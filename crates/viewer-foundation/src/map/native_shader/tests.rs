@@ -1,6 +1,6 @@
 use super::*;
 use crate::map::test_support::gpu::*;
-use installed_content::pdxshader::program::{Program, Stage};
+use installed_content_core::{pdxshader::program::Program, pdxshader::program::Stage};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},

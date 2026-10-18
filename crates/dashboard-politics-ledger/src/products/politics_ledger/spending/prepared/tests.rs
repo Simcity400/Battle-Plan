@@ -96,9 +96,9 @@ fn daily(day: i32, read: i32, pp: bool) -> DecodedFrame {
 #[test]
 fn prepared_content_success_and_failure_do_not_load_after_configuration() {
     use dashboard_base::prepared::observer_tests::{self, Work};
-    use replay::format::FormatVersion;
+    use replay_data::format::FormatVersion;
 
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for ledger content binding");
     for complete in [true, false] {
         // The store owns only prepared files; its cleanup deletes file entries.
@@ -175,7 +175,7 @@ fn prepared_content_success_and_failure_do_not_load_after_configuration() {
 #[test]
 fn prepared_shared_driver_unchanged_frames_and_closed_history_keep_work_flat() {
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    use replay::format::FormatVersion;
+    use replay_data::format::FormatVersion;
     let flag = AtomicBool::new(false);
     let unchanged = observer_tests::scaled_work(10, |hours| {
         let first = frame(24, 1);
@@ -241,7 +241,7 @@ fn prepared_shared_driver_unchanged_frames_and_closed_history_keep_work_flat() {
 #[cfg(feature = "slow-tests")]
 fn prepared_one_changed_row_and_unrelated_country_balances_bound_native_and_projection_work() {
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    use replay::format::FormatVersion;
+    use replay_data::format::FormatVersion;
     let flag = AtomicBool::new(false);
     let mut first = frame(24, 5000);
     put(
@@ -360,7 +360,7 @@ fn prepared_one_changed_row_and_unrelated_country_balances_bound_native_and_proj
 #[test]
 fn prepared_bulk_refusal_rates_keep_every_native_alias_and_the_first_naming_read() {
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    use replay::format::FormatVersion;
+    use replay_data::format::FormatVersion;
     let fixture = Fixture::new();
     let flag = AtomicBool::new(false);
     let mut first = frame(24, 1);
@@ -430,7 +430,7 @@ fn prepared_bulk_refusal_rates_keep_every_native_alias_and_the_first_naming_read
 fn prepared_bulk_clock_matches_oracle_refusals_coverage_and_holds_across_publication_resume_append_and_gaps()
  {
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    use replay::format::FormatVersion;
+    use replay_data::format::FormatVersion;
     let flag = AtomicBool::new(false);
     let mut fixture = Fixture::new();
     let mut prepared = Prepared::default();
@@ -445,7 +445,7 @@ fn prepared_bulk_clock_matches_oracle_refusals_coverage_and_holds_across_publica
             countries.pop(); // Keep the absent country's zero hold across resume.
             put(&mut current, TableRows::Countries(countries));
             current.tables[TableId::CountryPowerChanges.index()] =
-                replay::frame::TableView::Unavailable {
+                replay_frame::frame::TableView::Unavailable {
                     reason: "synthetic missing stream".into(),
                 }
                 .into();
@@ -457,10 +457,11 @@ fn prepared_bulk_clock_matches_oracle_refusals_coverage_and_holds_across_publica
         }
         if stage == 3 {
             census = Some(current.tables[TableId::Countries.index()].clone());
-            current.tables[TableId::Countries.index()] = replay::frame::TableView::Unavailable {
-                reason: "synthetic census gap".into(),
-            }
-            .into();
+            current.tables[TableId::Countries.index()] =
+                replay_frame::frame::TableView::Unavailable {
+                    reason: "synthetic census gap".into(),
+                }
+                .into();
         }
         if stage == 4 {
             current.tables[TableId::Countries.index()] = census.take().unwrap();
@@ -508,7 +509,7 @@ fn prepared_bulk_clock_matches_oracle_refusals_coverage_and_holds_across_publica
 #[test]
 fn prepared_absent_spending_coverage_ends_when_the_census_is_lost_on_the_read_after_resume() {
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    use replay::format::FormatVersion;
+    use replay_data::format::FormatVersion;
     let flag = AtomicBool::new(false);
     let mut fixture = Fixture::new();
     let mut prepared = Prepared::default();
@@ -518,10 +519,11 @@ fn prepared_absent_spending_coverage_ends_when_the_census_is_lost_on_the_read_af
     for (stage, end) in [(0, 30), (1, 34)] {
         if stage == 1 {
             // Resumed at a complete census, the next read loses it.
-            current.tables[TableId::Countries.index()] = replay::frame::TableView::Unavailable {
-                reason: "synthetic census gap".into(),
-            }
-            .into();
+            current.tables[TableId::Countries.index()] =
+                replay_frame::frame::TableView::Unavailable {
+                    reason: "synthetic census gap".into(),
+                }
+                .into();
         }
         while current.hour <= end {
             if current.hour == 27 {
@@ -584,7 +586,7 @@ fn prepared_absent_spending_coverage_ends_when_the_census_is_lost_on_the_read_af
 #[test]
 fn prepared_hold_snapshots_stop_after_census_loss_across_commits_resume_and_append() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use replay::format::FormatVersion;
+    use replay_data::format::FormatVersion;
     let flag = AtomicBool::new(false);
     let mut fixture = Fixture::new();
     let mut prepared = Prepared::default();
@@ -625,10 +627,11 @@ fn prepared_hold_snapshots_stop_after_census_loss_across_commits_resume_and_appe
             tracker.invalidate();
         }
         if stage == 3 {
-            current.tables[TableId::Countries.index()] = replay::frame::TableView::Unavailable {
-                reason: "synthetic census gap".into(),
-            }
-            .into();
+            current.tables[TableId::Countries.index()] =
+                replay_frame::frame::TableView::Unavailable {
+                    reason: "synthetic census gap".into(),
+                }
+                .into();
         }
         if stage == 4 {
             current.tables[TableId::Countries.index()] = census.take().unwrap();
@@ -1002,7 +1005,7 @@ fn prepared_payments_match_the_oracle_across_two_commits_resume_and_append() {
     let mut fixture = Fixture::new();
     let mut prepared = Prepared::default();
     let mut oracle = Scanned::default();
-    let first = engine::cdate::HOUR_EPOCH;
+    let first = engine_native::cdate::HOUR_EPOCH;
     for day in [first, first + 24] {
         let mut current = daily(day, day, true);
         let mut payment = event(
@@ -1729,7 +1732,7 @@ fn prepared_government_navigation_keeps_adjacent_hours_with_equal_supplying_lags
 fn prepared_month_folds_include_only_partial_selected_months_and_each_category_day_once() {
     let fixture = Fixture::new();
     let mut prepared = Prepared::default();
-    let first = engine::cdate::HOUR_EPOCH;
+    let first = engine_native::cdate::HOUR_EPOCH;
     for index in 0..=45 {
         let day = first + index * 24;
         let mut current = daily(day, day, true);
@@ -1821,14 +1824,14 @@ fn prepared_unresolved_cost_warning_disappears_when_its_application_arrives() {
 /// The recording codec: each input hour is encoded and decoded as the
 /// preparation pipeline reads it, with its recorded updates.
 struct Recorded {
-    encoder: replay::frame::FrameEncoder,
-    decoder: replay::frame::FrameDecoder,
+    encoder: replay_frame::frame::FrameEncoder,
+    decoder: replay_frame::frame::FrameDecoder,
 }
 impl Recorded {
     fn new() -> Self {
         Self {
-            encoder: replay::frame::FrameEncoder::new(),
-            decoder: replay::frame::FrameDecoder::new(),
+            encoder: replay_frame::frame::FrameEncoder::new(),
+            decoder: replay_frame::frame::FrameDecoder::new(),
         }
     }
     /// The decoded hour and its updates. Every hourly politics table is
@@ -1837,7 +1840,7 @@ impl Recorded {
         &mut self,
         input: &mut DecodedFrame,
         keyframe: bool,
-    ) -> (DecodedFrame, Arc<replay::frame::Frame>) {
+    ) -> (DecodedFrame, Arc<replay_frame::frame::Frame>) {
         for table in [
             TableId::Countries,
             TableId::CountryLinks,
@@ -1847,7 +1850,7 @@ impl Recorded {
             TableId::CountryCommandPower,
             TableId::Characters,
         ] {
-            input.metrics.table_ns[table.index()] = replay::frame::READ_TIME_NOT_RECORDED;
+            input.metrics.table_ns[table.index()] = replay_frame::frame::READ_TIME_NOT_RECORDED;
         }
         let wire = self.encoder.encode(input.clone(), keyframe).unwrap();
         let decoded = self.decoder.advance(&wire).unwrap().clone();
@@ -1914,7 +1917,7 @@ type HourWork = (usize, usize, usize, usize);
 /// whole tables.
 fn assert_hour_observes_only_changed_countries(count: u32) {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let mut recorded = Recorded::new();
     let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
@@ -2114,7 +2117,7 @@ fn edit_hour(
 #[test]
 fn prepared_changed_rows_match_whole_tables_and_oracle_across_keyframe_gap_and_resume() {
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let fixtures = [Fixture::new(), Fixture::new()];
     // Joined from changed rows, and from the whole tables every hour.
@@ -2209,7 +2212,7 @@ fn prepared_from(replay: &Arc<replay::container::Replay>) -> Prepared {
 #[test]
 fn prepared_holds_only_the_naming_tables_of_the_previous_read() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use replay::format::FormatVersion;
+    use replay_data::format::FormatVersion;
     let flag = AtomicBool::new(false);
     // Each hour's tables are their own allocations.
     let hour_read = |hour: i32| {
@@ -2268,7 +2271,7 @@ fn prepared_holds_only_the_naming_tables_of_the_previous_read() {
 #[test]
 fn prepared_payment_dated_at_the_previous_read_is_described_from_that_read_decoded_again() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use replay::format::FormatVersion;
+    use replay_data::format::FormatVersion;
     let flag = AtomicBool::new(false);
     let mut first = frame(24, 1);
     put(
@@ -2472,7 +2475,7 @@ impl Publications {
             let changes = tracker.observe_updates(
                 &decoded,
                 Arc::clone(&wire),
-                replay::format::FormatVersion::CURRENT,
+                replay_data::format::FormatVersion::CURRENT,
             );
             observer.observe(&decoded, &changes, &flag).unwrap();
             *work = (
@@ -2712,7 +2715,7 @@ fn advancing_hour(
     ] {
         if matches!(
             &*input.tables[table.index()],
-            replay::frame::TableView::Unavailable { .. }
+            replay_frame::frame::TableView::Unavailable { .. }
         ) {
             put(input, TableRows::empty(table));
         }
@@ -2790,7 +2793,7 @@ fn advancing_hour(
     );
     // A live recording publishes the daily tables at every hour.
     for table in [TableId::CountryPowerDaily, TableId::CountryPowerDailyCosts] {
-        input.metrics.table_ns[table.index()] = replay::frame::READ_TIME_NOT_RECORDED;
+        input.metrics.table_ns[table.index()] = replay_frame::frame::READ_TIME_NOT_RECORDED;
     }
 }
 
@@ -2803,7 +2806,7 @@ fn advancing_hour(
 #[test]
 fn prepared_advance_only_hours_match_the_whole_accounting_byte_for_byte() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let fixtures = [Fixture::new(), Fixture::new()];
     let mut observers = [Prepared::default(), Prepared::default()];
@@ -2971,7 +2974,7 @@ fn advancing_block(
     captures: &mut Vec<PoliticsCaptureCoverageRow>,
     power: &mut Vec<CountryPowerChangeRow>,
     hours: &[i32],
-) -> Vec<(DecodedFrame, Arc<replay::frame::Frame>)> {
+) -> Vec<(DecodedFrame, Arc<replay_frame::frame::Frame>)> {
     hours
         .iter()
         .map(|&hour| {
@@ -2984,9 +2987,9 @@ fn advancing_block(
 
 /// A pre-pass worker's join of `frames` read alone, with the change facts of
 /// those hours alone.
-fn worker_facts(frames: &[(DecodedFrame, Arc<replay::frame::Frame>)]) -> BlockFacts {
+fn worker_facts(frames: &[(DecodedFrame, Arc<replay_frame::frame::Frame>)]) -> BlockFacts {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     // The worker reads no table of the recording through it.
     let replay = replay::container::Replay::from_records(
         dashboard_base::test_fixtures::CAMPAIGN.into(),
@@ -3021,7 +3024,7 @@ fn worker_facts(frames: &[(DecodedFrame, Arc<replay::frame::Frame>)]) -> BlockFa
 #[test]
 fn prepared_blocks_folded_from_worker_joins_match_hourly_observation_byte_for_byte() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let fixtures = [Fixture::new(), Fixture::new()];
     // Observed hour by hour, and folded from each block's worker join.
@@ -3162,7 +3165,7 @@ fn prepared_blocks_folded_from_worker_joins_match_hourly_observation_byte_for_by
 /// join's through edits, deletions, a replacement, a keyframe, resume and a gap.
 fn assert_daily_changes_observe_only_their_owners(count: u32) {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let fixtures = [Fixture::new(), Fixture::new()];
     let mut observers = [Prepared::default(), Prepared::default()];
@@ -3232,7 +3235,7 @@ fn assert_daily_changes_observe_only_their_owners(count: u32) {
             (34, TableId::CountryPowerDaily),
         ] {
             if hour == at {
-                input.tables[table.index()] = replay::frame::TableView::Unavailable {
+                input.tables[table.index()] = replay_frame::frame::TableView::Unavailable {
                     reason: "synthetic daily read refused".into(),
                 }
                 .into();
@@ -3360,7 +3363,7 @@ fn prepared_payment_projection_indexes_each_source_row_once() {
 #[test]
 fn prepared_equal_cost_reads_with_unrelated_events_do_not_revisit_retained_cost_keys() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let fixtures = [Fixture::new(), Fixture::new()];
     let mut observers = [Prepared::default(), Prepared::default()];
@@ -3401,13 +3404,13 @@ fn prepared_equal_cost_reads_with_unrelated_events_do_not_revisit_retained_cost_
         put(&mut input, TableRows::CountryPowerDailyCosts(costs.clone()));
         if hour == 30 {
             input.tables[TableId::CountryPowerDailyCosts.index()] =
-                replay::frame::TableView::Unavailable {
+                replay_frame::frame::TableView::Unavailable {
                     reason: "synthetic cost read refused".into(),
                 }
                 .into();
         }
         input.metrics.table_ns[TableId::CountryPowerDailyCosts.index()] =
-            replay::frame::READ_TIME_NOT_RECORDED;
+            replay_frame::frame::READ_TIME_NOT_RECORDED;
         put(
             &mut input,
             TableRows::CountryPowerChanges(vec![payment(2, hour as u64, hour)]),
@@ -3482,7 +3485,7 @@ fn pending_rows_of_one_owner_do_not_scan_other_owners_refusals() {
 #[test]
 fn prepared_accounting_follows_changed_rows_within_one_owners_retained_publication() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let fixtures = [Fixture::new(), Fixture::new()];
     let mut observers = [Prepared::default(), Prepared::default()];
@@ -3548,7 +3551,7 @@ fn prepared_accounting_follows_changed_rows_within_one_owners_retained_publicati
         put(&mut input, TableRows::CountryPowerDailyCosts(costs.clone()));
         if hour == 32 {
             input.tables[TableId::CountryPowerChanges.index()] =
-                replay::frame::TableView::Unavailable {
+                replay_frame::frame::TableView::Unavailable {
                     reason: "synthetic power read refused".into(),
                 }
                 .into();
@@ -3609,7 +3612,7 @@ fn prepared_accounting_follows_changed_rows_within_one_owners_retained_publicati
 /// daily operands and empty holds have not changed.
 fn unchanged_daily_and_empty_holds_do_not_rebuild(count: u32) {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let mut prepared = Prepared::default();
     let mut tracker = FrameChangeTracker::new();
@@ -3696,7 +3699,7 @@ fn native_daily_ordinals_are_resolved_once_per_tag_and_identity() {
 #[test]
 fn retained_daily_projection_keeps_bytes_across_membership_refusals_days_and_resume() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let fixtures = [Fixture::new(), Fixture::new()];
     let mut observers = [Prepared::default(), Prepared::default()];
@@ -3724,7 +3727,7 @@ fn retained_daily_projection_keeps_bytes_across_membership_refusals_days_and_res
         put(&mut input, TableRows::CountryPowerDaily(days));
         if hour == 50 {
             input.tables[TableId::CountryPowerDaily.index()] =
-                replay::frame::TableView::Unavailable {
+                replay_frame::frame::TableView::Unavailable {
                     reason: "synthetic daily refusal".into(),
                 }
                 .into();
@@ -3796,7 +3799,7 @@ fn retained_daily_projection_keeps_bytes_across_membership_refusals_days_and_res
 /// whole-table accounting, including their complete published continuations.
 fn assert_sliding_window_bytes(count: u32, campaign: bool) {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let fixtures = [Fixture::new(), Fixture::new(), Fixture::new()];
     let mut observers = [
@@ -3897,7 +3900,7 @@ fn assert_sliding_window_bytes(count: u32, campaign: bool) {
                     (76, TableId::CountryPowerChanges),
                 ] {
                     if hour == at {
-                        input.tables[table.index()] = replay::frame::TableView::Unavailable {
+                        input.tables[table.index()] = replay_frame::frame::TableView::Unavailable {
                             reason: "synthetic sliding-window read refused".into(),
                         }
                         .into();
@@ -4119,7 +4122,7 @@ fn sliding_capture_windows_among_5000_countries_do_no_hourly_accounting_or_proje
 #[test]
 fn shared_tags_slots_and_aliases_keep_ordinary_capture_accounting_bytes() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     // Shared tags, shared native links, census aliases with one remaining
     // native link, and a sole native link naming a different census id.
@@ -4143,7 +4146,7 @@ fn shared_tags_slots_and_aliases_keep_ordinary_capture_accounting_bytes() {
                     let mut duplicate = countries.clone();
                     duplicate[1].canonical_slot = 1;
                     put(&mut invalid, TableRows::Countries(duplicate));
-                    let error = replay::frame::FrameEncoder::new()
+                    let error = replay_frame::frame::FrameEncoder::new()
                         .encode(invalid, true)
                         .unwrap_err();
                     assert_eq!(error.kind(), io::ErrorKind::InvalidData);

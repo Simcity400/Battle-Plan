@@ -26,11 +26,13 @@ use crate::{
     },
 };
 use replay::{
-    container::{BlockIndex, QuietHours, Replay, TableFields},
-    format::FormatVersion,
-    frame::{DecodedFrame, SharedView, TableView},
-    rows::{CountryCounterInputRow, CountryRow, TableId, TableRows, tables},
+    container::BlockIndex, container::QuietHours, container::Replay, container::TableFields,
 };
+use replay_data::{
+    format::FormatVersion, rows::CountryCounterInputRow, rows::CountryRow, rows::TableId,
+    rows::TableRows, rows::tables,
+};
+use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView};
 use std::{any::Any, io, ops::Range, sync::Arc};
 
 /// The tables the identity history reads: the countries and their links,
@@ -180,7 +182,7 @@ impl BlockExtract {
 /// The history's observation of one hour, as hourly preparation makes it
 /// (the owned-state counts it publishes are territory's, not the history's).
 fn observe(scan: &mut HistoryScan, frame: &DecodedFrame, changes: &FrameChanges) {
-    let _cpu = ::replay::cpu::scope("fold observe", None);
+    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
     scan.observe_owned_states(frame, Some(changes), |_, _, _| {});
 }
 
@@ -295,9 +297,9 @@ pub fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let facts = {
-        let _cpu = ::replay::cpu::scope("fold facts", None);
+        let _cpu = ::replay_frame::cpu::scope("fold facts", None);
         facts
             .downcast::<BlockFacts>()
             .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -306,7 +308,7 @@ pub fn fold(
     crate::prepared::kept::note_frames("identities", facts.frames);
     let mut reached = None;
     for hour in facts.hours {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         check()?;
         match hour {
             Hour::Observed { frame, changes } => {
@@ -327,7 +329,7 @@ pub fn fold(
                 // Equal inputs step as the worker's history stepped, so a
                 // failed step leaves the carried history unchanged.
                 let advanced = {
-                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     scan.quiet_inputs() == inputs && scan.advance_quiet(first, last, witnessed)
                 };
                 if !advanced {
@@ -355,7 +357,7 @@ pub fn observe_block(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let mut tracker = FrameChangeTracker::new();
     let mut reached = None;
     let mut stopped = false;
@@ -364,7 +366,7 @@ pub fn observe_block(
         index,
         TABLES,
         |raw, frame| {
-            let _cpu = ::replay::cpu::scope("fold driver", None);
+            let _cpu = ::replay_frame::cpu::scope("fold driver", None);
             let facts = tracker.observe_updates(frame, Arc::new(raw), replay.format);
             if stopped || from.is_some_and(|from| frame.hour < from) {
                 return Ok(());

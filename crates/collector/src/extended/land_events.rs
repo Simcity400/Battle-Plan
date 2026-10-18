@@ -3,14 +3,14 @@ use crate::{
     land_events::Drain,
     table_capture::{grow_capacity, grow_vec},
 };
-use engine::{allocation, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{
-        DestroyedDivisionsRow, LandCombatResultsRow, LandEquipmentLoss, LandEventCoverageRow,
-        LandResultSide, LandSideLosses, TableId, TableRows,
-    },
+use engine_allocation as allocation;
+use engine_native::walk::Outcome;
+use replay_data::{
+    rows::DestroyedDivisionsRow, rows::LandCombatResultsRow, rows::LandEquipmentLoss,
+    rows::LandEventCoverageRow, rows::LandResultSide, rows::LandSideLosses, rows::TableId,
+    rows::TableRows,
 };
+use replay_frame::frame::TableView;
 pub const N: usize = 3;
 pub const TABLES: [TableId; N] = [
     TableId::LandCombatResults,
@@ -317,7 +317,7 @@ fn decode(
                 let border_terminating = [(packed >> 24) as u8, (packed >> 32) as u8];
                 if !border_war
                     && winners
-                        != engine::land_events::winners(
+                        != engine_land_inputs::land_events::winners(
                             sides.each_ref().map(|s| s.outcome_flags),
                             sides.each_ref().map(|s| s.progress),
                         )
@@ -491,7 +491,8 @@ fn decode(
             result.sides[n].outcome_flags = inputs[n * 2] as u8;
             result.sides[n].progress = inputs[n * 2 + 1] as i64;
         }
-        result.winners = engine::land_events::border_winners(flags, result.border_terminating)?;
+        result.winners =
+            engine_land_inputs::land_events::border_winners(flags, result.border_terminating)?;
     }
     for result in &mut results {
         let (countries, tags) = histories
@@ -584,11 +585,11 @@ mod tests {
         test_support::disable();
     }
     fn encode_land(
-        encoder: &mut replay::frame::FrameEncoder,
+        encoder: &mut replay_frame::frame::FrameEncoder,
         hour: i32,
         land: [TableView; N],
         forced: bool,
-    ) -> replay::frame::Frame {
+    ) -> replay_frame::frame::Frame {
         let mut tables = std::array::from_fn(|_| {
             TableView::Unavailable {
                 reason: "fixture omitted".into(),
@@ -600,7 +601,7 @@ mod tests {
         }
         encoder
             .encode(
-                replay::frame::DecodedFrame {
+                replay_frame::frame::DecodedFrame {
                     branch: 1,
                     hour,
                     tables,
@@ -615,8 +616,8 @@ mod tests {
         let _guard = test_support::own();
         test_support::reset();
         let mut captured = Captured::with_capacities(&Capacities { words: 1024 });
-        let mut encoder = replay::frame::FrameEncoder::new();
-        let mut decoder = replay::frame::FrameDecoder::new();
+        let mut encoder = replay_frame::frame::FrameEncoder::new();
+        let mut decoder = replay_frame::frame::FrameDecoder::new();
         captured.drain(10, true);
         let first = captured.tables();
         let epoch = complete_coverage(&first).epoch;
@@ -699,8 +700,8 @@ mod tests {
         let _guard = test_support::own();
         test_support::reset();
         let mut captured = Captured::with_capacities(&Capacities { words: 1024 });
-        let mut encoder = replay::frame::FrameEncoder::new();
-        let mut decoder = replay::frame::FrameDecoder::new();
+        let mut encoder = replay_frame::frame::FrameEncoder::new();
+        let mut decoder = replay_frame::frame::FrameDecoder::new();
         captured.drain(10, true);
         decoder
             .advance(&encode_land(&mut encoder, 10, captured.tables(), false))
@@ -1016,9 +1017,9 @@ mod tests {
             tables[1],
             TableView::Complete(TableRows::DestroyedDivisions(destroyed))
         );
-        let mut encoder = replay::frame::FrameEncoder::new();
+        let mut encoder = replay_frame::frame::FrameEncoder::new();
         let frame = encode_land(&mut encoder, 80, tables.clone(), true);
-        let mut decoder = replay::frame::FrameDecoder::new();
+        let mut decoder = replay_frame::frame::FrameDecoder::new();
         let decoded = decoder.advance(&frame).unwrap();
         for (id, expected) in TABLES.into_iter().zip(&tables) {
             assert_eq!(&*decoded.tables[id.index()], expected);
@@ -1033,7 +1034,7 @@ mod tests {
     fn native_destruction_to_replay_roundtrip_recovers_without_stale_events() {
         #[derive(Default)]
         struct Memory(std::collections::BTreeMap<usize, u8>);
-        impl engine::Memory for Memory {
+        impl engine_native::Memory for Memory {
             fn copy(&self, p: usize, out: &mut [u8]) -> bool {
                 for (n, b) in out.iter_mut().enumerate() {
                     let Some(v) = self.0.get(&(p + n)) else {
@@ -1062,10 +1063,10 @@ mod tests {
                 self.d(p + 12, count);
             }
         }
-        use engine::{carmy, ccountry, cgame_state, cland_combat, cprovince, cunit};
+        use engine_native::{carmy, ccountry, cgame_state, cland_combat, cprovince, cunit};
         let mut m = Memory::default();
-        m.q(engine::cgame_state::SINGLETON_RVA, 0x1000);
-        m.d(0x1000 + engine::cgame_state::CURRENT_HOUR, 80);
+        m.q(engine_native::cgame_state::SINGLETON_RVA, 0x1000);
+        m.d(0x1000 + engine_native::cgame_state::CURRENT_HOUR, 80);
         m.array(0x1000 + cgame_state::COUNTRIES, 0x9000, 2);
         m.array(0x1000 + cgame_state::COUNTRY_LINKS, 0xa000, 2);
         m.q(0x9008, 0xb000);
@@ -1085,8 +1086,10 @@ mod tests {
         m.q(0x6000, 0x7000);
         m.q(0x7000, cland_combat::VTABLE_RVA as u64);
         m.q(0x7000 + cland_combat::HANDLE, 0x8000_0003_0000_003e);
-        let plan =
-            engine::land_events::DestructionPlan::read(&m, 0, 0x3000, 0x4000, 0x2000, 0).unwrap();
+        let plan = engine_land_inputs::land_events::DestructionPlan::read(
+            &m, 0, 0x3000, 0x4000, 0x2000, 0,
+        )
+        .unwrap();
         let mut words = vec![plan.words as u64];
         plan.copy(&m, 0, |word| words.push(word)).unwrap();
         let entry_len = words.len();
@@ -1119,8 +1122,8 @@ mod tests {
                 reason: "",
             }),
         };
-        let mut encoder = replay::frame::FrameEncoder::new();
-        let mut decoder = replay::frame::FrameDecoder::new();
+        let mut encoder = replay_frame::frame::FrameEncoder::new();
+        let mut decoder = replay_frame::frame::FrameDecoder::new();
         for (hour, available) in [(80, true), (81, false), (82, true)] {
             let mut tables = std::array::from_fn(|_| {
                 TableView::Unavailable {
@@ -1152,7 +1155,7 @@ mod tests {
             }
             let frame = encoder
                 .encode(
-                    replay::frame::DecodedFrame {
+                    replay_frame::frame::DecodedFrame {
                         branch: 1,
                         hour,
                         tables,
@@ -1163,8 +1166,8 @@ mod tests {
                 .unwrap();
             let mut bytes = Vec::new();
             frame.encode(&mut bytes).unwrap();
-            let mut input = replay::codec::Decoder::new(&bytes);
-            let wire = replay::frame::Frame::decode(&mut input).unwrap();
+            let mut input = replay_data::codec::Decoder::new(&bytes);
+            let wire = replay_frame::frame::Frame::decode(&mut input).unwrap();
             let decoded = decoder.advance(&wire).unwrap();
             let table = &*decoded.tables[TableId::DestroyedDivisions.index()];
             if hour == 80 {

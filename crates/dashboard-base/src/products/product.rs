@@ -173,10 +173,10 @@ pub use crate::metadata::recorded_rows;
 /// A table-state reason that can be shared across dated history runs. Read
 /// dates and changing truncation counts belong to coverage, not reason text.
 pub fn table_missing_reason(
-    frame: &replay::frame::DecodedFrame,
-    table: replay::rows::TableId,
+    frame: &replay_frame::frame::DecodedFrame,
+    table: replay_data::rows::TableId,
 ) -> Option<String> {
-    use replay::frame::TableView;
+    use replay_frame::frame::TableView;
     match &*frame.tables[table.index()] {
         TableView::Complete(rows) if rows.table() == table => None,
         TableView::Complete(_) => Some(format!("{table:?} contains another table's rows")),

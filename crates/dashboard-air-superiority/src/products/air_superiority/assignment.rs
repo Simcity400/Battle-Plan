@@ -1087,23 +1087,21 @@ mod tests {
     #[test]
     fn membership_changes_are_applied_at_the_requested_hour() {
         use dashboard_core::test_fixtures::{CAMPAIGN, ownership_frame, records};
-        use replay::{
-            container::Replay,
-            frame::TableView,
-            rows::{TableId, TableRows},
-        };
+        use replay::container::Replay;
+        use replay_data::{rows::TableId, rows::TableRows};
+        use replay_frame::frame::TableView;
         use std::sync::atomic::AtomicBool;
         let frame = |hour, member| {
             let mut frame = ownership_frame(1, hour, 44);
             *frame.tables[TableId::Factions.index()] =
-                TableView::Complete(TableRows::Factions(vec![replay::rows::FactionRow {
+                TableView::Complete(TableRows::Factions(vec![replay_data::rows::FactionRow {
                     id: 9,
                     name: b"Mod Pact".to_vec(),
                     ..Default::default()
                 }]));
             *frame.tables[TableId::FactionMembers.index()] =
                 TableView::Complete(TableRows::FactionMembers(vec![
-                    replay::rows::FactionMemberRow {
+                    replay_data::rows::FactionMemberRow {
                         country: member,
                         faction: 9,
                         ordinal: 0,
@@ -1138,11 +1136,11 @@ mod tests {
     #[test]
     fn dissolved_faction_cannot_use_held_member_rows_as_an_air_side() {
         use dashboard_core::test_fixtures::{CAMPAIGN, ownership_frame, records};
-        use replay::{
-            container::Replay,
-            frame::TableView,
-            rows::{FactionMemberRow, FactionRow, TableId, TableRows},
+        use replay::container::Replay;
+        use replay_data::{
+            rows::FactionMemberRow, rows::FactionRow, rows::TableId, rows::TableRows,
         };
+        use replay_frame::frame::TableView;
         use std::sync::atomic::AtomicBool;
         let frame = |hour, present| {
             let mut frame = ownership_frame(1, hour, 44);

@@ -3,10 +3,8 @@ use crate::map::{
     province_map::HeightField,
     ribbon_geometry::{normalize, sub},
 };
-use installed_content::{
-    province_geometry::native_fixed_sqrt,
-    raids::{RaidArrowKind, RaidGraphicsDefines},
-};
+use installed_content_core::province_geometry::native_fixed_sqrt;
+use installed_content_raids::{raids::RaidArrowKind, raids::RaidGraphicsDefines};
 const SCALE: i64 = 100_000;
 type Point = [i64; 2];
 const LAUNCHED: i32 = 4;
@@ -153,10 +151,10 @@ pub fn ballistic_height(ends: Ends, i: i32, n: i32, defines: &RaidGraphicsDefine
 }
 
 pub fn animation_state<'s>(
-    stages: &'s [installed_content::raids::RaidAnimationStage],
+    stages: &'s [installed_content_raids::raids::RaidAnimationStage],
     progress: f32,
     has_state: &dyn Fn(&str) -> bool,
-) -> Option<&'s installed_content::raids::RaidAnimationStage> {
+) -> Option<&'s installed_content_raids::raids::RaidAnimationStage> {
     let mut chosen = None;
     for stage in stages {
         if progress < stage.at_progress_raw as f32 / 100_000.0 {
@@ -191,7 +189,7 @@ pub struct UnitPlacement {
     /// `unit_animations`, which [`animation_state`] reads once the entity's
     /// states are known.
     pub progress: f32,
-    pub stages: Vec<installed_content::raids::RaidAnimationStage>,
+    pub stages: Vec<installed_content_raids::raids::RaidAnimationStage>,
     /// Entity used to draw the unit (`resolve_entity`); `None` when none is created.
     pub entity: Option<String>,
     /// The raid's id: the entity's animation history belongs to its raid,
@@ -520,7 +518,7 @@ pub fn next_hour_progress(elapsed: i32, remaining: i32) -> i64 {
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
     use super::*;
-    use installed_content::raids::PathArrowDefines;
+    use installed_content_raids::raids::PathArrowDefines;
     pub fn defines() -> RaidGraphicsDefines {
         RaidGraphicsDefines {
             preparing_color: [0.7, 0.7, 0.7, 1.0],
@@ -775,7 +773,7 @@ mod tests {
 
     #[test]
     fn the_animation_stage_is_the_last_reached_one_the_entity_has() {
-        use installed_content::raids::RaidAnimationStage;
+        use installed_content_raids::raids::RaidAnimationStage;
         let stage = |state: &str, at: i64| RaidAnimationStage {
             state: state.into(),
             intro: None,

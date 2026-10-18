@@ -1,5 +1,5 @@
 use super::*;
-use engine::{cbuilding_template, cprovince, memory::SliceMemory};
+use engine_native::{cbuilding_template, cprovince, memory::SliceMemory};
 use std::cell::RefCell;
 
 const BASE: usize = 0x1000;
@@ -290,7 +290,7 @@ fn cold_building_worker_keeps_5000_countries_and_later_mod_sized_location_vector
         };
         let rows = COUNTRIES * types;
         assert_eq!(
-            engine::cpdx_array::Array::read(&memory, BASE + cgame_state::COUNTRIES, 8)
+            engine_native::cpdx_array::Array::read(&memory, BASE + cgame_state::COUNTRIES, 8)
                 .unwrap()
                 .count,
             COUNTRIES as u32 + 1
@@ -394,7 +394,8 @@ mod carried {
         building_changes::{Changes, Counts, Watches},
         sampled_verify::{Check, ROTATION},
     };
-    use engine::{building_mutations, cpdx_array::Array};
+    use engine_mutations::building_mutations;
+    use engine_native::cpdx_array::Array;
     use std::ops::Range;
 
     const COUNTRIES: usize = 3;
@@ -475,7 +476,7 @@ mod carried {
             cgame_state::STATES
         };
         let locations = Array::read(&memory, BASE + slots, 8).unwrap();
-        let location = engine::read::<u64>(&memory, locations.element(id as u32, 8).unwrap())
+        let location = engine_native::read::<u64>(&memory, locations.element(id as u32, 8).unwrap())
             .unwrap() as usize;
         location
             + if province {
@@ -491,7 +492,8 @@ mod carried {
         let memory = memory(fixture);
         let vector = Array::read(&memory, status + cbuilding_status::BUILDINGS, 8).unwrap();
         let building =
-            engine::read::<u64>(&memory, vector.element(ordinal as u32, 8).unwrap()).unwrap();
+            engine_native::read::<u64>(&memory, vector.element(ordinal as u32, 8).unwrap())
+                .unwrap();
         (status, building as usize)
     }
 
@@ -518,7 +520,7 @@ mod carried {
                 }
                 for ordinal in 0..buildings.count {
                     let building =
-                        engine::read::<u64>(&memory, buildings.element(ordinal, 8).unwrap())
+                        engine_native::read::<u64>(&memory, buildings.element(ordinal, 8).unwrap())
                             .unwrap() as usize;
                     spans.push(building..building + cbuilding::TEMPLATE + 8);
                 }

@@ -7,21 +7,19 @@ use std::{
     time::Instant,
 };
 
-use installed_content::ResolveOptions;
+use installed_content_core::ResolveOptions;
 #[cfg(test)]
 use installed_content_save::Decimal;
 use installed_content_save::{self as save, Save};
+use replay::{container::Replay, container::SeekResult};
 #[cfg(test)]
-use replay::frame::TableView;
-#[cfg(test)]
-use replay::rows::TableRows;
-use replay::{
-    BranchId, Hour,
-    container::{Replay, SeekResult},
-    frame::DecodedFrame,
-    identity::{SampleBoundary, Verification},
-    rows::{TableId, tables},
+use replay_data::rows::TableRows;
+use replay_data::{
+    BranchId, Hour, identity::SampleBoundary, identity::Verification, rows::TableId, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
+#[cfg(test)]
+use replay_frame::frame::TableView;
 
 use self::support::*;
 #[cfg(test)]
@@ -208,8 +206,8 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
         options.game_dir.display(),
         options.user_dir.display()
     );
-    let content = installed_content::resolve(&session.identity, &options)?;
-    engine::executable_tables::initialize(&options.game_dir)?;
+    let content = installed_content_core::resolve(&session.identity, &options)?;
+    engine_executable::executable_tables::initialize(&options.game_dir)?;
     let uncovered_reads = content.layers.report_uncovered_reads();
     println!(
         "Content verified under policy {}: {} files, {} bytes, {} ms",
@@ -228,22 +226,23 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
         .map_err(ToString::to_string)
         .and_then(|(_, resources)| content_read(resources));
     let railway_adjacency = save::naval_history::RailwayAdjacency::read(&content.layers);
-    let buildings = installed_content::buildings::read(&content.layers);
-    let defines = installed_content::defines::read(&content.layers);
-    let raid_graph = installed_content::province_graph::ProvinceGraph::read(&content.layers);
-    let equipment = installed_content::equipment::Database::load_complete(&content.layers);
-    let essential_caps = installed_content::raids::read(&content.layers)
+    let buildings = installed_content_core::buildings::read(&content.layers);
+    let defines = installed_content_core::defines::read(&content.layers);
+    let raid_graph = installed_content_core::province_graph::ProvinceGraph::read(&content.layers);
+    let equipment = installed_content_core::equipment::Database::load_complete(&content.layers);
+    let essential_caps = installed_content_raids::raids::read(&content.layers)
         .map_err(|error| error.to_string())
         .and_then(|raids| raids.essential_caps(equipment.as_ref().map_err(ToString::to_string)?));
-    let leader_traits = installed_content::leader_traits::read(&content.layers).map(|(traits, _)| traits);
-    let sub_units = installed_content::unit_leader::sub_units(&content.layers);
-    let regions = installed_content::regions::read(&content.layers);
-    let intelligence = installed_content::intelligence::read_agency_upgrades(&content.layers);
+    let leader_traits =
+        installed_content_core::leader_traits::read(&content.layers).map(|(traits, _)| traits);
+    let sub_units = installed_content_core::unit_leader::sub_units(&content.layers);
+    let regions = installed_content_regions::regions::read(&content.layers);
+    let intelligence = installed_content_core::intelligence::read_agency_upgrades(&content.layers);
     let temperature = raid_graph
         .as_ref()
         .map_err(|error| io::Error::other(error.to_string()))
         .and_then(|(graph, geometry)| {
-            installed_content::weather::temperature::read_with(&content.layers, graph, geometry)
+            installed_content_weather::weather::temperature::read_with(&content.layers, graph, geometry)
         });
     let province_modifiers = weather::ProvinceModifierContent::read(&content.layers, &save);
     let read_hours = last_read_hours(&replay, frame.branch, hour)?;
@@ -454,7 +453,7 @@ fn compare_core(
     boundary: SampleBoundary,
     save: &Save,
     membership: ContentRead<'_, save::PartialMapMembership>,
-    equipment: ContentRead<'_, installed_content::equipment::Database>,
+    equipment: ContentRead<'_, installed_content_core::equipment::Database>,
     read_hours: Option<BTreeMap<TableId, Hour>>,
 ) -> io::Result<Report> {
     validate_identity(frame, save)?;
@@ -595,7 +594,7 @@ fn compare_core(
 }
 
 /// The content's `is_port` building types, whose levels `naval-base cache` sums.
-fn port_types(buildings: &installed_content::buildings::Buildings) -> BTreeSet<Vec<u8>> {
+fn port_types(buildings: &installed_content_core::buildings::Buildings) -> BTreeSet<Vec<u8>> {
     buildings
         .types
         .values()
@@ -609,18 +608,18 @@ struct ExtendedContent<'a> {
     membership: ContentRead<'a, save::PartialMapMembership>,
     base_resources: ContentRead<'a, save::construction::PartialBaseResources>,
     railway_adjacency: ContentRead<'a, save::naval_history::RailwayAdjacency>,
-    buildings: ContentRead<'a, installed_content::buildings::Buildings>,
-    defines: ContentRead<'a, installed_content::defines::Defines>,
+    buildings: ContentRead<'a, installed_content_core::buildings::Buildings>,
+    defines: ContentRead<'a, installed_content_core::defines::Defines>,
     raid_graph: ContentRead<'a, projects::RaidGraph>,
-    equipment: ContentRead<'a, installed_content::equipment::Database>,
+    equipment: ContentRead<'a, installed_content_core::equipment::Database>,
     /// Each essential archetype's largest raid requirement, by name
-    /// ([`installed_content::raids::Catalog::essential_caps`]).
+    /// ([`installed_content_raids::raids::Catalog::essential_caps`]).
     essential_caps: ContentRead<'a, BTreeMap<Vec<u8>, i32>>,
-    leader_traits: ContentRead<'a, installed_content::leader_traits::LeaderTraits>,
-    sub_units: ContentRead<'a, installed_content::unit_leader::SubUnits>,
-    intelligence: ContentRead<'a, installed_content::intelligence::AgencyUpgrades>,
+    leader_traits: ContentRead<'a, installed_content_core::leader_traits::LeaderTraits>,
+    sub_units: ContentRead<'a, installed_content_core::unit_leader::SubUnits>,
+    intelligence: ContentRead<'a, installed_content_core::intelligence::AgencyUpgrades>,
     /// What the hourly temperature pass reads, which recordings that store only its inputs need.
-    temperature: ContentRead<'a, replay::temperature::Content>,
+    temperature: ContentRead<'a, replay_data::temperature::Content>,
     /// What a province weather record's modifier rebuild reads.
     province_modifiers: ContentRead<'a, weather::ProvinceModifierContent>,
 }

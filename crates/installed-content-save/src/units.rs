@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, io};
 
-use installed_content::parser::Item;
+use installed_content_core::parser::Item;
 
 use super::{
     Decimal, block, boolean, bytes, combat_details, decimal, field, integer, integer_list, invalid,

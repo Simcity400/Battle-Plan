@@ -1,5 +1,5 @@
 use super::*;
-use replay::rows::ShipCounterInputs;
+use replay_data::rows::ShipCounterInputs;
 
 fn defines() -> Defines {
     Defines {

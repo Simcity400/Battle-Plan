@@ -10,12 +10,13 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-engine.workspace = true
-installed-content.workspace = true
+engine-native.workspace = true
+installed-content-core.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
 installed-content-save.workspace = true
 recorder-oracle-combat-details.workspace = true
 recorder-oracle-support.workspace = true
-replay.workspace = true
-
 [dev-dependencies]
+engine-executable.workspace = true
 recorder-oracle-support = { workspace = true, features = ["test-support"] }

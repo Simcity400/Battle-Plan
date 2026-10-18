@@ -87,6 +87,7 @@ pub struct Registered {
     pub interactive: bool,
     pub load:
         fn(&Source, &str, serde_json::Value, &LoadContext, &AtomicBool) -> Result<String, String>,
+    #[cfg(any(test, feature = "export-types"))]
     pub types: fn() -> Vec<String>,
     /// Answered only by prepared queries: its product route refuses, while its
     /// types, content dependence and lane stay registered.
@@ -99,6 +100,7 @@ const fn register<P: Product>() -> Registered {
         content_dependent: P::CONTENT_DEPENDENT,
         interactive: P::INTERACTIVE,
         load: load_json::<P>,
+        #[cfg(any(test, feature = "export-types"))]
         types: types::<P>,
         prepared_only: false,
     }
@@ -180,6 +182,7 @@ fn load_json<P: Product>(
     Ok(reply)
 }
 
+#[cfg(any(test, feature = "export-types"))]
 fn types<P: Product>() -> Vec<String> {
     P::types()
 }

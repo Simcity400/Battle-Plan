@@ -2,10 +2,11 @@
 //! Source addresses are used only against the owned raw log on decode.
 
 use super::*;
-use engine::cair_base::{
-    CarrierAceSlot, CarrierBase, CarrierBuffers, CarrierCountryTerms, CarrierDemand,
-    CarrierForecastSlot, CarrierIndexedCertificate, CarrierLengths, CarrierPool,
-    CarrierRegistration, CountryOccurrence,
+use engine_native::{
+    cair_base::CarrierAceSlot, cair_base::CarrierBase, cair_base::CarrierBuffers,
+    cair_base::CarrierCountryTerms, cair_base::CarrierDemand, cair_base::CarrierForecastSlot,
+    cair_base::CarrierIndexedCertificate, cair_base::CarrierLengths, cair_base::CarrierPool,
+    cair_base::CarrierRegistration, cair_base::CountryOccurrence,
 };
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};

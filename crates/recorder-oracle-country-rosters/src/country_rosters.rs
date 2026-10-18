@@ -1,7 +1,7 @@
 //! Country roster set comparisons.
 
 use super::{Report, Save, invalid};
-use replay::rows::CountryCounterInputRow;
+use replay_data::rows::CountryCounterInputRow;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,

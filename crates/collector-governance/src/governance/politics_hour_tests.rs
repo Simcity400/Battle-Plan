@@ -14,9 +14,10 @@ use crate::{
     political_status_changes::{self, Counts},
     sampled_verify::Check,
 };
-use engine::{
+use engine_mutations::political_status_mutations::Domain;
+use engine_native::{
     ccharacter, ccountry, ccountry_leader, cgame_state, cidea, cideology_group, cpolitical_party,
-    memory::SliceMemory, msvc_string, political_status_mutations::Domain,
+    memory::SliceMemory, msvc_string,
 };
 use std::cell::RefCell;
 

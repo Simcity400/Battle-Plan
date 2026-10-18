@@ -1,8 +1,8 @@
 //! Outcome and timing helpers the extended capture families share.
 
 use crate::clock::qpc;
-use engine::walk::Outcome;
-use replay::rows::TableId;
+use engine_native::walk::Outcome;
+use replay_data::rows::TableId;
 
 pub const MISSING: Outcome = Outcome::Unavailable {
     reason: "acquisition source not supplied",
@@ -26,10 +26,10 @@ pub fn failed_capture(
     reason: &'static str,
 ) -> Outcome {
     Outcome::Unavailable {
-        reason: if replay::cadence::should_walk(table, hour, force_full) {
+        reason: if replay_data::cadence::should_walk(table, hour, force_full) {
             reason
         } else {
-            replay::cadence::SKIPPED_REASON
+            replay_data::cadence::SKIPPED_REASON
         },
     }
 }

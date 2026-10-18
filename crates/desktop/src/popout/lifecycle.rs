@@ -81,10 +81,15 @@ enum Phase {
     Closed,
     /// The window is being created; `cancelled` once a close arrived meanwhile, `reopen` once
     /// an open arrived after that.
-    Opening { cancelled: bool, reopen: bool },
+    Opening {
+        cancelled: bool,
+        reopen: bool,
+    },
     Open,
     /// The window and viewer are being released; `reopen` when an open arrived meanwhile.
-    Closing { reopen: bool },
+    Closing {
+        reopen: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -141,7 +146,12 @@ impl Lifecycle {
                 effects.push(E::AwaitOpen(self.generation));
                 effects
             }
-            (P::Opening { cancelled: true, .. }, I::Open) => {
+            (
+                P::Opening {
+                    cancelled: true, ..
+                },
+                I::Open,
+            ) => {
                 self.phase = P::Opening {
                     cancelled: true,
                     reopen: true,
@@ -149,7 +159,12 @@ impl Lifecycle {
                 vec![E::AwaitOpen(next)]
             }
             // The open in flight answers this request too.
-            (P::Opening { cancelled: false, .. }, I::Open) => vec![E::AwaitOpen(self.generation)],
+            (
+                P::Opening {
+                    cancelled: false, ..
+                },
+                I::Open,
+            ) => vec![E::AwaitOpen(self.generation)],
             (P::Open, I::Open) => vec![
                 E::Raise,
                 E::AwaitOpen(self.generation),
@@ -169,7 +184,12 @@ impl Lifecycle {
             }
             // The window going away while it opens cancels it. Once cancelled, its going away
             // is expected and never cancels the reopen queued behind it.
-            (P::Opening { cancelled: false, .. }, I::Destroyed(generation)) if current(generation) => {
+            (
+                P::Opening {
+                    cancelled: false, ..
+                },
+                I::Destroyed(generation),
+            ) if current(generation) => {
                 self.phase = P::Opening {
                     cancelled: true,
                     reopen: false,
@@ -182,7 +202,9 @@ impl Lifecycle {
                 self.phase = P::Closing { reopen: false };
                 reopen.then_some(E::OpenFailed(next)).into_iter().collect()
             }
-            (P::Opening { cancelled, reopen }, I::Created { generation, ok }) if current(generation) => {
+            (P::Opening { cancelled, reopen }, I::Created { generation, ok })
+                if current(generation) =>
+            {
                 match (ok, cancelled) {
                     (true, false) => {
                         self.phase = P::Open;
@@ -500,10 +522,7 @@ mod tests {
         run(&mut lifecycle, &[created(1), started(1)]);
         // A crash after the open state was published is published in order after it, read as
         // the viewer is now.
-        assert_eq!(
-            lifecycle.handle(I::StatusChanged(1)),
-            [E::PublishStatus(1)]
-        );
+        assert_eq!(lifecycle.handle(I::StatusChanged(1)), [E::PublishStatus(1)]);
         // A crash while closing only finishes the close.
         run(&mut lifecycle, &[CLOSE]);
         assert!(lifecycle.handle(I::StatusChanged(1)).is_empty());
@@ -517,7 +536,10 @@ mod tests {
         // The crashed viewer reports, its window goes away, and the user asks for a restart.
         assert!(lifecycle.handle(I::StatusChanged(generation)).is_empty());
         assert!(lifecycle.handle(I::Destroyed(generation)).is_empty());
-        assert_eq!(lifecycle.handle(I::Restart(generation)), [E::RestartFailed(generation)]);
+        assert_eq!(
+            lifecycle.handle(I::Restart(generation)),
+            [E::RestartFailed(generation)]
+        );
         assert_eq!(
             lifecycle.handle(I::Released(generation)),
             [E::Publish {
@@ -688,7 +710,15 @@ mod tests {
         // While an earlier window is closing, a queued reopen is cancelled the same way.
         let mut lifecycle = Lifecycle::default();
         let old = opened(&mut lifecycle);
-        run(&mut lifecycle, &[I::Close { generation: Some(old) }, I::Open]);
+        run(
+            &mut lifecycle,
+            &[
+                I::Close {
+                    generation: Some(old),
+                },
+                I::Open,
+            ],
+        );
         assert_eq!(lifecycle.handle(CLOSE), [E::OpenFailed(old + 1)]);
         assert_eq!(
             lifecycle.handle(I::Released(old)),

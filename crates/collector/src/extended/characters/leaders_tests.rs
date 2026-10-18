@@ -45,7 +45,7 @@ fn hour(
     let mut captured = Captured::with_capacities(&capacities());
     captured.fail_character_tables(
         PART_MASKS[1].map(|active| !active),
-        replay::cadence::SKIPPED_REASON,
+        replay_data::cadence::SKIPPED_REASON,
     );
     cache.decode(&mut captured);
     captured
@@ -130,7 +130,7 @@ fn set_ideology_and_invalidation_read_every_leader() {
     // set_country_leader_ideology names no character.
     drop(watches.notify(
         None,
-        engine::character_role_mutations::COUNTRY_LEADER_IDEOLOGY,
+        engine_mutations::character_role_mutations::COUNTRY_LEADER_IDEOLOGY,
     ));
     hour(&mut cache, &world, &world, &watches, Check::Nothing);
     assert_eq!((cache.counts.read, cache.counts.reused), (characters, 0));

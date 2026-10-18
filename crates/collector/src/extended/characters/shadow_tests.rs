@@ -234,7 +234,7 @@ fn character_shadow_offhours_branch_and_allocation_identity_are_not_inferred_fro
         &mut skipped.traits.rows.outcome,
     ] {
         *outcome = Outcome::Unavailable {
-            reason: replay::cadence::SKIPPED_REASON,
+            reason: replay_data::cadence::SKIPPED_REASON,
         };
     }
     assert_canonical(&skipped, &inputs(&skipped, &mut shadow, Some(&cached), 1));

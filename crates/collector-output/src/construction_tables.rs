@@ -14,15 +14,13 @@ pub use super::output_continuity::holds_publication;
 use super::output_continuity::{self, Progress, Reasons, State};
 use crate::construction_ic::{Drained, Entry};
 use crate::table_conversion::unavailable;
-use engine::allocation::{collect_vec, mul, owned_vec, reserve_map};
-use replay::{
-    BranchId,
-    frame::{TableInput, TableView},
-    rows::{
-        BuildingConstructionRow, ConstructionCompletion, ConstructionLineOutputRow,
-        RailwayConstructionRow, Recorded, TableId, TableRows,
-    },
+use engine_allocation::{collect_vec, mul, owned_vec, reserve_map};
+use replay_data::{
+    BranchId, rows::BuildingConstructionRow, rows::ConstructionCompletion,
+    rows::ConstructionLineOutputRow, rows::RailwayConstructionRow, rows::Recorded, rows::TableId,
+    rows::TableRows,
 };
+use replay_frame::{frame::TableInput, frame::TableView};
 use std::io;
 
 pub const N: usize = 1;
@@ -93,7 +91,7 @@ fn census<'a, T>(
             rows(table).map_or(Census::Missing(missing), Census::Rows)
         }
         TableInput::Sampled(TableView::Unavailable { reason })
-            if reason == replay::cadence::SKIPPED_REASON =>
+            if reason == replay_data::cadence::SKIPPED_REASON =>
         {
             Census::Skipped
         }
@@ -181,7 +179,7 @@ impl Totals {
         let (buildings, railways) = match (buildings, railways) {
             (Census::Rows(buildings), Census::Rows(railways)) => (buildings, railways),
             (Census::Skipped, Census::Skipped) => {
-                return unavailable(replay::cadence::SKIPPED_REASON);
+                return unavailable(replay_data::cadence::SKIPPED_REASON);
             }
             (Census::Missing(reason), _) | (_, Census::Missing(reason)) => {
                 return unavailable(reason);
@@ -208,7 +206,7 @@ impl Totals {
         let mut live: OutputMap<bool> = OutputMap::default();
         reserve_map(
             &mut live,
-            engine::allocation::add(buildings.len(), railways.len())?,
+            engine_allocation::add(buildings.len(), railways.len())?,
         )?;
         for row in buildings {
             live.insert(row.id, false);
@@ -364,7 +362,7 @@ mod tests {
         );
         assert_eq!(line.completion, None);
     }
-    use replay::frame::TABLE_COUNT;
+    use replay_data::rows::TABLE_COUNT;
 
     const LINE_A: u64 = 0x10_0000_003b;
     const LINE_B: u64 = 0x11_0000_003b;
@@ -534,7 +532,7 @@ mod tests {
         let mut tables = census_of(&[], &[]);
         for table in [TableId::BuildingConstruction, TableId::RailwayConstruction] {
             tables[table.index()] = TableInput::Sampled(TableView::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON.into(),
+                reason: replay_data::cadence::SKIPPED_REASON.into(),
             });
         }
         tables
@@ -730,7 +728,7 @@ mod tests {
         published(&mut totals, 0, &captured(0, &[]), census_of(&[LINE_A], &[]));
         assert!(matches!(
             published(&mut totals, 1, &captured(0, &[]), skipped()),
-            TableView::Unavailable { reason } if reason == replay::cadence::SKIPPED_REASON
+            TableView::Unavailable { reason } if reason == replay_data::cadence::SKIPPED_REASON
         ));
         let mut waiting = captured(0, &[entry(LINE_A, 5)]);
         waiting.set_drained_for_test(
@@ -793,7 +791,7 @@ mod tests {
             let mut lost = captured(0, &[]);
             lost.drained = broken;
             assert!(
-                matches!(published(&mut totals, 1, &lost, skipped()), TableView::Unavailable {reason} if reason != replay::cadence::SKIPPED_REASON)
+                matches!(published(&mut totals, 1, &lost, skipped()), TableView::Unavailable {reason} if reason != replay_data::cadence::SKIPPED_REASON)
             );
             assert!(matches!(
                 published(

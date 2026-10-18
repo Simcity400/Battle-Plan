@@ -4,7 +4,8 @@ use crate::{
     hook::{Hook, Registers, Tap},
     output_log::{Call, Drained, Log, raise},
 };
-use engine::{Memory, fuel_awards as native, memory::LiveMemory};
+use engine_fuel::fuel_awards as native;
+use engine_native::{Memory, memory::LiveMemory};
 use std::{
     cell::{Cell, RefCell, UnsafeCell},
     ops::Range,
@@ -127,7 +128,7 @@ impl Buffer {
         stride: usize,
         mut charge: crate::raw_memory::Charge,
     ) -> std::io::Result<Self> {
-        let mut slots = engine::allocation::vec(entries)?;
+        let mut slots = engine_allocation::vec(entries)?;
         slots.resize_with(entries, || Slot {
             entry: UnsafeCell::new(Entry::default()),
             name_required: UnsafeCell::new(0),
@@ -136,12 +137,12 @@ impl Buffer {
         let stride = stride.max(names.div_ceil(entries.max(1)));
         let count = entries
             .checked_mul(stride)
-            .ok_or_else(engine::allocation::oom)?;
-        let mut names = engine::allocation::vec(count)?;
+            .ok_or_else(engine_allocation::oom)?;
+        let mut names = engine_allocation::vec(count)?;
         names.resize_with(count, || UnsafeCell::new(0));
         let bytes = crate::raw_memory::vector_bytes(&slots)
             .checked_add(crate::raw_memory::vector_bytes(&names))
-            .ok_or_else(engine::allocation::oom)?;
+            .ok_or_else(engine_allocation::oom)?;
         charge.set(crate::raw_memory::Capacity {
             payload_vectors: bytes,
             ..Default::default()
@@ -240,7 +241,7 @@ fn stamp() -> Stamp {
 }
 
 /// The pending root's located country, for the calls of the same fuel update
-/// invocation (`engine::fuel_awards::start_held`), which writes no country
+/// invocation (`engine_fuel::fuel_awards::start_held`), which writes no country
 /// object, id, link or slot and registers no reference. Only a root still
 /// standing is taken: one already refused (a reset of its status, a nested
 /// award, a lost receipt) or from another log epoch is read afresh, as is
@@ -257,7 +258,7 @@ fn held(pending: &Pending) -> Option<native::Located> {
 /// Off-thread live census and allocation. Two passes leave room for an hour
 /// still waiting in a short drain; these are capacities, never population caps.
 pub fn presize(memory: &impl Memory, base: usize) {
-    engine::allocation::advisory(|| presize_storage(memory, base));
+    engine_allocation::advisory(|| presize_storage(memory, base));
 }
 
 fn presize_storage(memory: &impl Memory, base: usize) {
@@ -330,7 +331,7 @@ fn offer(entries: usize, names: usize) {
     crate::table_capture::grow_capacity(&mut name_capacity, names);
     // Allocation and displaced offers are entirely worker-owned.
     let Ok(buffer) = Buffer::with_stride(entry_capacity, name_capacity, stride, Default::default())
-        .and_then(engine::allocation::boxed)
+        .and_then(engine_allocation::boxed)
     else {
         drop(sizing);
         refuse_census("fuel observation allocation failed");
@@ -904,8 +905,8 @@ pub fn drain(
     names: &mut [u8],
 ) -> Result<(Drained, usize, usize), &'static str> {
     drain_buffers(
-        engine::walk::Buffer::Fixed(entries),
-        engine::walk::Buffer::Fixed(names),
+        engine_native::walk::Buffer::Fixed(entries),
+        engine_native::walk::Buffer::Fixed(names),
     )
 }
 pub fn drain_growing(
@@ -913,8 +914,8 @@ pub fn drain_growing(
     names: &mut Vec<u8>,
 ) -> Result<(Drained, usize, usize), &'static str> {
     drain_buffers(
-        engine::walk::Buffer::Growing(entries),
-        engine::walk::Buffer::Growing(names),
+        engine_native::walk::Buffer::Growing(entries),
+        engine_native::walk::Buffer::Growing(names),
     )
 }
 pub fn lost_drain() {
@@ -922,8 +923,8 @@ pub fn lost_drain() {
     LOG.invalidate();
 }
 fn drain_buffers(
-    entries: engine::walk::Buffer<'_, Entry>,
-    names: engine::walk::Buffer<'_, u8>,
+    entries: engine_native::walk::Buffer<'_, Entry>,
+    names: engine_native::walk::Buffer<'_, u8>,
 ) -> Result<(Drained, usize, usize), &'static str> {
     let result = drain_domains(entries, names);
     if let Err(reason) = result {
@@ -933,8 +934,8 @@ fn drain_buffers(
     result
 }
 fn drain_domains(
-    entries: engine::walk::Buffer<'_, Entry>,
-    names: engine::walk::Buffer<'_, u8>,
+    entries: engine_native::walk::Buffer<'_, Entry>,
+    names: engine_native::walk::Buffer<'_, u8>,
 ) -> Result<(Drained, usize, usize), &'static str> {
     // Shared only with boundary installation (the same worker) and detach;
     // spool sizing and capacity reads never take it.
@@ -1010,8 +1011,8 @@ fn handover_domains(
         log,
         buffer,
         older,
-        engine::walk::Buffer::Fixed(entries),
-        engine::walk::Buffer::Fixed(names),
+        engine_native::walk::Buffer::Fixed(entries),
+        engine_native::walk::Buffer::Fixed(names),
         unavailable,
     )
 }
@@ -1019,8 +1020,8 @@ fn handover_buffers(
     log: &Log,
     buffer: &Buffer,
     older: Option<&Buffer>,
-    mut entries: engine::walk::Buffer<'_, Entry>,
-    mut names: engine::walk::Buffer<'_, u8>,
+    mut entries: engine_native::walk::Buffer<'_, Entry>,
+    mut names: engine_native::walk::Buffer<'_, u8>,
     unavailable: Option<&'static str>,
 ) -> Result<(Drained, usize, usize), &'static str> {
     COUNTERS[4].fetch_add(1, Ordering::Relaxed);
@@ -1177,7 +1178,7 @@ impl Hooks {
         let mut taps = Vec::new();
         let result = (|| -> Result<(), &'static str> {
             for (rva, sentinel) in &sites {
-                if engine::read::<[u8; 16]>(memory, base + rva) != Some(*sentinel) {
+                if engine_native::read::<[u8; 16]>(memory, base + rva) != Some(*sentinel) {
                     return Err("fuel award sentinel differs");
                 }
             }

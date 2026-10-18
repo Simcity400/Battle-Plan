@@ -1,6 +1,10 @@
 use super::*;
-use replay::frame::{Metrics, SharedView, TABLE_COUNT};
-use replay::rows::{CampaignRow, ClockRow, CountryRow, DivisionStatusRow, Recorded, TableRows};
+use replay_data::rows::TABLE_COUNT;
+use replay_data::{
+    rows::CampaignRow, rows::ClockRow, rows::CountryRow, rows::DivisionStatusRow, rows::Recorded,
+    rows::TableRows,
+};
+use replay_frame::{frame::Metrics, frame::SharedView};
 
 const SELECTED: &[TableId] = &[
     TableId::Campaign,
@@ -86,7 +90,7 @@ fn checkpoint_retains_partial_census_old_fields_bytes_and_five_thousand_countrie
     assert_eq!(
         restored
             .frame
-            .complete::<replay::rows::tables::Countries>()
+            .complete::<replay_data::rows::tables::Countries>()
             .unwrap()
             .len(),
         5_000
@@ -252,7 +256,7 @@ fn map_selection_keeps_every_authored_trigger_operand_and_omits_product_only_inp
 
 #[test]
 fn gap_intervals_keep_overlap_order_duplicates_and_maximum_hour() {
-    use replay::branches::Gap;
+    use replay_frame::branches::Gap;
     let gaps = [
         Gap {
             branch: 1,
@@ -294,7 +298,7 @@ fn gap_intervals_keep_overlap_order_duplicates_and_maximum_hour() {
 #[test]
 fn sparse_map_checkpoints_equal_hourly_bytes_across_short_blocks_gaps_branches_and_resume() {
     use crate::test_fixtures::{CAMPAIGN, continuation_records, records, scale_frame};
-    use replay::container::{Replay, ReplayStream, test_work::table_decodes};
+    use replay::{container::Replay, container::ReplayStream, container::test_work::table_decodes};
     let observed = |branch, hour| {
         let mut frame = scale_frame(branch, hour, 2);
         frame.metrics.table_ns[TableId::Countries.index()] = 1;

@@ -154,7 +154,7 @@ impl Evaluator<'_, '_> {
             .ok_or("variable RNG character is not recorded")?;
         // Reference hashing swaps type/id words; ccharacter::read
         // validates the hard-coded native type before publishing Characters.
-        let reference = u64::from(id) << 32 | u64::from(engine::ccharacter::REFERENCE_TYPE);
+        let reference = u64::from(id) << 32 | u64::from(engine_native::ccharacter::REFERENCE_TYPE);
         Ok(super::super::scripted_localisation::reference_hash(
             reference,
         ))

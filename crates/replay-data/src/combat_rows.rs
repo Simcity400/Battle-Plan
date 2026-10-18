@@ -1025,7 +1025,7 @@ pub struct LandCombatDivisionRow {
     /// over the live `NMilitary.SLOWEST_SPEED`, less one, clamped to [0, 2] (fixed5). The
     /// reinforcement chance's speed arm multiplies it by `SPEED_REINFORCEMENT_BONUS`. As
     /// DivisionStatus keeps the camouflage category decided with the live define, the collector
-    /// composes the share at capture (`engine::land_reinforcement_inputs::speed`) and records it
+    /// composes the share at capture (`engine_native::land_reinforcement_inputs::speed`) and records it
     /// instead of the drifting movement-speed operands it takes. `None` for a committed division,
     /// and for a reserve whose operands could not be read or take a form the port does not follow
     /// (counted in collector status). Exact: the arm's truncating product and the chance's sum read

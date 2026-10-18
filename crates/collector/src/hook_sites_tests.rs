@@ -3,20 +3,27 @@
 //! entry, or patches whose spans overlap, make publication fail at attach
 //! (and with it every family enabled after the failing one). Dependent
 //! observers dispatch through the owner's detour instead.
-use engine::{
-    advisor_mutations, advisor_pool_mutations, air_base_mutations, air_history_mutations,
-    air_loss_sites, air_record_mutations, air_wing_equipment_mutations, army_stat_mutations,
-    building_damage_sites, building_mutations, ccharacter_portraits, cgame_state,
-    character_role_mutations, character_roster_mutations, clogistics_status, construction_ic_sites,
-    country_input_mutations, diplomacy_mutations, equipment_destruction, event_feed_sites,
-    experience_gain_sites, fuel_awards, land_events, land_wipe, line_output_sites,
-    local_subunit_mutations, naval_result_sources, naval_tree_mutations, ncombat_log_cmanager,
-    nuclear_strike_sites, operation_outcome_sites, opinion_mutations, party_leader_mutations,
-    peace_finalizer_site, political_party_mutations, political_status_mutations,
+use engine_air_history::{air_history_mutations, air_loss_sites, air_record_mutations};
+use engine_characters::ccharacter_portraits;
+use engine_events::{
+    building_damage_sites, diplomacy_mutations, equipment_destruction, event_feed_sites,
+    experience_gain_sites, nuclear_strike_sites, operation_outcome_sites,
+};
+use engine_fuel::fuel_awards;
+use engine_land_inputs::{clogistics_status, land_events, land_wipe, ncombat_log_cmanager};
+use engine_mutations::{
+    advisor_mutations, advisor_pool_mutations, air_base_mutations, air_wing_equipment_mutations,
+    army_stat_mutations, building_mutations, character_role_mutations, character_roster_mutations,
+    country_input_mutations, local_subunit_mutations, naval_tree_mutations, opinion_mutations,
+    party_leader_mutations, political_party_mutations, political_status_mutations,
     province_unit_mutations, raid_mutations, railway_mutations, regional_mission_mutations,
     script_flag_mutations, script_variable_mutations, ship_model_mutations, template_mutations,
     territory_mutations, world_input_mutations, world_lifetime_sites,
 };
+use engine_native::cgame_state;
+use engine_naval_history::naval_result_sources;
+use engine_peace::peace_finalizer_site;
+use engine_production::{construction_ic_sites, line_output_sites};
 
 /// One patch: its family, site name, RVA and the bytes it replaces.
 #[derive(Clone, Debug)]
@@ -140,7 +147,7 @@ fn patches() -> Vec<Patch> {
     );
     assert_eq!(
         naval_tree_mutations::MUTATIONS[1].rva,
-        engine::politics_sites::RESET_COUNTRY.rva
+        engine_events::politics_sites::RESET_COUNTRY.rva
     );
     for site in &naval_tree_mutations::MUTATIONS[country..] {
         add("naval_tree_changes", site.name, site.rva, PATCH);

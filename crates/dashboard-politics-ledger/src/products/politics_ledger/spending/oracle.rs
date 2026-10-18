@@ -3,7 +3,8 @@ use super::*;
 use dashboard_base::products::politics_content::politics_content;
 use dashboard_core::blocks::PerBlock;
 use dashboard_text::{catalogue::Catalogue, metadata::validate_campaign};
-use replay::{container::Replay, frame::FrameDecoder};
+use replay::container::Replay;
+use replay_frame::frame::FrameDecoder;
 
 #[derive(Default)]
 struct Cache {
@@ -71,7 +72,9 @@ fn event_hours(
                         if previous == Some(row.day_hour) {
                             dated.insert(row.day_hour);
                         }
-                        if row.identity.object_kind == replay::rows::PowerObjectKind::Organisation {
+                        if row.identity.object_kind
+                            == replay_data::rows::PowerObjectKind::Organisation
+                        {
                             hours.insert(row.day_hour);
                         }
                     }

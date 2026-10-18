@@ -20,7 +20,7 @@ pub(crate) const TABLES: &[TableId] = &[
 /// Sample cached amounts without completed-day or supplying-read inference.
 #[allow(clippy::type_complexity)]
 pub(crate) fn sample(
-    frame: &replay::frame::DecodedFrame,
+    frame: &replay_frame::frame::DecodedFrame,
     requested: Option<&[(String, String)]>,
 ) -> io::Result<BTreeMap<(String, String), (Option<(u32, u32)>, Option<i128>)>> {
     let tables = frame
@@ -160,8 +160,8 @@ impl Prepared {
     #[cfg(any(test, feature = "test-support"))]
     pub fn observe(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
-        format: replay::format::FormatVersion,
+        frame: &replay_frame::frame::DecodedFrame,
+        format: replay_data::format::FormatVersion,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         let changes = self
@@ -172,8 +172,8 @@ impl Prepared {
     }
     pub fn observe_changes(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
-        format: replay::format::FormatVersion,
+        frame: &replay_frame::frame::DecodedFrame,
+        format: replay_data::format::FormatVersion,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
@@ -184,13 +184,13 @@ impl Prepared {
     /// can release the part table while retaining exactly these operands.
     pub fn observe_demand(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
-        format: replay::format::FormatVersion,
+        frame: &replay_frame::frame::DecodedFrame,
+        format: replay_data::format::FormatVersion,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
         demand: Option<&[CountryFuelRow]>,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("fuel:observe");
+        let _cpu = ::replay_frame::cpu::scope_phase("fuel:observe");
         dashboard_text::metadata::check_cancel(cancelled)?;
         let previous_hour = self.metadata.last;
         self.current.advance(frame.hour)?;
@@ -523,9 +523,9 @@ impl Prepared {
         &mut self,
         first: i32,
         last: i32,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
     ) -> io::Result<bool> {
-        let _cpu = ::replay::cpu::scope_phase("fuel:quiet");
+        let _cpu = ::replay_frame::cpu::scope_phase("fuel:quiet");
         if first > last
             || self.metadata.last.and_then(|hour| hour.checked_add(1)) != Some(first)
             || !self.scan.continues_quiet(first)
@@ -568,7 +568,7 @@ impl Prepared {
     fn settle_due(
         &mut self,
         cutoff: i32,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         cancelled: &AtomicBool,
         changed: bool,
     ) -> io::Result<()> {
@@ -602,10 +602,10 @@ impl Prepared {
     fn settle(
         &mut self,
         cutoff: i32,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("fuel:settle");
+        let _cpu = ::replay_frame::cpu::scope_phase("fuel:settle");
         let from = self
             .metadata
             .settled_until
@@ -745,7 +745,7 @@ impl Prepared {
         &mut self,
         writer: &mut store::Writer,
         branch: u64,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         // Stable day values merge as one constant run. Only read decisions

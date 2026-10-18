@@ -11,13 +11,14 @@ use std::{
     },
 };
 
-use replay::{
-    BranchId,
-    branches::{BranchStart, Parentage},
-    container::Replay,
-    format::FormatVersion,
-    frame::{DecodedFrame, FrameDecoder, Metrics, TableView, ViewIdentity},
-    rows::{CountryLinkRow, CountryRow, TableId, tables},
+use replay::container::Replay;
+use replay_data::{
+    BranchId, format::FormatVersion, rows::CountryLinkRow, rows::CountryRow, rows::TableId,
+    rows::tables,
+};
+use replay_frame::{
+    branches::BranchStart, branches::Parentage, frame::DecodedFrame, frame::FrameDecoder,
+    frame::Metrics, frame::TableView, frame::ViewIdentity,
 };
 
 use crate::{
@@ -159,7 +160,7 @@ fn read_from(
                 validate_campaign(decoded, replay)?;
                 let (rows, links) = match country_tables(decoded) {
                     Ok(tables) => tables,
-                    Err(error) if engine::allocation::is_allocation_error(&error) => {
+                    Err(error) if engine_allocation::is_allocation_error(&error) => {
                         return Err(error);
                     }
                     Err(_) => return Ok(true),
@@ -170,22 +171,22 @@ fn read_from(
             });
             if let Err(error) = read {
                 check_cancel(cancelled)?;
-                if engine::allocation::is_allocation_error(&error) {
+                if engine_allocation::is_allocation_error(&error) {
                     return Err(error);
                 }
-                let reason = replay::codec::try_format(format_args!(
+                let reason = replay_data::codec::try_format(format_args!(
                     "Branch {} block {} – {} is unreadable: {}",
                     branch.id,
                     block.first_hour,
                     block.last_hour,
-                    replay::codec::diagnostic_text(&error.to_string())
+                    replay_data::codec::diagnostic_text(&error.to_string())
                 ))?;
                 let branch_metadata = metadata
                     .branches
                     .iter_mut()
                     .find(|entry| entry.id == branch.id.to_string())
                     .unwrap();
-                engine::allocation::reserve(&mut branch_metadata.gaps, 1)?;
+                engine_allocation::reserve(&mut branch_metadata.gaps, 1)?;
                 branch_metadata.gaps.push(RecordingGap {
                     first_hour: block.first_hour,
                     last_hour: block.last_hour,
@@ -237,8 +238,8 @@ pub fn partial_recording(
         return Ok(None);
     };
     Ok(Some(PartialRecording {
-        session_id: replay::codec::try_format(format_args!("{session}"))?,
-        reason: engine::allocation::string(reason)?,
+        session_id: replay_data::codec::try_format(format_args!("{session}"))?,
+        reason: engine_allocation::string(reason)?,
         failed_hour: *failed_hour,
     }))
 }
@@ -518,7 +519,7 @@ impl CountryKeys {
     pub fn same_changes(
         &self,
         countries: &[CountryRow],
-        delta: Option<(&[replay::rows::DeltaRow], &[u128])>,
+        delta: Option<(&[replay_data::rows::DeltaRow], &[u128])>,
     ) -> bool {
         self.kept_changes(countries.len(), delta) || self.same(countries)
     }
@@ -529,9 +530,9 @@ impl CountryKeys {
     pub fn kept_changes(
         &self,
         country_count: usize,
-        delta: Option<(&[replay::rows::DeltaRow], &[u128])>,
+        delta: Option<(&[replay_data::rows::DeltaRow], &[u128])>,
     ) -> bool {
-        let _cpu = replay::cpu::scope_phase("country_keys:changed_fields");
+        let _cpu = replay_frame::cpu::scope_phase("country_keys:changed_fields");
         static FIELDS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
             let mask = (0..64)
                 .filter(|&field| {
@@ -709,7 +710,7 @@ const CATALOGUE_TABLES: [TableId; 4] = [
 fn player_slot(frame: &DecodedFrame, links: &[CountryLinkRow]) -> io::Result<Option<u32>> {
     let players = match frame.complete::<tables::LocalPlayer>() {
         Ok(players) => players,
-        Err(error) if engine::allocation::is_allocation_error(&error) => return Err(error),
+        Err(error) if engine_allocation::is_allocation_error(&error) => return Err(error),
         Err(_) => return Ok(None),
     };
     let [player] = players else {
@@ -735,7 +736,7 @@ pub fn validate_campaign(frame: &DecodedFrame, replay: &Replay) -> io::Result<()
 }
 
 /// Whether this hour's frame read a daily table: its slot hour by the cadence
-/// (`replay::cadence::is_refresh`), or any hour where a walk of a table of its
+/// (`replay_data::cadence::is_refresh`), or any hour where a walk of a table of its
 /// slot was timed, which covers full hours (branch start, load, gap, refresh)
 /// and a shared read that times only its anchor (as the fresh-save oracle dates
 /// daily tables, `recorder::oracle::last_read_hours`). Timing alone is not
@@ -745,14 +746,14 @@ pub fn validate_campaign(frame: &DecodedFrame, replay: &Replay) -> io::Result<()
 /// move off its slot alone, so only its own timing dates it; it and the other
 /// tables of its slot are no evidence for each other. A failed walk leaves its
 /// table incomplete, which callers check. Other hours carry the last read.
-/// Cadences are those `format` recorded with (`replay::cadence::cadence_in`):
+/// Cadences are those `format` recorded with (`replay_data::cadence::cadence_in`):
 /// a table read daily then is dated at its slot even if it is hourly now.
 /// Every product that dates a daily table's values by their read uses this.
 pub fn slot_read(format: FormatVersion, metrics: &Metrics, table: TableId, hour: i32) -> bool {
     if table == TableId::CountryIntel {
         return metrics.table_ns[table.index()] != 0;
     }
-    if replay::cadence::cadence_in(table, format).is_refresh(hour) {
+    if replay_data::cadence::cadence_in(table, format).is_refresh(hour) {
         return true;
     }
     slot_reads(format, metrics, hour)[table.index()]
@@ -765,7 +766,7 @@ pub fn slot_reads(
     format: FormatVersion,
     metrics: &Metrics,
     hour: i32,
-) -> [bool; replay::frame::TABLE_COUNT] {
+) -> [bool; replay_data::rows::TABLE_COUNT] {
     SLOT_READS.with_borrow_mut(|held| {
         if held.as_ref().is_none_or(|held| held.format != format) {
             *held = Some(ReadSlots::new(format));
@@ -778,23 +779,23 @@ pub fn slot_reads(
 
 struct ReadSlots {
     format: FormatVersion,
-    groups: Vec<(replay::cadence::Cadence, Vec<TableId>)>,
+    groups: Vec<(replay_data::cadence::Cadence, Vec<TableId>)>,
     last: Option<(
         i32,
-        [bool; replay::frame::TABLE_COUNT],
-        [bool; replay::frame::TABLE_COUNT],
+        [bool; replay_data::rows::TABLE_COUNT],
+        [bool; replay_data::rows::TABLE_COUNT],
     )>,
 }
 
 impl ReadSlots {
     fn new(format: FormatVersion) -> Self {
-        let mut groups: Vec<(replay::cadence::Cadence, Vec<TableId>)> = Vec::new();
+        let mut groups: Vec<(replay_data::cadence::Cadence, Vec<TableId>)> = Vec::new();
         for table in TableId::ALL {
             // This table's measured walk dates only itself.
             if table == TableId::CountryIntel {
                 continue;
             }
-            let cadence = replay::cadence::cadence_in(table, format);
+            let cadence = replay_data::cadence::cadence_in(table, format);
             match groups.iter_mut().find(|(group, _)| *group == cadence) {
                 Some((_, tables)) => tables.push(table),
                 None => groups.push((cadence, vec![table])),
@@ -807,7 +808,7 @@ impl ReadSlots {
         }
     }
 
-    fn at(&mut self, metrics: &Metrics, hour: i32) -> [bool; replay::frame::TABLE_COUNT] {
+    fn at(&mut self, metrics: &Metrics, hour: i32) -> [bool; replay_data::rows::TABLE_COUNT] {
         let timed = metrics.table_ns.map(|duration| duration != 0);
         if let Some((previous, reads, flags)) = &self.last
             && *previous == hour
@@ -815,10 +816,10 @@ impl ReadSlots {
         {
             return *flags;
         }
-        let _cpu = replay::cpu::scope_phase("slot_reads:refresh");
+        let _cpu = replay_frame::cpu::scope_phase("slot_reads:refresh");
         #[cfg(any(test, feature = "test-support"))]
         SLOT_READ_BATCHES.with(|count| count.set(count.get() + 1));
-        let mut flags = [false; replay::frame::TABLE_COUNT];
+        let mut flags = [false; replay_data::rows::TABLE_COUNT];
         for (cadence, tables) in &self.groups {
             let read = cadence.is_refresh(hour) || tables.iter().any(|table| timed[table.index()]);
             for table in tables {
@@ -866,7 +867,7 @@ pub fn branch_bounds(replay: &Replay, branch: &BranchStart) -> (i32, i32) {
 }
 
 fn read_branches(replay: &Replay, cancelled: &AtomicBool) -> io::Result<Vec<BranchMetadata>> {
-    let mut branches = engine::allocation::vec(replay.branches.len())?;
+    let mut branches = engine_allocation::vec(replay.branches.len())?;
     for branch in &replay.branches {
         check_cancel(cancelled)?;
         let (first_hour, last_hour) = branch_bounds(replay, branch);
@@ -881,20 +882,20 @@ fn read_branches(replay: &Replay, cancelled: &AtomicBool) -> io::Result<Vec<Bran
             .ok_or_else(|| invalid("branch refers to an unknown session"))?;
         let mut gaps = Vec::new();
         for gap in replay.gaps.iter().filter(|gap| gap.branch == branch.id) {
-            engine::allocation::reserve(&mut gaps, 1)?;
+            engine_allocation::reserve(&mut gaps, 1)?;
             gaps.push(RecordingGap {
                 first_hour: gap.first_hour,
                 last_hour: gap.last_hour,
-                reason: engine::allocation::string(&gap.reason)?,
+                reason: engine_allocation::string(&gap.reason)?,
             });
         }
         let mut event_losses = Vec::new();
         for (after_hour, hour) in replay.event_losses(branch.id) {
-            engine::allocation::reserve(&mut event_losses, 1)?;
+            engine_allocation::reserve(&mut event_losses, 1)?;
             event_losses.push(RecordingEventLoss {
                 after_hour,
                 hour,
-                reason: engine::allocation::string(EVENT_LOSS_REASON)?,
+                reason: engine_allocation::string(EVENT_LOSS_REASON)?,
             });
         }
         branches.push(BranchMetadata {
@@ -904,7 +905,7 @@ fn read_branches(replay: &Replay, cancelled: &AtomicBool) -> io::Result<Vec<Bran
             last_hour,
             parent_id,
             parent_hour,
-            sample_boundary: engine::allocation::string(session.sample_boundary.name())?,
+            sample_boundary: engine_allocation::string(session.sample_boundary.name())?,
             gaps,
             event_losses: (!event_losses.is_empty()).then_some(event_losses),
         });
@@ -935,11 +936,11 @@ impl Catalogue {
                 continue;
             };
             if !first.contains_key(&slot) {
-                engine::allocation::reserve_map(&mut first, 1)?;
+                engine_allocation::reserve_map(&mut first, 1)?;
                 first.insert(slot, row);
             }
         }
-        self.rows = engine::allocation::vec(first.len())?;
+        self.rows = engine_allocation::vec(first.len())?;
         for (slot, row) in first {
             let tag = String::from_utf8_lossy(&row.tag[..row.tag.len().min(512 + 3)]);
             self.rows.push(CountryMetadata {
@@ -971,9 +972,9 @@ fn merge_countries(
     countries: Vec<CountryMetadata>,
 ) -> io::Result<()> {
     for country in countries {
-        engine::allocation::reserve_set(known, 1)?;
+        engine_allocation::reserve_set(known, 1)?;
         if known.insert((country.id.clone(), country.tag.clone())) {
-            engine::allocation::reserve(merged, 1)?;
+            engine_allocation::reserve(merged, 1)?;
             merged.push(country);
         }
     }
@@ -1010,7 +1011,7 @@ pub fn check_cancel(cancelled: &AtomicBool) -> io::Result<()> {
 #[cfg(test)]
 mod local_player_tests {
     use super::*;
-    use replay::rows::{LocalPlayerRow, PlayerRow, TableRows};
+    use replay_data::{rows::LocalPlayerRow, rows::PlayerRow, rows::TableRows};
 
     #[test]
     fn initial_country_uses_the_client_and_its_observer_view_not_the_mp_roster() {
@@ -1059,10 +1060,10 @@ mod local_player_tests {
 
 /// The rows a table holds this hour, complete or truncated; an unavailable table
 /// holds none. For products that use whatever rows were recorded.
-pub fn recorded_rows<T: replay::rows::TableSchema>(
-    frame: &replay::frame::DecodedFrame,
+pub fn recorded_rows<T: replay_data::rows::TableSchema>(
+    frame: &replay_frame::frame::DecodedFrame,
 ) -> io::Result<&[T::Row]> {
-    use replay::frame::TableView;
+    use replay_frame::frame::TableView;
     match &*frame.tables[T::ID.index()] {
         TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
             rows.rows::<T>().ok_or_else(|| {

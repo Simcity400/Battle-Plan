@@ -77,11 +77,9 @@ use dashboard_base::{
     },
     products::equipment::VariantCatalogue,
 };
-use replay::{
-    container::{BlockChange, BlockIndex, TableFields},
-    frame::Metrics,
-    rows::Recorded,
-};
+use replay::{container::BlockChange, container::BlockIndex, container::TableFields};
+use replay_data::rows::Recorded;
+use replay_frame::frame::Metrics;
 use serde_json::Value;
 
 /// What a look-back's census notes while it observes, for its proof.
@@ -398,7 +396,7 @@ impl Facts {
         &mut self,
         open: &mut HashMap<u64, usize>,
         previous: &mut Option<i32>,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         frame: &DecodedFrame,
         hour: i32,
         metrics: &Metrics,
@@ -461,7 +459,12 @@ struct Window {
 
 impl Window {
     /// A changed hour of the last block, whose first hour is `first`.
-    fn observe(&mut self, format: replay::format::FormatVersion, frame: &DecodedFrame, first: i32) {
+    fn observe(
+        &mut self,
+        format: replay_data::format::FormatVersion,
+        frame: &DecodedFrame,
+        first: i32,
+    ) {
         let hour = frame.hour;
         // Every variant a progress row's losses name, read or not.
         if let Ok(rows) = frame.complete::<tables::LandCombatProgress>() {
@@ -1087,7 +1090,7 @@ fn block_variant_reads(
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
     let format = replay.format;
-    let read = |metrics: &replay::frame::Metrics, hour: i32| {
+    let read = |metrics: &replay_frame::frame::Metrics, hour: i32| {
         slot_read(format, metrics, TableId::VariantDefinitions, hour)
     };
     let observe = |variants: &mut VariantCatalogue, frame: &DecodedFrame| {

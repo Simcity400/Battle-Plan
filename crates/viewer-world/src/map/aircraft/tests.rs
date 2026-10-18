@@ -11,8 +11,8 @@ fn wing(id: u64, owner: u32, region: u32) -> AirWingRow {
     }
 }
 
-fn registration(wing: u64, ordinal: u32) -> replay::rows::AirRegionalMissionRow {
-    replay::rows::AirRegionalMissionRow { wing, ordinal }
+fn registration(wing: u64, ordinal: u32) -> replay_data::rows::AirRegionalMissionRow {
+    replay_data::rows::AirRegionalMissionRow { wing, ordinal }
 }
 
 #[test]
@@ -53,10 +53,8 @@ fn wings_fly_region_by_region_ours_first_then_both_arrays_in_registration_order(
 
 #[test]
 fn recorded_vectors_and_hosts_build_the_viewpoints_arrays() {
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{TableId, TableRows, VolunteerHostRow},
-    };
+    use replay_data::{rows::TableId, rows::TableRows, rows::VolunteerHostRow};
+    use replay_frame::{frame::Metrics, frame::TableView};
     let mut frame = DecodedFrame {
         branch: 1,
         hour: 42,
@@ -104,10 +102,8 @@ fn recorded_vectors_and_hosts_build_the_viewpoints_arrays() {
 /// bloc, the enemy of the other and given two donors from its own bloc.
 /// The viewing country 1 volunteers to host country `n`.
 fn bloc_war(n: u32) -> (DecodedFrame, BTreeMap<u32, u32>) {
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{TableId, TableRows, VolunteerHostRow},
-    };
+    use replay_data::{rows::TableId, rows::TableRows, rows::VolunteerHostRow};
+    use replay_frame::{frame::Metrics, frame::TableView};
     let half = n / 2;
     let bloc = |country: u32| {
         if country <= half {
@@ -310,7 +306,7 @@ fn lazy_explicit_aircraft_keep_named_counted_attachment_diagnostics_without_audi
     "#,
     ));
     let selected = aircraft_model::resolve_lazy(
-        &replay::rows::VariantDefinitionRow {
+        &replay_data::rows::VariantDefinitionRow {
             explicit_entity: b"OddAircraft".to_vec(),
             ..Default::default()
         },
@@ -333,7 +329,7 @@ fn lazy_explicit_aircraft_keep_named_counted_attachment_diagnostics_without_audi
     );
     let typed = assets.lazy_diagnostics();
     assert!(typed.iter().any(|(kind, line)| {
-        *kind == installed_content::DiagnosticKind::Refused
+        *kind == installed_content_core::DiagnosticKind::Refused
             && line.contains("AbsentFlap")
             && line.contains("(2)")
     }));
@@ -433,7 +429,7 @@ fn a_roster_whose_every_plane_is_refused_keeps_each_reason() {
         ])
     );
     assert_eq!(warnings.len(), 1);
-    assert_eq!(warnings[0].0, installed_content::DiagnosticKind::Refused);
+    assert_eq!(warnings[0].0, installed_content_core::DiagnosticKind::Refused);
     assert!(
         warnings[0]
             .1
@@ -799,7 +795,7 @@ fn a_plane_using_a_possibly_hidden_declaration_is_refused_with_that_declaration(
         "{}",
         unusable["clean_plane_entity"]
     );
-    assert_eq!(warnings[0].0, installed_content::DiagnosticKind::Refused);
+    assert_eq!(warnings[0].0, installed_content_core::DiagnosticKind::Refused);
     assert!(
         warnings[0]
             .1
@@ -856,10 +852,7 @@ fn a_name_an_unreadable_descriptor_holds_is_refused_not_skipped() {
         roster.refused_declaration("JAP_plane_entity"),
         Some(format!("its mesh ger_mesh {why}"))
     );
-    assert_eq!(
-        roster.refused_declaration("plane_entity"),
-        None
-    );
+    assert_eq!(roster.refused_declaration("plane_entity"), None);
 
     // The loader's candidate filter admits the unreadable name, so the
     // ladder stops there instead of drawing the generic plane.
@@ -875,7 +868,7 @@ fn a_name_an_unreadable_descriptor_holds_is_refused_not_skipped() {
         &mut warnings,
     )
     .unwrap();
-    assert_eq!(warnings[0].0, installed_content::DiagnosticKind::Refused);
+    assert_eq!(warnings[0].0, installed_content_core::DiagnosticKind::Refused);
     assert!(
         warnings[0]
             .1
@@ -1134,7 +1127,7 @@ fn regions_skip_undefined_provinces_and_count_duplicates() {
     );
     assert_eq!(fractions[&8], RegionFractions::default());
     assert_eq!(warnings.len(), 1);
-    assert_eq!(warnings[0].0, installed_content::DiagnosticKind::Warning);
+    assert_eq!(warnings[0].0, installed_content_core::DiagnosticKind::Warning);
     assert!(warnings[0].1.contains("list 2 provinces"));
 }
 
@@ -1216,10 +1209,10 @@ fn bit17_base_equipment_has_only_the_coarse_group_call_gate() {
 
 #[test]
 fn first_window_history_distinguishes_older_absence_from_captured_zero() {
-    use replay::{
-        frame::TableView,
-        rows::{AirNavalPatrolHistoryRow, Recorded, TableId, TableRows},
+    use replay_data::{
+        rows::AirNavalPatrolHistoryRow, rows::Recorded, rows::TableId, rows::TableRows,
     };
+    use replay_frame::frame::TableView;
     let (mut frame, _) = bloc_war(2);
     assert_eq!(
         ScenarioHistory::read(&frame, 1).unwrap().err(),
@@ -1254,10 +1247,10 @@ fn first_window_history_distinguishes_older_absence_from_captured_zero() {
 
 #[test]
 fn refused_scenario_history_keeps_other_regions_and_original_naval_channels() {
-    use replay::{
-        frame::TableView,
-        rows::{AirNavalPatrolHistoryRow, Recorded, TableId, TableRows},
+    use replay_data::{
+        rows::AirNavalPatrolHistoryRow, rows::Recorded, rows::TableId, rows::TableRows,
     };
+    use replay_frame::frame::TableView;
     let (mut frame, _) = bloc_war(2);
     let refused = AirNavalPatrolHistoryRow {
         country: 1,
@@ -1294,12 +1287,12 @@ fn refused_scenario_history_keeps_other_regions_and_original_naval_channels() {
 
 #[test]
 fn first_window_history_saturates_each_channel_after_each_ordered_record() {
-    use replay::{
-        frame::TableView,
-        rows::{AirNavalPatrolHistoryRow, Recorded, TableId, TableRows},
+    use replay_data::{
+        rows::AirNavalPatrolHistoryRow, rows::Recorded, rows::TableId, rows::TableRows,
     };
+    use replay_frame::frame::TableView;
     let (mut frame, _) = bloc_war(2);
-    let limit = engine::air_kamikaze::SUM_LIMIT;
+    let limit = engine_air_history::air_kamikaze::SUM_LIMIT;
     let rows = vec![
         AirNavalPatrolHistoryRow {
             country: 1,
@@ -1588,7 +1581,7 @@ fn scenario_rigs_log_an_absent_node_and_read_rocket_speed_and_band_only_where_ne
     assert_eq!(
         warnings,
         [(
-            installed_content::DiagnosticKind::Logged,
+            installed_content_core::DiagnosticKind::Logged,
             "Aircraft scenario scenario_entity has no attachment node rocket: the game logs it and that actor rides the scenario entity's root".to_owned()
         )]
     );
@@ -1601,7 +1594,7 @@ fn scenario_rigs_log_an_absent_node_and_read_rocket_speed_and_band_only_where_ne
     );
     assert!(missile.is_none());
     assert_eq!(warnings.len(), 1);
-    assert_eq!(warnings[0].0, installed_content::DiagnosticKind::Refused);
+    assert_eq!(warnings[0].0, installed_content_core::DiagnosticKind::Refused);
     assert!(warnings[0].1.contains("ROCKET_SPEED is unreadable"));
     let (bomber, warnings) = rig(
         (6, 0),
@@ -1610,7 +1603,7 @@ fn scenario_rigs_log_an_absent_node_and_read_rocket_speed_and_band_only_where_ne
         Ok(band),
     );
     assert_eq!(bomber.unwrap().unbound, [Some(UNBOUND_SPEED)]);
-    assert_eq!(warnings[0].0, installed_content::DiagnosticKind::Logged);
+    assert_eq!(warnings[0].0, installed_content_core::DiagnosticKind::Logged);
     let (bound, _) = rig((6, 0), vec![(0, "joint1".into())], Err("unused"), Ok(band));
     assert_eq!(bound.unwrap().unbound, [None]);
     // A rocket on a real node flies: the near-ground band is ported.
@@ -1636,7 +1629,7 @@ fn scenario_rigs_log_an_absent_node_and_read_rocket_speed_and_band_only_where_ne
     let missing = Err("NDefines.NAirGfx.AIRPLANES_GROUND_COLLISION_OFFSET_Y is unreadable");
     let (rocket, warnings) = rig((15, 0), vec![(0, "joint1".into())], Ok(15.0), missing);
     assert!(rocket.is_none());
-    assert_eq!(warnings[0].0, installed_content::DiagnosticKind::Refused);
+    assert_eq!(warnings[0].0, installed_content_core::DiagnosticKind::Refused);
     assert!(
         warnings[0]
             .1
@@ -2213,7 +2206,7 @@ fn a_scenario_rig_whose_files_do_not_read_is_refused_and_the_assets_load() {
             warnings
                 .iter()
                 .filter(|(kind, line)| {
-                    *kind == installed_content::DiagnosticKind::Refused && line.starts_with(&refused)
+                    *kind == installed_content_core::DiagnosticKind::Refused && line.starts_with(&refused)
                 })
                 .count(),
             1,
@@ -2250,7 +2243,10 @@ fn ground_contact_reads_the_content_defines_and_names_a_missing_one() {
         )
         .unwrap();
     let error = GroundContact::load(&missing).unwrap_err().to_string();
-    assert!(error.contains("AIRPLANES_GROUND_EXPLOSION_TIME_DELAY"), "{error}");
+    assert!(
+        error.contains("AIRPLANES_GROUND_EXPLOSION_TIME_DELAY"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -2280,12 +2276,9 @@ fn an_explosion_has_played_once_its_own_player_reads_the_delay() {
 /// Catalogue reasons and mesh-file failures stay named and refused.
 #[test]
 fn a_chosen_aircraft_bakes_lazily_or_is_refused_with_why() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
-    let root = std::env::temp_dir().join(format!(
-        "viewer-aircraft-player-{}",
-        std::process::id()
-    ));
+    let root = std::env::temp_dir().join(format!("viewer-aircraft-player-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let mut mesh = b"@@b@[object\0[[frame\0[[[mesh\0".to_vec();
     for (name, values) in [
@@ -2403,11 +2396,14 @@ fn a_scenario_rig_the_mods_break_is_flown_from_the_recording() {
         |from_recording, notes| {
             attempts.push(from_recording);
             if from_recording {
-                notes.push((installed_content::DiagnosticKind::Logged, "recorded rig".into()));
+                notes.push((
+                    installed_content_core::DiagnosticKind::Logged,
+                    "recorded rig".into(),
+                ));
                 Some("recorded")
             } else {
                 notes.push((
-                    installed_content::DiagnosticKind::Refused,
+                    installed_content_core::DiagnosticKind::Refused,
                     "its animation file gfx/entities/patrol.anim does not read".into(),
                 ));
                 None
@@ -2419,7 +2415,10 @@ fn a_scenario_rig_the_mods_break_is_flown_from_the_recording() {
     assert_eq!(attempts, [false, true]);
     assert_eq!(
         warnings,
-        [(installed_content::DiagnosticKind::Logged, "recorded rig".to_owned())]
+        [(
+            installed_content_core::DiagnosticKind::Logged,
+            "recorded rig".to_owned()
+        )]
     );
     assert!(layers.refused().is_empty());
     // Neither stack builds it: refused by name, with the shown stack's reason.
@@ -2430,7 +2429,7 @@ fn a_scenario_rig_the_mods_break_is_flown_from_the_recording() {
         true,
         |from_recording, notes| {
             notes.push((
-                installed_content::DiagnosticKind::Refused,
+                installed_content_core::DiagnosticKind::Refused,
                 format!("refused from the recording: {from_recording}"),
             ));
             None::<&str>
@@ -2441,7 +2440,7 @@ fn a_scenario_rig_the_mods_break_is_flown_from_the_recording() {
     assert_eq!(
         warnings,
         [(
-            installed_content::DiagnosticKind::Refused,
+            installed_content_core::DiagnosticKind::Refused,
             "refused from the recording: false".to_owned()
         )]
     );

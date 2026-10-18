@@ -14,9 +14,11 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-recorder = { path = "../recorder" }
 replay.workspace = true
-installed-content.workspace = true
+installed-content-core.workspace = true
+installed-content-country-names.workspace = true
+replay-data.workspace = true
+recorder = { path = "../recorder" }
 installed-content-image.workspace = true
 tauri = { version = "2", features = ["tray-icon"] }
 serde = { workspace = true, features = ["derive"] }

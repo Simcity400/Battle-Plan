@@ -4,12 +4,11 @@ use crate::{
     politics_changes::{self as hooks, Drained, Event, Kind},
     table_capture::grow_capacity,
 };
-use engine::{allocation, politics_sites::BalanceSnapshot, walk::Outcome};
-use replay::{
-    BranchId,
-    frame::{TableInput, TableView},
-    rows::*,
-};
+use engine_allocation as allocation;
+use engine_events::politics_sites::BalanceSnapshot;
+use engine_native::walk::Outcome;
+use replay_data::{BranchId, rows::*};
+use replay_frame::{frame::TableInput, frame::TableView};
 use std::{
     collections::{HashMap, HashSet},
     io,
@@ -178,7 +177,7 @@ impl Ledger {
         branch: BranchId,
         hour: i32,
         captured: &Captured,
-        countries: &[engine::ccountry::Row],
+        countries: &[engine_native::ccountry::Row],
         outcome: Outcome,
         tables: &mut [TableInput],
     ) -> io::Result<()> {
@@ -752,7 +751,7 @@ fn key_bytes<'a>(event: &Event, bytes: &'a [u8], index: usize) -> &'a [u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::politics_sites as native;
+    use engine_events::politics_sites as native;
     fn captured(
         epoch: u64,
         first: u64,
@@ -782,7 +781,7 @@ mod tests {
         capture
     }
     fn tables() -> Vec<TableInput> {
-        (0..replay::frame::TABLE_COUNT)
+        (0..replay_data::rows::TABLE_COUNT)
             .map(|_| TableInput::Sampled(unavailable("fixture")))
             .collect()
     }
@@ -873,7 +872,7 @@ mod tests {
             e.epoch = 1;
             e.sequence = n as u64 + 1;
         }
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0x1000,
             bytes: &native_bytes,
         };
@@ -914,13 +913,13 @@ mod tests {
         b.assemble(1, 0, &compact, &mut right);
         assert_eq!(left, right);
         let wire = |tables: Vec<TableInput>| {
-            let source = replay::frame::FrameInput {
+            let source = replay_frame::frame::FrameInput {
                 branch: 1,
                 hour: 0,
                 tables: tables.try_into().unwrap(),
                 metrics: Default::default(),
             };
-            let frame = replay::frame::FrameEncoder::new()
+            let frame = replay_frame::frame::FrameEncoder::new()
                 .encode_input(source, true)
                 .unwrap();
             let mut bytes = Vec::new();

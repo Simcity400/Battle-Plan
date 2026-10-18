@@ -28,7 +28,8 @@ use std::{
 };
 use viewer_foundation::parallel::Workers;
 
-use replay::{BranchId, Hour, frame::DecodedFrame};
+use replay_data::{BranchId, Hour};
+use replay_frame::frame::DecodedFrame;
 
 use {
     crate::document::Content, crate::playback::Current, dashboard::triggers::World,

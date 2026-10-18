@@ -1,11 +1,9 @@
 //! The army scenario the block tests and the dashboard's pre-pass tests fold.
 
 use dashboard_base::test_fixtures::{CAMPAIGN, continuation_records, records};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::sync::Arc;
 
 /// One hour of the army scenario. Origin's division loses strength at 102;

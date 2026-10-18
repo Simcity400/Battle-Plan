@@ -5,29 +5,32 @@ use super::*;
 mod tests;
 
 impl Renderer<'_, '_, '_> {
-    pub(super) fn effect_class(&self, item: &Item) -> Option<installed_content::effect_keys::NativeClass> {
+    pub(super) fn effect_class(
+        &self,
+        item: &Item,
+    ) -> Option<installed_content_core::effect_keys::NativeClass> {
         if let Some(class) = item
             .keyword()
-            .and_then(|key| installed_content::effect_keys::native_class(&key.folded()))
+            .and_then(|key| installed_content_core::effect_keys::native_class(&key.folded()))
         {
             return Some(class);
         }
         if self.is_context(item) {
-            return Some(installed_content::effect_keys::NativeClass {
-                name: engine::executable_tables::get()
+            return Some(installed_content_core::effect_keys::NativeClass {
+                name: engine_executable::executable_tables::get()
                     .registries
                     .effect_class_name(0x14299F6F8)
                     .expect("context effect class is present in verified metadata"),
                 vtable: 0x14299F6F8,
             });
         }
-        let name = installed_content::parser::c_string(item.key.as_deref().unwrap_or_default());
+        let name = installed_content_core::parser::c_string(item.key.as_deref().unwrap_or_default());
         self.context
             .content
             .key_names
             .filter(|names| names.scripted_effects.contains(&name.to_ascii_lowercase()))
-            .map(|_| installed_content::effect_keys::NativeClass {
-                name: engine::executable_tables::get()
+            .map(|_| installed_content_core::effect_keys::NativeClass {
+                name: engine_executable::executable_tables::get()
                     .registries
                     .effect_class_name(0x14299F7C8)
                     .expect("scripted effect class is present in verified metadata"),

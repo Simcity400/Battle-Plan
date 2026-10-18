@@ -3,7 +3,7 @@
 //! Evaluate conjunctions, disjunctions and conditional chains
 //! with the shared recorded-hour evaluator.
 
-use installed_content::parser::Item;
+use installed_content_core::parser::Item;
 
 use super::{
     Eval, Scopes,

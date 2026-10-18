@@ -2,7 +2,8 @@ use super::*;
 use crate::test_fixtures::scale_frame;
 #[cfg(feature = "slow-tests")]
 use crate::test_fixtures::{CAMPAIGN, records};
-use replay::{frame::TableView, rows::TableRows};
+use replay_data::rows::TableRows;
+use replay_frame::frame::TableView;
 
 #[test]
 fn factory_point_queries_share_one_reached_observation_without_folding_the_block() {
@@ -319,11 +320,11 @@ fn phase_b_deferred_native_runs_match_eager_after_two_checkpoints_resume_append_
                 reason: "synthetic refusal".into(),
             };
         }
-        oracle.observe(&next, replay::format::FormatVersion::CURRENT);
+        oracle.observe(&next, replay_data::format::FormatVersion::CURRENT);
         lazy.observe_changes(
             &next,
-            replay::format::FormatVersion::CURRENT,
-            Some(&tracker.observe(&next, replay::format::FormatVersion::CURRENT)),
+            replay_data::format::FormatVersion::CURRENT,
+            Some(&tracker.observe(&next, replay_data::format::FormatVersion::CURRENT)),
         );
         if hour == 103 || hour == 108 {
             lazy.seal();

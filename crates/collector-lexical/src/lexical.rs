@@ -8,12 +8,10 @@ use crate::{
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
     table_conversion::table,
 };
-use engine::allocation::{copy_vec, owned_vec};
-use engine::{Memory, cpdx_lexer, cpdx_lexer::TOKEN_NAME_STRIDE, walk::Outcome};
-use replay::{
-    frame::{TableInput, TableView},
-    rows::{self, TableId, TableRows, tables},
-};
+use engine_allocation::{copy_vec, owned_vec};
+use engine_native::{Memory, cpdx_lexer, cpdx_lexer::TOKEN_NAME_STRIDE, walk::Outcome};
+use replay_data::{rows, rows::TableId, rows::TableRows, rows::tables};
+use replay_frame::{frame::TableInput, frame::TableView};
 
 use std::sync::Arc;
 
@@ -119,14 +117,14 @@ impl Captured {
             self.reset();
             if !self.raw_mode {
                 self.rows.outcome = Outcome::Unavailable {
-                    reason: if replay::cadence::should_walk(
+                    reason: if replay_data::cadence::should_walk(
                         TableId::LexicalTokens,
                         hour,
                         force_full,
                     ) {
                         "lexical acquisition not supplied"
                     } else {
-                        replay::cadence::SKIPPED_REASON
+                        replay_data::cadence::SKIPPED_REASON
                     },
                 };
             }
@@ -151,9 +149,9 @@ impl Captured {
             // worker, which installs identical rows, outcomes and arenas.
             return [0];
         }
-        if !replay::cadence::should_walk(TableId::LexicalTokens, hour, force_full) {
+        if !replay_data::cadence::should_walk(TableId::LexicalTokens, hour, force_full) {
             self.rows.outcome = Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON,
+                reason: replay_data::cadence::SKIPPED_REASON,
             };
             return [0];
         }
@@ -206,7 +204,7 @@ impl Captured {
         if !matches!(
             self.outcomes()[0],
             Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON
+                reason: replay_data::cadence::SKIPPED_REASON
             }
         ) {
             reuse.stats.misses = reuse.stats.misses.saturating_add(1);
@@ -355,12 +353,12 @@ impl LexicalJob {
     #[cfg(any(test, feature = "test-support"))]
     fn with_capacity(spans: usize, bytes: usize) -> Self {
         let mut job = Self {
-            bytes: owned_vec(engine::allocation::vec(bytes)),
-            tokens: owned_vec(engine::allocation::vec(spans.saturating_add(1))),
+            bytes: owned_vec(engine_allocation::vec(bytes)),
+            tokens: owned_vec(engine_allocation::vec(spans.saturating_add(1))),
             // Every completed chunk contains 2048 token terminator reads;
             // an incomplete chunk stops the capture. This bounds descriptors
             // using the unchanged logical span budget, including failed reads.
-            chunks: owned_vec(engine::allocation::vec(
+            chunks: owned_vec(engine_allocation::vec(
                 spans / (TABLE_CHUNK / TOKEN_NAME_STRIDE) + 2,
             )),
             span_limit: spans,
@@ -415,21 +413,21 @@ impl LexicalJob {
         if self.required_bytes > self.bytes.capacity() {
             let target = self.required_bytes;
             let additional = target - self.bytes.len();
-            if engine::allocation::reserve_exact(&mut self.bytes, additional).is_err() {
+            if engine_allocation::reserve_exact(&mut self.bytes, additional).is_err() {
                 return;
             }
         }
         let tokens = self.span_limit.saturating_add(1);
         if tokens > self.tokens.capacity() {
             let additional = tokens - self.tokens.len();
-            if engine::allocation::reserve_exact(&mut self.tokens, additional).is_err() {
+            if engine_allocation::reserve_exact(&mut self.tokens, additional).is_err() {
                 return;
             }
         }
         let chunks = self.span_limit / (TABLE_CHUNK / TOKEN_NAME_STRIDE) + 2;
         if chunks > self.chunks.capacity() {
             let additional = chunks - self.chunks.len();
-            if engine::allocation::reserve_exact(&mut self.chunks, additional).is_err() {
+            if engine_allocation::reserve_exact(&mut self.chunks, additional).is_err() {
                 return;
             }
         }
@@ -476,7 +474,7 @@ impl LexicalJob {
                 self.span_limit = self.span_limit.saturating_mul(2).max(self.spans + 1);
             }
             if len > self.bytes.capacity().saturating_sub(self.bytes.len()) {
-                if engine::allocation::reserve(&mut self.bytes, len).is_err() {
+                if engine_allocation::reserve(&mut self.bytes, len).is_err() {
                     self.overflowed = true;
                     return Observation::Missing;
                 }
@@ -546,7 +544,7 @@ impl LexicalJob {
                     self.bytes.truncate(start);
                     return self.failed();
                 }
-                if engine::allocation::reserve(&mut self.bytes, count).is_err() {
+                if engine_allocation::reserve(&mut self.bytes, count).is_err() {
                     self.overflowed = true;
                     return Observation::Missing;
                 }
@@ -766,7 +764,7 @@ impl LexicalJob {
                 return None;
             }
             let inline = u64::from_le_bytes(header[24..].try_into().ok()?)
-                == engine::msvc_string::INLINE_CAPACITY;
+                == engine_native::msvc_string::INLINE_CAPACITY;
             if !inline {
                 // Include the independent terminator in the protected-range
                 // check. Heap aliases with other heap observations are safe
@@ -801,7 +799,7 @@ impl LexicalJob {
             let address = before.table() + index * TOKEN_NAME_STRIDE;
             let text = cpdx_lexer::TokenText::from_header(address, header).ok()?;
             let inline = u64::from_le_bytes(header[24..].try_into().ok()?)
-                == engine::msvc_string::INLINE_CAPACITY;
+                == engine_native::msvc_string::INLINE_CAPACITY;
             if !text.is_empty() {
                 let start = if inline {
                     packet.header.start()?
@@ -920,7 +918,7 @@ fn copy_token_text(
         return false;
     }
     let inline = u64::from_le_bytes(header[24..].try_into().unwrap())
-        == engine::msvc_string::INLINE_CAPACITY;
+        == engine_native::msvc_string::INLINE_CAPACITY;
     if !text.is_empty() && !inline {
         packet.payload = job.take_payload(memory, text.source(), text.len());
         if packet.payload.start().is_none() {
@@ -945,8 +943,8 @@ fn copy_pass(memory: &impl Memory, base: usize, job: &mut LexicalJob) {
         // Reverse-table growth recomputes its maximum. Retain this original
         // writer-free witness.
         let chunks = total.div_ceil(TABLE_CHUNK / TOKEN_NAME_STRIDE);
-        if engine::allocation::reserve(&mut job.tokens, total).is_err()
-            || engine::allocation::reserve(&mut job.chunks, chunks).is_err()
+        if engine_allocation::reserve(&mut job.tokens, total).is_err()
+            || engine_allocation::reserve(&mut job.chunks, chunks).is_err()
         {
             job.overflowed = true;
             return;
@@ -1045,8 +1043,8 @@ impl Captured {
         let (rows, text) = complete.unwrap_or((job.tokens.len(), job.bytes.len()));
         let rows_capacity = rows.max(self.rows.rows.len());
         let text_capacity = text.max(self.text.first.len());
-        if engine::allocation::resize_default(&mut self.rows.rows, rows_capacity).is_err()
-            || engine::allocation::resize_default(&mut self.text.first, text_capacity).is_err()
+        if engine_allocation::resize_default(&mut self.rows.rows, rows_capacity).is_err()
+            || engine_allocation::resize_default(&mut self.text.first, text_capacity).is_err()
         {
             self.fail_lexical_capture("collector allocation failed");
             decode_ticks[0] += elapsed(started);
@@ -1082,12 +1080,13 @@ pub mod lexical_test_kit {
         Capacities, Captured, LexicalCopyContext, LexicalCopyReport, LexicalJob,
         copy_lexical_refresh,
     };
-    use engine::cpdx_lexer::{
-        DYNAMIC_CAPACITY_RVA, DYNAMIC_COUNT_RVA, DYNAMIC_TOKENS_RVA, INITIALIZED_RVA,
-        MAX_TOKEN_ID_RVA, STATIC_MAX_TOKEN_ID_RVA, TOKEN_ALLOCATION_RVA, TOKEN_CAPACITY_RVA,
-        TOKEN_NAMES_RVA, WRITER_FLAG_RVA,
+    use engine_native::{cpdx_lexer, msvc_string};
+    use engine_native::{
+        cpdx_lexer::DYNAMIC_CAPACITY_RVA, cpdx_lexer::DYNAMIC_COUNT_RVA,
+        cpdx_lexer::DYNAMIC_TOKENS_RVA, cpdx_lexer::INITIALIZED_RVA, cpdx_lexer::MAX_TOKEN_ID_RVA,
+        cpdx_lexer::STATIC_MAX_TOKEN_ID_RVA, cpdx_lexer::TOKEN_ALLOCATION_RVA,
+        cpdx_lexer::TOKEN_CAPACITY_RVA, cpdx_lexer::TOKEN_NAMES_RVA, cpdx_lexer::WRITER_FLAG_RVA,
     };
-    use engine::{cpdx_lexer, msvc_string};
 
     pub const BASE: usize = 0x140000000;
     const TABLE_BASE: usize = 0x20000000;
@@ -1173,7 +1172,7 @@ pub mod lexical_test_kit {
         }
     }
 
-    impl engine::Memory for KitMemory {
+    impl engine_native::Memory for KitMemory {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
             if destination.is_empty() {
                 return true;
@@ -1252,12 +1251,12 @@ pub mod lexical_test_kit {
                 && !captured.raw_mode
                 && if crate::allocation::failed() {
                     outcome
-                        == engine::walk::Outcome::Unavailable {
+                        == engine_native::walk::Outcome::Unavailable {
                             reason: "collector allocation failed",
                         }
                 } else {
                     expected.is_some_and(|(rows, text)| {
-                        outcome == engine::walk::Outcome::Rows { len: rows }
+                        outcome == engine_native::walk::Outcome::Rows { len: rows }
                             && captured.text.len == text
                     })
                 }
@@ -1875,7 +1874,7 @@ mod tests {
         /// fails, having recorded the same spans the replay re-derives the reason
         /// from.
         fn copy_witness(log: &mut RawLog<1>, memory: &impl Memory, base: usize) -> Option<Witness> {
-            use engine::cpdx_lexer::*;
+            use engine_native::cpdx_lexer::*;
             let writer = base.checked_add(WRITER_FLAG_RVA)?;
             let mut flag = [0u8; 4];
             let start = log.take(memory, writer, 4, 0x01)?;
@@ -1956,7 +1955,7 @@ mod tests {
             header: &[u8; 32],
             address: usize,
         ) -> bool {
-            use engine::msvc_string;
+            use engine_native::msvc_string;
             let len = u64::from_le_bytes(header[16..24].try_into().unwrap());
             let capacity = u64::from_le_bytes(header[24..32].try_into().unwrap());
             if capacity < msvc_string::INLINE_CAPACITY || len > capacity {
@@ -2087,7 +2086,7 @@ mod tests {
         }
     }
 
-    use engine::{cpdx_lexer::*, memory::SliceMemory};
+    use engine_native::{cpdx_lexer::*, memory::SliceMemory};
     use std::cell::Cell;
     struct MemoryFixture {
         header: [u8; 64],
@@ -2177,7 +2176,7 @@ mod tests {
             assert_eq!(
                 captured.outcomes()[0],
                 Outcome::Unavailable {
-                    reason: replay::cadence::SKIPPED_REASON,
+                    reason: replay_data::cadence::SKIPPED_REASON,
                 }
             );
         }
@@ -2576,7 +2575,7 @@ mod conversion_tests {
         };
         assert!(Arc::ptr_eq(&rows, &previous));
         current.rows.outcome = Outcome::Unavailable {
-            reason: replay::cadence::SKIPPED_REASON,
+            reason: replay_data::cadence::SKIPPED_REASON,
         };
         let before = stats;
         let result = input(&current, Some(&previous), &mut stats);

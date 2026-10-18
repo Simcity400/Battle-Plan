@@ -11,11 +11,11 @@ use dashboard_base::{
     source::Source,
 };
 use dashboard_core::{config::LoadContext, protocol::validate_tag};
-use replay::{
-    container::Replay,
-    format::FormatVersion,
-    frame::{DecodedFrame, Frame, FrameSource, RecordedFrame, TableUpdate, TableView},
-    rows::TableId,
+use replay::container::Replay;
+use replay_data::{format::FormatVersion, rows::TableId};
+use replay_frame::{
+    frame::DecodedFrame, frame::Frame, frame::FrameSource, frame::RecordedFrame,
+    frame::TableUpdate, frame::TableView,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};

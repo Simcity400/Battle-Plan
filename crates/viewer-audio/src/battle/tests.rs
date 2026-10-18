@@ -147,6 +147,10 @@ fn a_missing_distant_effect_silences_every_battle_sound() {
         "the battle sound effect absent is not declared, so no battle plays (the game skips its whole battle-sound update)"
     );
     content.battle = None;
-    assert!(silence(&content).unwrap().contains("defines are unreadable"));
+    assert!(
+        silence(&content)
+            .unwrap()
+            .contains("defines are unreadable")
+    );
     assert_eq!(silence(&declared), None);
 }

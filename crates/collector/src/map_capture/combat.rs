@@ -1,8 +1,8 @@
 //! One original worker capture of map battle rows and their progress visitor.
 use super::{MAP_TABLES, MapCaptured, elapsed, qpc};
 use crate::{extended::combat_progress, table_capture::CaptureRows};
-use engine::{Memory, cland_combat, cnaval_combat, cnaval_combatant, walk::Outcome};
-use replay::rows::TableId;
+use engine_native::{Memory, cland_combat, cnaval_combat, cnaval_combatant, walk::Outcome};
+use replay_data::rows::TableId;
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct CombatReport {

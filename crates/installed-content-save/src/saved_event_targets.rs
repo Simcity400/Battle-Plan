@@ -1,8 +1,8 @@
 //! Every saved event-target record is emitted in order.
 //! No block means an empty registry.
 use super::{block, bytes, field, integer, invalid, null_permitted_handle, scalar};
-use installed_content::parser::Item;
-use replay::rows::GlobalSavedEventTargetRow as Row;
+use installed_content_core::parser::Item;
+use replay_data::rows::GlobalSavedEventTargetRow as Row;
 use std::io;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Target {
@@ -75,7 +75,7 @@ mod tests {
     use super::*;
     #[test]
     fn repeated_names_order_and_omission_follow_writer() {
-        let items=installed_content::parser::parse(b"saved_event_target={ name=x country=AAA } saved_event_target={name=x state=3 character={id=8 type=54}} saved_event_target={}").unwrap();
+        let items=installed_content_core::parser::parse(b"saved_event_target={ name=x country=AAA } saved_event_target={name=x state=3 character={id=8 type=54}} saved_event_target={}").unwrap();
         let rows = parse(&items.items).unwrap();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].country.as_deref(), Some(b"AAA".as_slice()));

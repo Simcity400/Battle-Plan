@@ -20,12 +20,10 @@
 
 use super::tests::{captured, session};
 use super::*;
-use engine::msvc_string::Text;
-use replay::{
-    frame::{FrameDecoder, TableUpdate},
-    rows::TableId,
-    spool::recover_prefix,
-};
+use engine_native::msvc_string::Text;
+use replay::spool::recover_prefix;
+use replay_data::rows::TableId;
+use replay_frame::{frame::FrameDecoder, frame::TableUpdate};
 
 const FIRST_HOUR: i32 = 100;
 const HOURS: i32 = 30;
@@ -59,7 +57,7 @@ fn hour_frame(step: i32) -> Captured {
     source.total_ns = 1_000 + step as u64;
     source.table_ns[TableId::Countries.index()] = 10 + step as u64;
     source.pool_bytes = 4096;
-    source.countries[0] = engine::ccountry::Row {
+    source.countries[0] = engine_native::ccountry::Row {
         politics_witness: None,
         id: 7,
         canonical_slot: 1,
@@ -80,7 +78,7 @@ fn hour_frame(step: i32) -> Captured {
     } else {
         Outcome::Rows { len: 1 }
     };
-    source.links[0] = engine::ccountry::LinkRow {
+    source.links[0] = engine_native::ccountry::LinkRow {
         id: 2,
         canonical_slot: 1,
     };
@@ -92,7 +90,7 @@ fn hour_frame(step: i32) -> Captured {
     } else {
         Outcome::Rows { len: 1 }
     };
-    source.provinces.rows[0] = engine::cprovince::Row {
+    source.provinces.rows[0] = engine_native::cprovince::Row {
         id: 6,
         state: 4,
         owner: 7,
@@ -101,7 +99,7 @@ fn hour_frame(step: i32) -> Captured {
         ..Default::default()
     };
     source.provinces_result = Outcome::Rows { len: 1 };
-    source.states[0] = engine::cstate::Row {
+    source.states[0] = engine_native::cstate::Row {
         id: 4,
         owner: 7,
         controller: 7,
@@ -109,21 +107,21 @@ fn hour_frame(step: i32) -> Captured {
         ..Default::default()
     };
     source.states_result = Outcome::Rows { len: 1 };
-    source.divisions[0] = engine::carmy::Row {
+    source.divisions[0] = engine_native::carmy::Row {
         id: 4713,
         roster_owner: 7,
         logical_owner: 7,
         expeditionary_owner: 0,
         province: 6,
         template: 9,
-        // Whole display steps (replay::display): the wire holds the same
+        // Whole display steps (replay_data::display): the wire holds the same
         // tenths the digest was taken over.
         hit_points: 10_000 * (1_000 - i64::from(step)),
         organisation: 5_000_000,
         orders_group: 0,
         reveal_skip: 0,
     };
-    source.divisions[1] = engine::carmy::Row {
+    source.divisions[1] = engine_native::carmy::Row {
         id: 51,
         hit_points: 9_000_000,
         ..source.divisions[0]
@@ -131,7 +129,7 @@ fn hour_frame(step: i32) -> Captured {
     source.divisions_result = Outcome::Rows {
         len: if (12..16).contains(&step) { 1 } else { 2 },
     };
-    source.wars[0] = engine::cwar_relation::Row {
+    source.wars[0] = engine_native::cwar_relation::Row {
         first_country: 2,
         second_country: 7,
         start_hour: 50,
@@ -144,7 +142,7 @@ fn hour_frame(step: i32) -> Captured {
         first_was_instigator: 1,
     };
     source.wars_result = Outcome::Rows { len: 1 };
-    source.factions[0] = engine::cfaction::Row {
+    source.factions[0] = engine_native::cfaction::Row {
         id: 88,
         name_start: 0,
         name_len: 3,
@@ -153,7 +151,7 @@ fn hour_frame(step: i32) -> Captured {
     source.faction_names[..3].copy_from_slice(b"Axs");
     source.faction_names_len = 3;
     source.factions_result = Outcome::Rows { len: 1 };
-    source.faction_members[0] = engine::cfaction_system::MemberRow {
+    source.faction_members[0] = engine_native::cfaction_system::MemberRow {
         country: 7,
         faction: 88,
         ordinal: 0,
@@ -231,7 +229,7 @@ fn run_campaign(directory: &Path, helpers: usize) -> (u64, Coverage) {
             };
             decoder.apply(&frame).unwrap();
             for (table, update) in TableId::ALL.into_iter().zip(&frame.tables) {
-                if replay::cadence::is_staggered(table)
+                if replay_data::cadence::is_staggered(table)
                     && matches!(update, TableUpdate::Unchanged { .. })
                 {
                     coverage.staggered_unchanged += 1;

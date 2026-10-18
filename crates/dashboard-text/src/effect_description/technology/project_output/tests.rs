@@ -1,7 +1,8 @@
 use super::*;
 use crate::catalogue::tests::{Folder, folder_catalogue};
 use crate::effect_description::tests::{Fixture, fresh};
-use replay::{frame::TableView, rows::*};
+use replay_data::rows::*;
+use replay_frame::frame::TableView;
 
 fn fixture(output: &str) -> (Fixture, Folder) {
     let mut fixture = Fixture::new();
@@ -197,7 +198,7 @@ fn render(fixture: &Fixture, body: &str) -> Description {
 // Output blocks default show_modifiers to yes.
 #[test]
 fn template_output_header_unlocks_limits_and_module_country_gate() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(
         "enable_equipment_modules={mod_forbidden_module mod_module} enable_subunits={mod_unit limit={always=yes}} enable_equipments={mod_equipment} enable_subunits={mod_unit limit={always=no}}",
@@ -212,7 +213,7 @@ fn template_output_header_unlocks_limits_and_module_country_gate() {
 
 #[test]
 fn subunit_unlock_duplicate_keeps_its_first_limit_before_admission() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(
         "enable_subunits={limit={always=no} mod_unit} enable_subunits={limit={always=yes} mod_unit}",
@@ -224,7 +225,7 @@ fn subunit_unlock_duplicate_keeps_its_first_limit_before_admission() {
 
 #[test]
 fn country_effects_use_fresh_owner_root_and_prev() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture("country_effects={custom_effect_tooltip=PROJECT_COUNTRY}");
     let output = render(
@@ -241,7 +242,7 @@ fn country_effects_use_fresh_owner_root_and_prev() {
 
 #[test]
 fn country_output_from_link_preserves_the_project_carrier() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // enters FROM; installs the project there.
     let (fixture, _folder) = fixture("country_effects={FROM={add_project_progress_ratio=0.37}}");
@@ -255,7 +256,7 @@ fn country_output_from_link_preserves_the_project_carrier() {
 
 #[test]
 fn scientist_fallback_uses_roster_order_and_fresh_character_root() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture("scientist_effects={custom_effect_tooltip=PROJECT_SCIENTIST}");
     let output = render(&fixture, "complete_special_project=sp:mod_project");
@@ -277,7 +278,7 @@ fn scientist_fallback_uses_roster_order_and_fresh_character_root() {
 
 #[test]
 fn effects_keep_country_scientist_facility_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(
         "country_effects={custom_effect_tooltip=PROJECT_COUNTRY} scientist_effects={custom_effect_tooltip=PROJECT_SCIENTIST} facility_state_effects={custom_effect_tooltip=PROJECT_FACILITY}",
@@ -292,7 +293,7 @@ fn effects_keep_country_scientist_facility_order() {
 
 #[test]
 fn unrostered_scientist_refusal_preserves_country_output() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(
         "country_effects={custom_effect_tooltip=PROJECT_COUNTRY} scientist_effects={custom_effect_tooltip=PROJECT_SCIENTIST}",
@@ -322,7 +323,7 @@ fn unrostered_scientist_refusal_preserves_country_output() {
 
 #[test]
 fn facility_selector_precedes_specialization_and_injects_stored_province_id() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) =
         fixture("facility_state_effects={custom_effect_tooltip=PROJECT_FACILITY}");
@@ -345,7 +346,7 @@ fn facility_selector_precedes_specialization_and_injects_stored_province_id() {
 
 #[test]
 fn project_output_reuses_equipment_and_subunit_bonus_formatters() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(
         "equipment_bonus={mod_equipment={soft_attack=0.2}} sub_unit_bonus={mod_unit={soft_attack=0.1}} enable_equipments={mod_equipment}",

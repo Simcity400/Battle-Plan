@@ -3,7 +3,8 @@ use std::{collections::BTreeMap, io, sync::Arc};
 
 use super::shader_sources;
 use eframe::wgpu::{self, util::DeviceExt};
-use installed_content::{ResolvedLayers, image::native::Decode, pdxshader::program::Stage};
+use installed_content_core::{ResolvedLayers, pdxshader::program::Stage};
+use installed_content_image::native::Decode;
 use shader_pipeline::{binding, gpu, library::Effect};
 
 // The receiver owns the depth/stencil attachment.

@@ -3,12 +3,9 @@ use super::{
     Checkpoint, Current, Position, Progress, decode_checkpoint, gap_reason, header, invalid,
     section, validate_selection,
 };
-use replay::{
-    BranchId, Hour,
-    container::{Parallel, Replay},
-    frame::{DecodedFrame, Frame, FrameDecoder, TableView},
-    rows::{TableId, tables},
-};
+use replay::{container::Parallel, container::Replay};
+use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::Frame, frame::FrameDecoder, frame::TableView};
 use std::{io, sync::Arc, time::Instant};
 use store::{SourceKey, Store};
 

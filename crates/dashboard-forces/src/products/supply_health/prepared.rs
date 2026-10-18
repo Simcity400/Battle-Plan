@@ -31,7 +31,7 @@ fn sample(
         .filter_map(|row| std::str::from_utf8(&row.tag).ok().map(str::to_owned))
         .collect::<Vec<_>>();
     let mut scan = Scan::new(&tags);
-    scan.format = replay::format::FormatVersion::CURRENT;
+    scan.format = replay_data::format::FormatVersion::CURRENT;
     if let Some(defines) = defines {
         scan.observe(frame, defines)?;
     } else {
@@ -127,7 +127,7 @@ impl Prepared {
         frame: &DecodedFrame,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
-        let cpu = ::replay::cpu::scope_phase("supply:series_observe");
+        let cpu = ::replay_frame::cpu::scope_phase("supply:series_observe");
         for values in &mut self.values {
             values.advance(frame.hour)?;
         }
@@ -168,7 +168,7 @@ impl Prepared {
         if !self.scan.observe_changes(frame, defines, Some(changes))? {
             return Ok(());
         }
-        let _cpu = ::replay::cpu::scope_phase("supply:projection_series");
+        let _cpu = ::replay_frame::cpu::scope_phase("supply:projection_series");
         let observed = self
             .scan
             .observed
@@ -234,7 +234,7 @@ impl Prepared {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("supply:series_flush");
+        let _cpu = ::replay_frame::cpu::scope_phase("supply:series_flush");
         self.scan.seal();
         self.runs
             .flush(writer, &format!("supply-runs-{branch}"), 0, cancelled)?;

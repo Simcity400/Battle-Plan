@@ -48,7 +48,7 @@ impl Credits {
     }
     pub(super) fn try_new(divisions: usize, entries: usize) -> std::io::Result<Self> {
         let heads = FixedIndex::try_new(divisions)?;
-        let mut nodes = engine::allocation::vec(entries)?;
+        let mut nodes = engine_allocation::vec(entries)?;
         nodes.resize(
             entries,
             Node {

@@ -2,7 +2,8 @@
 //! charges, daily evaluated rates/components or execution provenance.
 use super::{Report, TokenNames, complete, invalid, required_country_tag};
 use installed_content_save::Save;
-use replay::{frame::DecodedFrame, rows::*};
+use replay_data::rows::*;
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 pub fn compare(
     frame: &DecodedFrame,
@@ -299,7 +300,7 @@ mod tests {
     }
     #[test]
     fn fresh_save_certifies_endpoints_and_requires_every_live_country() {
-        use replay::frame::TableView;
+        use replay_frame::frame::TableView;
         let (mut frame, save, _, _) = super::super::fixtures::fixture();
         *frame.tables[TableId::PoliticsCaptureCoverage.index()] =
             TableView::Complete(TableRows::PoliticsCaptureCoverage(vec![

@@ -1,5 +1,5 @@
 use super::*;
-use engine::allocation;
+use engine_allocation as allocation;
 
 pub(crate) const WING_PACK_N: usize = 2;
 /// Most parts the AirWing census is walked in: the pool runs no more jobs at
@@ -28,7 +28,7 @@ pub(crate) struct AirWingJob {
     pub(super) equipment: Vec<rows::WingEquipmentRow>,
     pub(super) cumulative: Vec<cair_wing::CumulativeRow>,
     pub(super) memberships: Vec<WingMembershipRead>,
-    pub(crate) naval_memberships: Vec<engine::ctheatre::WingMembership>,
+    pub(crate) naval_memberships: Vec<engine_native::ctheatre::WingMembership>,
     pub(crate) naval_membership_outcome: Outcome,
     pub(crate) game_score: crate::extended::game_score::AirInputs,
     pub(super) game_score_enabled: bool,
@@ -342,7 +342,7 @@ impl<M: Memory> WingMemory<'_, M> {
     }
 }
 impl<M: Memory> Memory for WingMemory<'_, M> {
-    fn read_scalar<T: engine::memory::Raw>(&self, address: usize) -> Option<T> {
+    fn read_scalar<T: engine_native::memory::Raw>(&self, address: usize) -> Option<T> {
         let value = self.inner.read_scalar::<T>(address);
         if value.is_some() {
             self.count(size_of::<T>());
@@ -393,8 +393,8 @@ impl<M: Memory> Memory for WingMemory<'_, M> {
     }
     fn copy_records(
         &self,
-        sources: engine::memory::RecordSources<'_>,
-        layout: &engine::memory::RecordLayout<'_>,
+        sources: engine_native::memory::RecordSources<'_>,
+        layout: &engine_native::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         let completed = self.inner.copy_records(sources, layout, destination);
@@ -486,9 +486,9 @@ fn walk_air_part(
     job.clear();
     job.growing = growing;
     job.cumulative_active =
-        replay::cadence::should_walk(TableId::WingCumulative, ctx.hour, ctx.force_full);
+        replay_data::cadence::should_walk(TableId::WingCumulative, ctx.hour, ctx.force_full);
     job.theatres_active =
-        replay::cadence::should_walk(TableId::AirTheatreMembers, ctx.hour, ctx.force_full);
+        replay_data::cadence::should_walk(TableId::AirTheatreMembers, ctx.hour, ctx.force_full);
     job.limits = ctx.limits;
     if !job.cumulative_active {
         job.limits[2] = 0;
@@ -545,14 +545,14 @@ fn walk_air_part(
     let score = std::cell::RefCell::new(&mut job.game_score);
     let mut map_len = 0;
     let map_rows = if growing {
-        engine::walk::Buffer::Growing(&mut job.map_rows)
+        engine_native::walk::Buffer::Growing(&mut job.map_rows)
     } else {
-        engine::walk::Buffer::Fixed(&mut job.map_rows[..ctx.limits[0]])
+        engine_native::walk::Buffer::Fixed(&mut job.map_rows[..ctx.limits[0]])
     };
     let sources = if growing {
-        engine::walk::Buffer::Growing(&mut job.sources)
+        engine_native::walk::Buffer::Growing(&mut job.sources)
     } else {
-        engine::walk::Buffer::Fixed(&mut job.sources)
+        engine_native::walk::Buffer::Fixed(&mut job.sources)
     };
     let walked = cair_wing::walk_shared_game_score_buffers_with_owners(
         &source,
@@ -610,9 +610,9 @@ fn walk_air_part(
             if admitted.sources && !matches!(equipment, Outcome::Unavailable { .. }) {
                 source.mask.set(1);
                 let output = if growing {
-                    engine::walk::Buffer::Growing(&mut job.equipment)
+                    engine_native::walk::Buffer::Growing(&mut job.equipment)
                 } else {
-                    engine::walk::Buffer::Fixed(&mut job.equipment[..ctx.limits[1]])
+                    engine_native::walk::Buffer::Fixed(&mut job.equipment[..ctx.limits[1]])
                 };
                 let (next, required) = read_equipment_carried(
                     &source,
@@ -629,9 +629,9 @@ fn walk_air_part(
                 reads.select(TableId::WingCumulative);
                 source.mask.set(2);
                 let mut output = if growing {
-                    engine::walk::Buffer::Growing(&mut job.cumulative)
+                    engine_native::walk::Buffer::Growing(&mut job.cumulative)
                 } else {
-                    engine::walk::Buffer::Fixed(&mut job.cumulative[..ctx.limits[2]])
+                    engine_native::walk::Buffer::Fixed(&mut job.cumulative[..ctx.limits[2]])
                 };
                 let required = cumulative.len().saturating_add(1);
                 cumulative_required = required;
@@ -655,7 +655,7 @@ fn walk_air_part(
             }
             if job.theatres_active && (admitted.map || admitted.naval) {
                 if growing
-                    && engine::walk::Buffer::Growing(&mut job.memberships)
+                    && engine_native::walk::Buffer::Growing(&mut job.memberships)
                         .ensure(membership_len + 1)
                         .is_err()
                 {
@@ -665,7 +665,7 @@ fn walk_air_part(
                 source.mask.set(0);
                 let started = qpc();
                 job.memberships[membership_len] =
-                    match engine::ctheatre::read_wing_membership(&source, pointer, row) {
+                    match engine_native::ctheatre::read_wing_membership(&source, pointer, row) {
                         Ok(value) => WingMembershipRead { value, error: None },
                         Err(reason) => WingMembershipRead {
                             error: Some(reason),
@@ -1105,9 +1105,9 @@ fn copy_air_refresh_inner(
 ) -> AirWingCopyReport {
     let started = qpc();
     let cumulative_active =
-        replay::cadence::should_walk(TableId::WingCumulative, ctx.hour, ctx.force_full);
+        replay_data::cadence::should_walk(TableId::WingCumulative, ctx.hour, ctx.force_full);
     let theatres_active =
-        replay::cadence::should_walk(TableId::AirTheatreMembers, ctx.hour, ctx.force_full);
+        replay_data::cadence::should_walk(TableId::AirTheatreMembers, ctx.hour, ctx.force_full);
     let mut limits = ctx.limits;
     if !cumulative_active {
         limits[2] = 0;

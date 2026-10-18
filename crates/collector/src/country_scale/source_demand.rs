@@ -1,7 +1,7 @@
 //! Advisory source storage from native headers before attach and on demand cadence.
 use super::{DemandFailures, Sizing, demand_game_state, raise, table_demand};
 use crate::extended;
-use engine::{Memory, cgame_state, cpdx_array::Array};
+use engine_native::{Memory, cgame_state, cpdx_array::Array};
 
 const NAMES: [&str; 10] = [
     "world",
@@ -58,7 +58,7 @@ impl Demand {
             .and_then(|address| Array::read(memory, address, 4))
             .map(|array| array.count as usize)
             .ok_or("source demand country links invalid");
-        let factions = engine::cfaction::walk(memory, base, state, &mut [], &mut []);
+        let factions = engine_native::cfaction::walk(memory, base, state, &mut [], &mut []);
         let faction_rows =
             table_demand::rows(factions.outcome).map(|rows| (rows, factions.required_bytes));
         Ok(Some(Self {
@@ -66,13 +66,16 @@ impl Demand {
             links: FAILURES[2].observe(links),
             provinces: FAILURES[3].observe(indexed(cgame_state::PROVINCES, 8)),
             states: FAILURES[4].observe(indexed(cgame_state::STATES, 8)),
-            state_names: FAILURES[5].observe(engine::cstate::name_demand(memory, base, state)),
+            state_names: FAILURES[5]
+                .observe(engine_native::cstate::name_demand(memory, base, state)),
             factions: FAILURES[6].observe(faction_rows),
             faction_members: FAILURES[7].observe(table_demand::rows(
-                engine::cfaction_system::walk_members(memory, base, state, &mut []),
+                engine_native::cfaction_system::walk_members(memory, base, state, &mut []),
             )),
-            wars: FAILURES[8].observe(engine::cwar_relation::row_demand(memory, base, state)),
-            groups: FAILURES[9].observe(engine::cprovince::conflict_group_demand(
+            wars: FAILURES[8].observe(engine_native::cwar_relation::row_demand(
+                memory, base, state,
+            )),
+            groups: FAILURES[9].observe(engine_native::cprovince::conflict_group_demand(
                 memory, base, state,
             )),
         }))

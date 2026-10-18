@@ -1,6 +1,6 @@
 //! Authored aircraft scenario callbacks and entity-clock requests.
 use super::entity_animation::Request;
-use installed_content::mesh;
+use installed_content_core::mesh;
 
 pub fn callback(id: &str, side: u8, track: usize, count: usize) -> Option<u32> {
     let bytes = id.as_bytes();
@@ -18,7 +18,7 @@ pub fn callback(id: &str, side: u8, track: usize, count: usize) -> Option<u32> {
         bytes
     };
     let state = if rest.first().is_some_and(u8::is_ascii_digit) {
-        let number = installed_content::fixed5::decimal_i32(rest);
+        let number = installed_content_core::fixed5::decimal_i32(rest);
         if number > 0 && number as usize <= count && number as usize != track + 1 {
             return None;
         }

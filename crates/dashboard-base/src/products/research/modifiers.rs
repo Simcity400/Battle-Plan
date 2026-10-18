@@ -1,6 +1,6 @@
 //! Derive research speed from recorded hourly operands, never staggered tables.
 use crate::{ResearchModifier, ResearchModifierSource, ResearchModifiers};
-use replay::rows::{ResearchInputRow, ResearchModifierRow as R};
+use replay_data::{rows::ResearchInputRow, rows::ResearchModifierRow as R};
 
 pub(super) fn breakdown(input: &ResearchInputRow, rows: Option<&[R]>) -> Option<ResearchModifiers> {
     if input.technology_present == 0 {
@@ -295,7 +295,7 @@ mod tests {
             country: 7,
             index: 0,
             technology_handle: 22,
-            database_index: replay::rows::Recorded::Value(22),
+            database_index: replay_data::rows::Recorded::Value(22),
             technology_present: 1,
             token: b"radio".to_vec(),
             cost_raw: 100_000,

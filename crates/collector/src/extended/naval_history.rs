@@ -21,18 +21,19 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows, bounded, grow_capacity, grow_vec},
 };
-use engine::allocation::{collect_vec, copy_vec, default_vec, owned_vec, resize_default};
-use engine::{
-    Memory, cair_group, cair_theatre, cair_wing, cdominance_values, cgame_date, cgame_state,
-    cnaval_combat_results, cnaval_region_dominance, corders_group, cpdx_array::Array, cprovince,
-    cprovince_railway_info, crailway_manager, cstrategic_region, csub_unit_definition,
-    csunk_convoy_info, csunk_ship_info, ctheater_group, ctheatre, msvc_string,
-    naval_dominance_entry, rail_neighbor, walk::Outcome,
+use engine_allocation::{collect_vec, copy_vec, default_vec, owned_vec, resize_default};
+use engine_native::{
+    Memory, cair_group, cair_theatre, cair_wing, cgame_date, cgame_state, corders_group,
+    cpdx_array::Array, cprovince, cstrategic_region, csub_unit_definition, ctheater_group,
+    ctheatre, msvc_string, walk::Outcome,
 };
-use replay::{
-    frame::TableView,
-    rows::{self, TableId, TableRows, tables},
+use engine_naval_history::{
+    cdominance_values, cnaval_combat_results, cnaval_region_dominance, csunk_convoy_info,
+    csunk_ship_info, naval_dominance_entry,
 };
+use engine_railways::{cprovince_railway_info, crailway_manager, rail_neighbor};
+use replay_data::{rows, rows::TableId, rows::TableRows, rows::tables};
+use replay_frame::frame::TableView;
 
 pub const N: usize = 17;
 pub const TABLES: [TableId; N] = [
@@ -101,7 +102,7 @@ impl Capacities {
         state: usize,
     ) -> Result<(), &'static str> {
         use crate::country_scale::table_demand::rows;
-        use engine::walk::Buffer;
+        use engine_native::walk::Buffer;
         let mut failure = None;
         let mut accept = |slot: usize, outcome: Outcome| match rows(outcome) {
             Ok(required) => self.rows[slot] = self.rows[slot].max(required),
@@ -340,7 +341,7 @@ impl RailPart {
         self.reset();
         let active = |table| {
             failed(
-                replay::cadence::should_walk(table, hour, force_full),
+                replay_data::cadence::should_walk(table, hour, force_full),
                 reason,
             )
         };
@@ -451,7 +452,7 @@ pub struct Captured {
 }
 
 const SKIPPED: Outcome = Outcome::Unavailable {
-    reason: replay::cadence::SKIPPED_REASON,
+    reason: replay_data::cadence::SKIPPED_REASON,
 };
 
 fn reserved_raw_demand(count: Option<u32>) -> Option<(usize, usize)> {
@@ -637,7 +638,8 @@ impl Captured {
 
     /// Freeze the requested tables before contexts and shared map callbacks.
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
-        self.active = TABLES.map(|table| replay::cadence::should_walk(table, hour, force_full));
+        self.active =
+            TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
     }
 
     /// The daily theatre details; LandTheatres headers are walked every hour.
@@ -1283,7 +1285,7 @@ impl Captured {
         self.capture_reserved_land(
             memory,
             base,
-            engine::ccountry::read_reserved_root(memory, base, game_state),
+            engine_native::ccountry::read_reserved_root(memory, base, game_state),
             None,
             None,
         );
@@ -1314,7 +1316,7 @@ impl Captured {
         &mut self,
         memory: &impl Memory,
         base: usize,
-        root: Result<engine::ccountry::Country, &'static str>,
+        root: Result<engine_native::ccountry::Country, &'static str>,
         prior_rosters: Option<(&RawLog<NAVAL_PACK_N>, usize)>,
         staging_refusal: Option<&'static str>,
     ) {
@@ -1326,7 +1328,7 @@ impl Captured {
         &mut self,
         memory: &impl Memory,
         base: usize,
-        root: Result<engine::ccountry::Country, &'static str>,
+        root: Result<engine_native::ccountry::Country, &'static str>,
         prior_rosters: Option<(&RawLog<NAVAL_PACK_N>, usize)>,
         staging_refusal: Option<&'static str>,
         growing: bool,
@@ -1344,7 +1346,7 @@ impl Captured {
                     memory,
                     base,
                     root,
-                    engine::walk::Buffer::Fixed(&mut []),
+                    engine_native::walk::Buffer::Fixed(&mut []),
                     |_, _| Ok(()),
                 );
                 self.reserved_land_required_rows = walk.required_rows;
@@ -1371,9 +1373,9 @@ impl Captured {
             base,
             root,
             if growing {
-                engine::walk::Buffer::GrowingFrom(&mut self.land.rows, positive_len)
+                engine_native::walk::Buffer::GrowingFrom(&mut self.land.rows, positive_len)
             } else {
-                engine::walk::Buffer::Fixed(&mut self.land.rows[positive_len..])
+                engine_native::walk::Buffer::Fixed(&mut self.land.rows[positive_len..])
             },
             |theatre, handle| {
                 if !oob_finished {
@@ -1819,11 +1821,11 @@ impl Captured {
     }
 }
 
-fn storage_buffer<T>(values: &mut Vec<T>, growing: bool) -> engine::walk::Buffer<'_, T> {
+fn storage_buffer<T>(values: &mut Vec<T>, growing: bool) -> engine_native::walk::Buffer<'_, T> {
     if growing {
-        engine::walk::Buffer::Growing(values)
+        engine_native::walk::Buffer::Growing(values)
     } else {
-        engine::walk::Buffer::Fixed(values)
+        engine_native::walk::Buffer::Fixed(values)
     }
 }
 

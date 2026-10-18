@@ -20,7 +20,8 @@ use crate::{
     states,
     terrain::DefaultMap,
 };
-use replay::{frame::DecodedFrame, rows::tables};
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 
 /// Each authored state's continent: `None` is the native null-continent entry,
 /// including a state with no province whose continent index is valid.

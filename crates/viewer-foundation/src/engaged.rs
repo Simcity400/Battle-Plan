@@ -45,7 +45,8 @@
 //! transfer owners) until the next one.
 
 use crate::map::visibility::Relations;
-use replay::{frame::DecodedFrame, rows::TableId};
+use replay_data::rows::TableId;
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 
 /// One hour's sides of one combat kind.

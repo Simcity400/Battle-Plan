@@ -13,7 +13,8 @@ doctest = false
 test-support = []
 
 [dependencies]
-engine.workspace = true
+engine-mutations.workspace = true
+engine-native.workspace = true
 serde = { workspace = true, features = ["derive"] }
 collector-status.workspace = true
 collector-hooks.workspace = true

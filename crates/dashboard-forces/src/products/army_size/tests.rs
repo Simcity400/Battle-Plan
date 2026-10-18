@@ -4,13 +4,11 @@ use dashboard_base::{
     source::SourceKey,
     test_fixtures::{CAMPAIGN, records},
 };
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{
-        CountryLinkRow, CountryRow, DivisionCensusRow, DivisionTemplateIconRow, LexicalTokenRow,
-        TableRows, TemplateSubunit,
-    },
+use replay_data::{
+    rows::CountryLinkRow, rows::CountryRow, rows::DivisionCensusRow, rows::DivisionTemplateIconRow,
+    rows::LexicalTokenRow, rows::TableRows, rows::TemplateSubunit,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 pub(super) fn opened(frames: Vec<DecodedFrame>) -> Source {
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
@@ -188,7 +186,7 @@ fn army_size_large_selections_and_branch_cache_keep_every_recorded_country() {
 
 #[test]
 fn army_size_scoreboard_agrees_with_product_for_every_measure_and_attribution() {
-    use replay::rows::{DivisionLandInputsRow, DivisionManpowerContributor};
+    use replay_data::{rows::DivisionLandInputsRow, rows::DivisionManpowerContributor};
     let source = opened(
         [100, 101, 103]
             .into_iter()
@@ -870,7 +868,7 @@ fn army_size_compact_wire_contract_has_optional_composition() {
 
 #[test]
 fn army_size_incremental_hp_and_template_edits_do_only_changed_row_work() {
-    use replay::frame::FrameEncoder;
+    use replay_frame::frame::FrameEncoder;
     let mut hp = frame(101);
     if let TableView::Complete(TableRows::Divisions(rows)) =
         &mut *hp.tables[TableId::Divisions.index()]
@@ -935,7 +933,7 @@ fn army_size_incremental_hp_and_template_edits_do_only_changed_row_work() {
 
 #[test]
 fn army_size_incremental_transfers_deletions_and_missing_templates_preserve_totals() {
-    use replay::frame::FrameEncoder;
+    use replay_frame::frame::FrameEncoder;
     let mut transferred = frame(101);
     if let TableView::Complete(TableRows::Divisions(rows)) =
         &mut *transferred.tables[TableId::Divisions.index()]
@@ -1012,7 +1010,7 @@ fn army_size_incremental_transfers_deletions_and_missing_templates_preserve_tota
 
 #[test]
 fn army_size_incremental_bad_baselines_stay_missing_until_snapshot_recovery() {
-    use replay::frame::FrameEncoder;
+    use replay_frame::frame::FrameEncoder;
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&scan_tables(true));
     let mut state = ScanState::new(true);
@@ -1050,7 +1048,8 @@ fn army_size_incremental_bad_baselines_stay_missing_until_snapshot_recovery() {
 
 #[test]
 fn army_size_windows_rank_mid_window_entries_and_never_rank_outside_history() {
-    use replay::{frame::FrameEncoder, spool::Record};
+    use replay::spool::Record;
+    use replay_frame::frame::FrameEncoder;
     let mut middle = frame(101);
     if let TableView::Complete(TableRows::DivisionCensus(rows)) =
         &mut *middle.tables[TableId::DivisionCensus.index()]
@@ -1238,7 +1237,7 @@ fn full_inventory_at(
 
 #[test]
 fn army_size_inventory_matches_full_recompute_at_every_step() {
-    use replay::frame::FrameEncoder;
+    use replay_frame::frame::FrameEncoder;
     let mut initial = frame(100);
     if let TableView::Complete(TableRows::DivisionTemplateIcons(rows)) =
         &mut *initial.tables[TableId::DivisionTemplateIcons.index()]
@@ -1369,7 +1368,7 @@ fn army_size_inventory_matches_full_recompute_at_every_step() {
 
 #[test]
 fn army_size_invalid_sparse_rows_name_the_gap_and_preserve_census() {
-    use replay::frame::FrameEncoder;
+    use replay_frame::frame::FrameEncoder;
     let source = opened(vec![frame(100), frame(101)]);
     let mut encoder = FrameEncoder::new();
     let mut bad = encoder.encode(frame(100), false).unwrap();
@@ -1423,7 +1422,7 @@ fn army_size_invalid_sparse_rows_name_the_gap_and_preserve_census() {
 
 #[test]
 fn army_size_manpower_native_total_owner_host_and_missing_input() {
-    use replay::rows::{DivisionLandInputsRow, DivisionManpowerContributor};
+    use replay_data::{rows::DivisionLandInputsRow, rows::DivisionManpowerContributor};
     let mut first = frame(100);
     *first.tables[TableId::DivisionLandInputs.index()] =
         TableView::Complete(TableRows::DivisionLandInputs(vec![

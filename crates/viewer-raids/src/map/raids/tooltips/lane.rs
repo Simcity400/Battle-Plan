@@ -2,7 +2,7 @@
 //! content and frame Arc identity bind results to their complete inputs.
 use super::{Content, Key, Tooltip};
 use eframe::egui;
-use replay::frame::DecodedFrame;
+use replay_frame::frame::DecodedFrame;
 use std::sync::{Arc, Condvar, Mutex};
 
 #[derive(Clone)]
@@ -135,7 +135,7 @@ mod tests {
             branch: 0,
             hour: 10,
             tables: std::array::from_fn(|_| {
-                replay::frame::TableView::Unavailable {
+                replay_frame::frame::TableView::Unavailable {
                     reason: "not sampled".into(),
                 }
                 .into()

@@ -2,11 +2,12 @@ use super::*;
 use crate::effect_description::tests::Fixture;
 use crate::scripted_text::{EventObject, EventScope, Link};
 use EventObject::{Country as C, State as S};
-use replay::{frame::TableView, rows::*};
+use replay_data::rows::*;
+use replay_frame::frame::TableView;
 
 #[test]
 fn state_category_description_uses_cached_validity_and_operand_spelling() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
@@ -98,7 +99,7 @@ fn state_category_description_uses_cached_validity_and_operand_spelling() {
 
 #[test]
 fn state_content_descriptions_use_cached_names() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
@@ -182,7 +183,7 @@ fn state_content_descriptions_use_cached_names() {
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
             scope_kind: 1,
             scope_id: 100,
-            seed: replay::rows::Recorded::Value(None),
+            seed: replay_data::rows::Recorded::Value(None),
             entries: vec![
                 ScriptVariableEntry {
                     name: b"syn_amount".to_vec(),
@@ -501,7 +502,7 @@ fn state_content_descriptions_use_cached_names() {
 
 #[test]
 fn state_content_province_display_uses_fallbacks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
@@ -636,7 +637,7 @@ fn state_content_province_display_uses_fallbacks() {
 
 #[test]
 fn state_effect_zero_keeps_target() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     for (body, expected) in [
@@ -654,7 +655,7 @@ fn state_effect_zero_keeps_target() {
 
 #[test]
 fn reserved_country_names_describe_omitted_country_operands() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.catalogue.localisation = fixture
@@ -734,7 +735,7 @@ fn reserved_country_names_describe_omitted_country_operands() {
 
 #[test]
 fn country_effect_state_links_use_recorded_owner() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.catalogue.localisation = fixture
@@ -796,7 +797,7 @@ fn country_effect_state_links_use_recorded_owner() {
 
 #[test]
 fn states_branches() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
@@ -902,7 +903,7 @@ fn states_branches() {
             ScriptVariablesRow {
                 scope_kind: 1,
                 scope_id: 100,
-                seed: replay::rows::Recorded::Value(None),
+                seed: replay_data::rows::Recorded::Value(None),
                 entries: vec![ScriptVariableEntry {
                     name: b"syn".to_vec(),
                     value_raw: 249_999,
@@ -911,7 +912,7 @@ fn states_branches() {
             ScriptVariablesRow {
                 scope_kind: 2,
                 scope_id: 1,
-                seed: replay::rows::Recorded::Value(None),
+                seed: replay_data::rows::Recorded::Value(None),
                 entries: vec![ScriptVariableEntry {
                     name: b"syn".to_vec(),
                     value_raw: 249_999,
@@ -925,12 +926,12 @@ fn states_branches() {
             active: 0,
             ..Default::default()
         }]));
-    let mut names = installed_content::key_names::KeyNames::default();
+    let mut names = installed_content_core::key_names::KeyNames::default();
     names
         .countries
         .extend([b"AAA".to_vec(), b"BBB".to_vec(), b"CCC".to_vec()]);
     names.counts.buildings.insert(b"syn_mill".to_vec());
-    let resources = [installed_content::resources::Resource {
+    let resources = [installed_content_core::resources::Resource {
         token: "syn_ore".into(),
         icon_frame: Some(7),
     }];
@@ -1537,7 +1538,7 @@ fn states_branches() {
             out.refusals
         );
         if let Some(reason) = refusal {
-            let parsed = installed_content::parser::parse(body.as_bytes()).unwrap();
+            let parsed = installed_content_core::parser::parse(body.as_bytes()).unwrap();
             let effect_key = key(&parsed.items[0]);
             assert!(
                 out.refusals
@@ -1584,7 +1585,7 @@ fn states_branches() {
 
 #[test]
 fn state_tables_refuse_gaps_and_country_names_scale() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     for (table, rows, body, name) in [

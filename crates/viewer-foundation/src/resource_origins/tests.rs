@@ -126,7 +126,7 @@ fn a_rights_holder_without_an_origin_is_refused_by_name() {
     let mut frame = frame();
     put(
         &mut frame,
-        replay::rows::TableRows::ResourceRights(vec![replay::rows::ResourceRightRow {
+        replay_data::rows::TableRows::ResourceRights(vec![replay_data::rows::ResourceRightRow {
             ordinal: 0,
             state: GRANTED,
             resource: 1,

@@ -1,9 +1,7 @@
 //! Pure native identity projections shared by agency and operation consumers.
 use dashboard_text::metadata::recorded_rows;
-use replay::{
-    frame::DecodedFrame,
-    rows::{AgencyUpgradeLevelRow, tables},
-};
+use replay_data::{rows::AgencyUpgradeLevelRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 pub(super) struct CapturedAgencyUpgrade {
     /// Native array ordinal at this read, not a persistent upgrade identity.
@@ -31,8 +29,9 @@ pub(super) fn literal(frame: &DecodedFrame, token: Option<u32>) -> Option<String
 }
 
 pub(super) fn upgrade(frame: &DecodedFrame, row: &AgencyUpgradeLevelRow) -> CapturedAgencyUpgrade {
-    let identity_reason = (row.identity_status != engine::agency_upgrade_levels::AUTHENTICATED)
-        .then(|| engine::agency_upgrade_levels::status_name(row.identity_status).to_owned());
+    let identity_reason = (row.identity_status
+        != engine_native::agency_upgrade_levels::AUTHENTICATED)
+        .then(|| engine_native::agency_upgrade_levels::status_name(row.identity_status).to_owned());
     CapturedAgencyUpgrade {
         ordinal: row.ordinal,
         definition_pointer: row.definition_pointer.to_string(),
@@ -50,10 +49,8 @@ pub(super) fn upgrade(frame: &DecodedFrame, row: &AgencyUpgradeLevelRow) -> Capt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::TableView,
-        rows::{LexicalTokenRow, TableId, TableRows},
-    };
+    use replay_data::{rows::LexicalTokenRow, rows::TableId, rows::TableRows};
+    use replay_frame::frame::TableView;
 
     #[test]
     fn acquired_identity_keeps_signed_raw_operands_and_names_its_refusal() {
@@ -77,7 +74,7 @@ mod tests {
             upgrade_token: Some(7),
             branch_token: Some(8),
             level: -3,
-            identity_status: engine::agency_upgrade_levels::DEFINITION_NOT_REGISTERED,
+            identity_status: engine_native::agency_upgrade_levels::DEFINITION_NOT_REGISTERED,
         };
         let value = upgrade(&frame, &row);
         assert_eq!((value.ordinal, value.level), (2, -3));
@@ -87,7 +84,7 @@ mod tests {
         assert_eq!(value.branch_literal.as_deref(), Some("mod_branch"));
         assert_eq!(
             value.identity_reason.as_deref(),
-            Some(engine::agency_upgrade_levels::status_name(
+            Some(engine_native::agency_upgrade_levels::status_name(
                 row.identity_status
             ))
         );

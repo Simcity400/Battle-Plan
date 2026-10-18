@@ -74,7 +74,7 @@ struct Published {
     country: Option<u32>,
     state_owner: Option<u32>,
     repair_levels: i32,
-    building: Option<replay::rows::BuildingRow>,
+    building: Option<replay_data::rows::BuildingRow>,
 }
 #[derive(Default)]
 pub(super) struct OutputCheck {
@@ -122,7 +122,7 @@ impl OutputCheck {
         );
         self.output_handles.extend(rows.iter().map(|r| r.line));
         for row in rows {
-            if let replay::rows::Recorded::Value(Some(event)) = row.completion {
+            if let replay_data::rows::Recorded::Value(Some(event)) = row.completion {
                 let absent = !buildings.iter().any(|r| r.id == row.line)
                     && !railways.iter().any(|r| r.id == row.line);
                 if !row.ended
@@ -305,7 +305,7 @@ impl OutputCheck {
                         // The game also adds BASE_FACTORY_REPAIR at zero IC;
                         // zero-IC repair advances are therefore retained as ticks.
                         let gain = (i128::from(new.healthy_level) - i128::from(old.healthy_level))
-                            * i128::from(engine::cbuilding::PARTIAL_HEALTH_PER_LEVEL)
+                            * i128::from(engine_native::cbuilding::PARTIAL_HEALTH_PER_LEVEL)
                             + i128::from(new.partial_health)
                             - i128::from(old.partial_health);
                         if gain > 0 && new.level == old.level {
@@ -342,12 +342,13 @@ impl OutputCheck {
                     // Script effects can also update levels without spending
                     // this line's IC or consuming its remaining count.
                     let reset = match (&a.count_reset, &b.count_reset) {
-                        (replay::rows::Recorded::Value(a), replay::rows::Recorded::Value(b)) => {
-                            Some(i128::from(*b) - i128::from(*a))
-                        }
                         (
-                            replay::rows::Recorded::NotRecorded,
-                            replay::rows::Recorded::NotRecorded,
+                            replay_data::rows::Recorded::Value(a),
+                            replay_data::rows::Recorded::Value(b),
+                        ) => Some(i128::from(*b) - i128::from(*a)),
+                        (
+                            replay_data::rows::Recorded::NotRecorded,
+                            replay_data::rows::Recorded::NotRecorded,
                         ) => None,
                         _ => {
                             report.difference(

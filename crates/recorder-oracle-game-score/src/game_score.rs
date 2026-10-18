@@ -3,10 +3,8 @@
 use std::{collections::BTreeMap, io};
 
 use installed_content_save::{PartialMapMembership, ProvinceMembership, Save};
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryGameScoreInputRow, CountryRow, tables},
-};
+use replay_data::{rows::CountryGameScoreInputRow, rows::CountryRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::{Report, complete, invalid};
 

@@ -9,10 +9,8 @@ use std::{
     io,
 };
 
-use replay::{
-    frame::DecodedFrame,
-    rows::{AirBaseRow, AirReferenceWitnessRow, tables},
-};
+use replay_data::{rows::AirBaseRow, rows::AirReferenceWitnessRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use crate::map::tables::{Available, rows};
 
@@ -57,7 +55,7 @@ impl AirRegistrySources {
                     host: row.host.unwrap_or(0),
                     // Only the roster records capacity; the map does not use it.
                     capacity: 0,
-                    carrier: replay::rows::Recorded::NotRecorded,
+                    carrier: replay_data::rows::Recorded::NotRecorded,
                 },
                 None => manager
                     .and_then(|rows| {

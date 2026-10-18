@@ -1,8 +1,11 @@
 //! Retained native unit names, shared by political counters, combat entries,
 //! scripted UNIT names and recorded-unit products.
 
-use installed_content::{division_names::Database, localisation::Localisation};
-use replay::rows::{DivisionStatusRow, NameOperands, Recorded, TaskForceCounterInputRow};
+use installed_content_division_names::division_names::Database;
+use installed_content_localisation::localisation::Localisation;
+use replay_data::{
+    rows::DivisionStatusRow, rows::NameOperands, rows::Recorded, rows::TaskForceCounterInputRow,
+};
 
 /// Return the task force's stored name directly. No generator choice
 /// survives in this cache, so readable nonempty text keeps the
@@ -111,8 +114,8 @@ fn legacy_army_name<'a>(
     names()?
         .resolve(&naming.group, naming.order, naming.ordered != 0)
         .map_err(|why| match why {
-            installed_content::division_names::Unresolved::NoGroup
-            | installed_content::division_names::Unresolved::NoFallback => {
+            installed_content_division_names::division_names::Unresolved::NoGroup
+            | installed_content_division_names::division_names::Unresolved::NoFallback => {
                 "legacy name allocation inputs are not recorded (no recorded visible override)"
                     .into()
             }
@@ -128,7 +131,7 @@ fn legacy_army_name<'a>(
 /// The caller supplies the existing country-localisation path;
 /// it is acquired lazily and never consulted for literal or known empty text.
 pub fn template_name(
-    parts: replay::rows::TemplateDisplayNameParts<'_>,
+    parts: replay_data::rows::TemplateDisplayNameParts<'_>,
     raw_country: i32,
     localise_for_country: impl FnOnce(i32, &[u8]) -> Result<String, String>,
 ) -> Result<String, String> {

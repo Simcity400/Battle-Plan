@@ -100,7 +100,7 @@ fn parse_month(items: &[Item]) -> io::Result<Month> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content::parser;
+    use installed_content_core::parser;
 
     fn parse_text(text: &[u8]) -> io::Result<Pack> {
         parse(&parser::parse(text)?.items)

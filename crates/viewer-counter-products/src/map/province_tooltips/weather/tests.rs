@@ -49,7 +49,7 @@ fn ranges() -> [TemperatureRange; 4] {
 #[test]
 fn independent_flags_keep_native_order_and_raw_mud() {
     let province = WeatherProvinceRow {
-        raw_mud: replay::rows::Recorded::Value(2),
+        raw_mud: replay_data::rows::Recorded::Value(2),
         display_mud: 0,
         ..Default::default()
     };
@@ -66,7 +66,7 @@ fn independent_flags_keep_native_order_and_raw_mud() {
         "Weather: 1:Rain 2:Storm 3:Snow 4:Blizzard 5:Sandstorm 6:Mud (0°C)"
     );
     let custom_only = WeatherProvinceRow {
-        raw_mud: replay::rows::Recorded::Value(0),
+        raw_mud: replay_data::rows::Recorded::Value(0),
         display_mud: 1,
         ..Default::default()
     };
@@ -166,7 +166,7 @@ fn compatibility_weather_fields_are_not_native_zero() {
         .unwrap_err(),
         "WeatherProvinces temperature not recorded"
     );
-    province.raw_mud = replay::rows::Recorded::NotRecorded;
+    province.raw_mud = replay_data::rows::Recorded::NotRecorded;
     assert_eq!(
         row(&loc(), &ranges(), Ok(0), &province, &region).unwrap_err(),
         "WeatherProvinces.raw_mud not recorded"

@@ -4,7 +4,7 @@
 //! and domain from content.
 //!
 //! **In stock** is the recorded `Stockpiles` pool (fixed5,
-//! `engine::equipment_entry`), compared exactly with the save by the
+//! `engine_native::equipment_entry`), compared exactly with the save by the
 //! fresh-save oracle (`recorder::oracle::production::compare_stockpiles`). A
 //! variant listed twice holds their sum; one not listed holds none.
 //!
@@ -25,7 +25,7 @@
 //! **The surplus or shortage** is the recorded `LogisticsEquipment` balance: series
 //! 16 of the logistics record, the value the Logistics screen's stock balance
 //! column shows, with series 15, the stock the same daily update counted
-//! (`engine::clogistics_status`, table read in daily slot 0, just after the update).
+//! (`engine_land_inputs::clogistics_status`, table read in daily slot 0, just after the update).
 //! The daily update writes the balance per archetype as
 //! `Avail − clamp(Demand + PoolDifference)`:
 //!
@@ -56,7 +56,7 @@
 //! the following hours of the same country identity, and end at a gap, an
 //! incomplete table or a change of identity (`read_runs`).
 //!
-//! **Equipment types** come from content (`installed_content::equipment`): a variant's type is
+//! **Equipment types** come from content (`installed_content_core::equipment`): a variant's type is
 //! its recorded equipment token, resolved to the authored key under the lexer's
 //! fold, and grouped by that type's archetype, as the Logistics screen groups
 //! rows (by archetype pointer, never substituting one archetype for another).
@@ -84,11 +84,12 @@ use dashboard_base::{
 };
 use dashboard_core::config::LoadContext;
 use dashboard_text::metadata::{IdentityTrack, slot_read};
-use installed_content::equipment::Database;
-use replay::{
-    frame::DecodedFrame,
-    rows::{LogisticsEquipmentRow, ProductionLineRow, StockpileRow, TableId, tables},
+use installed_content_core::equipment::Database;
+use replay_data::{
+    rows::LogisticsEquipmentRow, rows::ProductionLineRow, rows::StockpileRow, rows::TableId,
+    rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -100,7 +101,9 @@ use ts_rs::TS;
 #[cfg(test)]
 use dashboard_text::metadata::validate_campaign;
 #[cfg(test)]
-use replay::{container::Replay, frame::FrameDecoder};
+use replay::container::Replay;
+#[cfg(test)]
+use replay_frame::frame::FrameDecoder;
 #[cfg(test)]
 use std::{collections::VecDeque, sync::atomic::Ordering};
 
@@ -244,8 +247,8 @@ pub struct ScannedStockpile {
 }
 
 /// `Demand + PoolDifference` saturates at this magnitude during the daily
-/// logistics update (`engine::clogistics_status`; the same bound as
-/// `engine::country_stability`'s ring saturation).
+/// logistics update (`engine_land_inputs::clogistics_status`; the same bound as
+/// `engine_stability::country_stability`'s ring saturation).
 pub const NEED_BOUND_RAW: i64 = 0x53e2_d620_fb40;
 
 impl ScannedStockpile {
@@ -456,7 +459,7 @@ impl ScanState {
     }
     pub(crate) fn observe(
         &mut self,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         input: &FrameRows<'_>,
         identity: Option<(u32, u32)>,
     ) {
@@ -524,15 +527,18 @@ impl ScanState {
                     result.missing_available += own
                         .iter()
                         .filter(|row| {
-                            !matches!(row.available_raw, replay::rows::Recorded::Value(Some(_)))
+                            !matches!(
+                                row.available_raw,
+                                replay_data::rows::Recorded::Value(Some(_))
+                            )
                         })
                         .count();
                     result.available.read(
                         hour,
                         own.iter().map(|row| {
                             let value = match row.available_raw {
-                                replay::rows::Recorded::Value(value) => value,
-                                replay::rows::Recorded::NotRecorded => None,
+                                replay_data::rows::Recorded::Value(value) => value,
+                                replay_data::rows::Recorded::NotRecorded => None,
                             };
                             (row.token, value)
                         }),
@@ -575,7 +581,8 @@ impl ScanState {
                 // total unknown at this read, never zero or a partial sum. Only a
                 // military line's rate is the military formula; what a naval,
                 // refit or railway-gun line delivers is not established.
-                let military = line.kind == engine::cequipment_production_line::KIND_MILITARY;
+                let military =
+                    line.kind == engine_native::cequipment_production_line::KIND_MILITARY;
                 let units = if military {
                     let units = equipment::daily_units_raw(line.speed_raw, line.cost_raw);
                     if units.is_none() {
@@ -1014,7 +1021,7 @@ pub(crate) fn reply(
     Ok(EquipmentStockpileReply {
         branch_id: params.branch_id.clone(),
         tag: params.tag.clone(),
-        campaign_key: engine::allocation::string(source.campaign_key())?,
+        campaign_key: engine_allocation::string(source.campaign_key())?,
         decimals: equipment::EQUIPMENT_DECIMALS,
         types,
         variants,

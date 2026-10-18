@@ -161,7 +161,7 @@ fn quiet_hours_recertify_the_carried_set_without_a_lookup() {
     world.patch(World::character(7) + ccharacter::NAME, b"Rena");
     drop(DOMAIN.watches.notify(
         Some(World::character(7)),
-        engine::character_role_mutations::CHARACTER_NAME,
+        engine_mutations::character_role_mutations::CHARACTER_NAME,
     ));
     let renamed = hour(&mut job, &world);
     assert!(DOMAIN.lookups() >= characters);
@@ -191,7 +191,7 @@ fn a_renamed_character_alone_is_read_and_a_new_world_reads_every_name() {
     world.patch(World::character(7) + ccharacter::NAME, b"Rena");
     drop(WATCHES.notify(
         Some(World::character(7)),
-        engine::character_role_mutations::CHARACTER_NAME,
+        engine_mutations::character_role_mutations::CHARACTER_NAME,
     ));
     let renamed = hour(&mut job, &world);
     assert_eq!(renamed.characters, expected(&world));
@@ -744,7 +744,7 @@ fn a_renamed_character_reads_the_roster_again() {
     world.patch(World::character(7) + ccharacter::NAME, b"Rena");
     drop(WATCHES.notify(
         Some(World::character(7)),
-        engine::character_role_mutations::CHARACTER_NAME,
+        engine_mutations::character_role_mutations::CHARACTER_NAME,
     ));
     let renamed = roster_hour(&mut job, &world);
     assert!(renamed.counts.read && !renamed.counts.quiet);

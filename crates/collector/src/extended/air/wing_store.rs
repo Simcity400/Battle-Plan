@@ -7,7 +7,7 @@
 //! same wing address and id as the held read, and no hooked writer touched its pool
 //! (`cair_wing::EQUIPMENT_POOL`) since that read registered it (same watch epoch and sequence; a
 //! load, gap, recovery, table change, poison or running writer revokes it). Every writer of a
-//! wing's pool is a hooked site ([`engine::air_wing_equipment_mutations`]), and a wing built at a
+//! wing's pool is a hooked site ([`engine_mutations::air_wing_equipment_mutations`]), and a wing built at a
 //! destroyed wing's address carries that destructor's notification, so a carried wing's rows equal
 //! a fresh read's. Each hour also reads the carryable wings of its sampled slice
 //! ([`crate::sampled_verify`], keyed by wing id; every one under `wing_verify`) afresh, publishes
@@ -24,8 +24,10 @@ use crate::{
     sampled_verify::Check,
     wing_changes::{Changes, Counts},
 };
-use engine::{air_wing_equipment_mutations::POOL, allocation, walk::Outcome};
-use replay::rows::WingEquipmentRow;
+use engine_allocation as allocation;
+use engine_mutations::air_wing_equipment_mutations::POOL;
+use engine_native::walk::Outcome;
+use replay_data::rows::WingEquipmentRow;
 use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

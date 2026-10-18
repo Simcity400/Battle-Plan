@@ -9,23 +9,21 @@
 //! each country's volunteer hosts once, the weather manager once, and every
 //! other operand once per sorted key.
 
-use engine::{
-    Memory, allocation,
-    cair_regional_mission::WingIdentity,
-    ccountry,
-    cpdx_array::Array,
+use engine_allocation as allocation;
+use engine_map_air::{
     map_air_carrier_operands, map_air_country_region_modifier, map_air_rocket_slots,
     map_air_sortie_inputs as native,
-    walk::{Buffer, Outcome},
 };
-use replay::{
-    frame::TableView,
-    rows::{
-        AIR_MISSION_MAP_FLAGS, AIR_MISSION_REACHED_IDS, AirMissionInputRow,
-        AirSortieBaseCountryRow, AirSortieModifierMetadataRow, AirSortieModifierRow,
-        AirSortieSpecialBaseRow, tables,
-    },
+use engine_native::{
+    Memory, cair_regional_mission::WingIdentity, ccountry, cpdx_array::Array, walk::Buffer,
+    walk::Outcome,
 };
+use replay_data::{
+    rows::AIR_MISSION_MAP_FLAGS, rows::AIR_MISSION_REACHED_IDS, rows::AirMissionInputRow,
+    rows::AirSortieBaseCountryRow, rows::AirSortieModifierMetadataRow, rows::AirSortieModifierRow,
+    rows::AirSortieSpecialBaseRow, rows::tables,
+};
+use replay_frame::frame::TableView;
 
 use super::air_reference_witness::BaseWitness;
 use crate::{
@@ -328,7 +326,7 @@ impl Sorties {
             UNSET
         } else {
             Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON,
+                reason: replay_data::cadence::SKIPPED_REASON,
             }
         };
         self.outcome = match self.acquire(memory, base, game_state, metadata, registered, witnesses)

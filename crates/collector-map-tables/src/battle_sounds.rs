@@ -1,17 +1,15 @@
 //! Hourly battle-sound list: the battles the game's battle ambience holds, in
-//! the order its per-frame pass visits them ([`engine::battle_sounds`]).
+//! the order its per-frame pass visits them ([`engine_native::battle_sounds`]).
 //! Storage grows on the worker from the live battle and member counts.
 use crate::{
     clock::qpc,
     table_capture::{Arena, CaptureRows, grow_capacity},
     table_conversion::{table, unavailable},
 };
-use engine::allocation::{copy_vec, owned_vec};
-use engine::{Memory, battle_sounds as native, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{BattleSoundRow, TableId, tables},
-};
+use engine_allocation::{copy_vec, owned_vec};
+use engine_native::{Memory, battle_sounds as native, walk::Outcome};
+use replay_data::{rows::BattleSoundRow, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::BattleSounds];
@@ -116,7 +114,7 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
 
     /// The pack publishes the walk's rows in list order with their members,
     /// grown from empty storage, and the next hour's buffers keep the demand.
@@ -163,10 +161,10 @@ mod tests {
             );
             put(
                 province(index + 1),
-                &((base + engine::cprovince::VTABLE_RVA) as u64).to_le_bytes(),
+                &((base + engine_native::cprovince::VTABLE_RVA) as u64).to_le_bytes(),
             );
             put(
-                province(index + 1) + engine::cprovince::ID,
+                province(index + 1) + engine_native::cprovince::ID,
                 &(index as i32 + 5).to_le_bytes(),
             );
         }

@@ -10,7 +10,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-engine.workspace = true
-
+engine-allocation.workspace = true
+engine-native.workspace = true
 [dev-dependencies]
 collector-test-support.workspace = true

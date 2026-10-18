@@ -57,14 +57,12 @@ pub use geometry::{RouteContent, Shaped, Stops, border_province, overlap_offset,
 
 use std::{collections::BTreeMap, io};
 
-use installed_content::defines::Defines;
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        ConvoyClientRow, CountryLinkRow, RegionalConvoyEfficiencyRow, ResourceOriginRow,
-        TradeRouteRow, tables,
-    },
+use installed_content_core::defines::Defines;
+use replay_data::{
+    rows::ConvoyClientRow, rows::CountryLinkRow, rows::RegionalConvoyEfficiencyRow,
+    rows::ResourceOriginRow, rows::TradeRouteRow, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use viewer_foundation::{
     errors::invalid,
     map::{

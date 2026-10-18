@@ -28,8 +28,11 @@ use crate::{
     },
     transport::json_len,
 };
-use installed_content::{faction_templates::Catalog, localisation::Localisation};
-use replay::{container::Replay, frame::FrameDecoder, rows::tables};
+use installed_content_core::faction_templates::Catalog;
+use installed_content_localisation::localisation::Localisation;
+use replay::container::Replay;
+use replay_data::rows::tables;
+use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -702,7 +705,7 @@ struct RosterHistory {
     faction_reads: RunHistory<HourSpan>,
     incomplete: usize,
     #[serde(skip)]
-    views: Option<[replay::frame::ViewIdentity; 2]>,
+    views: Option<[replay_frame::frame::ViewIdentity; 2]>,
     #[serde(skip)]
     current: Vec<(String, bool)>,
     #[cfg(any(test, feature = "test-support"))]
@@ -725,7 +728,7 @@ impl RosterHistory {
     #[cfg(test)]
     pub(crate) fn observe(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
+        decoded: &replay_frame::frame::DecodedFrame,
         hour: i32,
         countries_known: bool,
         tags: &HashMap<u32, String>,
@@ -751,7 +754,7 @@ impl RosterHistory {
     #[allow(clippy::too_many_arguments)]
     fn observe_projected(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
+        decoded: &replay_frame::frame::DecodedFrame,
         operands: &GroupOperands,
         refresh_countries: bool,
         hour: i32,
@@ -779,8 +782,8 @@ impl RosterHistory {
         };
         self.faction_reads.record_hour(hour);
         let views = [
-            replay::rows::TableId::Factions,
-            replay::rows::TableId::FactionMembers,
+            replay_data::rows::TableId::Factions,
+            replay_data::rows::TableId::FactionMembers,
         ]
         .map(|id| &decoded.tables[id.index()]);
         if !identities_changed
@@ -981,9 +984,9 @@ impl Updates {
         capitulations: true,
     };
 }
-fn projected_countries(keys: &crate::metadata::CountryKeys) -> Vec<replay::rows::CountryRow> {
+fn projected_countries(keys: &crate::metadata::CountryKeys) -> Vec<replay_data::rows::CountryRow> {
     keys.iter()
-        .map(|(id, canonical_slot, tag)| replay::rows::CountryRow {
+        .map(|(id, canonical_slot, tag)| replay_data::rows::CountryRow {
             id,
             canonical_slot,
             tag: tag.to_vec(),
@@ -1005,7 +1008,7 @@ struct GroupOperands {
 impl GroupOperands {
     fn refresh(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         factions: bool,
         members: bool,
         humans: bool,
@@ -1063,7 +1066,9 @@ impl GroupOperands {
         visits
     }
     #[allow(clippy::type_complexity)]
-    fn war_operands(frame: &replay::frame::DecodedFrame) -> Option<Vec<(u32, u32, i32, i32, u8)>> {
+    fn war_operands(
+        frame: &replay_frame::frame::DecodedFrame,
+    ) -> Option<Vec<(u32, u32, i32, i32, u8)>> {
         Some(
             frame
                 .complete::<tables::WarRelations>()
@@ -1124,7 +1129,7 @@ struct Continuation {
     lexical: Option<Arc<faction_names::LexicalNames>>,
     lexical_dictionary: Option<usize>,
     #[serde(skip)]
-    lexical_seen: Option<replay::frame::ViewIdentity>,
+    lexical_seen: Option<replay_frame::frame::ViewIdentity>,
     lexical_read: i32,
     deferred: bool,
     rates: (u32, usize, usize),
@@ -1537,7 +1542,7 @@ fn scan_from(
     cancelled: &AtomicBool,
     previous: Option<&Scan>,
 ) -> io::Result<Scan> {
-    use replay::rows::TableId;
+    use replay_data::rows::TableId;
     let selected = [
         TableId::Campaign,
         TableId::Countries,
@@ -1762,10 +1767,10 @@ impl Scan {
     #[allow(clippy::type_complexity)]
     pub fn advance_changed(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         changes: &crate::prepared::frame_changes::FrameChanges,
     ) -> io::Result<Option<(Vec<(u64, usize)>, Vec<usize>)>> {
-        use replay::rows::TableId;
+        use replay_data::rows::TableId;
         let state = &mut self.continuation;
         let countries = changes.rows_changed[TableId::Countries.index()]
             && state.country_keys.as_ref().is_none_or(|keys| {
@@ -2103,8 +2108,8 @@ impl Scan {
             }
         }
     }
-    pub fn observe(&mut self, decoded: &replay::frame::DecodedFrame) -> io::Result<()> {
-        let _cpu = replay::cpu::scope("groups-read", None);
+    pub fn observe(&mut self, decoded: &replay_frame::frame::DecodedFrame) -> io::Result<()> {
+        let _cpu = replay_frame::cpu::scope("groups-read", None);
         self.refresh_holders(decoded, true, true);
         let mut operands = GroupOperands::default();
         let visits = operands.refresh(decoded, true, true, true, true, true);
@@ -2118,7 +2123,7 @@ impl Scan {
     }
     fn refresh_holders(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         countries: bool,
         links: bool,
     ) {
@@ -2151,17 +2156,17 @@ impl Scan {
     }
     fn observe_selected(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
+        decoded: &replay_frame::frame::DecodedFrame,
         operands: &GroupOperands,
         updates: Updates,
         renamed: &[u64],
     ) -> io::Result<()> {
-        use replay::rows::TableId;
+        use replay_data::rows::TableId;
         let hour = decoded.hour;
         self.unobserved = Arc::default();
         #[cfg(any(test, feature = "test-support"))]
         {
-            use replay::frame::TableView;
+            use replay_frame::frame::TableView;
             if updates.dictionary {
                 self.continuation.work.row_visits +=
                     match &*decoded.tables[TableId::LexicalTokens.index()] {
@@ -2284,8 +2289,8 @@ impl Scan {
                             Arc::clone(lexical.as_ref().expect("the hour has a lexical table view"))
                         } else {
                             Arc::new(faction_names::LexicalNames::new(
-                                replay::frame::TableView::Complete(
-                                    replay::rows::TableRows::LexicalTokens(Vec::new()),
+                                replay_frame::frame::TableView::Complete(
+                                    replay_data::rows::TableRows::LexicalTokens(Vec::new()),
                                 )
                                 .into(),
                             ))
@@ -2806,8 +2811,8 @@ impl Scan {
             prepared::TABLES,
             cancelled,
             &|frame| Ok(Some(frame.clone())),
-            &|frame: &replay::frame::DecodedFrame| {
-                std::mem::size_of::<replay::frame::DecodedFrame>()
+            &|frame: &replay_frame::frame::DecodedFrame| {
+                std::mem::size_of::<replay_frame::frame::DecodedFrame>()
                     + frame
                         .tables
                         .iter()
@@ -2957,10 +2962,8 @@ mod tests;
 #[cfg(test)]
 mod roster_reuse_tests {
     use super::*;
-    use replay::{
-        frame::TableView,
-        rows::{FactionMemberRow, FactionRow, TableId, TableRows},
-    };
+    use replay_data::{rows::FactionMemberRow, rows::FactionRow, rows::TableId, rows::TableRows};
+    use replay_frame::frame::TableView;
 
     #[test]
     fn unchanged_rosters_reuse_members_and_match_uncached_history_at_5000_countries() {

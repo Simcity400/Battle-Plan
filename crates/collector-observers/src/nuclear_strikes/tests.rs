@@ -1,5 +1,6 @@
 use super::*;
-use engine::{ccountry, cgame_state, cnuke, cprovince, cstate};
+use engine_events::cnuke;
+use engine_native::{ccountry, cgame_state, cprovince, cstate};
 use std::sync::Mutex;
 
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -199,7 +200,7 @@ fn a_strike_records_its_target_and_refuses_each_part_not_forwarded() {
             Item::Strike {
                 hour: 60_827_795,
                 strike: native::Strike {
-                    launcher: engine::event_feed_sites::CountryIdentity {
+                    launcher: engine_events::event_feed_sites::CountryIdentity {
                         reference: 1,
                         id: 1,
                         instance: 0x101,
@@ -207,7 +208,7 @@ fn a_strike_records_its_target_and_refuses_each_part_not_forwarded() {
                     nuke_type: 0,
                     province: 13_000,
                     state: 1_204,
-                    owner: engine::event_feed_sites::CountryIdentity {
+                    owner: engine_events::event_feed_sites::CountryIdentity {
                         reference: 2,
                         id: 2,
                         instance: 0x102,

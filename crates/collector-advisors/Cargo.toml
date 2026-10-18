@@ -22,8 +22,12 @@ character_record_verify = ["character_record_changes"]
 roster_changes = []
 
 [dependencies]
-engine.workspace = true
-replay.workspace = true
+engine-allocation.workspace = true
+engine-characters.workspace = true
+engine-mutations.workspace = true
+engine-native.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
 serde = { workspace = true, features = ["derive"] }
 collector-certificates.workspace = true
 collector-extended-support.workspace = true
@@ -33,9 +37,9 @@ collector-primitives.workspace = true
 collector-projection.workspace = true
 
 [dev-dependencies]
+engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-test-support.workspace = true
 serde_json.workspace = true
-engine = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-extended-support = { workspace = true, features = ["test-support"] }
 collector-certificates = { workspace = true, features = ["test-support"] }
 collector-memory = { workspace = true, features = ["test-support"] }

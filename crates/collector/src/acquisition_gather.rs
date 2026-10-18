@@ -3,7 +3,7 @@
 //! The caller moves a preallocated payload into a request and restores it after
 //! collection. Every accepted request runs at most once, including on failure.
 
-use engine::walk::Outcome;
+use engine_native::walk::Outcome;
 
 pub(crate) struct Request<B> {
     pub base: usize,

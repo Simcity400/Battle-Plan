@@ -58,17 +58,16 @@ use dashboard_base::prepared::{
 };
 use dashboard_text::triggers::inputs::{BlockTables, QuietTables, TableChange, TableChanges};
 use replay::{
-    BranchId,
-    container::{BlockIndex, QuietHours, Replay, TableFields},
-    format::FormatVersion,
-    frame::{DecodedFrame, Metrics, SharedView, TableView},
-    rows::{
-        CountryCounterInputRow, CountryRow, LandCombatDetailsRow, LandCombatSideDetails,
-        NavalCombatDetailsRow, NavalCombatSideDetails, NavalMissionTaskForceRow, ProvinceRow,
-        RowCodec, StateRow, TableId, TableRows, TableSchema, TaskForceRow, UnitLeaderRow,
-        WarRelationRow, full_mask, tables,
-    },
+    container::BlockIndex, container::QuietHours, container::Replay, container::TableFields,
 };
+use replay_data::{
+    BranchId, format::FormatVersion, rows::CountryCounterInputRow, rows::CountryRow,
+    rows::LandCombatDetailsRow, rows::LandCombatSideDetails, rows::NavalCombatDetailsRow,
+    rows::NavalCombatSideDetails, rows::NavalMissionTaskForceRow, rows::ProvinceRow,
+    rows::RowCodec, rows::StateRow, rows::TableId, rows::TableRows, rows::TableSchema,
+    rows::TaskForceRow, rows::UnitLeaderRow, rows::WarRelationRow, rows::full_mask, rows::tables,
+};
+use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::SharedView, frame::TableView};
 use std::{
     any::Any, cell::Cell, collections::BTreeMap, io, marker::PhantomData, ops::Range,
     sync::LazyLock,
@@ -392,8 +391,8 @@ pub static FAMILY: LazyLock<Family> = LazyLock::new(|| Family {
 pub(super) fn rejected(reason: &'static str) {
     #[cfg(any(test, feature = "test-support"))]
     dashboard_base::prepared::prepass::note(reason);
-    if replay::cpu::enabled() {
-        replay::cpu::note(reason, FAMILY.name, replay::cpu::thread_cycles());
+    if replay_frame::cpu::enabled() {
+        replay_frame::cpu::note(reason, FAMILY.name, replay_frame::cpu::thread_cycles());
     }
 }
 
@@ -1429,7 +1428,7 @@ fn built(
     metrics: Metrics,
     sampled: &[(TableId, Option<i32>)],
 ) -> DecodedFrame {
-    let _cpu = ::replay::cpu::scope("fold frame", None);
+    let _cpu = ::replay_frame::cpu::scope("fold frame", None);
     let mut frame = rows.clone();
     frame.hour = hour;
     frame.metrics = metrics;
@@ -1451,9 +1450,9 @@ pub fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let facts = {
-        let _cpu = ::replay::cpu::scope("fold facts", None);
+        let _cpu = ::replay_frame::cpu::scope("fold facts", None);
         facts
             .downcast::<BlockFacts>()
             .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -1481,7 +1480,7 @@ pub fn fold(
     // The last kept hour's frame, and whether it is reduced.
     let mut base: Option<(DecodedFrame, bool)> = None;
     for hour in hours {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         check()?;
         match hour {
             Hour::Whole { frame, changes } => {
@@ -1489,7 +1488,7 @@ pub fn fold(
                 // verdicts as a kept frame does: only where they read none
                 // of them, else the block is observed with every table.
                 let result = {
-                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     if unread.0.is_empty() {
                         prepared
                             .observe(&frame, replay, content, &changes)
@@ -1525,7 +1524,7 @@ pub fn fold(
                 since,
             } => {
                 let result = {
-                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     prepared.observe_kept(&frame, replay, content, &changes, &since, &reduction)
                 };
                 if matches!(result, Ok(false)) {
@@ -1568,7 +1567,7 @@ pub fn fold(
                 let mut differ = stale;
                 differ.merge(if *reduced { &reduction } else { &unread });
                 let result = {
-                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     prepared.observe_kept(&frame, replay, content, &changes, &since, &differ)
                 };
                 if matches!(result, Ok(false)) {
@@ -1596,7 +1595,7 @@ pub fn fold(
                     io::Error::other("A leader hour came before its block's first")
                 })?;
                 let advanced = {
-                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     prepared.advance_quiet(first, last, &since, rows, content)
                 };
                 match advanced {
@@ -1621,7 +1620,7 @@ pub fn fold(
                     }
                 }
                 for hour in first..=last {
-                    let _cpu = ::replay::cpu::scope("fold driver", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
                     reached = Some(hour);
                     if !observed(hour, Ok(()))? {
                         return Ok((Folded::Fast, reached));
@@ -1646,7 +1645,7 @@ pub fn observe_block(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     observe_hours(
         replay,
         index,

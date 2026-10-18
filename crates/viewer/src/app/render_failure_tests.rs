@@ -157,9 +157,11 @@ fn a_drawn_map_names_an_undeclared_distant_battle_effect() -> std::io::Result<()
         viewer.map_state(&target)
     );
     assert!(
-        viewer.map_warnings.iter().any(|warning| warning.starts_with(
+        viewer.map_warnings.iter().any(|warning| {
+            warning.starts_with(
             "Map battle ambience: the battle sound effect undeclared_battle_effect is not declared"
-        )),
+        )
+        }),
         "{:?}",
         viewer.map_warnings
     );

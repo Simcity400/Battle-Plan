@@ -8,8 +8,8 @@ use {viewer_foundation::map::perspective, viewer_world::map::scene::FactionHighl
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Key {
     pub epoch: u64,
-    pub branch: replay::BranchId,
-    pub hour: replay::Hour,
+    pub branch: replay_data::BranchId,
+    pub hour: replay_data::Hour,
     pub perspective: perspective::Choice,
     pub borders: u64,
     pub regions: Arc<[u32]>,

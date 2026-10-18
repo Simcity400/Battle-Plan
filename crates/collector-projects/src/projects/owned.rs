@@ -104,7 +104,7 @@ impl ProjectsJob {
 
     /// Prepare only observed shortage and live census demand off-thread.
     pub fn grow(&mut self) {
-        engine::allocation::advisory(|| {
+        engine_allocation::advisory(|| {
             self.log.grow();
             let countries = self
                 .census
@@ -114,7 +114,7 @@ impl ProjectsJob {
             let _ = crate::allocation::reserve_raw(&mut self.census, countries, "projects census");
             let _ =
                 crate::allocation::reserve_raw(&mut self.statuses, countries, "project statuses");
-            let _ = engine::allocation::reserve(&mut self.pointers, 1);
+            let _ = engine_allocation::reserve(&mut self.pointers, 1);
         });
         self.update_capacity_charge();
     }
@@ -463,8 +463,7 @@ fn copy_pass(memory: &impl Memory, base: usize, game_state: usize, job: &mut Pro
     if job.log.overflowed {
         return;
     }
-    if job.worker_growth
-        && engine::allocation::reserve(&mut job.statuses, job.census.len()).is_err()
+    if job.worker_growth && engine_allocation::reserve(&mut job.statuses, job.census.len()).is_err()
     {
         job.log.overflowed = true;
         return;
@@ -544,7 +543,7 @@ fn copy_census(
     }
     let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
     if log.worker_growth_enabled()
-        && engine::allocation::reserve(census, countries.count as usize).is_err()
+        && engine_allocation::reserve(census, countries.count as usize).is_err()
     {
         log.overflowed = true;
         return None;
@@ -672,7 +671,7 @@ impl Captured {
         let reason = if active {
             reason
         } else {
-            replay::cadence::SKIPPED_REASON
+            replay_data::cadence::SKIPPED_REASON
         };
         self.programs.outcome = Outcome::Unavailable { reason };
         self.breakthroughs.outcome = Outcome::Unavailable { reason };
@@ -693,7 +692,7 @@ impl Captured {
         decode_ticks: &mut [u64; RAW.len()],
     ) {
         if !job.active {
-            self.fail_projects_capture(false, replay::cadence::SKIPPED_REASON);
+            self.fail_projects_capture(false, replay_data::cadence::SKIPPED_REASON);
             return;
         }
         let started = qpc();
@@ -702,9 +701,9 @@ impl Captured {
             &recorded,
             base,
             job.game_state,
-            engine::walk::Buffer::for_worker(&mut self.candidates, job.worker_growth),
-            engine::walk::Buffer::for_worker(&mut self.programs.rows, job.worker_growth),
-            engine::walk::Buffer::for_worker(&mut self.names.first, job.worker_growth),
+            engine_native::walk::Buffer::for_worker(&mut self.candidates, job.worker_growth),
+            engine_native::walk::Buffer::for_worker(&mut self.programs.rows, job.worker_growth),
+            engine_native::walk::Buffer::for_worker(&mut self.names.first, job.worker_growth),
         );
         self.programs.outcome = program_outcome(first, &self.programs.rows, &self.names.first);
         self.names.len = first.bytes_len;
@@ -715,7 +714,10 @@ impl Captured {
                 &recorded,
                 base,
                 job.game_state,
-                engine::walk::Buffer::for_worker(&mut self.breakthroughs.rows, job.worker_growth),
+                engine_native::walk::Buffer::for_worker(
+                    &mut self.breakthroughs.rows,
+                    job.worker_growth,
+                ),
             ),
             self.breakthroughs.rows.len(),
         );
@@ -987,7 +989,7 @@ fn copy_programs(
             return;
         };
         if log.worker_growth_enabled()
-            && engine::allocation::reserve(pointers, array.count as usize).is_err()
+            && engine_allocation::reserve(pointers, array.count as usize).is_err()
         {
             log.overflowed = true;
             return;

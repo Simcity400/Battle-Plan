@@ -1,6 +1,6 @@
 //! Exact signed equipment-line factory IC from the applied progress input,
 //! independently of delivery or the later census cost. Instant progress is
-//! recorded separately and excluded. See engine::line_output_sites for the
+//! recorded separately and excluded. See engine_production::line_output_sites for the
 //! four callers and their instant predicates. Deleted lines retain their
 //! last publication through the shared Equipment produced branch scan.
 //! Rocket sites use their independent retained country/design observation.
@@ -324,7 +324,7 @@ fn combined(
 }
 
 fn rocket_name(
-    buildings: &installed_content::buildings::Buildings,
+    buildings: &installed_content_core::buildings::Buildings,
     texts: Option<&dyn Texts>,
 ) -> Result<(String, Option<String>), String> {
     let keys: Vec<_> = buildings
@@ -368,7 +368,7 @@ fn cached_rocket_name(source: &Source, catalogue: &Arc<crate::catalogue::Catalog
         .as_ref()
         .is_some_and(|(cached, _)| Arc::ptr_eq(cached, catalogue))
     {
-        let name = installed_content::buildings::read(&catalogue.content.layers)
+        let name = installed_content_core::buildings::read(&catalogue.content.layers)
             .map_err(|error| error.to_string())
             .and_then(|buildings| rocket_name(&buildings, Some(&**catalogue)));
         cache.content = Some((Arc::clone(catalogue), name));

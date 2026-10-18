@@ -4,7 +4,7 @@ use crate::products::{
     LoadContext, Product,
     military_air_ledger::{MilitaryAirFamily, MilitaryAirLedger, MilitaryAirParams},
 };
-use replay::rows::AirLossEventRow;
+use replay_data::rows::AirLossEventRow;
 use std::{sync::Mutex, time::Duration};
 
 const REFUSAL: &str = "military air event ordinal repeated or moved backwards";

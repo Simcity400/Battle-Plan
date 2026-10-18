@@ -1,6 +1,6 @@
 //! Playback's reader of a replay's blocks, which reads the next block ahead.
 //!
-//! A block holds up to `replay::KEYFRAME_INTERVAL` hours (720), and reading one
+//! A block holds up to `replay_frame::KEYFRAME_INTERVAL` hours (720), and reading one
 //! decompresses and parses hundreds of megabytes: 0.2–2.2 s on the 2,302-hour
 //! recording. Playback that read a block only when it reached it stalled at
 //! every block boundary. Here playback asks for the next block ahead of time
@@ -22,10 +22,8 @@ use std::{
     thread,
 };
 
-use replay::{
-    container::{Parallel, Replay},
-    frame::Frame,
-};
+use replay::{container::Parallel, container::Replay};
+use replay_frame::frame::Frame;
 
 use crate::retirement::Dropper;
 

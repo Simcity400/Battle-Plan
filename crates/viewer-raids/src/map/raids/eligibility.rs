@@ -4,8 +4,8 @@ use super::{
     RaidAssets, TypeToken,
     script::{Eval, Scope, Scopes, World},
 };
-use installed_content::raids::RaidType;
-use replay::rows::tables;
+use installed_content_raids::raids::RaidType;
+use replay_data::rows::tables;
 
 /// Launch-trigger order:
 ///
@@ -23,7 +23,7 @@ pub fn launch_triggers(
     world: &World<'_>,
     owner: u32,
     kind: &RaidType,
-    scope: &replay::rows::RaidScope,
+    scope: &replay_data::rows::RaidScope,
     source_country: &Result<Option<u32>, String>,
 ) -> Eval {
     let target_country = match super::target_country(world, scope) {
@@ -113,13 +113,13 @@ pub fn on_cooldown(
     world: &World<'_>,
     owner: u32,
     kind: &RaidType,
-    scope: &replay::rows::RaidScope,
+    scope: &replay_data::rows::RaidScope,
 ) -> Eval {
     let rows = match world.frame().complete::<tables::RaidCooldowns>() {
         Ok(rows) => rows,
         Err(error) => return Eval::unknown(error.to_string()),
     };
-    let matches = |row: &replay::rows::RaidScope| {
+    let matches = |row: &replay_data::rows::RaidScope| {
         row.building_type == scope.building_type
             && (scope.building_type == 0
                 || (row.building_location == scope.building_location

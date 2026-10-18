@@ -27,12 +27,9 @@ use std::{
     io,
 };
 
-use installed_content::{
-    defines::Defines,
-    gui::native,
-    localisation::{Argument as Arg, Localisation},
-};
-use replay::frame::DecodedFrame;
+use installed_content_core::{defines::Defines, gui::native};
+use installed_content_localisation::{localisation::Argument as Arg, localisation::Localisation};
+use replay_frame::frame::DecodedFrame;
 use viewer_foundation::{
     map::{
         camera::Camera,
@@ -93,7 +90,7 @@ pub struct ResourceIconContent {
 }
 
 impl ResourceIconContent {
-    pub fn load(layers: &installed_content::ResolvedLayers, defines: &Defines) -> io::Result<Self> {
+    pub fn load(layers: &installed_content_core::ResolvedLayers, defines: &Defines) -> io::Result<Self> {
         Ok(Self {
             origins: resource_origins::Content::load(layers, defines)?,
             defines: ResourceIconDefines::load(defines)?,

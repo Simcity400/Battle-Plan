@@ -18,7 +18,7 @@ impl gui::Sheets for Sheets {
 }
 
 fn effect(source: &str) -> Arc<super::super::library::Effect> {
-    let program = installed_content::pdxshader::program::read_with(b"gfx/FX/fixture.lua", &|path| {
+    let program = installed_content_core::pdxshader::program::read_with(b"gfx/FX/fixture.lua", &|path| {
         Some(match path {
             b"gfx/FX/fixture.shader" => source.as_bytes().to_vec(),
             _ => Vec::new(),
@@ -56,7 +56,7 @@ use gui::PartKind;
 /// masking included, and binds none of the records' slots 1-4 or b1.
 #[test]
 fn a_recordless_animated_technique_draws_the_plain_sprite() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let sheets = Sheets(sprites::SpriteSheet {
         name: "fixture".into(),
@@ -124,7 +124,7 @@ fn a_recordless_animated_technique_draws_the_plain_sprite() {
 /// per quad as a list for glyphs and cornered tiles.
 #[test]
 fn each_draw_submits_its_native_records_and_topology() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use eframe::wgpu::PrimitiveTopology::{TriangleList, TriangleStrip};
     let sheets = Sheets(sprites::SpriteSheet {
@@ -228,7 +228,7 @@ fn each_draw_submits_its_native_records_and_topology() {
 /// writes through byte 68, including floats 12 and 14 only for types 1 to 4.
 #[test]
 fn each_draw_carries_its_native_allocation_and_the_bytes_it_writes() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let sheets = Sheets(sprites::SpriteSheet {
         name: "fixture".into(),
@@ -423,7 +423,7 @@ fn each_draw_carries_its_native_allocation_and_the_bytes_it_writes() {
 
 #[test]
 fn bound_portrait_texture_keeps_the_icons_mask_sampler() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let sheets = Sheets(sprites::SpriteSheet {
         name: "mask".into(),

@@ -2,10 +2,10 @@
 //! Mapping and text are separate.
 use super::super::{RaidAssets, script::World, target_country, unit_inputs};
 use super::{chance, intel};
-use engine::modifier_keys as keys;
-use engine::raid_tooltip_operands::*;
-use installed_content::raids::tooltips::Modifier;
-use replay::rows::{RaidRow, RaidScope, RaidTooltipOperandRow, tables};
+use engine_executable::modifier_keys as keys;
+use engine_native::raid_tooltip_operands::*;
+use installed_content_raids::raids::tooltips::Modifier;
+use replay_data::{rows::RaidRow, rows::RaidScope, rows::RaidTooltipOperandRow, rows::tables};
 
 type Result<T> = std::result::Result<T, String>;
 fn times(a: i64, b: i64) -> i64 {
@@ -88,7 +88,7 @@ impl<'a, 'w> Inputs<'a, 'w> {
             .complete::<tables::SimulationFeatures>()
             .map_err(|e| e.to_string())?;
         let features = features.first().ok_or("simulation feature flags absent")?;
-        Ok(engine::modifier_definition::Operands {
+        Ok(engine_native::modifier_definition::Operands {
             flags: definition.flags,
             selector: definition.feature_selector,
             eligibility_flags: features.dlc_mask,
@@ -325,9 +325,9 @@ impl<'a, 'w> Inputs<'a, 'w> {
         ))
     }
     fn air(&self, name: &str) -> Result<i64> {
-        replay::fixed_layout::validate_recording(
+        replay_derive::fixed_layout::validate_recording(
             self.world.frame(),
-            replay::fixed_layout::RAID_SUCCESS,
+            replay_derive::fixed_layout::RAID_SUCCESS,
         )?;
         let bombing = name == "strategic_bomber";
         let key = if bombing {

@@ -1,11 +1,12 @@
 use super::*;
 use crate::triggers::{ContentFacts, World, variables::Store, world::Query};
-use replay::frame::{Frame, FrameDecoder, FrameEncoder, TableUpdate};
-use replay::rows::{
-    CompletedFocusRow, CountryCharacterRow, CountryLinkRow, CountryRow, FactionMemberRow,
-    LexicalTokenRow, PartyLeaderRow, PoliticalPartyRow, ScriptFlagRow, SubjectRow, TableRows,
-    TableSchema, WarRelationRow,
+use replay_data::{
+    rows::CompletedFocusRow, rows::CountryCharacterRow, rows::CountryLinkRow, rows::CountryRow,
+    rows::FactionMemberRow, rows::LexicalTokenRow, rows::PartyLeaderRow, rows::PoliticalPartyRow,
+    rows::ScriptFlagRow, rows::SubjectRow, rows::TableRows, rows::TableSchema,
+    rows::WarRelationRow,
 };
+use replay_frame::{frame::Frame, frame::FrameDecoder, frame::FrameEncoder, frame::TableUpdate};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -173,7 +174,7 @@ fn frame(hour: Hour, state: State) -> DecodedFrame {
 
 fn with_world<T>(frame: &DecodedFrame, run: impl FnOnce(&World<'_>) -> T) -> T {
     let dlcs = BTreeSet::new();
-    let triggers = installed_content::trigger_keys::TriggerNames::default();
+    let triggers = installed_content_core::trigger_keys::TriggerNames::default();
     let aliases = Arc::default();
     run(&World::read(
         frame,
@@ -685,7 +686,7 @@ fn rich_frame() -> DecodedFrame {
     );
     set::<tables::ActiveIdeas>(
         &mut frame,
-        vec![replay::rows::ActiveIdeaRow {
+        vec![replay_data::rows::ActiveIdeaRow {
             country: 101,
             ordinal: 0,
             token: b"idea".to_vec(),
@@ -695,11 +696,13 @@ fn rich_frame() -> DecodedFrame {
         &mut frame,
         [(101, 0), (102, 7)]
             .into_iter()
-            .map(|(country, original)| replay::rows::CountryAppearanceRow {
-                country,
-                original_tag_reference: replay::rows::Recorded::Value(Some(original)),
-                ..Default::default()
-            })
+            .map(
+                |(country, original)| replay_data::rows::CountryAppearanceRow {
+                    country,
+                    original_tag_reference: replay_data::rows::Recorded::Value(Some(original)),
+                    ..Default::default()
+                },
+            )
             .collect(),
     );
     for table in [
@@ -1048,15 +1051,18 @@ fn check_mode_reports_a_wrong_declaration_of_each_declared_query() {
 /// world queries read, and country 102's rows in each table read by
 /// country.
 fn richer_frame() -> DecodedFrame {
-    use replay::rows::{
-        ActiveIdeaRow, AdvisorTokenRow, ArmyOrderPlanRow, ArmyOrderRow, BuildingRow,
-        CharacterRoleTraitRow, CountryBuildingResourceRow, CountryCivilWarRow,
-        CountryCounterInputRow, CountryFactoriesRow, CountryLeaderRoleRow, CountryWarRow,
-        DivisionRow, DivisionStatusRow, DivisionTemplateRow, DynamicModifierRow, HiredAdvisorRow,
-        IndustrialOrganisationRow, LandTheatreRow, NukeRow, OrdersGroupPlanRow, OrdersGroupRow,
-        ProvinceRow, Recorded, RelationOpinionRow, ResearchTechnologyRow, ReservedCountryNamingRow,
-        ResourceDefinitionRow, StateBaseResourceRow, StateCoreRow, StateDynamicModifierRow,
-        StateResourceInputRow, StateResourceRow, StateRow, TechnologyDefinitionRow,
+    use replay_data::{
+        rows::ActiveIdeaRow, rows::AdvisorTokenRow, rows::ArmyOrderPlanRow, rows::ArmyOrderRow,
+        rows::BuildingRow, rows::CharacterRoleTraitRow, rows::CountryBuildingResourceRow,
+        rows::CountryCivilWarRow, rows::CountryCounterInputRow, rows::CountryFactoriesRow,
+        rows::CountryLeaderRoleRow, rows::CountryWarRow, rows::DivisionRow,
+        rows::DivisionStatusRow, rows::DivisionTemplateRow, rows::DynamicModifierRow,
+        rows::HiredAdvisorRow, rows::IndustrialOrganisationRow, rows::LandTheatreRow,
+        rows::NukeRow, rows::OrdersGroupPlanRow, rows::OrdersGroupRow, rows::ProvinceRow,
+        rows::Recorded, rows::RelationOpinionRow, rows::ResearchTechnologyRow,
+        rows::ReservedCountryNamingRow, rows::ResourceDefinitionRow, rows::StateBaseResourceRow,
+        rows::StateCoreRow, rows::StateDynamicModifierRow, rows::StateResourceInputRow,
+        rows::StateResourceRow, rows::StateRow, rows::TechnologyDefinitionRow,
     };
     let mut frame = rich_frame();
     let both = [101_u32, 102];
@@ -1140,7 +1146,7 @@ fn richer_frame() -> DecodedFrame {
         both.map(|country| ResearchTechnologyRow {
             country,
             database_index: 4,
-            classifier: engine::ctechnology::CLASSIFIER_COMPLETED,
+            classifier: engine_research::ctechnology::CLASSIFIER_COMPLETED,
             ..Default::default()
         })
         .into(),
@@ -1652,7 +1658,7 @@ fn other_changes() -> Vec<Change> {
         }),
         Change::new(T::StateCores, &["claims"], None, |rows| {
             if let TableRows::StateCores(rows) = rows {
-                rows[0].claims = replay::rows::Recorded::Value(vec![101]);
+                rows[0].claims = replay_data::rows::Recorded::Value(vec![101]);
             }
         }),
     ]
@@ -1691,21 +1697,21 @@ fn every_other_world_query_is_declared_and_reads_no_table_field_or_row_it_does_n
 
 #[test]
 fn content_decided_world_queries_read_no_table_field_or_row_they_do_not_declare() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root =
         std::env::temp_dir().join(format!("dashboard-declared-trait-{}", std::process::id()));
     let file = root.join("common/country_leader/traits.txt");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, "leader_traits = { same = {} }").unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let leaders = installed_content::leader_traits::read(&layers).unwrap().0;
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let leaders = installed_content_core::leader_traits::read(&layers).unwrap().0;
     std::fs::remove_dir_all(root).unwrap();
-    let units = installed_content::unit_leader::Traits::default();
+    let units = installed_content_core::unit_leader::Traits::default();
     let states: std::collections::BTreeMap<u32, Vec<u32>> = [(1, vec![1])].into();
     let (dlcs, triggers, aliases) = (
         BTreeSet::new(),
-        installed_content::trigger_keys::TriggerNames::default(),
+        installed_content_core::trigger_keys::TriggerNames::default(),
         Arc::default(),
     );
     let digests = |frame: &DecodedFrame, keys: &[Key]| -> Vec<Option<u64>> {
@@ -1792,8 +1798,10 @@ fn every_declaration_names_existing_fields() {
 #[test]
 fn country_scope_queries_declare_tag_substitution_and_only_the_fields_they_read() {
     use crate::scope::{Query as Scopes, RecordedScopes, Target};
-    use installed_content::tag_aliases::{TagAlias, TagAliases};
-    use replay::rows::{CountryCounterInputRow, Recorded, ReservedCountryNamingRow};
+    use installed_content_core::{tag_aliases::TagAlias, tag_aliases::TagAliases};
+    use replay_data::{
+        rows::CountryCounterInputRow, rows::Recorded, rows::ReservedCountryNamingRow,
+    };
     let mut frame = frame(100, BASE);
     set::<tables::CountryCounterInputs>(
         &mut frame,
@@ -1842,7 +1850,7 @@ fn country_scope_queries_declare_tag_substitution_and_only_the_fields_they_read(
     .collect::<Vec<_>>();
     let (_, resolved) = capture(&frame, || {
         scopes.resolve(
-            &installed_content::scope::Scope::Country("AAA".into()),
+            &installed_content_core::scope::Scope::Country("AAA".into()),
             &crate::scope::Context::default(),
         )
     });
@@ -1952,7 +1960,7 @@ fn country_scope_queries_declare_tag_substitution_and_only_the_fields_they_read(
 /// The scenario's countries with character 5, whose unit leader needs
 /// `required` experience for its next level and has `skill`.
 fn character_frame(hour: Hour, required: i32, skill: i32) -> DecodedFrame {
-    use replay::rows::{CharacterRow, UnitLeaderRow};
+    use replay_data::{rows::CharacterRow, rows::UnitLeaderRow};
     let mut frame = frame(hour, BASE);
     set::<tables::Characters>(
         &mut frame,
@@ -2019,7 +2027,7 @@ fn character_tables_read_only_their_declared_fields() {
         row.captured = 1;
         row.visibility_choice = 2;
         row.template_visibility = 3;
-        row.exile_country = replay::rows::Recorded::Value(4);
+        row.exile_country = replay_data::rows::Recorded::Value(4);
     }
     if let TableView::Complete(TableRows::Characters(rows)) =
         &mut *unread.tables[TableId::Characters.index()]

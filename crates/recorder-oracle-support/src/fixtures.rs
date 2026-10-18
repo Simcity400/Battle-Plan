@@ -1,12 +1,10 @@
 //! Shared synthetic save-comparison fixtures.
 use installed_content_save::{self as save, Decimal, Save};
-use replay::{
-    frame::{DecodedFrame, Metrics, TableView},
-    rows::{
-        CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow, ProvinceRow, Recorded,
-        StateRow, TableId, TableRows,
-    },
+use replay_data::{
+    rows::CampaignRow, rows::ClockRow, rows::CountryLinkRow, rows::CountryRow, rows::DivisionRow,
+    rows::ProvinceRow, rows::Recorded, rows::StateRow, rows::TableId, rows::TableRows,
 };
+use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::TableView};
 use std::{collections::BTreeMap, io};
 
 /// The lexical token of the fixture state's category, spelled `town`.
@@ -16,7 +14,7 @@ pub fn fixture() -> (
     DecodedFrame,
     Save,
     save::PartialMapMembership,
-    installed_content::equipment::Database,
+    installed_content_core::equipment::Database,
 ) {
     let save = save::parse(br#"HOI4txt
 player="GER" date="1936.1.1.1" game_unique_id="campaign" game_unique_seed=7 debug_current_ref_id=65580 unit=4008 order_index=7484 front_index=8230 theatre_index=112 theater_group_index=910 military_deployment_line_index=7783 military_deployment_conveyor_index=736 equipment_variant_index=6284 country_leader_index=1 navy_id=8184 land_combat_id=15224 multiplayer_random_count=-1334833904 version="build"
@@ -34,13 +32,15 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             });
             // An alias reference: the save names the linked country's tag.
             tables[TableId::LocalPlayer.index()] =
-                TableView::Complete(TableRows::LocalPlayer(vec![replay::rows::LocalPlayerRow {
-                    country: 102,
-                    observer_country: 0,
-                }]));
+                TableView::Complete(TableRows::LocalPlayer(vec![
+                    replay_data::rows::LocalPlayerRow {
+                        country: 102,
+                        observer_country: 0,
+                    },
+                ]));
             tables[TableId::ReservedCountryNaming.index()] =
                 TableView::Complete(TableRows::ReservedCountryNaming(vec![
-                    replay::rows::ReservedCountryNamingRow {
+                    replay_data::rows::ReservedCountryNamingRow {
                         // This shared prefix fixture has no physical country census
                         // or launch-source packet; its save has no admitted emission ledger.
                         country_array: Recorded::NotRecorded,
@@ -58,7 +58,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                     id: b"campaign".to_vec(),
                 }])),
                 TableView::Complete(TableRows::Countries(vec![CountryRow {
-                    border_land_doctrine_level: replay::rows::Recorded::Value(None),
+                    border_land_doctrine_level: replay_data::rows::Recorded::Value(None),
                     id: 101,
                     canonical_slot: 7,
                     tag: b"GER".to_vec(),
@@ -126,42 +126,43 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             }
             tables[TableId::LexicalTokens.index()] =
                 TableView::Complete(TableRows::LexicalTokens(vec![
-                    replay::rows::LexicalTokenRow {
+                    replay_data::rows::LexicalTokenRow {
                         token: FIXTURE_CATEGORY_TOKEN,
                         literal: b"town".to_vec(),
                     },
                 ]));
             tables[TableId::HumanControllers.index()] =
                 TableView::Complete(TableRows::HumanControllers(vec![
-                    replay::rows::HumanControllerRow {
+                    replay_data::rows::HumanControllerRow {
                         country: 101,
                         count: 0,
                     },
                 ]));
             tables[TableId::SunkShips.index()] = TableView::Complete(TableRows::SunkShips(vec![
-                replay::rows::SunkShipsRow::default(),
+                replay_data::rows::SunkShipsRow::default(),
             ]));
-            tables[TableId::StateFlags.index()] =
-                TableView::Complete(TableRows::StateFlags(vec![replay::rows::StateFlagRow {
-                    border_conflict_active: replay::rows::Recorded::Value(0),
-                    border_conflict_countries: replay::rows::Recorded::Value(Vec::new()),
+            tables[TableId::StateFlags.index()] = TableView::Complete(TableRows::StateFlags(vec![
+                replay_data::rows::StateFlagRow {
+                    border_conflict_active: replay_data::rows::Recorded::Value(0),
+                    border_conflict_countries: replay_data::rows::Recorded::Value(Vec::new()),
                     state: 1,
                     demilitarized: 0,
-                }]));
+                },
+            ]));
             tables[TableId::CountryGameScoreInputs.index()] =
                 TableView::Complete(TableRows::CountryGameScoreInputs(vec![
-                    replay::rows::CountryGameScoreInputRow {
+                    replay_data::rows::CountryGameScoreInputRow {
                         country: 101,
                         army_count: Some(0),
                         navy_count: Some(0),
                         land_count: Some(2),
-                        air_state: replay::rows::CountryGameScoreInputRow::AIR_ABSENT,
+                        air_state: replay_data::rows::CountryGameScoreInputRow::AIR_ABSENT,
                         ..Default::default()
                     },
                 ]));
             tables[TableId::GameScoreMultipliers.index()] =
                 TableView::Complete(TableRows::GameScoreMultipliers(vec![
-                    replay::rows::GameScoreMultiplierRow {
+                    replay_data::rows::GameScoreMultiplierRow {
                         total_raw: Some(0),
                         army_raw: Some(0),
                         navy_raw: Some(0),
@@ -174,7 +175,9 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             // A current recording decodes the tables its format no longer
             // records as named absences, never as complete empty tables.
             for table in TableId::ALL {
-                if let Some(reason) = replay::format::FormatVersion::CURRENT.table_refusal(table) {
+                if let Some(reason) =
+                    replay_data::format::FormatVersion::CURRENT.table_refusal(table)
+                {
                     tables[table.index()] = TableView::Unavailable { reason };
                 }
             }
@@ -189,7 +192,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         frame,
         save,
         membership,
-        installed_content::equipment::Database::default(),
+        installed_content_core::equipment::Database::default(),
     )
 }
 
@@ -208,12 +211,12 @@ pub fn add_country(frame: &mut DecodedFrame, save: &mut Save, id: u32, slot: u32
     else {
         unreachable!()
     };
-    rows.push(replay::rows::CountryGameScoreInputRow {
+    rows.push(replay_data::rows::CountryGameScoreInputRow {
         country: id,
         army_count: Some(0),
         navy_count: Some(0),
         land_count: Some(0),
-        air_state: replay::rows::CountryGameScoreInputRow::AIR_ABSENT,
+        air_state: replay_data::rows::CountryGameScoreInputRow::AIR_ABSENT,
         ..Default::default()
     });
     let TableView::Complete(TableRows::Countries(rows)) =
@@ -240,7 +243,7 @@ pub fn add_country(frame: &mut DecodedFrame, save: &mut Save, id: u32, slot: u32
     else {
         unreachable!()
     };
-    rows.push(replay::rows::HumanControllerRow {
+    rows.push(replay_data::rows::HumanControllerRow {
         country: id,
         count: 0,
     });
@@ -250,7 +253,7 @@ pub fn division_fixture() -> (
     DecodedFrame,
     Save,
     save::PartialMapMembership,
-    installed_content::equipment::Database,
+    installed_content_core::equipment::Database,
 ) {
     let (mut frame, mut save, membership, equipment) = fixture();
     add_country(&mut frame, &mut save, 201, 8, b"D01");
@@ -286,7 +289,7 @@ pub fn division_fixture() -> (
             expeditionary_owner: 301,
             province: 1,
             template,
-            // As a recording stores them, in tenths (replay::display); the
+            // As a recording stores them, in tenths (replay_data::display); the
             // save keeps the exact 90071992547.40993 and 53.45454.
             hit_points: 9_007_199_254_740_000,
             organisation: 5_340_000,
@@ -310,7 +313,7 @@ pub fn read_membership(
 pub fn with_content<T>(
     history: &str,
     province_count: u32,
-    read: impl FnOnce(&installed_content::ResolvedLayers) -> io::Result<T>,
+    read: impl FnOnce(&installed_content_core::ResolvedLayers) -> io::Result<T>,
 ) -> io::Result<T> {
     with_content_files(history, province_count, &[], read)
 }
@@ -319,9 +322,9 @@ pub fn with_content_files<T>(
     history: &str,
     province_count: u32,
     extra_files: &[(&str, &str)],
-    read: impl FnOnce(&installed_content::ResolvedLayers) -> io::Result<T>,
+    read: impl FnOnce(&installed_content_core::ResolvedLayers) -> io::Result<T>,
 ) -> io::Result<T> {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     struct Content(std::path::PathBuf);
     impl Drop for Content {
@@ -362,6 +365,6 @@ pub fn with_content_files<T>(
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
     }
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&content.0, &[])]).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&content.0, &[])]).unwrap();
     read(&layers)
 }

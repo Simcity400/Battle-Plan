@@ -19,17 +19,12 @@ use viewer_foundation::map::camera::Placement;
 use viewer_foundation::map::tables::core;
 use viewer_foundation::table_access::TokenNames;
 
-use installed_content::{
-    ResolvedLayers,
-    cities::Cities,
-    image::{IndexedImage, native::Decode},
-};
+use installed_content_core::{ResolvedLayers, cities::Cities};
+use installed_content_image::{IndexedImage, native::Decode};
 
-use installed_content::buildings::BuildingType;
-use replay::{
-    frame::DecodedFrame,
-    rows::{BuildingRow, ProvinceRow, tables},
-};
+use installed_content_core::buildings::BuildingType;
+use replay_data::{rows::BuildingRow, rows::ProvinceRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use {
     super::{
         entity_animation::{BUILDING_IDLE, Clock, Request, STOPPED},
@@ -657,7 +652,7 @@ impl Sprawl {
         layers: &ResolvedLayers,
         decode: Decode,
         plan: &SprawlPlan,
-        defines: &installed_content::defines::Defines,
+        defines: &installed_content_core::defines::Defines,
         warnings: &mut Vec<String>,
     ) -> io::Result<Self> {
         // The entities and meshes of every descriptor the engine registers
@@ -782,7 +777,7 @@ impl Sprawl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content::cities;
+    use installed_content_core::cities;
 
     fn damage_types() -> Vec<BuildingType> {
         ["infrastructure", "industrial_complex", "arms_factory"]
@@ -935,8 +930,8 @@ mod tests {
 
     #[test]
     fn city_damage_refuses_incomplete_rows_and_ambiguous_templates() {
-        use replay::frame::TableView;
-        use replay::rows::{TableId, TableRows};
+        use replay_data::{rows::TableId, rows::TableRows};
+        use replay_frame::frame::TableView;
         let mut frame = DecodedFrame {
             branch: 1,
             hour: 42,
@@ -977,7 +972,7 @@ mod tests {
     #[test]
     fn city_damage_drives_authored_fire_and_smoke_on_the_state_entry_clock() {
         use super::super::entity_animation::{Clip, Node, Player, Rig};
-        use installed_content::mesh;
+        use installed_content_core::mesh;
         let state = |name: &str, particle: &str| Clip {
             state: mesh::EntityState {
                 name: name.into(),

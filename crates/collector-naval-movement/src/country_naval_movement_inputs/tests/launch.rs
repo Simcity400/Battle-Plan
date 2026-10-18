@@ -44,13 +44,15 @@ fn words(launch: &Launch) -> Option<Vec<(i32, u32)>> {
         .unwrap()
         .naval_bases
     {
-        replay::rows::LaunchNavalBases::Bases(rows) => Some(
+        replay_data::rows::LaunchNavalBases::Bases(rows) => Some(
             rows.into_iter()
                 .map(|row| (row.base_province as i32, row.country))
                 .collect(),
         ),
-        replay::rows::LaunchNavalBases::Unavailable => None,
-        replay::rows::LaunchNavalBases::NativeNull => panic!("expected a list or read refusal"),
+        replay_data::rows::LaunchNavalBases::Unavailable => None,
+        replay_data::rows::LaunchNavalBases::NativeNull => {
+            panic!("expected a list or read refusal")
+        }
     }
 }
 
@@ -240,7 +242,7 @@ fn worker_launch_grows_empty_arenas_before_first_publication() {
 
 #[test]
 fn native_null_projection_is_fresh_and_distinct_from_lists_and_read_faults() {
-    use replay::rows::LaunchNavalBases;
+    use replay_data::rows::LaunchNavalBases;
 
     let mut memory = launch_world();
     let (capacity, launch_capacity) = launch_capacity();
@@ -263,7 +265,7 @@ fn native_null_projection_is_fresh_and_distinct_from_lists_and_read_faults() {
             .projection_launch(Some(vec![9, 3, 9]))
             .unwrap()
             .unwrap();
-        assert_eq!(packet.sample_hour, replay::rows::PacketHour::Host);
+        assert_eq!(packet.sample_hour, replay_data::rows::PacketHour::Host);
         assert_eq!(packet.owned_states, Some(vec![9, 3, 9]));
         match hour {
             71 => assert!(

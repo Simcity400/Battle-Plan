@@ -1,9 +1,7 @@
 use crate::test_fixtures::{CAMPAIGN, records, source};
-use replay::{
-    container::Replay,
-    frame::TableView,
-    rows::{TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::frame::TableView;
 use std::sync::{Arc, atomic::AtomicBool};
 
 #[test]
@@ -50,13 +48,13 @@ fn the_catalogue_names_countries_when_content_is_known_and_shows_tags_otherwise(
     let mut frame = source(1, 100, Some(1));
     *frame.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(vec![
-            replay::rows::CountryAppearanceRow {
+            replay_data::rows::CountryAppearanceRow {
                 country: 9001,
                 ..Default::default()
             },
         ]));
     *frame.tables[TableId::Politics.index()] =
-        TableView::Complete(TableRows::Politics(vec![replay::rows::PoliticsRow {
+        TableView::Complete(TableRows::Politics(vec![replay_data::rows::PoliticsRow {
             country: 9001,
             ..Default::default()
         }]));
@@ -72,7 +70,7 @@ fn the_catalogue_names_countries_when_content_is_known_and_shows_tags_otherwise(
         &AtomicBool::new(false),
     )
     .unwrap();
-    let localisation: installed_content::localisation::Localisation =
+    let localisation: installed_content_localisation::localisation::Localisation =
         [("GER".to_owned(), "German Reich".to_owned())]
             .into_iter()
             .collect();

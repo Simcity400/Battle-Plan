@@ -2,7 +2,7 @@ use super::*;
 
 fn plan(inputs: Option<OrderExecutionInputs>) -> ArmyOrderPlanRow {
     ArmyOrderPlanRow {
-        owner_group: (7_u64 << 32) | engine::corders_group::REFERENCE_TYPE as u64,
+        owner_group: (7_u64 << 32) | engine_native::corders_group::REFERENCE_TYPE as u64,
         instance: u32::MAX,
         execution: Recorded::Value(inputs),
         ..Default::default()

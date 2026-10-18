@@ -6,11 +6,10 @@ use crate::{
     spooling::unavailable,
     table_capture::{CaptureRows, grow_vec},
 };
-use engine::{Memory, allocation, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{NavalResultSourceRow, TableId, TableRows},
-};
+use engine_allocation as allocation;
+use engine_native::{Memory, walk::Outcome};
+use replay_data::{rows::NavalResultSourceRow, rows::TableId, rows::TableRows};
+use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::NavalResultSources];

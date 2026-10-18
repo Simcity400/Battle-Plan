@@ -28,14 +28,12 @@ use viewer_foundation::map::name_draw::{Placements, WorldName, next_generation};
 
 use super::map_mode::GroupLabels;
 use eframe::wgpu;
-use installed_content::{
-    ResolvedLayers, adjacencies,
-    country_names::CountryNames,
-    image::IndexedImage,
-    localisation::{self, Localisation},
-    map::{MapData, ProvinceKind},
-};
-use replay::{frame::DecodedFrame, rows::tables};
+use installed_content_core::{ResolvedLayers, adjacencies, map::MapData, map::ProvinceKind};
+use installed_content_country_names::country_names::CountryNames;
+use installed_content_image::IndexedImage;
+use installed_content_localisation::{localisation, localisation::Localisation};
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 
 use {
     super::{
@@ -87,7 +85,7 @@ impl ProvinceGraph {
                 pairs.insert((a.min(b), a.max(b)));
             }
         };
-        for (id, list) in installed_content::movement::raster_neighbours(w, h, ids)?
+        for (id, list) in installed_content_core::movement::raster_neighbours(w, h, ids)?
             .iter()
             .enumerate()
         {
@@ -312,7 +310,7 @@ impl NameAreas {
     pub fn states(
         map: &MapData,
         frame: &DecodedFrame,
-        name: impl Fn(&replay::rows::StateRow) -> Result<String, String>,
+        name: impl Fn(&replay_data::rows::StateRow) -> Result<String, String>,
     ) -> io::Result<Self> {
         let mut members: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
         for province in core::<tables::Provinces>(frame)? {

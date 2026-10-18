@@ -1,6 +1,6 @@
 //! Allocation-free notifications from the native writers of every per-country
 //! field the stability, research, focus, project, appearance, counter and
-//! visibility tables record ([`engine::country_input_mutations`]). A detour only marks
+//! visibility tables record ([`engine_mutations::country_input_mutations`]). A detour only marks
 //! the countries its receiver names in the [`DirtySet`] of each table family
 //! its writes reach, counts its site and calls the original; it never
 //! changes game behaviour.
@@ -60,14 +60,15 @@ use crate::{
     dirty_set::{Dirty, DirtySet},
     hook::Hook,
 };
-use engine::{
-    Memory,
-    country_input_mutations::{
-        self as sites, FACTION_SHARING_BASE, GROW_INTEL_NETWORK, MUTATIONS,
-        PROJECT_DATABASE_RESYNC, PROJECT_REWARD_OPTION, REMOVE_UNIT_LEADER, Receiver,
-        SYNC_RESEARCH_SLOTS, Tables,
-    },
+use engine_mutations::{
+    country_input_mutations as sites, country_input_mutations::FACTION_SHARING_BASE,
+    country_input_mutations::GROW_INTEL_NETWORK, country_input_mutations::MUTATIONS,
+    country_input_mutations::PROJECT_DATABASE_RESYNC,
+    country_input_mutations::PROJECT_REWARD_OPTION, country_input_mutations::REMOVE_UNIT_LEADER,
+    country_input_mutations::Receiver, country_input_mutations::SYNC_RESEARCH_SLOTS,
+    country_input_mutations::Tables,
 };
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -536,7 +537,7 @@ impl Drop for Part<'_> {
 /// live memory.
 fn name(receiver: Receiver, first: usize, second: usize, visit: &mut dyn FnMut(u32)) -> bool {
     // SAFETY: guarded reads of live memory on the calling thread.
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     sites::countries(
         &memory,
         BASE.load(Ordering::Relaxed),
@@ -928,8 +929,8 @@ impl Changes for Observer {
 /// stateless country returns after its units and war checks. An unreadable count drifts.
 pub fn drifts(memory: &impl Memory, country: usize) -> bool {
     country
-        .checked_add(engine::ccountry::OWNED_STATE_COUNT)
-        .and_then(|address| engine::read::<i32>(memory, address))
+        .checked_add(engine_native::ccountry::OWNED_STATE_COUNT)
+        .and_then(|address| engine_native::read::<i32>(memory, address))
         .is_none_or(|count| count >= 1)
 }
 
@@ -980,7 +981,7 @@ pub fn forwarded(site: Forward, first: usize, second: usize) -> Marks<'static> {
 }
 
 /// The writer a political status site forwards
-/// ([`engine::political_status_mutations::MUTATIONS`] index): the capital
+/// ([`engine_mutations::political_status_mutations::MUTATIONS`] index): the capital
 /// setter writes nothing recorded here.
 fn status_forward(site: usize) -> Option<Forward> {
     match site {
@@ -1004,13 +1005,13 @@ pub fn forwarded_status(site: usize, first: usize) -> Marks<'static> {
     }
 }
 
-/// What a character role site ([`engine::character_role_mutations`])
+/// What a character role site ([`engine_mutations::character_role_mutations`])
 /// writes: a stability source (the country leader and advisor modifiers,
 /// role creation and destruction and the leader ideology), or, for the name
 /// and repair sites, a scientist source's name and id the research
 /// modifiers read.
 fn role_forward(site: usize) -> Forward {
-    use engine::character_role_mutations as roles;
+    use engine_mutations::character_role_mutations as roles;
     match site {
         roles::CHARACTER_NAME | roles::CHARACTER_REPAIR => Forward::CharacterIdentity,
         _ => Forward::Roles,
@@ -1024,11 +1025,11 @@ pub fn forwarded_role(site: usize, character: Option<usize>) -> Marks<'static> {
 }
 
 /// The writer and receiver a roster site forwards
-/// ([`engine::character_roster_mutations`]): the scientist build names its
+/// ([`engine_mutations::character_roster_mutations`]): the scientist build names its
 /// character in RDX, attach and clear in RCX and the trait writers their
 /// scientist in RCX; the roster array sites write nothing read here.
 fn roster_forward(site: usize, first: usize, second: usize) -> Option<(Forward, usize)> {
-    use engine::character_roster_mutations as roster;
+    use engine_mutations::character_roster_mutations as roster;
     match site {
         roster::SCIENTIST_BUILD => Some((Forward::ScientistRoles, second)),
         roster::SCIENTIST_ATTACH | roster::SCIENTIST_CLEAR => {
@@ -1050,7 +1051,7 @@ pub fn forwarded_roster(site: usize, first: usize, second: usize) -> Marks<'stat
 }
 
 /// The writer a territory site forwards
-/// ([`engine::territory_mutations::MUTATIONS`] index): the state owner and
+/// ([`engine_mutations::territory_mutations::MUTATIONS`] index): the state owner and
 /// controller setters and the state reset write the counter rows' state
 /// lists.
 fn territory_forward(site: usize) -> Option<Forward> {
@@ -1074,7 +1075,7 @@ pub fn forwarded_territory(site: usize, first: usize, second: usize) -> Marks<'s
     }
 }
 
-/// Whether a raid site ([`engine::raid_mutations::MUTATIONS`] index) is a
+/// Whether a raid site ([`engine_mutations::raid_mutations::MUTATIONS`] index) is a
 /// core insert or erase, `(state, &tag)`.
 fn raid_forward(site: usize) -> Option<Forward> {
     match site {
@@ -1093,7 +1094,7 @@ pub fn forwarded_raid(site: usize, first: usize, second: usize) -> Marks<'static
 }
 
 /// Whether an advisor pool site
-/// ([`engine::advisor_pool_mutations::MUTATIONS`] index) constructs or
+/// ([`engine_mutations::advisor_pool_mutations::MUTATIONS`] index) constructs or
 /// destroys a `CCountryCharacters`.
 fn pool_forward(site: usize) -> Option<Forward> {
     match site {
@@ -1256,7 +1257,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "country_input_changes")
             && MUTATIONS.iter().all(|(site, _, _)| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             BASE.store(base, Ordering::Release);
@@ -1352,8 +1353,10 @@ impl Hooks {
                         unsafe { Hook::new_call(base + site.rva, callbacks[index], site.sentinel) }
                             .map_err(|_| "native hook construction failed")?;
                     // The detour calls the CALL's target itself.
-                    ORIGINAL[index]
-                        .store(base + sites::PROVINCE_WEATHER_REBUILD_RVA, Ordering::Release);
+                    ORIGINAL[index].store(
+                        base + sites::PROVINCE_WEATHER_REBUILD_RVA,
+                        Ordering::Release,
+                    );
                     hook
                 } else {
                     let hook =
@@ -1375,7 +1378,10 @@ impl Hooks {
             crate::naval_tree_changes::forwarder(0, false);
             crate::advisor_pool_changes::unappoint_forwarder(false);
             crate::war_changes::forwarder(crate::war_changes::Forwarder::CountryInputs, false);
-            crate::nuclear_strikes::forwarder(replay::rows::NuclearStrikePart::WarSupport, false);
+            crate::nuclear_strikes::forwarder(
+                replay_data::rows::NuclearStrikePart::WarSupport,
+                false,
+            );
         }
         // One census and suspension for the whole family, shared with the
         // other families in a runtime round (`hook::shared`): a thread at any
@@ -1405,7 +1411,7 @@ impl Hooks {
             enabled && !self.hooks.is_empty(),
         );
         crate::nuclear_strikes::forwarder(
-            replay::rows::NuclearStrikePart::WarSupport,
+            replay_data::rows::NuclearStrikePart::WarSupport,
             enabled && !self.hooks.is_empty(),
         );
         Ok(true)
@@ -1620,7 +1626,7 @@ unsafe extern "system" fn remove_unit_leader(
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::CountryInputChanges);
     // SAFETY: guarded reads of live memory on the calling thread.
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[REMOVE_UNIT_LEADER].load(Ordering::Acquire)) };
     DOMAIN.remove_leader(
@@ -1767,7 +1773,7 @@ unsafe extern "system" fn sync_research_slots(
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::CountryInputChanges);
     // SAFETY: guarded reads of live memory on the calling thread.
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[SYNC_RESEARCH_SLOTS].load(Ordering::Acquire)) };
     DOMAIN.sync(
@@ -1787,7 +1793,7 @@ unsafe extern "system" fn faction_sharing_base(
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::CountryInputChanges);
     // SAFETY: guarded reads of live memory on the calling thread.
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[FACTION_SHARING_BASE].load(Ordering::Acquire)) };
     DOMAIN.rebase(

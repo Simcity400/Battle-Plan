@@ -8,8 +8,8 @@
 //! index zero and an empty name.
 
 use super::*;
-use installed_content::unit_leader::SubUnits;
-use replay::rows::{ShipModelRow, ShipRow, TaskForceRow};
+use installed_content_core::unit_leader::SubUnits;
+use replay_data::{rows::ShipModelRow, rows::ShipRow, rows::TaskForceRow};
 use viewer_foundation::map::counter_order;
 use viewer_foundation::map::msvc_stable_sort::sort;
 use viewer_foundation::map::naval_count_approx;
@@ -330,7 +330,7 @@ fn merge_groups<'a>(all: &mut BTreeMap<i32, Group<'a>>, groups: BTreeMap<i32, Gr
 
 fn composition(
     groups: &BTreeMap<i32, Group<'_>>,
-    equipment: Result<&installed_content::equipment::Database, &str>,
+    equipment: Result<&installed_content_core::equipment::Database, &str>,
 ) -> Result<String, String> {
     let mut ordered = groups.values().collect::<Vec<_>>();
     let mut missing = None;
@@ -504,7 +504,10 @@ fn append_detail(context: &Context<'_>, members: &[Member<'_>], out: &mut Toolti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{Recorded, ShipCounterInputs, TableId, TableRows, TaskForceCounterInputRow};
+    use replay_data::{
+        rows::Recorded, rows::ShipCounterInputs, rows::TableId, rows::TableRows,
+        rows::TaskForceCounterInputRow,
+    };
     use viewer_foundation::map::test_support::{test_frame, test_put};
 
     fn loc() -> Localisation {
@@ -569,7 +572,7 @@ mod tests {
         let mut frame = test_frame(600);
         test_put(
             &mut frame,
-            TableRows::CountryLinks(vec![replay::rows::CountryLinkRow {
+            TableRows::CountryLinks(vec![replay_data::rows::CountryLinkRow {
                 id: 41,
                 canonical_slot: 1,
             }]),
@@ -603,7 +606,7 @@ mod tests {
             assert!(members(context, &[99]).unwrap().is_empty());
         });
         // Missing/unfinished census cannot establish that a reference dangles.
-        frame.tables[TableId::TaskForces.index()] = replay::frame::TableView::Unavailable {
+        frame.tables[TableId::TaskForces.index()] = replay_frame::frame::TableView::Unavailable {
             reason: "unfinished task-force census".into(),
         }
         .into();
@@ -784,7 +787,7 @@ mod tests {
 
     #[test]
     fn copied_type_index_distinguishes_later_rejected_names_and_preserves_original_spelling() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut units = SubUnits::default();
         units.read(
@@ -830,7 +833,7 @@ mod tests {
 
     #[test]
     fn nul_declaration_keys_refuse_index_derivation_instead_of_selecting_a_later_prefix() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut units = SubUnits::default();
         units.read(
@@ -943,7 +946,7 @@ mod tests {
 
     #[test]
     fn current_variant_depth_orders_exact_modded_composition() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let content = viewer_foundation::map::test_support::equipment_from_documents(&[br"
             equipments = {
@@ -954,7 +957,7 @@ mod tests {
         let database = &content;
         let selected = |ship, name: &[u8]| {
             let mut row = model(ship, ship);
-            row.hull_variant = Recorded::Value(Some(replay::rows::HullVariantInputs {
+            row.hull_variant = Recorded::Value(Some(replay_data::rows::HullVariantInputs {
                 definition_index: Some(
                     database
                         .equipment
@@ -983,7 +986,7 @@ mod tests {
     fn native_null_definition_composition_needs_no_equipment_content() {
         let selected = |ship, marker| {
             let mut row = model(ship, ship);
-            row.hull_variant = Recorded::Value(Some(replay::rows::HullVariantInputs {
+            row.hull_variant = Recorded::Value(Some(replay_data::rows::HullVariantInputs {
                 definition_index: Some(-1),
                 module_count: Some(0),
                 upgrade_level_sum: Some(0),

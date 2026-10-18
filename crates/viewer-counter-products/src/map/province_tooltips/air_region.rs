@@ -3,19 +3,17 @@
 //! hovered province's strategic region and the viewing country, over the
 //! last day. The rows come from AirRegionCombat at the frame's hour after the
 //! latest daily prune that visited the viewing country
-//! ([`replay::air_region_derive::visiting_pass`]), found from the recorded hourly
+//! ([`replay_derive::air_region_derive::visiting_pass`]), found from the recorded hourly
 //! AirDailyRoster of the frame's branch ([`PassRosters`], read on a worker; the hover
 //! shows no statistics until the answer is ready); each side lists its air grid
 //! and its ground grid for our missions and the enemy's. Each line uses the
 //! item's tooltip key and its value as the received-damage formatter
 //! writes it, green for ours and red for the enemy's.
 use super::{Arg, Context, line};
-use replay::{
-    BranchId, Hour, air_region_derive as derive,
-    container::Replay,
-    frame::FrameDecoder,
-    rows::{TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
+use replay_derive::air_region_derive as derive;
+use replay_frame::frame::FrameDecoder;
 use std::{
     collections::{BTreeMap, HashSet},
     sync::{
@@ -561,7 +559,7 @@ fn fixed_round(value: i64) -> i32 {
 /// `VAL`, every other cause rounded to an integer.
 fn value(context: &Context<'_>, item: derive::Item) -> Result<String, String> {
     let text = match item.cause {
-        0 | 1 | 2 | 6 | 7 => installed_content::fixed5::fixed5_to_string(item.amount, 2),
+        0 | 1 | 2 | 6 | 7 => installed_content_core::fixed5::fixed5_to_string(item.amount, 2),
         3 => context.loc(
             "AIRWING_DISRUPTED_VAL",
             &[("VAL", Arg::Fixed5(item.amount))],
@@ -592,7 +590,7 @@ fn item_line(context: &Context<'_>, item: derive::Item) -> Result<String, String
 /// frame's hour, or `None` when the region or the holder has no records.
 fn retained<'a>(
     context: &'a Context<'_>,
-    rows: &'a [replay::rows::AirRegionCombatRow],
+    rows: &'a [replay_data::rows::AirRegionCombatRow],
 ) -> Result<Option<derive::Retained<'a>>, String> {
     let Some(region) = context
         .content
@@ -733,12 +731,15 @@ pub(super) mod tests {
     /// A recording of branch 1 from hour 20 to 130 whose roster holds country 7 (slot 5)
     /// until hour `until`, and lacks the hours in `missing`.
     pub(in super::super) fn recording(until: Hour, missing: &[Hour]) -> Arc<Replay> {
-        use replay::{
-            branches::{BranchReason, BranchStart, Parentage},
-            frame::{FrameEncoder, Metrics, TableView},
-            identity::{Identity, Roster as Verified, SessionStart, Verification},
-            rows::{AirDailyRosterRow, CampaignRow, CountryLinkRow, TableRows},
-            spool::Record,
+        use replay::spool::Record;
+        use replay_data::{
+            identity::Identity, identity::Roster as Verified, identity::SessionStart,
+            identity::Verification, rows::AirDailyRosterRow, rows::CampaignRow,
+            rows::CountryLinkRow, rows::TableRows,
+        };
+        use replay_frame::{
+            branches::BranchReason, branches::BranchStart, branches::Parentage,
+            frame::FrameEncoder, frame::Metrics, frame::TableView,
         };
         let mut records = vec![
             Record::SessionStart(SessionStart {
@@ -746,7 +747,7 @@ pub(super) mod tests {
                 process_id: 1,
                 process_start_time: 1,
                 qpc_frequency: 10_000_000,
-                sample_boundary: replay::identity::SampleBoundary::EndOfHour,
+                sample_boundary: replay_data::identity::SampleBoundary::EndOfHour,
                 identity: Identity {
                     game_version: "synthetic".into(),
                     exe_hash: [1; 32],
@@ -775,7 +776,7 @@ pub(super) mod tests {
         ];
         let mut encoder = FrameEncoder::new();
         for hour in (20..=130).filter(|hour| !missing.contains(hour)) {
-            let mut tables: [TableView; replay::rows::TableId::ALL.len()] =
+            let mut tables: [TableView; replay_data::rows::TableId::ALL.len()] =
                 std::array::from_fn(|_| TableView::Unavailable {
                     reason: "outside the roster fixture".into(),
                 });
@@ -795,7 +796,7 @@ pub(super) mod tests {
                 let index = rows.table().index();
                 tables[index] = TableView::Complete(rows);
             }
-            let frame = replay::frame::DecodedFrame {
+            let frame = replay_frame::frame::DecodedFrame {
                 branch: 1,
                 hour,
                 tables: tables.map(Into::into),

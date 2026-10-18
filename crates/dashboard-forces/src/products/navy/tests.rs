@@ -3,14 +3,13 @@ use dashboard_base::{
     source::SourceKey,
     test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag, source},
 };
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{
-        CountryLinkRow, CountryRow, LexicalTokenRow, ShipCounterInputs, ShipModelRow, ShipRow,
-        TableId, TableRows, TaskForceRow, tables,
-    },
+use replay::container::Replay;
+use replay_data::{
+    rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow, rows::ShipCounterInputs,
+    rows::ShipModelRow, rows::ShipRow, rows::TableId, rows::TableRows, rows::TaskForceRow,
+    rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 fn fleet_frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1));
@@ -502,7 +501,7 @@ fn project(scanned: &ScannedNavy, request: &NavyParams) -> NavyReply {
 
 #[test]
 fn navy_lexical_spelling_recovers_without_backdating_or_merging_reloaded_tokens() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut first = fleet_frame(0);
     *first.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
@@ -531,7 +530,7 @@ fn navy_lexical_spelling_recovers_without_backdating_or_merging_reloaded_tokens(
         );
     }
     assert_eq!(scanned.classes.len(), 5);
-    let mut units = installed_content::unit_leader::SubUnits::default();
+    let mut units = installed_content_core::unit_leader::SubUnits::default();
     units.read(
         b"sub_units={mod_escort={type=screen_ship} other_mod_hull={type=carrier}}",
         "mod.txt",
@@ -563,7 +562,7 @@ fn navy_lexical_spelling_recovers_without_backdating_or_merging_reloaded_tokens(
 
 #[test]
 fn navy_selected_parts_use_layered_mod_classes_and_native_role_masks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!("hoi4_navy_mod_{}", uuid::Uuid::new_v4()));
     let base = root.join("base");
@@ -578,12 +577,12 @@ fn navy_selected_parts_use_layered_mod_classes_and_native_role_masks() {
         std::fs::create_dir_all(folder.join("common/units")).unwrap();
         std::fs::write(folder.join("common/units/fleet.txt"), text).unwrap();
     }
-    let layers = installed_content::ResolvedLayers::from_folders(&[
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[
         (&base, &[][..]),
         (&addon, &["common/units"][..]),
     ])
     .unwrap();
-    let units = installed_content::unit_leader::sub_units(&layers).unwrap();
+    let units = installed_content_core::unit_leader::sub_units(&layers).unwrap();
     drop(layers);
     std::fs::remove_dir_all(root).unwrap();
     let source = recorded_source(vec![fleet_frame(0)]);
@@ -1295,7 +1294,7 @@ fn navy_realistic_scale_including_decode() {
 
 #[test]
 fn phase_b_navy_database_success_and_failure_are_bound_before_observation() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for removed in [false, true] {
         let (catalogue, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[(
@@ -1312,7 +1311,7 @@ fn phase_b_navy_database_success_and_failure_are_bound_before_observation() {
         let database = catalogue
             .content
             .layers
-            .derived::<catalogue::CachedResult<installed_content::unit_leader::SubUnits>>();
+            .derived::<catalogue::CachedResult<installed_content_core::unit_leader::SubUnits>>();
         let binding = part_content(&source, Some(&catalogue));
         let key = (41, Some("mod_hull".into()));
         let classes = BTreeSet::from([0]);

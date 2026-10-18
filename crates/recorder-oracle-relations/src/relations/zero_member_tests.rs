@@ -1,8 +1,8 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{FactionMemberRow, Recorded, ReservedCountryNamingRow, TableRows},
+use replay_data::{
+    rows::FactionMemberRow, rows::Recorded, rows::ReservedCountryNamingRow, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 
 const FACTION: u64 = (7 << 32) | 0x128;
 

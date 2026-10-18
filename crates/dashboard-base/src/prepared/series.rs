@@ -416,7 +416,7 @@ impl Accumulator {
     }
     /// [`Self::advance`] at every hour `first..=last` in order, in constant time.
     pub fn advance_span(&mut self, first: i32, last: i32) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope("series advance", None);
+        let _cpu = ::replay_frame::cpu::scope("series advance", None);
         self.advance_inner(first)?;
         if last > first {
             if let Some(series) = self.recorded {
@@ -459,7 +459,7 @@ impl Accumulator {
     /// Authenticate one accepted frame before applying its changed keys. Repeated
     /// hours are idempotent; a gap closes held values at the old frontier.
     pub fn advance(&mut self, hour: i32) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope("series advance", None);
+        let _cpu = ::replay_frame::cpu::scope("series advance", None);
         self.advance_inner(hour)
     }
     fn advance_inner(&mut self, hour: i32) -> io::Result<()> {
@@ -490,7 +490,7 @@ impl Accumulator {
     /// Materialize held values only through accepted hours. Explicit spans and
     /// events never become held values. Checkpoints flush before serializing.
     pub fn seal(&mut self) {
-        let _cpu = ::replay::cpu::scope("series seal", None);
+        let _cpu = ::replay_frame::cpu::scope("series seal", None);
         let Some(frontier) = self.frontier else {
             return;
         };
@@ -750,7 +750,7 @@ impl Accumulator {
         cancelled: &AtomicBool,
         payloads: Option<&mut Payloads>,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope("series flush", None);
+        let _cpu = ::replay_frame::cpu::scope("series flush", None);
         self.seal();
         if self.batch.first.is_none() {
             return Ok(());
@@ -913,7 +913,7 @@ impl Recording {
     }
     /// Make every recorded call again, in order, on `target`'s accumulators.
     pub fn replay(self, target: &mut impl ReplayTarget) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope("series replay", None);
+        let _cpu = ::replay_frame::cpu::scope("series replay", None);
         for call in self.calls {
             match call {
                 Call::Advance {
@@ -1031,7 +1031,7 @@ pub fn catalogue_names(keys: &BTreeMap<String, u64>) -> io::Result<Vec<String>> 
 /// catalogue: a known name keeps its key and a new one takes the next, as
 /// the calls that first saw them would have.
 pub fn number_names(keys: &mut BTreeMap<String, u64>, names: &[String]) -> Vec<u64> {
-    let _cpu = ::replay::cpu::scope("fold facts", None);
+    let _cpu = ::replay_frame::cpu::scope("fold facts", None);
     names
         .iter()
         .map(|name| {
@@ -1642,7 +1642,7 @@ impl Batch {
             idle.finish();
         }
         check_cancel(cancelled)?;
-        let _cpu = ::replay::cpu::scope_phase("series:write_page");
+        let _cpu = ::replay_frame::cpu::scope_phase("series:write_page");
         writer.write(section, bytes.as_slice())?;
         Ok(())
     }
@@ -1661,7 +1661,7 @@ fn summary_buckets(
     let direct = true;
     #[cfg(test)]
     let direct = !WHOLE_SUMMARY_MAPS.with(std::cell::Cell::get);
-    let _cpu = ::replay::cpu::scope_phase("series:summary_buckets");
+    let _cpu = ::replay_frame::cpu::scope_phase("series:summary_buckets");
     if direct
         && (runs.len() <= 1
             || (runs.iter().all(|run| run.first_hour <= run.last_hour)
@@ -2497,7 +2497,7 @@ impl<'a> Reader<'a> {
                 }) {
                     return Ok(None);
                 }
-                let _phase = replay::cpu::scope_phase("query:directory");
+                let _phase = replay_frame::cpu::scope_phase("query:directory");
                 Arc::new(Table::read(self.file(batch)?)?)
             }
         };
@@ -3130,7 +3130,7 @@ impl<'a> Reader<'a> {
             Some(walk) => walk,
             None => self.seek_events(keys, from, to, cursor)?,
         };
-        let _cpu = replay::cpu::scope_phase("series:query_event_page");
+        let _cpu = replay_frame::cpu::scope_phase("series:query_event_page");
         let first = cursor.max(walk.base);
         let end = first.saturating_add(u64::from(page_size)).min(walk.last);
         let mut rows = Vec::new();
@@ -3164,7 +3164,7 @@ impl<'a> Reader<'a> {
         to: i32,
         cursor: u64,
     ) -> io::Result<EventWalk> {
-        let _cpu = replay::cpu::scope_phase("series:query_event_seek");
+        let _cpu = replay_frame::cpu::scope_phase("series:query_event_seek");
         let keys: Vec<_> = selected
             .iter()
             .copied()

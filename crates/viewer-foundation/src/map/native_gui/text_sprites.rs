@@ -172,7 +172,7 @@ impl Walk<'_> {
         let font = text_font(self.resources, element, draw.font)?;
         // Both bake passes upload the font's auxiliary colour as `ModColor`. It starts white;
         // ordinary text drawing restores it to white after each draw. A component-written
-        // colour ([`installed_content::gui::native::fonts::FontFacts::aux_color`]) therefore holds
+        // colour ([`installed_content_core::gui::native::fonts::FontFacts::aux_color`]) therefore holds
         // until the first ordinary text draw with that font.
         if font.facts.aux_color != [1.0; 4] {
             return Err(Refusal::new(

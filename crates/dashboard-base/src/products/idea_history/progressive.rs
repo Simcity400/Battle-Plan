@@ -25,7 +25,7 @@ fn sample(
     source: &Source,
     branch: u64,
     tag: &str,
-    frame: &replay::frame::DecodedFrame,
+    frame: &replay_frame::frame::DecodedFrame,
 ) -> io::Result<Option<Observation>> {
     let mut scan = Scan::default();
     scan.observe_selected(frame, Some(tag), None)?;
@@ -316,10 +316,8 @@ mod tests {
     #[test]
     fn sampled_holdings_match_the_scan_with_five_thousand_countries() {
         use crate::test_fixtures::{scale_frame, scale_tag};
-        use replay::{
-            frame::TableView,
-            rows::{ActiveIdeaRow, TableId, TableRows},
-        };
+        use replay_data::{rows::ActiveIdeaRow, rows::TableId, rows::TableRows};
+        use replay_frame::frame::TableView;
         let mut frame = scale_frame(1, 100, 5_000);
         *frame.tables[TableId::ActiveIdeas.index()] = TableView::Complete(TableRows::ActiveIdeas(
             (0..5_000)
@@ -347,7 +345,7 @@ mod tests {
     #[cfg(feature = "slow-tests")]
     #[test]
     fn idea_first_views_are_non_null_marked_and_keep_the_exact_prefix_and_held_set() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let (_catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
             (
                 "common/defines/work.lua",
@@ -364,7 +362,9 @@ mod tests {
             idea_frame(102, &["mod_b"]),
         ];
         let (memory, context) = crate::test_fixtures::source_with_content(input.clone(), &folder.0);
-        let (source, root) = file_source(memory.replay_ref().clone());
+        let (source, root) = file_source(
+            replay::container::Replay::open(memory.replay_ref().bytes().to_vec()).unwrap(),
+        );
         let options = context.content.as_ref().unwrap();
         let content = politics_content(&source, options).unwrap();
         let (store, key) = crate::prepared::files(&source, Some(options)).unwrap();
@@ -419,7 +419,7 @@ mod tests {
         scan.observe(&input[0]).unwrap();
         let mut writer = store.replace(key.clone()).unwrap();
         writer
-            .write_at("idea-history-1", 0, &scan.saved_bytes().unwrap())
+            .write_at("idea-history-1", 0, scan.saved_bytes().unwrap().as_slice())
             .unwrap();
         crate::prepared::coverage::publish_coverage(&mut writer, 1, 100, 100, false).unwrap();
         writer.commit().unwrap();
@@ -464,7 +464,7 @@ mod tests {
         }
         let mut writer = store.append(&key, key.clone()).unwrap();
         writer
-            .write_at("idea-history-1", 0, &scan.saved_bytes().unwrap())
+            .write_at("idea-history-1", 0, scan.saved_bytes().unwrap().as_slice())
             .unwrap();
         crate::prepared::coverage::publish_coverage(&mut writer, 1, 100, 102, true).unwrap();
         writer.commit().unwrap();

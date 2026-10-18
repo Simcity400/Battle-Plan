@@ -7,16 +7,16 @@ use std::sync::OnceLock;
 pub(super) struct PreparedInputs {
     states: OnceLock<Result<PreparedStates, String>>,
     continents: OnceLock<Result<Vec<String>, String>>,
-    triggers: OnceLock<Result<installed_content::trigger_keys::TriggerNames, String>>,
-    buildings: OnceLock<Result<installed_content::buildings::Buildings, String>>,
+    triggers: OnceLock<Result<installed_content_core::trigger_keys::TriggerNames, String>>,
+    buildings: OnceLock<Result<installed_content_core::buildings::Buildings, String>>,
     bonuses: OnceLock<Result<[i64; 2], String>>,
     roles: OnceLock<Result<LeaderRoles, String>>,
-    constants: OnceLock<Result<installed_content::script_constants::Constants, String>>,
-    traits: OnceLock<Result<installed_content::unit_leader::Traits, String>>,
+    constants: OnceLock<Result<installed_content_core::script_constants::Constants, String>>,
+    traits: OnceLock<Result<installed_content_core::unit_leader::Traits, String>>,
     invasion_days: OnceLock<Result<i32, String>>,
     pub(super) dlcs: OnceLock<Result<BTreeSet<String>, String>>,
     pub(super) neighbors: OnceLock<Result<BTreeMap<u32, Vec<u32>>, String>>,
-    pub(super) terrain: OnceLock<Option<installed_content::movement::MovementMap>>,
+    pub(super) terrain: OnceLock<Option<installed_content_core::movement::MovementMap>>,
 }
 
 #[cfg(test)]
@@ -39,12 +39,13 @@ struct PreparedStates {
 }
 
 impl ScriptedContent {
-    fn prepared_buildings(&self) -> Result<&installed_content::buildings::Buildings, &str> {
+    fn prepared_buildings(&self) -> Result<&installed_content_core::buildings::Buildings, &str> {
         self.prepared_environment()?
             .prepared
             .buildings
             .get_or_init(|| {
-                installed_content::buildings::read(&self.layers.layers).map_err(|error| error.to_string())
+                installed_content_core::buildings::read(&self.layers.layers)
+                    .map_err(|error| error.to_string())
             })
             .as_ref()
             .map_err(String::as_str)
@@ -95,7 +96,7 @@ impl ScriptedContent {
         if let Some(Ok(inputs)) = environment.inputs.get() {
             return Ok(inputs.world(self, environment, frame));
         }
-        static TRIGGERS: OnceLock<installed_content::trigger_keys::TriggerNames> = OnceLock::new();
+        static TRIGGERS: OnceLock<installed_content_core::trigger_keys::TriggerNames> = OnceLock::new();
         let dlcs = environment
             .prepared
             .dlcs
@@ -149,41 +150,43 @@ impl PreparedContent for ScriptedContent {
             .prepared
             .continents
             .get_or_init(|| {
-                installed_content::terrain::read_default_map(&self.layers.layers)
+                installed_content_core::terrain::read_default_map(&self.layers.layers)
                     .and_then(|map| self.layers.layers.read(&map.file("continent")?))
                     .and_then(|bytes| {
-                        installed_content::equipment_graphics::context::continent_names(&bytes)
+                        installed_content_equipment_graphics::equipment_graphics::context::continent_names(
+                            &bytes,
+                        )
                     })
                     .map_err(|error| error.to_string())
             })
             .as_deref()
             .map_err(String::as_str)
     }
-    fn ideologies(&self) -> Result<&installed_content::ideologies::Ideologies, &str> {
+    fn ideologies(&self) -> Result<&installed_content_core::ideologies::Ideologies, &str> {
         self.prepared_environment()?
             .ideologies_result()
             .as_ref()
             .map_err(String::as_str)
     }
-    fn triggers(&self) -> Result<&installed_content::trigger_keys::TriggerNames, &str> {
+    fn triggers(&self) -> Result<&installed_content_core::trigger_keys::TriggerNames, &str> {
         let environment = self.prepared_environment()?;
         environment
             .prepared
             .triggers
             .get_or_init(|| {
                 let buildings = self.prepared_buildings();
-                let scripted = installed_content::scripted_triggers::read(&self.layers.layers)
+                let scripted = installed_content_core::scripted_triggers::read(&self.layers.layers)
                     .map_err(|error| error.to_string())?;
                 let counts = buildings.ok().and_then(|buildings| {
                     let ideologies = environment.ideologies().ok()?;
-                    let resources = installed_content::resources::read(&self.layers.layers).ok()?;
-                    Some(installed_content::trigger_keys::CountTriggerNames::new(
+                    let resources = installed_content_core::resources::read(&self.layers.layers).ok()?;
+                    Some(installed_content_core::trigger_keys::CountTriggerNames::new(
                         buildings,
                         ideologies,
                         &resources.0,
                     ))
                 });
-                Ok(installed_content::trigger_keys::TriggerNames { scripted, counts })
+                Ok(installed_content_core::trigger_keys::TriggerNames { scripted, counts })
             })
             .as_ref()
             .map_err(String::as_str)
@@ -192,8 +195,8 @@ impl PreparedContent for ScriptedContent {
         &self,
     ) -> Result<
         (
-            &installed_content::unit_leader::Traits,
-            &installed_content::leader_traits::LeaderTraits,
+            &installed_content_core::unit_leader::Traits,
+            &installed_content_core::leader_traits::LeaderTraits,
         ),
         &str,
     > {
@@ -202,7 +205,7 @@ impl PreparedContent for ScriptedContent {
             .prepared
             .traits
             .get_or_init(|| {
-                installed_content::unit_leader::Traits::registered(&self.layers.layers)
+                installed_content_core::unit_leader::Traits::registered(&self.layers.layers)
                     .map_err(|error| error.to_string())
             })
             .as_ref()
@@ -215,7 +218,7 @@ impl PreparedContent for ScriptedContent {
                 .map_err(String::as_str)?,
         ))
     }
-    fn resources(&self) -> Result<(&installed_content::buildings::Buildings, [i64; 2]), &str> {
+    fn resources(&self) -> Result<(&installed_content_core::buildings::Buildings, [i64; 2]), &str> {
         let environment = self.prepared_environment()?;
         let buildings = self.prepared_buildings()?;
         let bonuses = environment
@@ -234,19 +237,19 @@ impl PreparedContent for ScriptedContent {
             .prepared
             .roles
             .get_or_init(|| {
-                installed_content::characters::leader_templates(&self.layers.layers)
+                installed_content_core::characters::leader_templates(&self.layers.layers)
                     .map(LeaderRoles::new)
                     .map_err(|error| error.to_string())
             })
             .as_ref()
             .map_err(String::as_str)
     }
-    fn constants(&self) -> Result<&installed_content::script_constants::Constants, &str> {
+    fn constants(&self) -> Result<&installed_content_core::script_constants::Constants, &str> {
         self.prepared_environment()?
             .prepared
             .constants
             .get_or_init(|| {
-                installed_content::script_constants::read(&self.layers.layers)
+                installed_content_core::script_constants::read(&self.layers.layers)
                     .map_err(|error| error.to_string())
             })
             .as_ref()

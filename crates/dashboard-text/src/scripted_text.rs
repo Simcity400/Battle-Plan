@@ -20,85 +20,81 @@
 //! recording cannot answer is refused by name with the missing input.
 
 use crate::scope::RecordedScopes;
-use installed_content::{
-    country_names::CountryNames,
-    localisation::{Localisation, crt_case_text},
-};
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{TableSchema, tables},
-};
+use installed_content_country_names::country_names::CountryNames;
+use installed_content_localisation::{localisation::Localisation, localisation::crt_case_text};
+use replay_data::{rows::TableSchema, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 /// Recorded inputs for authored country-scoped scripted text and its triggers.
 /// Consumers that see a scripted `[` in resolved content decode this set once
 /// in their forward presentation pass. Plain text needs none of these tables.
-pub const TABLES: &[replay::rows::TableId] = &[
-    replay::rows::TableId::ActiveIdeas,
-    replay::rows::TableId::AdvisorTokens,
-    replay::rows::TableId::ArmyOrderPlans,
-    replay::rows::TableId::ArmyOrders,
-    replay::rows::TableId::Autonomy,
-    replay::rows::TableId::CharacterOperatives,
-    replay::rows::TableId::CharacterRoleTraits,
-    replay::rows::TableId::Characters,
-    replay::rows::TableId::CompletedFocuses,
-    replay::rows::TableId::Countries,
-    replay::rows::TableId::CountryAppearance,
-    replay::rows::TableId::CountryBuildingResources,
-    replay::rows::TableId::CountryCharacters,
-    replay::rows::TableId::CountryCivilWars,
-    replay::rows::TableId::CountryCounterInputs,
-    replay::rows::TableId::CountryFactories,
-    replay::rows::TableId::CountryLeaderRoles,
-    replay::rows::TableId::CountryLinks,
-    replay::rows::TableId::CountryRetiredCharacters,
-    replay::rows::TableId::CountryResources,
-    replay::rows::TableId::CountryWars,
-    replay::rows::TableId::DynamicModifiers,
-    replay::rows::TableId::FactionAdvisors,
-    replay::rows::TableId::FactionMembers,
-    replay::rows::TableId::Factions,
-    replay::rows::TableId::Focus,
-    replay::rows::TableId::GlobalSavedEventTargets,
-    replay::rows::TableId::HiredAdvisors,
-    replay::rows::TableId::IntelligenceAgencies,
-    replay::rows::TableId::InvasionPreparations,
-    replay::rows::TableId::LandTheatres,
-    replay::rows::TableId::LexicalTokens,
-    replay::rows::TableId::LocalPlayer,
-    replay::rows::TableId::ModifierDefinitions,
-    replay::rows::TableId::Nukes,
-    replay::rows::TableId::OrdersGroupPlans,
-    replay::rows::TableId::OrdersGroups,
-    replay::rows::TableId::PartyLeaders,
-    replay::rows::TableId::PoliticalParties,
-    replay::rows::TableId::Politics,
-    replay::rows::TableId::PowerBalanceMembers,
-    replay::rows::TableId::PowerBalanceModifierBreakdowns,
-    replay::rows::TableId::PowerBalances,
-    replay::rows::TableId::Projects,
-    replay::rows::TableId::ProvinceBuildings,
-    replay::rows::TableId::ProvinceNames,
-    replay::rows::TableId::Provinces,
-    replay::rows::TableId::RelationOpinions,
-    replay::rows::TableId::ResearchTechnologies,
-    replay::rows::TableId::ReservedCountryNaming,
-    replay::rows::TableId::ResourceDefinitions,
-    replay::rows::TableId::ScriptFlags,
-    replay::rows::TableId::ScriptVariables,
-    replay::rows::TableId::SimulationFeatures,
-    replay::rows::TableId::StateBaseResources,
-    replay::rows::TableId::StateBuildings,
-    replay::rows::TableId::StateCores,
-    replay::rows::TableId::StateDynamicModifiers,
-    replay::rows::TableId::StateResourceInputs,
-    replay::rows::TableId::StateResources,
-    replay::rows::TableId::States,
-    replay::rows::TableId::Subjects,
-    replay::rows::TableId::TechnologyDefinitions,
-    replay::rows::TableId::UnitLeaderTraits,
-    replay::rows::TableId::UnitLeaders,
-    replay::rows::TableId::WarRelations,
+pub const TABLES: &[replay_data::rows::TableId] = &[
+    replay_data::rows::TableId::ActiveIdeas,
+    replay_data::rows::TableId::AdvisorTokens,
+    replay_data::rows::TableId::ArmyOrderPlans,
+    replay_data::rows::TableId::ArmyOrders,
+    replay_data::rows::TableId::Autonomy,
+    replay_data::rows::TableId::CharacterOperatives,
+    replay_data::rows::TableId::CharacterRoleTraits,
+    replay_data::rows::TableId::Characters,
+    replay_data::rows::TableId::CompletedFocuses,
+    replay_data::rows::TableId::Countries,
+    replay_data::rows::TableId::CountryAppearance,
+    replay_data::rows::TableId::CountryBuildingResources,
+    replay_data::rows::TableId::CountryCharacters,
+    replay_data::rows::TableId::CountryCivilWars,
+    replay_data::rows::TableId::CountryCounterInputs,
+    replay_data::rows::TableId::CountryFactories,
+    replay_data::rows::TableId::CountryLeaderRoles,
+    replay_data::rows::TableId::CountryLinks,
+    replay_data::rows::TableId::CountryRetiredCharacters,
+    replay_data::rows::TableId::CountryResources,
+    replay_data::rows::TableId::CountryWars,
+    replay_data::rows::TableId::DynamicModifiers,
+    replay_data::rows::TableId::FactionAdvisors,
+    replay_data::rows::TableId::FactionMembers,
+    replay_data::rows::TableId::Factions,
+    replay_data::rows::TableId::Focus,
+    replay_data::rows::TableId::GlobalSavedEventTargets,
+    replay_data::rows::TableId::HiredAdvisors,
+    replay_data::rows::TableId::IntelligenceAgencies,
+    replay_data::rows::TableId::InvasionPreparations,
+    replay_data::rows::TableId::LandTheatres,
+    replay_data::rows::TableId::LexicalTokens,
+    replay_data::rows::TableId::LocalPlayer,
+    replay_data::rows::TableId::ModifierDefinitions,
+    replay_data::rows::TableId::Nukes,
+    replay_data::rows::TableId::OrdersGroupPlans,
+    replay_data::rows::TableId::OrdersGroups,
+    replay_data::rows::TableId::PartyLeaders,
+    replay_data::rows::TableId::PoliticalParties,
+    replay_data::rows::TableId::Politics,
+    replay_data::rows::TableId::PowerBalanceMembers,
+    replay_data::rows::TableId::PowerBalanceModifierBreakdowns,
+    replay_data::rows::TableId::PowerBalances,
+    replay_data::rows::TableId::Projects,
+    replay_data::rows::TableId::ProvinceBuildings,
+    replay_data::rows::TableId::ProvinceNames,
+    replay_data::rows::TableId::Provinces,
+    replay_data::rows::TableId::RelationOpinions,
+    replay_data::rows::TableId::ResearchTechnologies,
+    replay_data::rows::TableId::ReservedCountryNaming,
+    replay_data::rows::TableId::ResourceDefinitions,
+    replay_data::rows::TableId::ScriptFlags,
+    replay_data::rows::TableId::ScriptVariables,
+    replay_data::rows::TableId::SimulationFeatures,
+    replay_data::rows::TableId::StateBaseResources,
+    replay_data::rows::TableId::StateBuildings,
+    replay_data::rows::TableId::StateCores,
+    replay_data::rows::TableId::StateDynamicModifiers,
+    replay_data::rows::TableId::StateResourceInputs,
+    replay_data::rows::TableId::StateResources,
+    replay_data::rows::TableId::States,
+    replay_data::rows::TableId::Subjects,
+    replay_data::rows::TableId::TechnologyDefinitions,
+    replay_data::rows::TableId::UnitLeaderTraits,
+    replay_data::rows::TableId::UnitLeaders,
+    replay_data::rows::TableId::WarRelations,
 ];
 
 mod balance;
@@ -460,24 +456,24 @@ impl Drop for DescriptionScopeGuard<'_, '_, '_> {
 
 /// Content facts the evaluator needs besides localisation.
 pub struct ScriptedContent {
-    /// `common/scripted_localisation` names ([`installed_content::scripted_localisation`]).
-    pub names: installed_content::scripted_localisation::Names,
+    /// `common/scripted_localisation` names ([`installed_content_scripted_localisation::scripted_localisation`]).
+    pub names: installed_content_scripted_localisation::scripted_localisation::Names,
     /// `NGame.MAX_SCRIPTED_LOC_RECURSION`, compared with text processing depth.
     pub recursion: i32,
     /// `common/country_tag_aliases` names, which promotion step 3 tries
     /// after the country tags.
-    pub tag_aliases: std::sync::Arc<installed_content::tag_aliases::TagAliases>,
+    pub tag_aliases: std::sync::Arc<installed_content_core::tag_aliases::TagAliases>,
     /// The recording client's game language ([`crate::catalogue::Catalogue`]):
     /// text the game stored already localised is in it.
     pub recorded_language: String,
     /// The content stack the triggers of scripted localisation entries and
     /// state names read ([`entries`]).
-    pub layers: std::sync::Arc<installed_content::content::ResolvedContent>,
+    pub layers: std::sync::Arc<installed_content_core::content::ResolvedContent>,
     pub(crate) environment: std::sync::OnceLock<Result<entries::Environment, String>>,
     pub(crate) state_content:
         std::sync::Arc<std::sync::OnceLock<Result<entries::StateContent, String>>>,
     pub(crate) template_names: std::sync::OnceLock<Result<Localisation, String>>,
-    event_index: std::sync::OnceLock<installed_content::events::LazyEvents>,
+    event_index: std::sync::OnceLock<installed_content_events::events::LazyEvents>,
     pub(crate) effects:
         std::sync::OnceLock<Result<crate::effect_description::CachedContent, String>>,
 }
@@ -488,11 +484,11 @@ impl ScriptedContent {
     /// of `content`, or why they cannot be read. `recorded_language` is the
     /// recording client's language, without its `l_`.
     pub fn read(
-        content: std::sync::Arc<installed_content::content::ResolvedContent>,
+        content: std::sync::Arc<installed_content_core::content::ResolvedContent>,
         recorded_language: String,
     ) -> Result<Self, String> {
         let layers = &content.layers;
-        let names = installed_content::scripted_localisation::names(layers)
+        let names = installed_content_scripted_localisation::scripted_localisation::names(layers)
             .map_err(|error| format!("common/scripted_localisation is unreadable: {error}"))?;
         let environment = Environment::read(layers)
             .map_err(|error| format!("NGame.MAX_SCRIPTED_LOC_RECURSION is unavailable: {error}"))?;
@@ -500,7 +496,7 @@ impl ScriptedContent {
             .defines()
             .int32("NGame", "MAX_SCRIPTED_LOC_RECURSION")
             .map_err(|error| format!("NGame.MAX_SCRIPTED_LOC_RECURSION is unavailable: {error}"))?;
-        let tag_aliases = installed_content::tag_aliases::read(layers)
+        let tag_aliases = installed_content_core::tag_aliases::read(layers)
             .map_err(|error| format!("common/country_tag_aliases is unreadable: {error}"))?;
         Ok(Self {
             names,
@@ -516,9 +512,9 @@ impl ScriptedContent {
         })
     }
 
-    pub(crate) fn event_index(&self) -> &installed_content::events::LazyEvents {
+    pub(crate) fn event_index(&self) -> &installed_content_events::events::LazyEvents {
         self.event_index.get_or_init(|| {
-            installed_content::events::LazyEvents::from_content(std::sync::Arc::clone(&self.layers))
+            installed_content_events::events::LazyEvents::from_content(std::sync::Arc::clone(&self.layers))
         })
     }
 
@@ -807,11 +803,11 @@ impl<'a> ScriptedText<'a> {
             scopes,
             names: recorded_names::RecordedNames(CountryNames::read(frame, localisation)),
             lexical_names: crate::faction_names::LexicalNames::new(
-                frame.tables[replay::rows::TableId::LexicalTokens.index()].clone(),
+                frame.tables[replay_data::rows::TableId::LexicalTokens.index()].clone(),
             ),
             frame,
             root,
-            nato_counters: installed_content::settings::Counters::default().nato == 1,
+            nato_counters: installed_content_settings::settings::Counters::default().nato == 1,
             world: std::sync::OnceLock::new(),
         }
     }
@@ -1025,7 +1021,7 @@ impl<'a> ScriptedText<'a> {
 
     pub(crate) fn country_tag_unrecorded(&self, country: u32) -> Result<&str, String> {
         if country == 0 {
-            installed_content::country_names::reserved_zero_tag(self.frame)
+            installed_content_country_names::country_names::reserved_zero_tag(self.frame)
         } else {
             self.scopes
                 .tag(country)
@@ -1352,7 +1348,7 @@ impl<'a> ScriptedText<'a> {
         }
         let digits = segment.strip_prefix(['-', '+']).unwrap_or(segment);
         if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
-            let id = installed_content::fixed5::decimal_i32(segment.as_bytes());
+            let id = installed_content_core::fixed5::decimal_i32(segment.as_bytes());
             if id <= 0 {
                 // Consumed, the context unchanged.
                 return Ok(object);
@@ -2057,7 +2053,7 @@ impl<'a> ScriptedText<'a> {
 
     pub(crate) fn party_name(
         &self,
-        party: &replay::rows::PoliticalPartyRow,
+        party: &replay_data::rows::PoliticalPartyRow,
         tag: &str,
         long: bool,
     ) -> Result<String, String> {
@@ -2093,7 +2089,7 @@ impl<'a> ScriptedText<'a> {
                 // party key misses, without the name generator's dynamic gate.
                 crate::party_names::party_key_with_selected_tag(
                     &naming,
-                    installed_content::country_names::original_or_own_tag(self.frame, slot)?,
+                    installed_content_country_names::country_names::original_or_own_tag(self.frame, slot)?,
                     defines,
                 )
                 .ok_or_else(|| {

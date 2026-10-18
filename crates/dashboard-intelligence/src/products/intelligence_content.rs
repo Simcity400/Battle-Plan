@@ -2,7 +2,7 @@
 use dashboard_base::{catalogue, source::Source};
 use dashboard_core::{config::ContentOptions, dto::Artwork};
 use dashboard_text::catalogue::{Catalogue, Refusals, View};
-use installed_content::localisation::Argument;
+use installed_content_localisation::localisation::Argument;
 use std::{
     collections::BTreeMap,
     io,
@@ -11,8 +11,8 @@ use std::{
 
 pub struct IntelligenceContent {
     pub catalogue: Arc<Catalogue>,
-    pub definitions: Arc<installed_content::intelligence::Intelligence>,
-    pub upgrades: installed_content::intelligence::AgencyUpgrades,
+    pub definitions: Arc<installed_content_core::intelligence::Intelligence>,
+    pub upgrades: installed_content_core::intelligence::AgencyUpgrades,
     upgrade_content_error: Option<String>,
     pub warnings: Vec<String>,
     agency_refusals: Mutex<Refusals>,
@@ -131,14 +131,14 @@ fn prepared_content(
 
 /// Roster assignments and operation pages use the same database and its refusal.
 pub(super) fn operations(
-    layers: &installed_content::ResolvedLayers,
-) -> io::Result<Arc<installed_content::intelligence::Intelligence>> {
+    layers: &installed_content_core::ResolvedLayers,
+) -> io::Result<Arc<installed_content_core::intelligence::Intelligence>> {
     layers
-        .derived::<catalogue::CachedResult<installed_content::intelligence::Intelligence>>()
+        .derived::<catalogue::CachedResult<installed_content_core::intelligence::Intelligence>>()
         .get_or_init(|| {
             #[cfg(test)]
             super::intelligence_prepared::work(|work| work.content_loads += 1);
-            installed_content::intelligence::read(layers)
+            installed_content_core::intelligence::read(layers)
         })
 }
 
@@ -208,7 +208,8 @@ impl IntelligenceContent {
 
     fn load_acquired_agency(catalogue: Arc<Catalogue>) -> Self {
         let mut content = Self::load_agency(catalogue);
-        match installed_content::intelligence::read_agency_upgrades(&content.catalogue.content.layers) {
+        match installed_content_core::intelligence::read_agency_upgrades(&content.catalogue.content.layers)
+        {
             Ok(upgrades) => {
                 content.warnings.extend(upgrades.warnings.iter().cloned());
                 content.upgrades = upgrades;
@@ -255,7 +256,7 @@ impl IntelligenceContent {
         Self {
             catalogue,
             definitions: Arc::default(),
-            upgrades: installed_content::intelligence::AgencyUpgrades::default(),
+            upgrades: installed_content_core::intelligence::AgencyUpgrades::default(),
             upgrade_content_error: None,
             warnings,
             agency_refusals: Mutex::default(),
@@ -482,7 +483,7 @@ mod tests {
 
     #[test]
     fn intelligence_shared_notes_keep_native_deferred_kind() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[(
             "common/operations/mod.txt",
@@ -563,7 +564,7 @@ mod tests {
 
     #[test]
     fn intelligence_content_modded_operation_name_art_and_uncreated_agency_are_content_resolved() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
             (

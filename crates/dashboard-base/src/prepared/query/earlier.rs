@@ -1,9 +1,7 @@
 //! Compact block facts and proved windows in the shared observation cache.
 use crate::{Source, metadata::check_cancel};
-use replay::{
-    container::{BlockChange, BlockIndex, TableFields},
-    frame::DecodedFrame,
-};
+use replay::{container::BlockChange, container::BlockIndex, container::TableFields};
+use replay_frame::frame::DecodedFrame;
 use serde::{Serialize, de::DeserializeOwned};
 use std::{collections::HashSet, io, sync::atomic::AtomicBool};
 
@@ -104,14 +102,14 @@ pub fn keys(
 mod tests {
     use super::*;
     use crate::test_fixtures::{continuation_records, file_source, replay, source as frame};
-    use replay::rows::{CountryRow, TableId, TableRows, tables};
+    use replay_data::{rows::CountryRow, rows::TableId, rows::TableRows, rows::tables};
 
     #[test]
     fn earlier_prefixes_reuse_block_facts_within_the_shared_live_block_bound() {
         let country = |hour, id| {
             let mut frame = frame(1, hour, None);
             *frame.tables[TableId::Countries.index()] =
-                replay::frame::TableView::Complete(TableRows::Countries(vec![CountryRow {
+                replay_frame::frame::TableView::Complete(TableRows::Countries(vec![CountryRow {
                     id,
                     ..Default::default()
                 }]));

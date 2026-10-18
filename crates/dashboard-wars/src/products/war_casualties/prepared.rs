@@ -1,7 +1,7 @@
 //! The shared casualty ingestion feeding exact country values and rank positions.
 use super::*;
 use dashboard_base::prepared::series::{self, Accumulator, Reader, Run};
-use replay::frame::DecodedFrame;
+use replay_frame::frame::DecodedFrame;
 use serde_json::{Value, json};
 
 pub mod block;

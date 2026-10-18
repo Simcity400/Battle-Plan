@@ -48,7 +48,7 @@ impl Config {
     /// saved preparation choice.
     pub fn save(&self) -> io::Result<()> {
         self.resolve_options()?;
-        engine::executable_tables::initialize(&self.game_dir)?;
+        engine_executable::executable_tables::initialize(&self.game_dir)?;
         self.save_folders_at(&Self::path()?)
     }
 

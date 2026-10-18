@@ -1,8 +1,9 @@
 //! Numeric localisation's live-scope grammar and property dispatch admission.
 
 use super::*;
-use engine::executable_tables::numeric::{
-    NumericIdentity, NumericProperty, NumericScope, NumericTables,
+use engine_executable::{
+    executable_tables::numeric::NumericIdentity, executable_tables::numeric::NumericProperty,
+    executable_tables::numeric::NumericScope, executable_tables::numeric::NumericTables,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,7 +66,7 @@ pub(super) fn admit<'a>(
     start: usize,
 ) -> Result<(), String> {
     if let Some((_, suffix)) = operand.rsplit_once('.') {
-        if registered_property(&engine::executable_tables::get().numeric, suffix)?
+        if registered_property(&engine_executable::executable_tables::get().numeric, suffix)?
             || text.content.names.entries.contains_key(suffix.as_bytes())
         {
             return Err(format!(
@@ -126,7 +127,10 @@ pub(super) fn admit<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{CharacterRow, CountryCharacterRow, LexicalTokenRow, TableId, TableRows};
+    use replay_data::{
+        rows::CharacterRow, rows::CountryCharacterRow, rows::LexicalTokenRow, rows::TableId,
+        rows::TableRows,
+    };
 
     #[test]
     fn property_admission_uses_runtime_names_and_handler_identity() {
@@ -187,7 +191,7 @@ mod tests {
 
     #[test]
     fn live_character_grammar_uses_country_rosters_before_temps() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder, mut frame) = fixture();
         let event = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
@@ -229,7 +233,7 @@ mod tests {
 
     #[test]
     fn exact_properties_and_missing_character_census_remain_named() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder, mut frame) = fixture();
         let event = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
@@ -318,7 +322,7 @@ mod tests {
 
     #[test]
     fn known_empty_character_registry_needs_no_token_dictionary() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder, mut frame) = fixture();
         *frame.tables[TableId::Characters.index()] =

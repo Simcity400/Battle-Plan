@@ -15,7 +15,8 @@ use crate::{
     },
 };
 use dashboard_text::idea_names::{CountryLook, IdeaCountry};
-use installed_content::{ResolvedLayers, image::Rgba8Image};
+use installed_content_core::ResolvedLayers;
+use installed_content_image::Rgba8Image;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -186,7 +187,7 @@ const GOLD: [u8; 4] = [255, 200, 0, 255];
 /// renamed base resource takes the mod's name.
 #[test]
 fn resource_balance_names_and_draws_a_mod_resource_from_the_mod_s_own_art() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("resources");
     let (base, addon) = (stack.base(), stack.addon());
@@ -286,7 +287,7 @@ fn a_cosmetic_flag_in_a_subfolder_is_drawn_and_an_unresolvable_one_never_falls_t
     stack.write(&addon, "gfx/flags/variants/red.tga", tga_row(&[BLUE]));
     let catalogue = stack.catalogue(&[]);
     let layers = &catalogue.content.layers;
-    let sets = [installed_content::flags::FlagSet::Normal];
+    let sets = [installed_content_core::flags::FlagSet::Normal];
     let search = |candidates: &[&str]| {
         let candidates: Vec<String> = candidates.iter().map(|key| key.to_string()).collect();
         find_flag(
@@ -330,7 +331,7 @@ fn a_cosmetic_flag_in_a_subfolder_is_drawn_and_an_unresolvable_one_never_falls_t
 /// and a mod that redeclares the top bar in a later file wins, with a warning.
 #[test]
 fn shield_flags_read_the_top_bar_s_own_flag_button_whatever_other_windows_declare() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("shield");
     let (base, addon) = (stack.base(), stack.addon());
@@ -394,7 +395,7 @@ fn shield_flags_read_the_top_bar_s_own_flag_button_whatever_other_windows_declar
 /// name and slots, and a base category the mod removes is gone.
 #[test]
 fn idea_timeline_categories_come_from_the_mod_stack() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("categories");
     let (base, addon) = (stack.base(), stack.addon());
@@ -449,7 +450,7 @@ fn idea_timeline_categories_come_from_the_mod_stack() {
 /// may recolour a base ideology, and replacing the folder removes the base ones.
 #[test]
 fn ruling_party_ideologies_take_the_mod_s_names_and_colours() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("ideologies");
     let (base, addon) = (stack.base(), stack.addon());
@@ -515,7 +516,7 @@ fn ruling_party_ideologies_take_the_mod_s_names_and_colours() {
 /// base game's usual three.
 #[test]
 fn idea_artwork_follows_the_mod_s_sprites_and_localisation() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("artwork");
     let (base, addon) = (stack.base(), stack.addon());
@@ -594,7 +595,7 @@ fn idea_artwork_follows_the_mod_s_sprites_and_localisation() {
 /// replies stay quiet.
 #[test]
 fn a_refused_sprite_override_shows_no_art_and_says_why() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("refused_sprite");
     let (base, addon) = (stack.base(), stack.addon());
@@ -653,7 +654,7 @@ fn unusual_and_dynamic_tags_are_valid_country_keys() {
 /// An ambiguous first portrait cannot fall through to a lower role or token art.
 #[test]
 fn an_ambiguous_first_portrait_stops_the_native_role_search() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("ambiguous_portrait");
     stack.write(
@@ -693,7 +694,7 @@ fn an_ambiguous_first_portrait_stops_the_native_role_search() {
 
 #[test]
 fn a_tag_specific_idea_sprite_keeps_the_holder_tag_opaque() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("tag_artwork");
     stack.write(
@@ -726,7 +727,7 @@ fn a_tag_specific_idea_sprite_keeps_the_holder_tag_opaque() {
 
 #[test]
 fn an_ideas_own_art_does_not_evaluate_an_ambiguous_advisor_portrait() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("lazy_portrait");
     stack.write(
@@ -767,7 +768,7 @@ fn an_ideas_own_art_does_not_evaluate_an_ambiguous_advisor_portrait() {
 
 #[test]
 fn a_resource_icon_is_the_trade_row_s_button_whatever_file_declares_it() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (kind, drawn) in [("buttonType", true), ("iconType", false)] {
         let stack = Stack::new(kind);
@@ -824,7 +825,7 @@ fn a_resource_icon_is_the_trade_row_s_button_whatever_file_declares_it() {
 /// The offline corpus uses each product's own preparation over the merged stack.
 #[test]
 fn content_check_exercises_every_product_and_names_exact_mod_fallbacks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::{
         content_check::{Finding, Kind, check},
@@ -969,8 +970,8 @@ fn content_check_exercises_every_product_and_names_exact_mod_fallbacks() {
         "maskedShieldType = { name = GFX_mod_shield textureFile2 = gfx/interface/mod.tga } }")
     );
     let raid_labels = std::iter::once("raid_type_mod_sortie")
-        .chain(engine::craid_instance::PHASE_KEYS)
-        .chain(engine::craid_instance::OUTCOME_KEYS)
+        .chain(engine_native::craid_instance::PHASE_KEYS)
+        .chain(engine_native::craid_instance::OUTCOME_KEYS)
         .map(|key| format!(" {key}:0 \"Modded {key}\"\n"))
         .collect::<String>();
     stack.write(
@@ -1267,7 +1268,7 @@ fn flag_search_reports_rejected_files_and_reuses_each_decode() {
         content_check::{Finding, Kind},
         products::country_flags::FlagCache,
     };
-    use installed_content::flags::FlagSet;
+    use installed_content_core::flags::FlagSet;
     let stack = Stack::new("flag_decode_cache");
     let (base, addon) = (stack.base(), stack.addon());
     stack.write(&base, "gfx/flags/plain.tga", tga_row(&[RED]));
@@ -1345,7 +1346,7 @@ fn flag_cache_keeps_sets_separate_for_opaque_subfolder_keys() {
         content_check::{Finding, Kind},
         products::country_flags::FlagCache,
     };
-    use installed_content::flags::FlagSet;
+    use installed_content_core::flags::FlagSet;
     let stack = Stack::new("flag_set_cache");
     stack.write(
         &stack.addon(),
@@ -1395,7 +1396,7 @@ fn flag_cache_keeps_sets_separate_for_opaque_subfolder_keys() {
 
 #[test]
 fn offline_ideas_report_traits_scripted_names_and_recorded_name_operands() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::{
         content_check::{Finding, Kind, check},
@@ -1661,7 +1662,7 @@ fn missing_resource_keys_are_content_and_shared_icon_refusals_are_not_repeated()
 
 #[test]
 fn ideology_colour_refusals_emit_one_warning_without_text_refusals() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::content_check::Kind;
     let stack = Stack::new("ideology_colour");
@@ -1702,7 +1703,7 @@ fn ideology_colour_refusals_emit_one_warning_without_text_refusals() {
 
 #[test]
 fn an_iconless_focus_draws_the_engine_s_unknown_goal_or_says_it_cannot() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::{
         content_check::{Kind, check},
@@ -1782,7 +1783,7 @@ fn an_iconless_focus_draws_the_engine_s_unknown_goal_or_says_it_cannot() {
 #[test]
 fn truncated_flag_is_refused_without_a_content_fallback_claim() {
     use crate::{content_check::Kind, products::country_flags::FlagCache};
-    use installed_content::flags::FlagSet;
+    use installed_content_core::flags::FlagSet;
     let stack = Stack::new("truncated_flag");
     let mut bytes = tga_row(&[BLUE]);
     bytes.pop();
@@ -1808,7 +1809,7 @@ fn truncated_flag_is_refused_without_a_content_fallback_claim() {
 
 #[test]
 fn native_reader_recovery_is_owned_by_the_corpus_reader() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("native_recovery");
     stack.write(
@@ -1817,12 +1818,13 @@ fn native_reader_recovery_is_owned_by_the_corpus_reader() {
         "ideas = { group = {} group = { use_list_view = yes } }",
     );
     let politics = stack.politics(&[]);
-    let (_, _, notes) = installed_content::ideas::read(&politics.catalogue.content.layers, &[]).unwrap();
+    let (_, _, notes) =
+        installed_content_core::ideas::read(&politics.catalogue.content.layers, &[]).unwrap();
     let (kind, message) = notes
         .iter()
         .find(|(_, note)| note.contains("where its reader reads a block"))
         .unwrap();
-    assert_eq!(*kind, installed_content::DiagnosticKind::Misread);
+    assert_eq!(*kind, installed_content_core::DiagnosticKind::Misread);
     let checks = crate::content_check::check(Arc::clone(&politics.catalogue.content), "english");
     assert!(
         checks
@@ -1838,7 +1840,7 @@ fn native_reader_recovery_is_owned_by_the_corpus_reader() {
 
 #[test]
 fn stability_advisor_names_and_roles_need_the_recorded_holder() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::{
         content_check::{Kind, check},
@@ -1885,7 +1887,7 @@ fn stability_advisor_names_and_roles_need_the_recorded_holder() {
 
 #[test]
 fn ideas_draw_the_mods_unknown_sprite_or_name_its_failure() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("unknown_idea_art");
     let (base, addon) = (stack.base(), stack.addon());
@@ -1938,7 +1940,7 @@ fn ideas_draw_the_mods_unknown_sprite_or_name_its_failure() {
 
 #[test]
 fn corpus_separates_recording_context_country_names_and_technology_fallbacks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::content_check::{Kind, check};
     let stack = Stack::new("context_name_fallbacks");
@@ -2053,7 +2055,7 @@ fn corpus_separates_recording_context_country_names_and_technology_fallbacks() {
 
 #[test]
 fn character_reader_notes_are_not_repeated_by_product_preparation() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("shared_politics_notes");
     stack.write(
@@ -2063,10 +2065,10 @@ fn character_reader_notes_are_not_repeated_by_product_preparation() {
     );
     let politics = stack.politics(&[]);
     let (_, diagnostics) =
-        installed_content::characters::read(&politics.catalogue.content.layers, Default::default())
+        installed_content_core::characters::read(&politics.catalogue.content.layers, Default::default())
             .unwrap();
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-    assert_eq!(diagnostics[0].0, installed_content::DiagnosticKind::Warning);
+    assert_eq!(diagnostics[0].0, installed_content_core::DiagnosticKind::Warning);
     let checks = crate::content_check::check(Arc::clone(&politics.catalogue.content), "english");
     for (_, message) in diagnostics {
         assert!(
@@ -2084,7 +2086,7 @@ fn character_reader_notes_are_not_repeated_by_product_preparation() {
 
 #[test]
 fn recorded_holder_names_settle_alternatives_but_authored_portraits_still_do_not() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::content_check::{Kind, check};
     let stack = Stack::new("recorded_names");
@@ -2168,7 +2170,7 @@ fn recorded_holder_names_settle_alternatives_but_authored_portraits_still_do_not
 
 #[test]
 fn live_catalogue_does_not_accumulate_product_findings() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::content_check::{Finding, Kind};
     let stack = Stack::new("live_findings");
@@ -2238,7 +2240,7 @@ fn live_catalogue_does_not_accumulate_product_findings() {
 
 #[test]
 fn offline_idea_icons_skip_country_candidates_and_aggregate_the_dependency() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::content_check::{Kind, check};
     let stack = Stack::new("offline_idea_icon_country");
@@ -2279,7 +2281,7 @@ fn offline_idea_icons_skip_country_candidates_and_aggregate_the_dependency() {
 
 #[test]
 fn trigger_chosen_focus_icons_are_one_counted_finding() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::content_check::{Kind, check};
     let stack = Stack::new("focus_icon_aggregate");
@@ -2309,7 +2311,7 @@ fn trigger_chosen_focus_icons_are_one_counted_finding() {
 
 #[test]
 fn corpus_checks_new_main_products_through_their_shared_preparation() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::content_check::{Kind, check};
     let stack = Stack::new("main_product_preparation");
@@ -2513,7 +2515,7 @@ fn corpus_checks_new_main_products_through_their_shared_preparation() {
 
 #[test]
 fn recorded_holder_names_survive_refused_content() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("saved_name_refused_content");
     stack.write(
@@ -2603,9 +2605,9 @@ fn shared_equipment_and_autonomy_reader_notes_are_not_repeated_by_products() {
         "autonomy_state = { id = mod_subject min_freedom_level = nope }",
     );
     let catalogue = stack.catalogue(&[]);
-    let database = installed_content::equipment::Database::load(&catalogue.content.layers).unwrap();
+    let database = installed_content_core::equipment::Database::load(&catalogue.content.layers).unwrap();
     assert_eq!(database.misreads.len(), 10, "{:?}", database.misreads);
-    let (levels, warnings) = installed_content::autonomy::read(&catalogue.content.layers).unwrap();
+    let (levels, warnings) = installed_content_core::autonomy::read(&catalogue.content.layers).unwrap();
     assert_eq!(levels.ordered().len(), 1);
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     let checks = check(Arc::clone(&catalogue.content), "english");
@@ -2648,7 +2650,7 @@ fn shared_equipment_and_autonomy_reader_notes_are_not_repeated_by_products() {
 
 #[test]
 fn every_shared_preparation_note_has_one_owner_and_its_producer_kind() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::content_check::{
         AUTONOMY_CHECK_KEY, CONSTRUCTION_CHECK_KEY, Finding, INTELLIGENCE_CHECK_KEY, Kind,
@@ -2759,13 +2761,13 @@ fn every_shared_preparation_note_has_one_owner_and_its_producer_kind() {
         .unwrap(),
         crate::scripted_text::read_state_content(layers).unwrap(),
     );
-    let equipment = Arc::new(installed_content::equipment::Database::load_complete(layers).unwrap());
+    let equipment = Arc::new(installed_content_core::equipment::Database::load_complete(layers).unwrap());
     let icons = crate::products::equipment_icon::IconContent::with_equipment(
         Arc::clone(&cat),
         Some(equipment),
     )
     .unwrap();
-    let (_, autonomy) = installed_content::autonomy::read(layers).unwrap();
+    let (_, autonomy) = installed_content_core::autonomy::read(layers).unwrap();
     let intelligence =
         crate::products::intelligence_content::IntelligenceContent::load(Arc::clone(&cat)).unwrap();
     let mut shared = Vec::<(&str, Finding)>::new();
@@ -2847,31 +2849,32 @@ fn every_shared_preparation_note_has_one_owner_and_its_producer_kind() {
     assert!(
         proven
             .iter()
-            .all(|note| note.kind == installed_content::DiagnosticKind::Misread)
+            .all(|note| note.kind == installed_content_core::DiagnosticKind::Misread)
     );
     assert!(
         crate::scripted_text::live_state_warnings(&states.warnings)
             .any(|note| note.contains("definition `@bad` has no `=`"))
     );
-    let map = installed_content::terrain::read_default_map(layers).unwrap();
-    let provinces =
-        installed_content::map::parse_definitions(&layers.read(&map.file("definitions").unwrap()).unwrap())
-            .unwrap();
-    let (_, offline) = installed_content::states::read(layers, &states.defines, &provinces).unwrap();
+    let map = installed_content_core::terrain::read_default_map(layers).unwrap();
+    let provinces = installed_content_core::map::parse_definitions(
+        &layers.read(&map.file("definitions").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let (_, offline) = installed_content_states::states::read(layers, &states.defines, &provinces).unwrap();
     let all_notes: Vec<_> = states
         .warnings
         .into_iter()
-        .map(installed_content::states::Diagnostic::into_diagnostic)
+        .map(installed_content_states::states::Diagnostic::into_diagnostic)
         .collect();
     assert_eq!(offline, all_notes);
     assert_eq!(states.states.diagnostics(1).len(), 6);
     let mut owned = vec![all_notes];
-    let (ideologies, ideology_notes) = installed_content::ideologies::read(layers).unwrap();
+    let (ideologies, ideology_notes) = installed_content_core::ideologies::read(layers).unwrap();
     assert!(ideologies.groups().1.is_some());
     assert!(
         ideology_notes
             .iter()
-            .any(|(kind, _)| *kind == installed_content::DiagnosticKind::Unsettled),
+            .any(|(kind, _)| *kind == installed_content_core::DiagnosticKind::Unsettled),
         "{ideology_notes:?}"
     );
     assert!(
@@ -2881,9 +2884,9 @@ fn every_shared_preparation_note_has_one_owner_and_its_producer_kind() {
         "{emitted:?}"
     );
     owned.push(ideology_notes);
-    owned.push(installed_content::focus::read(layers).unwrap().1);
+    owned.push(installed_content_focus::focus::read(layers).unwrap().1);
     owned.push(
-        installed_content::technology::Database::read(layers)
+        installed_content_core::technology::Database::read(layers)
             .unwrap()
             .inventory_warnings,
     );
@@ -2919,7 +2922,9 @@ fn resource_reader_recovery_notes_do_not_enter_resource_product_checks() {
         "@bad nope orphan = yes resources = { mod_resource = {} }",
     );
     let cat = stack.catalogue(&[]);
-    let notes = installed_content::resources::read(&cat.content.layers).unwrap().1;
+    let notes = installed_content_core::resources::read(&cat.content.layers)
+        .unwrap()
+        .1;
     assert!(!notes.is_empty());
     let checks = check(Arc::clone(&cat.content), "english");
     // A resource recovery refuses building-registry preparation; the resource

@@ -3,7 +3,8 @@ use crate::{
     effect_description::tests::Fixture, scripted_text::EventScope, triggers::ContentFacts,
 };
 use EventObject::{Country as C, State as S, Unit as U};
-use replay::{frame::TableView, rows::*};
+use replay_data::rows::*;
+use replay_frame::frame::TableView;
 use std::collections::BTreeSet;
 
 fn fixture() -> Fixture {
@@ -137,7 +138,7 @@ fn fixture() -> Fixture {
     Arc::make_mut(&mut fixture.catalogue.localisation).language = "english".into();
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
-            seed: replay::rows::Recorded::Value(None),
+            seed: replay_data::rows::Recorded::Value(None),
             scope_kind: 1,
             scope_id: 100,
             entries: vec![ScriptVariableEntry {
@@ -218,20 +219,20 @@ fn render_with_nato(
 const UNIT: u64 = (7_u64 << 32) | 0x1269;
 
 #[allow(clippy::field_reassign_with_default)]
-fn bonus_names() -> installed_content::key_names::KeyNames {
-    let mut units = installed_content::unit_leader::SubUnits::default();
+fn bonus_names() -> installed_content_core::key_names::KeyNames {
+    let mut units = installed_content_core::unit_leader::SubUnits::default();
     units.read(
         b"sub_units={syn_unit={}} sub_unit_categories={Syn_Category syn_category}",
         "synthetic",
     );
-    let mut names = installed_content::key_names::KeyNames::default();
+    let mut names = installed_content_core::key_names::KeyNames::default();
     names.sub_units = Some(units);
     names
 }
 
 #[test]
 fn unit_bonus_preserves_rosters_stat_and_terrain_order_and_nato_frame() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     let (mut catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
@@ -270,7 +271,7 @@ fn unit_bonus_preserves_rosters_stat_and_terrain_order_and_nato_frame() {
 
 #[test]
 fn unit_bonus_battalion_mult_keeps_authored_stats_flags_and_adjacent_category_header() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let names = bonus_names();
@@ -293,7 +294,7 @@ fn unit_bonus_battalion_mult_keeps_authored_stats_flags_and_adjacent_category_he
 
 #[test]
 fn unit_bonus_refused_adjuster_keeps_known_stats_and_later_selectors() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     fixture.catalogue.localisation = fixture
@@ -638,7 +639,7 @@ fn unit_carrier_graph_links_keep_operand_scope() {
 
 #[test]
 fn unit_carrier_format98_naming_table() {
-    let names = installed_content::division_names::parse(
+    let names = installed_content_division_names::division_names::parse(
         br#"SYN_G={prefix="P " ordered={12={"%s/%d %s"}}
             unordered={a={"Literal %d"}} fallback_name="Fallback %d"}
             EMPTY={} SHIP={type=ship unique={"Ship"}}"#,
@@ -808,7 +809,7 @@ fn unit_carrier_name_groups_use_recorded_layers_and_one_cache() {
         "G={ordered={9={\"Mod %d\"}}}",
     )]);
     let layers =
-        installed_content::ResolvedLayers::from_folders(&[(&base.0, &[][..]), (&later.0, &[][..])])
+        installed_content_core::ResolvedLayers::from_folders(&[(&base.0, &[][..]), (&later.0, &[][..])])
             .unwrap();
     let mut fixture = unit_fixture();
     fixture.catalogue = layers_catalogue(layers);
@@ -905,13 +906,13 @@ fn unit_carrier_naming_has_no_country_or_division_cap() {
 #[allow(clippy::field_reassign_with_default)]
 #[test]
 fn units_output_branches() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let equipment = equipment();
-    let mut sub_units = installed_content::unit_leader::SubUnits::default();
+    let mut sub_units = installed_content_core::unit_leader::SubUnits::default();
     sub_units.read(b"sub_units={syn_unit={}}", "synthetic");
-    let mut names = installed_content::key_names::KeyNames::default();
+    let mut names = installed_content_core::key_names::KeyNames::default();
     names.sub_units = Some(sub_units);
     let content = Content {
         key_names: Some(&names),
@@ -1179,7 +1180,7 @@ fn units_output_branches() {
 
 #[test]
 fn navy_unknown_target_uses_reserved_country_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     fixture.catalogue.localisation = fixture
@@ -1503,8 +1504,8 @@ fn units_have_no_country_count_cap() {
     }
 }
 
-fn equipment() -> installed_content::equipment::Database {
-    installed_content::equipment::fixture::load(&[
+fn equipment() -> installed_content_core::equipment::Database {
+    installed_content_core::equipment::fixture::load(&[
         (
             "common/units/equipment/modules/synthetic.txt",
             "equipment_modules={syn_carrier={add_equipment_type=carrier} syn_sub={add_equipment_type=submarine}}",
@@ -1731,11 +1732,11 @@ fn equipment_fixture() -> Fixture {
 
 #[test]
 fn units_equipment_branches() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = equipment_fixture();
     let equipment = equipment();
-    let names = installed_content::key_names::KeyNames::default();
+    let names = installed_content_core::key_names::KeyNames::default();
     let content = Content {
         equipment: Some(&equipment),
         key_names: Some(&names),
@@ -2040,7 +2041,7 @@ fn units_equipment_branches() {
 
 #[test]
 fn units_equipment_named_refusals() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = equipment_fixture();
     let equipment = equipment();
@@ -2164,7 +2165,7 @@ fn units_equipment_named_refusals() {
 
 #[test]
 fn units_recorded_variant_no_tech_probe() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let equipment = equipment();
     let content = Content {
@@ -2276,7 +2277,7 @@ fn units_recorded_variant_no_tech_probe() {
 
 #[test]
 fn units_recorded_variant_pool_order_and_equality() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let equipment = equipment();
     let content = Content {
@@ -2398,7 +2399,7 @@ fn units_recorded_variant_pool_order_and_equality() {
 
 #[test]
 fn units_equipment_role_branches() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let cases = [
         ("capital_ship", "ship_designer_capital_ship"),
@@ -2446,8 +2447,11 @@ fn units_equipment_role_branches() {
         expected.push((name, key));
     }
     source.push('}');
-    let equipment =
-        installed_content::equipment::fixture::load(&[("common/units/equipment/synthetic.txt", &source)]).0;
+    let equipment = installed_content_core::equipment::fixture::load(&[(
+        "common/units/equipment/synthetic.txt",
+        &source,
+    )])
+    .0;
     let mut fixture = equipment_fixture();
     fixture.catalogue.localisation = fixture
         .catalogue

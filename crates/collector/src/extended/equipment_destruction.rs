@@ -6,14 +6,14 @@ use crate::{
     spooling::unavailable,
     table_capture::{CaptureRows, grow_vec},
 };
-use engine::{Memory, allocation, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{
-        DivisionDeletionDisposition, DivisionEquipmentDeletionRow, EquipmentDestructionCoverage,
-        EquipmentDestructionRow, Recorded, TableId, TableRows,
-    },
+use engine_allocation as allocation;
+use engine_native::{Memory, walk::Outcome};
+use replay_data::{
+    rows::DivisionDeletionDisposition, rows::DivisionEquipmentDeletionRow,
+    rows::EquipmentDestructionCoverage, rows::EquipmentDestructionRow, rows::Recorded,
+    rows::TableId, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [
@@ -185,25 +185,26 @@ fn deletion_rows(
                 division_handle: event.division_handle,
                 country: event.country,
                 expeditionary_owner: event.expeditionary_owner,
-                cause: (event.disposition == engine::equipment_destruction::Disposition::Loss)
+                cause: (event.disposition
+                    == engine_events::equipment_destruction::Disposition::Loss)
                     .then(|| event.cause.into()),
                 disposition: match event.disposition {
-                    engine::equipment_destruction::Disposition::Loss => {
+                    engine_events::equipment_destruction::Disposition::Loss => {
                         DivisionDeletionDisposition::Loss
                     }
-                    engine::equipment_destruction::Disposition::Returned => {
+                    engine_events::equipment_destruction::Disposition::Returned => {
                         DivisionDeletionDisposition::Returned
                     }
-                    engine::equipment_destruction::Disposition::Merged => {
+                    engine_events::equipment_destruction::Disposition::Merged => {
                         DivisionDeletionDisposition::Merged
                     }
-                    engine::equipment_destruction::Disposition::HqTransferred => {
+                    engine_events::equipment_destruction::Disposition::HqTransferred => {
                         DivisionDeletionDisposition::HqTransferred
                     }
-                    engine::equipment_destruction::Disposition::VolunteerTransferred => {
+                    engine_events::equipment_destruction::Disposition::VolunteerTransferred => {
                         DivisionDeletionDisposition::VolunteerTransferred
                     }
-                    engine::equipment_destruction::Disposition::ExileTransferred => {
+                    engine_events::equipment_destruction::Disposition::ExileTransferred => {
                         DivisionDeletionDisposition::ExileTransferred
                     }
                 },

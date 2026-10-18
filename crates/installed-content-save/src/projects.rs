@@ -3,7 +3,7 @@ use super::{
     Decimal, GameDate, SavedDate, block, boolean, bytes, field, integer, invalid, required_block,
     required_bytes, scalar, typed_handle,
 };
-use installed_content::parser::Item;
+use installed_content_core::parser::Item;
 use std::{collections::BTreeMap, io};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -715,7 +715,7 @@ pub(super) fn parse_with_countries(
 mod tests {
     use super::*;
     fn parsed(text: &[u8]) -> Pack {
-        parse(&installed_content::parser::parse(text).unwrap().items).unwrap()
+        parse(&installed_content_core::parser::parse(text).unwrap().items).unwrap()
     }
     #[test]
     fn nuke_save_uses_fixed5_literals_and_full_signed_ready_count() {
@@ -727,7 +727,7 @@ mod tests {
         assert_eq!(nukes[1].ready, i32::MAX);
         assert!(
             parse(
-                &installed_content::parser::parse(
+                &installed_content_core::parser::parse(
                     br"countries={GER={nukes={{amount=0.000001 nukes_ready=0}}}}"
                 )
                 .unwrap()
@@ -742,7 +742,7 @@ mod tests {
     fn raid_target_statuses_refuse_unknown_and_keyed_entries() {
         let targets = |body: &str| {
             parse(
-                &installed_content::parser::parse(
+                &installed_content_core::parser::parse(
                     format!("countries={{}} raids={{targets={{{body}}}}}").as_bytes(),
                 )
                 .unwrap()
@@ -795,7 +795,7 @@ mod tests {
     }
     #[test]
     fn context_keeps_optional_zero_and_signed_bit_patterns() {
-        let items = installed_content::parser::parse(br"province=-1 progress=-2147483648 country=-1 scientist=0 character={id=4294967295 type=73}").unwrap().items;
+        let items = installed_content_core::parser::parse(br"province=-1 progress=-2147483648 country=-1 scientist=0 character={id=4294967295 type=73}").unwrap().items;
         let context = parse_context(&items).unwrap();
         assert_eq!(context.progress, i32::MIN);
         assert_eq!(context.country, Some(u32::MAX));

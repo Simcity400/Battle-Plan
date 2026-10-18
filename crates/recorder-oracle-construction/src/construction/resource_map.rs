@@ -1,8 +1,8 @@
 use super::*;
 use installed_content_save::economy::{self, ConvoyCounts};
-use replay::rows::{
-    ConvoyClientRow, RegionalConvoyEfficiencyRow, ResourceDefinitionRow, ResourceOriginRow,
-    ResourceRightRow, SliceReadRow, TradeRouteRow,
+use replay_data::{
+    rows::ConvoyClientRow, rows::RegionalConvoyEfficiencyRow, rows::ResourceDefinitionRow,
+    rows::ResourceOriginRow, rows::ResourceRightRow, rows::SliceReadRow, rows::TradeRouteRow,
 };
 
 /// The recorded resources map tables a comparison reads.
@@ -235,7 +235,7 @@ pub(super) fn rights(
 /// ports and sea regions, any other kind's end states and land states, and nothing without
 /// both ends and a path.
 fn drawn(route: &saved::SavedRoute) -> (u8, u32, u32, Vec<u32>) {
-    let (ends, path) = if route.kind == engine::resource_map::NAVAL {
+    let (ends, path) = if route.kind == engine_resources::resource_map::NAVAL {
         ((route.from_port, route.to_port), &route.naval_path)
     } else {
         ((route.from_state, route.to_state), &route.land_path)
@@ -281,7 +281,7 @@ fn routes(
     for row in rows
         .routes
         .iter()
-        .filter(|row| row.class == engine::resource_map::ORIGIN_ROUTE_CLASS)
+        .filter(|row| row.class == engine_resources::resource_map::ORIGIN_ROUTE_CLASS)
     {
         let tag = required_country_tag(row.country, links)?;
         if captured.insert((tag, row.other), row).is_some() {
@@ -301,7 +301,7 @@ fn routes(
     {
         let read = ids
             .get(tag)
-            .and_then(|&id| replay::sliced::read_hour(rows.reads, TableId::TradeRoutes, id));
+            .and_then(|&id| replay_data::sliced::read_hour(rows.reads, TableId::TradeRoutes, id));
         if read != Some(hour) {
             unread.insert(tag);
             report.difference(
@@ -367,13 +367,13 @@ fn delivery_route_membership(rows: &ResourceMapRows<'_>, report: &mut Report) {
     let referenced: BTreeSet<_> = rows
         .clients
         .iter()
-        .filter(|row| row.route_class == engine::resource_map::DELIVERY_ROUTE_CLASS)
+        .filter(|row| row.route_class == engine_resources::resource_map::DELIVERY_ROUTE_CLASS)
         .map(|row| (row.route_country, row.route_class, row.route_other))
         .collect();
     let recorded: BTreeSet<_> = rows
         .routes
         .iter()
-        .filter(|row| row.class == engine::resource_map::DELIVERY_ROUTE_CLASS)
+        .filter(|row| row.class == engine_resources::resource_map::DELIVERY_ROUTE_CLASS)
         .map(|row| (row.country, row.class, row.other))
         .collect();
     let mut compared = 0;
@@ -409,7 +409,7 @@ fn market_route_endpoints(
     let clients: BTreeMap<_, _> = rows
         .clients
         .iter()
-        .filter(|row| row.category == engine::resource_map::MARKET)
+        .filter(|row| row.category == engine_resources::resource_map::MARKET)
         .map(|row| (row.handle, row))
         .collect();
     let mut checked = BTreeSet::new();
@@ -454,13 +454,13 @@ fn market_route_endpoints(
             report,
             &format!("{subject}.class"),
             key.1,
-            engine::resource_map::DELIVERY_ROUTE_CLASS,
+            engine_resources::resource_map::DELIVERY_ROUTE_CLASS,
         );
         let Some(row) = routes.get(&key) else {
             report.difference(&subject, "absent", "market route row required");
             continue;
         };
-        let read = replay::sliced::read_hour(rows.reads, TableId::TradeRoutes, row.country);
+        let read = replay_data::sliced::read_hour(rows.reads, TableId::TradeRoutes, row.country);
         if read != Some(hour) {
             report.difference(&subject, read, format!("read at the oracle hour {hour}"));
             continue;
@@ -554,7 +554,7 @@ fn regional(
             &subject,
             row.efficiency,
             saved.get(&row.region).map_or(
-                engine::cstrategic_navy::FULL_REGIONAL_CONVOY_EFFICIENCY,
+                engine_native::cstrategic_navy::FULL_REGIONAL_CONVOY_EFFICIENCY,
                 |value| value.raw,
             ),
         );
@@ -567,7 +567,8 @@ fn regional(
             else {
                 continue;
             };
-            if route.kind != engine::resource_map::NAVAL || !bad(a.raw, b.raw, threshold) {
+            if route.kind != engine_resources::resource_map::NAVAL || !bad(a.raw, b.raw, threshold)
+            {
                 continue;
             }
             for &region in &route.naval_path {
@@ -603,7 +604,7 @@ struct SavedClient<'a> {
 /// Every saved convoy client by the handle id its typed reference holds: each export (its
 /// receiver's import), each lend-lease exchange and each market contract's `convoy_client`.
 fn saved_clients(economy: &economy::Pack) -> io::Result<BTreeMap<u32, SavedClient<'_>>> {
-    use engine::resource_map::{IMPORT, LEND_LEASE, MARKET};
+    use engine_resources::{resource_map::IMPORT, resource_map::LEND_LEASE, resource_map::MARKET};
     let exchanges = economy.countries.values().flat_map(|country| {
         let exports = country.exports.iter().flatten().map(|exchange| {
             (
@@ -677,7 +678,7 @@ fn clients(
     let captured: BTreeMap<u32, &ConvoyClientRow> = rows
         .clients
         .iter()
-        .filter(|row| row.category != engine::resource_map::SUPPLY_TRANSFER)
+        .filter(|row| row.category != engine_resources::resource_map::SUPPLY_TRANSFER)
         .map(|row| (row.handle, row))
         .collect();
     let mut compared = 0;
@@ -740,7 +741,7 @@ fn clients(
                 row.owner,
                 "owner",
                 row.owner_ordinal,
-                row.category != engine::resource_map::IMPORT,
+                row.category != engine_resources::resource_map::IMPORT,
             ),
             (
                 row.other,
@@ -748,7 +749,8 @@ fn clients(
                 row.other_ordinal,
                 matches!(
                     row.category,
-                    engine::resource_map::LEND_LEASE | engine::resource_map::MARKET
+                    engine_resources::resource_map::LEND_LEASE
+                        | engine_resources::resource_map::MARKET
                 ),
             ),
         ] {
@@ -815,7 +817,7 @@ mod client_tests {
             handle: 9,
             owner_ordinal: Some(0),
             other_ordinal: Some(0),
-            category: engine::resource_map::MARKET,
+            category: engine_resources::resource_map::MARKET,
             bad: true,
             convoys_assigned: 2,
             convoys_required: 4,
@@ -891,7 +893,7 @@ mod market_route_tests {
 
     #[test]
     fn market_endpoints_compare_saved_land_and_naval_routes_through_contract_countries() {
-        let items = installed_content::parser::parse(br#"countries={
+        let items = installed_content_core::parser::parse(br#"countries={
             AA={resources={delivery_routes={BB={type=1 from_state=11 to_state=22}}}}
             CC={resources={delivery_routes={DD={type=2 from_state=33 to_state=44 from_port=100 to_port=200}
                 BB={type=2 from_state=33 to_state=22}}}}
@@ -919,7 +921,7 @@ mod market_route_tests {
         let clients = vec![
             ConvoyClientRow {
                 handle: 7,
-                category: engine::resource_map::MARKET,
+                category: engine_resources::resource_map::MARKET,
                 owner: 5,
                 other: 9,
                 route_country: 5,
@@ -929,7 +931,7 @@ mod market_route_tests {
             },
             ConvoyClientRow {
                 handle: 8,
-                category: engine::resource_map::MARKET,
+                category: engine_resources::resource_map::MARKET,
                 owner: 15,
                 other: 19,
                 route_country: 15,
@@ -1005,7 +1007,7 @@ mod market_route_tests {
         let mut extra = routes.clone();
         extra.push(TradeRouteRow {
             country: 15,
-            class: engine::resource_map::DELIVERY_ROUTE_CLASS,
+            class: engine_resources::resource_map::DELIVERY_ROUTE_CLASS,
             other: 9,
             kind: 2,
             source_state: Some(99),
@@ -1019,15 +1021,15 @@ mod market_route_tests {
         let mut shared = clients.clone();
         shared.push(ConvoyClientRow {
             handle: 9,
-            category: engine::resource_map::IMPORT,
+            category: engine_resources::resource_map::IMPORT,
             route_country: 15,
-            route_class: engine::resource_map::DELIVERY_ROUTE_CLASS,
+            route_class: engine_resources::resource_map::DELIVERY_ROUTE_CLASS,
             route_other: 9,
             ..Default::default()
         });
         shared.push(ConvoyClientRow {
             handle: 10,
-            category: engine::resource_map::LEND_LEASE,
+            category: engine_resources::resource_map::LEND_LEASE,
             ..shared[2].clone()
         });
         let report = run(&saved, &shared, &extra, &reads);

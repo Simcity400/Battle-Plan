@@ -6,13 +6,12 @@
 
 use std::{collections::BTreeMap, io, sync::OnceLock};
 
-use installed_content::{buildings::Buildings, defines::Defines, parser::Operator};
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        CountryBuildingResourceRow, StateResourceInputRow, StateResourceRow, TableSchema, tables,
-    },
+use installed_content_core::{buildings::Buildings, defines::Defines, parser::Operator};
+use replay_data::{
+    rows::CountryBuildingResourceRow, rows::StateResourceInputRow, rows::StateResourceRow,
+    rows::TableSchema, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 type Index<T> = OnceLock<Result<T, String>>;
 /// Building type token to its `local_resources` grants by resource token.

@@ -10,7 +10,7 @@ fn scan(replay: &Replay, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::
         cancelled,
     )
 }
-use replay::rows::{EquipmentDestructionCause as NativeCause, EquipmentDestructionRow};
+use replay_data::{rows::EquipmentDestructionCause as NativeCause, rows::EquipmentDestructionRow};
 
 fn removal(
     country: u32,
@@ -399,7 +399,7 @@ fn unknown_caller_is_its_own_cause_and_full_design_handles_are_validated() {
 
 #[test]
 fn unknown_callers_keep_proven_land_and_air_and_refuse_unsupported_domains() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "hoi4_losses_unknown_domain_{}_{:?}",
@@ -410,8 +410,8 @@ fn unknown_callers_keep_proven_land_and_air_and_refuse_unsupported_domains() {
     std::fs::create_dir_all(&equipment).unwrap();
     std::fs::write(equipment.join("synthetic.txt"),
         "equipments = { mod_rifle = { is_archetype = yes type = infantry } mod_rifle_1 = { archetype = mod_rifle } mod_air = { is_archetype = yes type = fighter } mod_air_1 = { archetype = mod_air } mod_hull = { is_archetype = yes type = screen_ship } mod_hull_1 = { archetype = mod_hull } }").unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let types = installed_content::equipment::Database::load_complete(&layers).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let types = installed_content_core::equipment::Database::load_complete(&layers).unwrap();
     assert_eq!(archetype_of(&types, "mod_air_1").unwrap().2, Domain::Air);
     let base = 60_827_880;
     let mut first = first(base);
@@ -433,7 +433,7 @@ fn unknown_callers_keep_proven_land_and_air_and_refuse_unsupported_domains() {
             (8, "mod_hull_1"),
         ]
         .into_iter()
-        .map(|(token, literal)| replay::rows::LexicalTokenRow {
+        .map(|(token, literal)| replay_data::rows::LexicalTokenRow {
             token,
             literal: literal.as_bytes().to_vec(),
         })
@@ -561,7 +561,7 @@ fn air_sources_are_the_same_in_both_land_modes_and_non_losses_stay_excluded() {
             log(
                 GER,
                 1,
-                engine::ncombat_log_cmanager::RECOVERED_KIND,
+                engine_land_inputs::ncombat_log_cmanager::RECOVERED_KIND,
                 OCTOBER,
                 90,
             ),
@@ -572,7 +572,7 @@ fn air_sources_are_the_same_in_both_land_modes_and_non_losses_stay_excluded() {
         &mut recorded,
         vec![exchange(
             7,
-            engine::clend_lease_exchange::DELIVERED_KIND,
+            engine_resources::clend_lease_exchange::DELIVERED_KIND,
             1326,
             80,
         )],
@@ -1193,8 +1193,8 @@ fn historical_amounts_remain_visible_without_claiming_supplemental_coverage() {
     let base = 60_827_880;
     let mut one = frame(base, vec![], &[]);
     let mut historical = removal(GER, NativeCause::LandCombat, 1326, 123_456);
-    historical.coverage = replay::rows::Recorded::NotRecorded;
-    historical.unavailable_reason = replay::rows::Recorded::NotRecorded;
+    historical.coverage = replay_data::rows::Recorded::NotRecorded;
+    historical.unavailable_reason = replay_data::rows::Recorded::NotRecorded;
     drain(&mut one, vec![historical]);
     let mut empty = frame(base + 1, vec![], &[]);
     drain(&mut empty, vec![]);
@@ -1220,7 +1220,7 @@ fn historical_amounts_remain_visible_without_claiming_supplemental_coverage() {
 
 #[test]
 fn supplemental_unavailable_marker_is_not_an_owner_and_keeps_cumulative_uncertainty() {
-    use replay::rows::EquipmentDestructionCoverage;
+    use replay_data::rows::EquipmentDestructionCoverage;
     let base = 60_827_880;
     let mut one = frame(base, vec![], &[]);
     drain(
@@ -1275,7 +1275,8 @@ fn supplemental_failure_cannot_add_losses_to_an_absent_country() {
     drain(
         &mut hour,
         vec![EquipmentDestructionRow {
-            coverage: replay::rows::EquipmentDestructionCoverage::SupplementalUnavailable.into(),
+            coverage: replay_data::rows::EquipmentDestructionCoverage::SupplementalUnavailable
+                .into(),
             unavailable_reason: "Supplemental capture hooks refused".to_owned().into(),
             ..Default::default()
         }],

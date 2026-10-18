@@ -2,14 +2,14 @@
 //! its actor. An unsupported chosen definition must not select a later hull.
 
 use super::*;
-use installed_content::parser::{c_string, text};
+use installed_content_core::{parser::c_string, parser::text};
 #[cfg(test)]
 use std::sync::Arc;
 
 pub(super) fn name<'t>(
     assets: &UnitModelAssets,
     tag: impl FnOnce() -> Result<&'t str, String>,
-    row: &replay::rows::ShipModelRow,
+    row: &replay_data::rows::ShipModelRow,
     graphics: &[u8],
     definition: Option<(u32, u32)>,
     hour: Option<&Hour<'_>>,
@@ -92,7 +92,7 @@ fn creator_country(raw: u32) -> Result<u32, String> {
 /// The two closures keep later native inputs lazy: an explicit primary winner
 /// needs neither generated graphics nor the task force's fallback country.
 fn choose<'t>(
-    row: &replay::rows::ShipModelRow,
+    row: &replay_data::rows::ShipModelRow,
     graphics: &[u8],
     tag: impl FnOnce() -> Result<&'t str, String>,
     generated: impl FnOnce() -> Result<Option<String>, String>,
@@ -153,7 +153,7 @@ fn identifier<'a>(bytes: &'a [u8], field: &str) -> Result<&'a str, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{ShipCounterInputs, ShipModelRow};
+    use replay_data::{rows::ShipCounterInputs, rows::ShipModelRow};
 
     fn valid() -> ShipModelRow {
         ShipModelRow {
@@ -381,15 +381,13 @@ mod tests {
 
     #[test]
     fn owner_local_first_requirement_preserves_zero_and_differs_from_global() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use replay::{
-            frame::{Metrics, TableView},
-            rows::{
-                CountryLinkRow, CountryLocalSubunitRow, LexicalTokenRow, LocalSubunitRequirement,
-                TableRows, TableSchema,
-            },
+        use replay_data::{
+            rows::CountryLinkRow, rows::CountryLocalSubunitRow, rows::LexicalTokenRow,
+            rows::LocalSubunitRequirement, rows::TableRows, rows::TableSchema,
         };
+        use replay_frame::{frame::Metrics, frame::TableView};
         let content = model_selection::Content::from_test_documents(&[br"
             sub_units = { ship = { type = infantry need = { base = 1 } } }
             equipments = { base = { is_archetype = yes } alternate = { is_archetype = yes } }

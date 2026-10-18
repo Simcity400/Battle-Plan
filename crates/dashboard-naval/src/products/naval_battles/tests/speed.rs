@@ -4,7 +4,7 @@ use dashboard_base::prepared::{
     frame_changes::{FrameChangeTracker, FrameChanges},
     observer_tests,
 };
-use replay::rows::{SunkShipEntry, SunkShipsRow};
+use replay_data::{rows::SunkShipEntry, rows::SunkShipsRow};
 
 fn input(first: i32, ships: usize, results: usize) -> DecodedFrame {
     let mut frame = source(1, first, Some(1));
@@ -122,7 +122,9 @@ fn historical_workload(ships: usize, results: usize, hours: usize, pending: bool
     let mut tracker = FrameChangeTracker::new();
     configure(&mut scan, &source, &context);
     observe(&mut scan, &source, &context, &frame, &mut tracker);
-    let original = frame.complete::<replay::rows::tables::SunkShips>().unwrap()[0]
+    let original = frame
+        .complete::<replay_data::rows::tables::SunkShips>()
+        .unwrap()[0]
         .entries
         .clone();
     for hour in 1..=hours {
@@ -157,7 +159,9 @@ fn historical_workload(ships: usize, results: usize, hours: usize, pending: bool
     reset_work();
     frame.hour += 1;
     balance_read(&mut frame);
-    let mut entries = frame.complete::<replay::rows::tables::SunkShips>().unwrap()[0]
+    let mut entries = frame
+        .complete::<replay_data::rows::tables::SunkShips>()
+        .unwrap()[0]
         .entries
         .clone();
     entries.push(sinking(frame.hour, ships + hours + 1000));
@@ -224,7 +228,7 @@ fn naval_observation_work_is_flat_after_ten_times_history_and_5000_ships() {
 
 #[test]
 fn naval_content_operands_are_read_once_per_branch_configuration_including_failures_and_resume() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for has_defines in [false, true] {
         let root =
@@ -312,7 +316,7 @@ fn shared_work() -> observer_tests::Work {
 
 #[test]
 fn naval_shared_driver_unchanged_reads_keep_native_work_flat_and_read_proof_exact() {
-    use replay::rows::{NavalCombatDetailsRow, SunkConvoyRow};
+    use replay_data::{rows::NavalCombatDetailsRow, rows::SunkConvoyRow};
     let scaled = observer_tests::scaled_work(8, |hours| {
         let first = crate::products::sinkings::month_start(1940 * 12).unwrap() + 100;
         let mut frame = input(first, 2, 2);
@@ -509,7 +513,7 @@ fn naval_shared_driver_census_parity_across_held_rows_changes_gaps_and_country_r
         let before = work().combats;
         prepared.observe_prepared(
             frame,
-            &tracker.observe(frame, replay::format::FormatVersion::default()),
+            &tracker.observe(frame, replay_data::format::FormatVersion::default()),
         );
         if index == 1 || index == 6 {
             assert_eq!(

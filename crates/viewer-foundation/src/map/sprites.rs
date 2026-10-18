@@ -15,11 +15,9 @@ use std::{collections::HashMap, io, sync::Arc};
 pub(super) mod oracle;
 
 use eframe::wgpu;
-use installed_content::{
-    ResolvedLayers, gfx,
-    gui::native::resources,
-    image::{dds, native::Decode},
-};
+use installed_content_core::{ResolvedLayers, gui::native::resources};
+use installed_content_gfx::gfx;
+use installed_content_image::{dds, native::Decode};
 
 use super::{
     free_icons::{IconAnchor, Present},
@@ -70,7 +68,7 @@ impl SpriteSheet {
 /// The interface files as the game read them (the resources and each sprite by name), and the
 /// client's texture decode state.
 pub struct Interface {
-    pub registry: installed_content::gui::native::resources::Registry,
+    pub registry: installed_content_core::gui::native::resources::Registry,
     pub sprites: gfx::SpriteSet,
     pub decode: Decode,
 }
@@ -237,7 +235,7 @@ const fn band_layer(band: u64, icon: u32, child: u32) -> u64 {
 }
 
 /// Reads an icon's content priority as a sign-extended low byte.
-pub fn priority(defines: &installed_content::defines::Defines, name: &str) -> io::Result<i8> {
+pub fn priority(defines: &installed_content_core::defines::Defines, name: &str) -> io::Result<i8> {
     Ok(defines.int32("NMapIcons", name)? as i8)
 }
 
@@ -855,7 +853,7 @@ impl SpritePass {
             device,
             queue,
             "empty sprite slot",
-            &dds::Texture::from_rgba8(installed_content::image::Rgba8Image {
+            &dds::Texture::from_rgba8(installed_content_image::Rgba8Image {
                 width: 1,
                 height: 1,
                 pixels: vec![0; 4],
@@ -1747,7 +1745,7 @@ struct CachedBake {
 /// (with the effect's own sampler state), none retained from an earlier draw.
 fn self_contained(draw: &super::native_shader::draw::Quad) -> bool {
     use super::native_shader::binding;
-    use installed_content::pdxshader::program::Stage;
+    use installed_content_core::pdxshader::program::Stage;
     let Ok(Some(selection)) = draw.effect.asset.select(&draw.effect.technique) else {
         return false;
     };
@@ -1811,7 +1809,7 @@ fn prepare_draw(
         premultiply,
     }: Output,
 ) -> Result<super::native_shader::stream::Submission, String> {
-    use installed_content::pdxshader::program::Stage;
+    use installed_content_core::pdxshader::program::Stage;
     let label = format!(
         "{} / {}:{}",
         draw.path, draw.effect.asset.source.effect, draw.effect.technique
@@ -2152,7 +2150,7 @@ mod tests {
     #[test]
     fn a_gui_draw_refused_before_the_stream_is_recorded() {
         let (_serial, device, queue) = crate::map::test_support::gpu::device();
-        let page = dds::Texture::from_rgba8(installed_content::image::Rgba8Image {
+        let page = dds::Texture::from_rgba8(installed_content_image::Rgba8Image {
             width: 1,
             height: 1,
             pixels: vec![255; 4],
@@ -2206,7 +2204,7 @@ mod tests {
 
     #[test]
     fn counter_sheet_uses_the_native_texture_decoder_and_client_setting() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "hoi4_counter_native_texture_{}",
@@ -2218,7 +2216,7 @@ mod tests {
         let layers = ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
         let sprites = gfx::SpriteSet::new(&[(
             "interface/test.gfx".into(),
-            installed_content::gui::native::sprites::read_sprites(
+            installed_content_core::gui::native::sprites::read_sprites(
                 b"spriteTypes = { spriteType = { name = GFX_test texturefile = gfx/test.tga } }",
             ),
         )]);
@@ -2269,7 +2267,7 @@ mod tests {
 
     #[test]
     fn layer_keys_stay_distinct_and_ordered_past_62500_icons() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         // The old `priority * 1_000_000 + icon * 16 + child` key made icon
         // 62,500 of priority 5 equal to priority 6's first key.
@@ -2291,7 +2289,7 @@ mod tests {
 
     #[test]
     fn priorities_are_the_defines_signed_low_byte_in_order_under_the_gui() {
-        let defines = installed_content::defines::Defines::new().unwrap();
+        let defines = installed_content_core::defines::Defines::new().unwrap();
         defines
             .load(
                 "mod.lua",
@@ -2416,7 +2414,7 @@ mod tests {
     }
 
     fn solid(rgba: [u8; 4]) -> dds::Texture {
-        dds::Texture::from_rgba8(installed_content::image::Rgba8Image {
+        dds::Texture::from_rgba8(installed_content_image::Rgba8Image {
             width: 1,
             height: 1,
             pixels: rgba.to_vec(),

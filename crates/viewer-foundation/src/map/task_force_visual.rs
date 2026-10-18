@@ -12,10 +12,10 @@
 use crate::map::province_map::HeightField;
 use std::{collections::BTreeMap, io};
 
-use replay::{
-    frame::DecodedFrame,
-    rows::{TaskForceCounterInputRow, TaskForceMapMotionRow, TaskForceRow, tables},
+use replay_data::{
+    rows::TaskForceCounterInputRow, rows::TaskForceMapMotionRow, rows::TaskForceRow, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 use {
     crate::map::counter_move, crate::map::counter_move::Motion, crate::map::counter_move::Position,
@@ -292,7 +292,9 @@ mod tests {
 
     #[test]
     fn partial_invalid_route_uses_the_sample_count_for_port_admission() {
-        use installed_content::movement::{MovementMap, Neighbour, ProvinceTerrain};
+        use installed_content_core::{
+            movement::MovementMap, movement::Neighbour, movement::ProvinceTerrain,
+        };
         let terrain = ProvinceTerrain { flags: 1, index: 1 };
         let neighbours = |to: u32| {
             vec![Neighbour {
@@ -308,7 +310,7 @@ mod tests {
         ]);
         let movement = MovementContent {
             map,
-            defines: replay::eta_derive::Defines {
+            defines: replay_derive::eta_derive::Defines {
                 embark_distance: 0,
                 transport_scale: 0,
                 invasion_speed: 0,
@@ -318,7 +320,7 @@ mod tests {
                 organisation: None,
                 rail: None,
             },
-            rail: Ok(installed_content::movement::RailMovementDefines {
+            rail: Ok(installed_content_core::movement::RailMovementDefines {
                 speed: [0; 4],
                 maximum_level: 0,
             }),

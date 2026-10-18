@@ -1,7 +1,7 @@
 //! Country and date properties whose operands are recorded.
 
 use super::*;
-use replay::rows::PoliticalPartyRow;
+use replay_data::rows::PoliticalPartyRow;
 
 // Property labels and their ideology-group bindings.
 const GROUPS: [(&str, &str); 4] = [
@@ -75,7 +75,7 @@ impl ScriptedText<'_> {
                 .checked_div(total)
                 .ok_or("GetPartySupport: native signed quotient overflows")?
         };
-        Ok(installed_content::fixed5::format_fixed5(
+        Ok(installed_content_core::fixed5::format_fixed5(
             value.wrapping_mul(100),
             true,
             5,
@@ -471,11 +471,13 @@ impl ScriptedText<'_> {
 
 // Uses the fixed 365-day calendar with signed arithmetic.
 fn date_parts(raw: i32) -> (i32, usize, i32, i32) {
-    let hours = raw.wrapping_sub(engine::cdate::HOUR_EPOCH);
+    let hours = raw.wrapping_sub(engine_native::cdate::HOUR_EPOCH);
     let mut day = hours / 24 % 365;
     let mut month = 0;
-    while month < engine::cdate::MONTH_LENGTHS.len() && day >= engine::cdate::MONTH_LENGTHS[month] {
-        day -= engine::cdate::MONTH_LENGTHS[month];
+    while month < engine_native::cdate::MONTH_LENGTHS.len()
+        && day >= engine_native::cdate::MONTH_LENGTHS[month]
+    {
+        day -= engine_native::cdate::MONTH_LENGTHS[month];
         month += 1;
     }
     (hours / 8760, month, day, hours % 24)

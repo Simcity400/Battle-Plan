@@ -13,13 +13,14 @@ use crate::{
     table_capture::{Arena, CaptureRows},
     table_conversion::{table, table_iter, unavailable},
 };
-use engine::allocation::{copy_vec, owned_vec, reserve_exact};
-use engine::{Memory, advisor_tokens, ccountry_characters as native, walk::Outcome};
-use replay::{
-    cadence::{SKIPPED_REASON, should_walk},
-    frame::TableView,
-    rows::{AdvisorTokenRow, CountryCharacterRow, HiredAdvisorRow, TableId, tables},
+use engine_allocation::{copy_vec, owned_vec, reserve_exact};
+use engine_characters::advisor_tokens;
+use engine_native::{Memory, ccountry_characters as native, walk::Outcome};
+use replay_data::{
+    cadence::SKIPPED_REASON, cadence::should_walk, rows::AdvisorTokenRow,
+    rows::CountryCharacterRow, rows::HiredAdvisorRow, rows::TableId, rows::tables,
 };
+use replay_frame::frame::TableView;
 
 pub const N: usize = 5;
 pub const TABLES: [TableId; N] = [
@@ -294,14 +295,14 @@ impl Captured {
                     base,
                     game_state,
                     if active {
-                        engine::walk::Buffer::Growing(&mut self.active.rows)
+                        engine_native::walk::Buffer::Growing(&mut self.active.rows)
                     } else {
-                        engine::walk::Buffer::Fixed(&mut [])
+                        engine_native::walk::Buffer::Fixed(&mut [])
                     },
                     if retired {
-                        engine::walk::Buffer::Growing(&mut self.retired.rows)
+                        engine_native::walk::Buffer::Growing(&mut self.retired.rows)
                     } else {
-                        engine::walk::Buffer::Fixed(&mut [])
+                        engine_native::walk::Buffer::Fixed(&mut [])
                     },
                 ),
             };
@@ -446,7 +447,7 @@ impl Captured {
             return unavailable("available advisor idea outside captured arena");
         }
         table::<tables::AvailableAdvisors, _>(self.available.outcome, rows, |row| {
-            replay::rows::AvailableAdvisorRow {
+            replay_data::rows::AvailableAdvisorRow {
                 country: row.country,
                 ordinal: row.ordinal,
                 character: row.character,
@@ -527,14 +528,14 @@ mod advisor_store_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
 
     /// HiredAdvisors, which `has_idea` triggers read, is read every hour
     /// (here unreadable rather than skipped), as are the advisor roles it
     /// names.
     #[test]
     fn appointed_advisors_walk_every_hour() {
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -623,7 +624,7 @@ mod tests {
 
     #[test]
     fn active_characters_walk_every_hour_and_keep_null_records() {
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

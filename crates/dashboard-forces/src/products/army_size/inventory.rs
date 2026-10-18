@@ -2,10 +2,8 @@
 //! Keys/order are checked before sparse updates; native delta fields use Replay.
 use super::*;
 use dashboard_base::prepared::frame_changes::FrameChanges;
-use replay::{
-    frame::{DecodedFrame, TableView, ViewIdentity},
-    rows::{DeltaRow, RowCodec, TableSchema},
-};
+use replay_data::{rows::DeltaRow, rows::RowCodec, rows::TableSchema};
+use replay_frame::{frame::DecodedFrame, frame::TableView, frame::ViewIdentity};
 use std::collections::HashSet;
 
 enum Applied<R> {
@@ -45,7 +43,7 @@ pub(super) struct Updates<'a> {
 
 impl<'a> Updates<'a> {
     /// A recorded frame's updates.
-    pub fn recorded(frame: &'a (impl replay::frame::FrameSource + ?Sized)) -> Self {
+    pub fn recorded(frame: &'a (impl replay_frame::frame::FrameSource + ?Sized)) -> Self {
         let update = move |table: TableId| Update::Recorded(frame.update(table.index()));
         Self {
             divisions: update(TableId::Divisions),
@@ -274,7 +272,7 @@ impl<T: TableSchema> Sparse<T> {
     #[cfg(test)]
     fn update(
         &mut self,
-        frame: &(impl replay::frame::FrameSource + ?Sized),
+        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
         compare_snapshot: bool,
     ) -> Applied<T::Row> {
         self.update_table(frame.update(T::ID.index()), frame.hour(), compare_snapshot)
@@ -499,7 +497,7 @@ pub(super) struct Inventory {
 
 fn edit_core(
     row: &DivisionRow,
-    land: Option<&replay::rows::DivisionLandInputsRow>,
+    land: Option<&replay_data::rows::DivisionLandInputsRow>,
     sign: i128,
     links: &[CountryLinkRow],
     core: &mut HashMap<u32, Core>,
@@ -535,7 +533,7 @@ fn edit_hp(core: &mut Core, index: usize, row: &DivisionRow, sign: i128) {
 fn edit_manpower(
     core: &mut Core,
     index: usize,
-    land: Option<&replay::rows::DivisionLandInputsRow>,
+    land: Option<&replay_data::rows::DivisionLandInputsRow>,
     sign: i128,
 ) {
     if let Some(land) = land {
@@ -605,7 +603,7 @@ impl Inventory {
     #[cfg(test)]
     pub fn apply_changes(
         &mut self,
-        frame: &(impl replay::frame::FrameSource + ?Sized),
+        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
     ) {
         self.apply_updates(Updates::recorded(frame), decoded);
@@ -980,7 +978,7 @@ impl Inventory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::frame::FrameEncoder;
+    use replay_frame::frame::FrameEncoder;
 
     #[test]
     fn army_size_sparse_rejects_invalid_snapshot_and_delta_keys() {
@@ -989,10 +987,10 @@ mod tests {
             .encode(super::super::test_fixtures::frame(100), false)
             .unwrap();
         let mut observation = super::super::test_fixtures::frame(101);
-        if let replay::frame::TableView::Complete(rows) =
+        if let replay_frame::frame::TableView::Complete(rows) =
             &mut *observation.tables[TableId::Divisions.index()]
         {
-            // A whole display step (replay::display), so the row changes.
+            // A whole display step (replay_data::display), so the row changes.
             rows.rows_mut::<tables::Divisions>().unwrap()[0].hit_points += 100_000;
         }
         let changed = encoder.encode(observation, false).unwrap();

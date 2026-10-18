@@ -4,7 +4,8 @@ use native::Blob;
 
 #[test]
 fn first_goal_zero_country_uses_dated_reserved_names_and_refuses_missing_input() {
-    use replay::{frame::TableView, rows::TableRows};
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
     let (cat, _folder) = catalogue::tests::folder_catalogue(&[
         (
             "common/wargoals/mod.txt",
@@ -91,7 +92,8 @@ fn first_goal_zero_country_uses_dated_reserved_names_and_refuses_missing_input()
 
 #[test]
 fn selected_native_viewpoint_uses_dated_tags_and_refuses_their_replacement() {
-    use replay::{frame::TableView, rows::TableRows};
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
     let frames = (100..=102)
         .map(|hour| {
             let mut frame = recorded(hour);
@@ -265,7 +267,8 @@ fn viewpoint_runs_do_not_index_a_missing_country_tag() {
 
 #[test]
 fn label_catalogue_keeps_historical_names_after_fighting_ends() {
-    use replay::{frame::TableView, rows::TableRows};
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
     let (cat, _folder) = catalogue::tests::folder_catalogue(&[(
         "localisation/mod_l_english.yml",
         "\u{feff}l_english:\n ONE:0 \"Short\"\n TWO:0 \"Second\"\n THREE:0 \"Third\"\n LATER:0 \"A much longer later country name\"\n",
@@ -304,7 +307,8 @@ fn label_catalogue_keeps_historical_names_after_fighting_ends() {
 
 #[test]
 fn label_catalogue_resolves_only_changed_naming_inputs_and_their_subjects() {
-    use replay::{frame::TableView, rows::TableRows};
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
     let (cat, _folder) = catalogue::tests::folder_catalogue(&[(
         "localisation/mod_l_english.yml",
         "\u{feff}l_english:\n ONE:0 \"First\"\n ONE_ADJ:0 \"First adjective\"\n TWO:0 \"$OVERLORDADJ$ subject\"\n THREE:0 \"Third\"\n THREE_mod_group:0 \"New third\"\n LATER:0 \"Later\"\n LATER_ADJ:0 \"Later adjective\"\n",
@@ -380,7 +384,8 @@ fn label_catalogue_resolves_only_changed_naming_inputs_and_their_subjects() {
 
 #[test]
 fn content_mod_override_native_key_fallback_and_missing_first_goal() {
-    use replay::{frame::TableView, rows::TableRows};
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
     let (cat, _folder) = catalogue::tests::folder_catalogue(&[
         (
             "common/wargoals/mod.txt",
@@ -477,7 +482,8 @@ fn content_mod_override_native_key_fallback_and_missing_first_goal() {
 
 #[test]
 fn alliance_name_variant_reads_the_viewpoint_predicate_only_when_its_key_exists() {
-    use replay::{frame::TableView, rows::TableRows};
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
     let content = |keys: &str| {
         let file = format!(
             "\u{feff}l_english:\n ONE:0 \"One\"\n ONE_ADJ:0 \"First\"\n TWO:0 \"Two\"\n TWO_ADJ:0 \"Second\"\n THREE:0 \"Three\"\n THREE_ADJ:0 \"Third\"\n NATIVE:0 \"$ORDER$$FIRST$ versus $SECOND$\"\n{keys}"
@@ -620,7 +626,8 @@ fn alliance_name_variant_reads_the_viewpoint_predicate_only_when_its_key_exists(
 
 #[test]
 fn branch_scan_preserves_exact_losses_capitulation_identity_and_gap_bounds() {
-    use replay::{frame::TableView, rows::TableRows};
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
     let mut frames: Vec<_> = [100, 101, 103, 104].into_iter().map(recorded).collect();
     for frame in &mut frames {
         frame.tables[TableId::Capitulation.index()] =
@@ -677,7 +684,8 @@ fn branch_scan_preserves_exact_losses_capitulation_identity_and_gap_bounds() {
 
 #[test]
 fn whole_branch_product_at_five_thousand_countries() {
-    use replay::{frame::TableView, rows::TableRows};
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
     let count = 5_000;
     let mut frame = recorded(100);
     frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
@@ -762,7 +770,8 @@ fn whole_branch_product_at_five_thousand_countries() {
 
 #[test]
 fn fallback_goal_name_preserves_plain_state_text_and_first_country_operands() {
-    use replay::{frame::TableView, rows::TableRows};
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
     let (cat, _folder) = catalogue::tests::folder_catalogue(&[
         (
             "common/wargoals/mod.txt",
@@ -1134,7 +1143,8 @@ fn representative_preserves_wrapping_strength_and_refuses_nonboolean_sorting() {
 
 #[test]
 fn casualty_only_hours_reuse_groups_and_observations_with_exact_dated_losses() {
-    use replay::{frame::TableView, rows::TableRows};
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
     let first = recorded(100);
     let mut next = recorded(101);
     let mut rows = first.complete::<tables::WarRelations>().unwrap().to_vec();
@@ -1166,7 +1176,8 @@ fn casualty_only_hours_reuse_groups_and_observations_with_exact_dated_losses() {
 
 #[test]
 fn overview_viewpoint_must_match_local_player_even_for_a_selected_foreign_view() {
-    use replay::{frame::TableView, rows::TableRows};
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
     let mut frame = recorded(100);
     let mut scores = frame.complete::<tables::WarNameRules>().unwrap().to_vec();
     scores[0].viewpoint = 2;
@@ -1188,7 +1199,8 @@ fn overview_viewpoint_must_match_local_player_even_for_a_selected_foreign_view()
 
 #[test]
 fn loss_only_scan_settles_participants_before_viewpoint_changes_and_gaps() {
-    use replay::{frame::TableView, rows::TableRows};
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
     let mut frames = Vec::new();
     for hour in [100, 101, 102, 103, 104, 106, 107] {
         let mut frame = recorded(hour);
@@ -1307,11 +1319,9 @@ fn overlapping_groups_keep_casualties_out_of_membership_reply_size() {
 }
 
 fn overlapping_branch(hours: i32, redeclare: bool) -> Replay {
-    use replay::{
-        frame::{FrameEncoder, TableView},
-        rows::TableRows,
-        spool::Record,
-    };
+    use replay::spool::Record;
+    use replay_data::rows::TableRows;
+    use replay_frame::{frame::FrameEncoder, frame::TableView};
     let mut base = recorded(100);
     base.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
         (1..=10)
@@ -1401,7 +1411,7 @@ fn overlapping_branch(hours: i32, redeclare: bool) -> Replay {
 
 #[test]
 fn cross_block_branch_reuses_four_overlapping_groups_when_losses_change_hourly() {
-    let hours = i32::try_from(replay::KEYFRAME_INTERVAL).unwrap() + 1;
+    let hours = i32::try_from(replay_frame::KEYFRAME_INTERVAL).unwrap() + 1;
     let replay = overlapping_branch(hours, false);
     assert!(replay.index.len() > 1);
     let reply = scan(&replay, 1, None, None, &AtomicBool::new(false)).unwrap();
@@ -1530,7 +1540,7 @@ fn equivalent_seed_reuse_cannot_hide_the_native_leading_seed_exemption() {
 
 #[test]
 fn availability_distinguishes_absent_overview_tables_from_failed_hour_inputs() {
-    use replay::frame::TableView;
+    use replay_frame::frame::TableView;
 
     let reply_for = |frames| {
         let replay = Replay::from_records(
@@ -1591,10 +1601,8 @@ fn availability_distinguishes_absent_overview_tables_from_failed_hour_inputs() {
 
 #[test]
 fn peaceful_viewpoint_changes_and_missing_hours_keep_dated_runs() {
-    use replay::{
-        frame::TableView,
-        rows::{LocalPlayerRow, TableRows},
-    };
+    use replay_data::{rows::LocalPlayerRow, rows::TableRows};
+    use replay_frame::frame::TableView;
 
     let frames = [(100, 1), (101, 2), (103, 2), (104, 2)]
         .into_iter()
@@ -1716,7 +1724,7 @@ fn assert_prepared_parity(replay: &Replay, cat: Option<&Arc<Catalogue>>, views: 
 #[test]
 fn prepared_wars_preserve_viewpoints_future_capitulations_truncation_gaps_and_native_identity_changes()
  {
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
     let mut frames: Vec<_> = (100..=108)
         .filter(|hour| *hour != 104)
         .map(recorded)
@@ -1828,7 +1836,7 @@ fn prepared_wars_counter_only_hours_publish_one_global_input_change_and_reached_
     assert_eq!(changes.len(), TABLES.len() - 1);
     assert!(!changes.contains(&(TableId::Clock as u16)));
     let packet = dashboard_base::prepared::series::decompress(packet).unwrap();
-    let mut input = replay::codec::Decoder::new(&packet);
+    let mut input = replay_data::codec::Decoder::new(&packet);
     assert_eq!(
         DecodedFrame::decode_checkpoint(&mut input).unwrap().hour,
         100
@@ -2185,7 +2193,7 @@ fn prepared_wars_changes_keep_unchanged_work_flat_and_one_relation_change_bounde
         frame_changes::FrameChangeTracker,
         observer_tests::{assert_flat, scaled_work, unchanged_frames},
     };
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let initial = scaled_recorded(100, 5000);
     assert_flat(
         scaled_work(10, |hours| {
@@ -2263,7 +2271,7 @@ fn prepared_wars_name_change_keeps_unchanged_relation_keys_flat_at_5000_countrie
             let first = scaled_recorded(100, countries as u32);
             let mut observer = prepared::Observer::default();
             let mut tracker = FrameChangeTracker::new();
-            let format = replay::format::FormatVersion::CURRENT;
+            let format = replay_data::format::FormatVersion::CURRENT;
             observer.observe_changed(&first, &tracker.observe(&first, format))?;
             let before = observer.work;
             let mut renamed = first.clone();
@@ -2298,7 +2306,7 @@ fn casualty_only_war_hours_reuse_counter_keys_and_publish_identical_bytes() {
         frame_changes::FrameChangeTracker,
         series::tests::{Fixture, assert_payloads_equal},
     };
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let mut cached = prepared::Observer::default();
     let mut rebuilt = prepared::Observer::default();
     let mut tracker = FrameChangeTracker::new();
@@ -2455,7 +2463,8 @@ fn participant_runs_sharing_an_hour_and_tag_keep_native_side_order() {
 #[test]
 fn restored_wars_close_a_relation_that_ends_at_the_first_hour_after_a_commit() {
     use dashboard_base::prepared::series;
-    use replay::{frame::TableView, rows::TableRows};
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
     // The second war relation ends at hour 104, the first hour after a commit.
     let frames: Vec<_> = (100..108)
         .map(|hour| {
@@ -2471,7 +2480,7 @@ fn restored_wars_close_a_relation_that_ends_at_the_first_hour_after_a_commit() {
         .collect();
     let flag = AtomicBool::new(false);
     dashboard_base::prepared::observer_tests::assert_restore_continues(
-        replay::format::FormatVersion::CURRENT,
+        replay_data::format::FormatVersion::CURRENT,
         &[&frames[..4], &frames[4..]],
         prepared::Observer::default,
         |observer, frame, changes, _| observer.observe_changed(frame, changes).unwrap(),
@@ -2492,7 +2501,7 @@ fn restored_wars_close_a_relation_that_ends_at_the_first_hour_after_a_commit() {
 /// cross every publication, and hours 250-252 are missing. From
 /// `counter_only` on, only casualties change.
 fn walked_frames(hours: std::ops::Range<i32>, counter_only: i32) -> Vec<DecodedFrame> {
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
     hours
         .filter(|hour| !(250..=252).contains(hour))
         .map(|hour| {
@@ -2895,7 +2904,8 @@ fn prepared_wars_keep_bounded_walks_per_viewpoint_and_catalogue() {
 
 #[test]
 fn resumable_walks_keep_each_open_wars_continuation_and_not_its_history() {
-    use replay::{frame::TableView, rows::TableRows};
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
     // Losses move every hour, so every hour adds a loss run to each war.
     let losses = |hour: i32| {
         let mut frame = recorded(hour);

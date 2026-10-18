@@ -32,11 +32,12 @@ use dashboard_core::{config::LoadContext, protocol::validate_tag};
 use dashboard_text::metadata::{
     IdentityTrack, TaggedCountry, link_slot, slot_read, tagged_countries,
 };
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableUpdate},
-    rows::{CountryLinkRow, DeltaRow, DivisionCensusRow, DivisionRow, TableId, tables},
+use replay::container::Replay;
+use replay_data::{
+    rows::CountryLinkRow, rows::DeltaRow, rows::DivisionCensusRow, rows::DivisionRow,
+    rows::TableId, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableUpdate};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -46,7 +47,7 @@ use std::{
 use ts_rs::TS;
 #[cfg(any(test, feature = "test-support"))]
 use {
-    dashboard_text::metadata::validate_campaign, replay::frame::FrameDecoder,
+    dashboard_text::metadata::validate_campaign, replay_frame::frame::FrameDecoder,
     std::collections::VecDeque,
 };
 
@@ -373,8 +374,8 @@ fn scan(replay: &Replay, branch: u64, detailed: bool, cancelled: &AtomicBool) ->
 struct ScanState {
     inventory: Option<Inventory>,
     identities: Vec<(String, Identity)>,
-    countries: Option<replay::frame::ViewIdentity>,
-    links: Option<replay::frame::ViewIdentity>,
+    countries: Option<replay_frame::frame::ViewIdentity>,
+    links: Option<replay_frame::frame::ViewIdentity>,
     unreadable_tags: usize,
     keys: Option<dashboard_text::metadata::CountryKeys>,
     /// How many Countries rows `keys` were read from.
@@ -408,7 +409,7 @@ impl ScanState {
     fn step(
         &mut self,
         result: &mut Scan,
-        frame: &(impl replay::frame::FrameSource + ?Sized),
+        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
         replay: &Replay,
     ) {
@@ -419,7 +420,7 @@ impl ScanState {
     fn step_changes(
         &mut self,
         result: &mut Scan,
-        frame: &(impl replay::frame::FrameSource + ?Sized),
+        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
         replay: &Replay,
         changes: Option<&FrameChanges>,
@@ -569,7 +570,7 @@ impl ScanState {
     }
     fn apply_changes(
         &mut self,
-        frame: &(impl replay::frame::FrameSource + ?Sized),
+        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
     ) {
         self.apply_updates(Updates::recorded(frame), decoded);
@@ -833,8 +834,8 @@ fn census_edit(
 fn observe_totals(
     result: &mut Scan,
     decoded: &DecodedFrame,
-    frame: &(impl replay::frame::FrameSource + ?Sized),
-    format: replay::format::FormatVersion,
+    frame: &(impl replay_frame::frame::FrameSource + ?Sized),
+    format: replay_data::format::FormatVersion,
     gap: bool,
     state: &mut ScanState,
     changes: Option<&FrameChanges>,
@@ -854,7 +855,7 @@ fn observe_updates(
     result: &mut Scan,
     decoded: &DecodedFrame,
     updates: Updates<'_>,
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
     gap: bool,
     state: &mut ScanState,
     changes: Option<&FrameChanges>,

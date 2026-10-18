@@ -3,11 +3,11 @@ use crate::{
     spooling::table_iter,
     table_capture::{Arena, CaptureRows, grow_vec},
 };
-use engine::{Memory, cland_combat, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{LandCombatProgressRow, LandEquipmentLoss, TableId, tables},
+use engine_native::{Memory, cland_combat, walk::Outcome};
+use replay_data::{
+    rows::LandCombatProgressRow, rows::LandEquipmentLoss, rows::TableId, rows::tables,
 };
+use replay_frame::frame::TableView;
 use std::mem::size_of;
 
 pub const N: usize = 1;
@@ -32,14 +32,15 @@ impl Capacities {
         base: usize,
     ) -> Result<(), &'static str> {
         let state = base
-            .checked_add(engine::cgame_state::SINGLETON_RVA)
-            .and_then(|address| engine::read::<u64>(memory, address))
+            .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+            .and_then(|address| engine_native::read::<u64>(memory, address))
             .and_then(|pointer| usize::try_from(pointer).ok())
             .filter(|pointer| *pointer != 0)
             .ok_or("land casualty sizing state unreadable")?;
         let (mut rows, mut variants) = (0usize, 0usize);
         cland_combat::visit_sides(memory, base, state, |sides| {
-            let plans = engine::cstats_observer::LossPlan::read_sides(memory, base, sides)?;
+            let plans =
+                engine_land_inputs::cstats_observer::LossPlan::read_sides(memory, base, sides)?;
             rows = rows.checked_add(1).ok_or("land loss row demand overflow")?;
             for plan in plans {
                 variants = variants
@@ -58,8 +59,8 @@ pub struct Captured {
     /// The combats' full handles, in census order; playback derives their
     /// progress and direction from LandCombats, Divisions and DivisionMovement.
     rows: CaptureRows<u64>,
-    losses: Vec<[engine::cstats_observer::LossSpan; 2]>,
-    equipment: Arena<engine::cstats_observer::LossEntry>,
+    losses: Vec<[engine_land_inputs::cstats_observer::LossSpan; 2]>,
+    equipment: Arena<engine_land_inputs::cstats_observer::LossEntry>,
     pointers: Vec<usize>,
     identities: Vec<[u8; 16]>,
     len: usize,
@@ -70,12 +71,12 @@ impl Captured {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(capacity.rows),
-            losses: engine::allocation::owned_vec(engine::allocation::default_vec(capacity.rows)),
+            losses: engine_allocation::owned_vec(engine_allocation::default_vec(capacity.rows)),
             equipment: Arena::new(capacity.variants),
-            pointers: engine::allocation::owned_vec(engine::allocation::default_vec(
+            pointers: engine_allocation::owned_vec(engine_allocation::default_vec(
                 capacity.variants,
             )),
-            identities: engine::allocation::owned_vec(engine::allocation::default_vec(
+            identities: engine_allocation::owned_vec(engine_allocation::default_vec(
                 capacity.variants,
             )),
             len: 0,
@@ -91,7 +92,8 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
             + self.equipment.allocated_bytes()
-            + self.losses.capacity() * size_of::<[engine::cstats_observer::LossSpan; 2]>()
+            + self.losses.capacity()
+                * size_of::<[engine_land_inputs::cstats_observer::LossSpan; 2]>()
             + self.pointers.capacity() * size_of::<usize>()
             + self.identities.capacity() * 16
     }
@@ -113,14 +115,17 @@ impl Captured {
         if self.failure.is_some() {
             return;
         }
-        let [attacker, defender] =
-            match engine::cstats_observer::LossPlan::read_sides(memory, base, source.sides) {
-                Ok(plans) => plans,
-                Err(reason) => {
-                    self.failure = Some(reason);
-                    return;
-                }
-            };
+        let [attacker, defender] = match engine_land_inputs::cstats_observer::LossPlan::read_sides(
+            memory,
+            base,
+            source.sides,
+        ) {
+            Ok(plans) => plans,
+            Err(reason) => {
+                self.failure = Some(reason);
+                return;
+            }
+        };
         let storage = (|| {
             let count = (attacker.equipment.count as usize)
                 .checked_add(defender.equipment.count as usize)
@@ -136,12 +141,12 @@ impl Captured {
                 .ok_or("land loss row demand overflow")?;
             // Worker-only World acquisition owns the full combat-side pools.
             // Grow from these original LossPlan headers before reading entries.
-            engine::walk::Buffer::Growing(&mut self.rows.rows).ensure(rows)?;
-            engine::walk::Buffer::Growing(&mut self.losses).ensure(rows)?;
-            engine::walk::Buffer::Growing(&mut self.equipment.first)
+            engine_native::walk::Buffer::Growing(&mut self.rows.rows).ensure(rows)?;
+            engine_native::walk::Buffer::Growing(&mut self.losses).ensure(rows)?;
+            engine_native::walk::Buffer::Growing(&mut self.equipment.first)
                 .ensure(self.equipment.required)?;
-            engine::walk::Buffer::Growing(&mut self.pointers).ensure(count)?;
-            engine::walk::Buffer::Growing(&mut self.identities).ensure(count)?;
+            engine_native::walk::Buffer::Growing(&mut self.pointers).ensure(count)?;
+            engine_native::walk::Buffer::Growing(&mut self.identities).ensure(count)?;
             Ok::<usize, &'static str>(count)
         })();
         let count = match storage {
@@ -152,7 +157,7 @@ impl Captured {
             }
         };
         let start = self.equipment.len;
-        if let Err(reason) = engine::cstats_observer::LossPlan::copy_sides(
+        if let Err(reason) = engine_land_inputs::cstats_observer::LossPlan::copy_sides(
             [attacker, defender],
             memory,
             base,
@@ -164,12 +169,12 @@ impl Captured {
             return;
         }
         self.losses[self.len] = [
-            engine::cstats_observer::LossSpan {
+            engine_land_inputs::cstats_observer::LossSpan {
                 manpower: attacker.manpower,
                 start,
                 len: attacker.equipment.count as usize,
             },
-            engine::cstats_observer::LossSpan {
+            engine_land_inputs::cstats_observer::LossSpan {
                 manpower: defender.manpower,
                 start: start + attacker.equipment.count as usize,
                 len: defender.equipment.count as usize,
@@ -230,8 +235,11 @@ impl Captured {
             },
         )]
     }
-    fn equipment_rows(&self, span: engine::cstats_observer::LossSpan) -> Vec<LandEquipmentLoss> {
-        engine::allocation::owned_vec(engine::allocation::collect_vec(
+    fn equipment_rows(
+        &self,
+        span: engine_land_inputs::cstats_observer::LossSpan,
+    ) -> Vec<LandEquipmentLoss> {
+        engine_allocation::owned_vec(engine_allocation::collect_vec(
             self.equipment.first[span.start..span.start + span.len]
                 .iter()
                 .map(|entry| LandEquipmentLoss {

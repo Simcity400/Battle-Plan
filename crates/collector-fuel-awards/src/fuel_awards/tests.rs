@@ -32,8 +32,8 @@ fn worker_handover_grows_original_five_thousand_country_receipts_and_mod_name_by
             &log,
             &buffer,
             None,
-            engine::walk::Buffer::Growing(&mut entries),
-            engine::walk::Buffer::Growing(&mut names),
+            engine_native::walk::Buffer::Growing(&mut entries),
+            engine_native::walk::Buffer::Growing(&mut names),
             None,
         )
         .unwrap();
@@ -61,9 +61,9 @@ fn sizing_retries_a_missing_world_and_grows_receipt_pressure_after_a_failed_cens
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     release().unwrap();
     struct NullState;
-    impl engine::Memory for NullState {
+    impl engine_native::Memory for NullState {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == engine::cgame_state::SINGLETON_RVA && output.len() == 8 {
+            if address == engine_native::cgame_state::SINGLETON_RVA && output.len() == 8 {
                 output.fill(0);
                 return true;
             }
@@ -91,7 +91,7 @@ fn sizing_retries_a_missing_world_and_grows_receipt_pressure_after_a_failed_cens
             Ordering::Release,
         );
     }
-    let unreadable = engine::memory::SliceMemory {
+    let unreadable = engine_native::memory::SliceMemory {
         base: 0,
         bytes: &[],
     };
@@ -141,7 +141,7 @@ fn independent_fuel_offers_preserve_pending_entry_and_name_growth() {
 }
 
 struct Memory(Vec<u8>);
-impl engine::Memory for Memory {
+impl engine_native::Memory for Memory {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         let Some(end) = address.checked_add(output.len()) else {
             return false;
@@ -316,7 +316,7 @@ fn started(root: u64) -> Pending {
         },
         located: native::Located {
             owner: 0,
-            country: engine::ccountry::Country {
+            country: engine_native::ccountry::Country {
                 pointer: 0,
                 canonical_slot: 0,
                 id: root as u32,
@@ -520,7 +520,7 @@ fn rejected_5000_country_receipt_burst_preserves_growth_after_failed_census() {
     drop(current);
     assert_eq!(ENTRY_DEMAND.load(Ordering::Acquire), 10_000);
     assert_eq!(NAME_DEMAND.load(Ordering::Acquire), 40_000);
-    let unreadable = engine::memory::SliceMemory {
+    let unreadable = engine_native::memory::SliceMemory {
         base: 0,
         bytes: &[],
     };
@@ -803,8 +803,8 @@ fn stale_publisher_can_fill_successor_before_the_boundary_publishes_it() {
         &log,
         &fresh,
         Some(&old),
-        engine::walk::Buffer::Growing(&mut entries),
-        engine::walk::Buffer::Growing(&mut Vec::new()),
+        engine_native::walk::Buffer::Growing(&mut entries),
+        engine_native::walk::Buffer::Growing(&mut Vec::new()),
         None,
     )
     .unwrap();
@@ -1035,7 +1035,8 @@ fn unsealable_boundary_keeps_or_supersedes_the_prepared_offer_without_a_lock() {
 #[test]
 #[ignore = "release per-call detour cost; run with --release --ignored --nocapture --test-threads=1"]
 fn hook_cost_fuel_awards() {
-    use engine::{ccountry, ccountry_fuel_status as fuel, cgame_state, fuel_consumer_data};
+    use engine_fuel::{ccountry_fuel_status as fuel, fuel_consumer_data};
+    use engine_native::{ccountry, cgame_state};
     const COUNTRIES: usize = 1500;
     const GAME: usize = 0x1000;
     const TABLE: usize = 0x2000;

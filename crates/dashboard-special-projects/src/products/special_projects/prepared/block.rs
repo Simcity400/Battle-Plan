@@ -39,11 +39,11 @@ use dashboard_base::prepared::{
     prepass::{Bound, Extract, Family, Folded},
 };
 use replay::{
-    container::{BlockIndex, QuietHours, Replay, TableFields},
-    format::FormatVersion,
-    frame::{DecodedFrame, SharedView, TABLE_COUNT},
-    rows::{TableId, tables},
+    container::BlockIndex, container::QuietHours, container::Replay, container::TableFields,
 };
+use replay_data::rows::TABLE_COUNT;
+use replay_data::{format::FormatVersion, rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::SharedView};
 use std::{
     any::Any,
     collections::BTreeSet,
@@ -65,7 +65,7 @@ pub const KIT: &str = "projects.kit";
 
 /// The tables the projects' observer reads: its project, program, history,
 /// character and dictionary tables, the countries' keys and links and their
-/// naming tables (`installed_content::country_names::TABLES`); with `world`, also
+/// naming tables (`installed_content_country_names::country_names::TABLES`); with `world`, also
 /// the shared trigger kit a scoped project name evaluates
 /// (`triggers::RECORDED_TABLES`), which only content holding such a name
 /// reads ([`Prepared::reads_trigger_world`]). The campaign, which every read
@@ -77,7 +77,7 @@ pub fn tables(world: bool) -> &'static [TableId] {
             .chain([TableId::Countries, TableId::Campaign])
             .chain(
                 world
-                    .then_some(installed_content::country_names::TABLES.as_slice())
+                    .then_some(installed_content_country_names::country_names::TABLES.as_slice())
                     .into_iter()
                     .flatten()
                     .copied(),
@@ -575,7 +575,7 @@ impl Extract for BlockExtract {
 /// The change facts of a quiet hour on the last kept frame: the tables its
 /// update rebuilt, and its projects slot read.
 fn quiet_changes(read: bool, rebuilt: &[TableId]) -> FrameChanges {
-    let _cpu = ::replay::cpu::scope("frame changes", None);
+    let _cpu = ::replay_frame::cpu::scope("frame changes", None);
     let mut rows_changed = [false; TABLE_COUNT];
     for table in rebuilt {
         rows_changed[table.index()] = true;
@@ -645,9 +645,9 @@ pub fn fold(
     check: &mut dyn FnMut() -> io::Result<()>,
     hour: &mut dyn FnMut(),
 ) -> io::Result<(Folded, Option<i32>)> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let facts = {
-        let _cpu = ::replay::cpu::scope("fold facts", None);
+        let _cpu = ::replay_frame::cpu::scope("fold facts", None);
         facts
             .downcast::<BlockFacts>()
             .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -680,7 +680,7 @@ pub fn fold(
             Held::Whole | Held::Built => read,
         };
         let result = {
-            let _cpu = ::replay::cpu::scope("fold observe", None);
+            let _cpu = ::replay_frame::cpu::scope("fold observe", None);
             prepared.observe_kept(
                 frame,
                 changes,
@@ -697,7 +697,7 @@ pub fn fold(
         observed(frame.hour, result.map(drop)).map(Some)
     };
     for kept_hour in facts.hours {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         check()?;
         match kept_hour {
             Hour::Observed {
@@ -736,12 +736,12 @@ pub fn fold(
                     io::Error::other("A quiet hour came before the block's first")
                 })?;
                 for (offset, (read, rebuilt)) in hours.into_iter().enumerate() {
-                    let _cpu = ::replay::cpu::scope("fold driver", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
                     check()?;
                     // The span's hours are consecutive i32 hours.
                     let at = first + offset as i32;
                     let mut frame = {
-                        let _cpu = ::replay::cpu::scope("fold frame", None);
+                        let _cpu = ::replay_frame::cpu::scope("fold frame", None);
                         base.clone()
                     };
                     frame.hour = at;
@@ -795,7 +795,7 @@ pub fn observe_block(
     check: &mut dyn FnMut() -> io::Result<()>,
     hour: &mut dyn FnMut(),
 ) -> io::Result<Option<i32>> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let running = AtomicBool::new(false);
     let world = prepared.reads_trigger_world();
     observe_hours(

@@ -22,11 +22,11 @@ fn vector(bytes: &mut [u8], at: usize, data: usize, count: u32) {
 fn fixture(count: u32) -> Vec<u8> {
     let mut bytes = kit::fixture();
     p64(&mut bytes, 0x11000, ZERO as u64);
-    p64(&mut bytes, ZERO, engine::ccountry::VTABLE_RVA as u64);
-    p32(&mut bytes, ZERO + engine::ccountry::ID, 0);
+    p64(&mut bytes, ZERO, engine_native::ccountry::VTABLE_RVA as u64);
+    p32(&mut bytes, ZERO + engine_native::ccountry::ID, 0);
     vector(
         &mut bytes,
-        ZERO + engine::ccountry::THEATRES,
+        ZERO + engine_native::ccountry::THEATRES,
         ZERO_VECTOR,
         count,
     );
@@ -116,7 +116,7 @@ fn typed(memory: &Observed<'_>, land_capacity: usize) -> Captured {
     captured.capture_reserved_land(
         memory,
         kit::BASE,
-        engine::ccountry::read_reserved_root(memory, kit::BASE, kit::GAME_STATE),
+        engine_native::ccountry::read_reserved_root(memory, kit::BASE, kit::GAME_STATE),
         None,
         None,
     );
@@ -215,7 +215,11 @@ fn zero_roster_reuses_a_registry_authenticated_type53_root_with_id_word_zero() {
     let mut bytes = fixture(1);
     let handle = u64::from(corders_group::REFERENCE_TYPE);
     p64(&mut bytes, OOB_GROUP + corders_group::HANDLE, handle);
-    p64(&mut bytes, 0x61000 + engine::reference_bucket::TYPE, handle);
+    p64(
+        &mut bytes,
+        0x61000 + engine_native::reference_bucket::TYPE,
+        handle,
+    );
     p64(
         &mut bytes,
         OOB_GROUP + corders_group::THEATRE,
@@ -362,7 +366,7 @@ fn optional_batch_never_promotes_incomplete_positive_theatres() {
         captured.capture_reserved_land(
             &memory,
             kit::BASE,
-            engine::ccountry::read_reserved_root(&memory, kit::BASE, kit::GAME_STATE),
+            engine_native::ccountry::read_reserved_root(&memory, kit::BASE, kit::GAME_STATE),
             None,
             None,
         );
@@ -445,7 +449,7 @@ fn committed_suffix_growth_counts_rows_once_and_restored_naming_failure_removes_
 
 #[test]
 fn ambiguous_prior_header_refuses_instead_of_selecting_or_retrying_an_occurrence() {
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: 0x1000,
         bytes: &[0; 16],
     };
@@ -485,7 +489,7 @@ fn failed_selected_root_alias_survives_cold_and_cached_copy_and_decode() {
         for (fault, reason) in [
             (ZERO, "reserved country object identity mismatch"),
             (
-                ZERO + engine::ccountry::ID,
+                ZERO + engine_native::ccountry::ID,
                 "reserved country id is not zero",
             ),
         ] {
@@ -498,13 +502,13 @@ fn failed_selected_root_alias_survives_cold_and_cached_copy_and_decode() {
                 fault,
                 attempts: std::cell::Cell::new(0),
             };
-            let mut cache = engine::country_memory::Cache::try_with_capacity(128)
+            let mut cache = engine_native::country_memory::Cache::try_with_capacity(128)
                 .expect("reserved-land fixture cache allocation");
             if cached {
                 let view = cache.prepare(&source, kit::BASE, kit::GAME_STATE);
                 assert_eq!(
                     view.seed_status(),
-                    engine::country_memory::SeedStatus::Unavailable { reason }
+                    engine_native::country_memory::SeedStatus::Unavailable { reason }
                 );
             }
             let mut job = NavalJob::fixture();

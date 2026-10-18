@@ -132,20 +132,20 @@ pub fn observed_hours() -> usize {
 }
 impl Prepared {
     #[cfg(test)]
-    pub fn observe(&mut self, frame: &replay::frame::DecodedFrame) -> io::Result<()> {
+    pub fn observe(&mut self, frame: &replay_frame::frame::DecodedFrame) -> io::Result<()> {
         self.observe_changed(
             frame,
             &FrameChanges {
-                rows_changed: [true; replay::frame::TABLE_COUNT],
-                table_read: [true; replay::frame::TABLE_COUNT],
-                slot_read: [true; replay::frame::TABLE_COUNT],
+                rows_changed: [true; replay_data::rows::TABLE_COUNT],
+                table_read: [true; replay_data::rows::TABLE_COUNT],
+                slot_read: [true; replay_data::rows::TABLE_COUNT],
                 updates: None,
             },
         )
     }
     pub fn observe_changed(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         changes: &FrameChanges,
     ) -> io::Result<()> {
         #[cfg(any(test, feature = "test-support"))]
@@ -436,7 +436,7 @@ impl Prepared {
     /// every resource named as before. None when the whole tables are needed.
     fn observe_rows(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         changes: &FrameChanges,
         holders_kept: bool,
     ) -> io::Result<Option<BTreeMap<String, [bool; 2]>>> {
@@ -667,14 +667,15 @@ pub fn query(
         .copied()
         .filter(|table| *table != TableId::Campaign)
         .collect();
-    let sampler = |frame: &replay::frame::DecodedFrame, requested: Option<&[(String, String)]>| {
+    let sampler = |frame: &replay_frame::frame::DecodedFrame,
+                   requested: Option<&[(String, String)]>| {
         if let (Ok(definitions), Ok(lexical)) = (
             frame.complete::<tables::ResourceDefinitions>(),
             frame.complete::<tables::LexicalTokens>(),
         ) {
             names.borrow_mut().learn(definitions, lexical);
         }
-        let _cpu = replay::cpu::scope_phase("resources:query_sample");
+        let _cpu = replay_frame::cpu::scope_phase("resources:query_sample");
         let mut values =
             sampled_values.sample(frame, &sample_tables, requested, &sample::sample)?;
         if !input.resources.is_empty() {
@@ -785,7 +786,7 @@ fn read_pages(
     progressive: Option<Progressive<'_>>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Value>> {
-    let _cpu = replay::cpu::scope_phase("resources:query_pages");
+    let _cpu = replay_frame::cpu::scope_phase("resources:query_pages");
     let catalogue = series::read_catalogue::<
         BTreeMap<String, (ResourceBalanceReply, BTreeMap<u32, String>)>,
     >(store, source_key, "resource-balance", branch)?;
@@ -1144,9 +1145,11 @@ fn read_pages(
 mod tests {
     use super::*;
     use dashboard_core::test_fixtures::{CAMPAIGN, records, resource_frame};
-    use replay::frame::TableView;
     #[cfg(feature = "slow-tests")]
-    use replay::rows::{CountryLinkRow, CountryResourceRow, CountryRow, TableRows};
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryResourceRow, rows::CountryRow, rows::TableRows,
+    };
+    use replay_frame::frame::TableView;
 
     #[test]
     fn resource_projection_refresh_visits_only_its_changed_source_table() {
@@ -1163,7 +1166,7 @@ mod tests {
         let slots = Arc::clone(prepared.scan.country_reads.as_ref().unwrap().slots());
         let before = prepared.work;
         frame.hour += 1;
-        if let TableView::Complete(replay::rows::TableRows::CountryResources(rows)) =
+        if let TableView::Complete(replay_data::rows::TableRows::CountryResources(rows)) =
             &mut *frame.tables[TableId::CountryResources.index()]
         {
             rows.truncate(1);
@@ -1183,7 +1186,7 @@ mod tests {
         ));
         let before = prepared.work;
         frame.hour += 1;
-        if let TableView::Complete(replay::rows::TableRows::ResourceExchanges(rows)) =
+        if let TableView::Complete(replay_data::rows::TableRows::ResourceExchanges(rows)) =
             &mut *frame.tables[TableId::ResourceExchanges.index()]
         {
             rows[0].delivered = i64::MAX;
@@ -1228,7 +1231,7 @@ mod tests {
                 (53, 0xdead, 9001, -7),
             ],
         );
-        if let TableView::Complete(replay::rows::TableRows::CountryResources(rows)) =
+        if let TableView::Complete(replay_data::rows::TableRows::CountryResources(rows)) =
             &mut *frame.tables[TableId::CountryResources.index()]
         {
             rows[0].produced = i64::MIN;
@@ -1239,7 +1242,7 @@ mod tests {
         }
         let mut later = frame.clone();
         later.hour += 1;
-        if let TableView::Complete(replay::rows::TableRows::Countries(rows)) =
+        if let TableView::Complete(replay_data::rows::TableRows::Countries(rows)) =
             &mut *later.tables[TableId::Countries.index()]
         {
             rows[0].tag = b"new resource alias".to_vec();
@@ -1313,9 +1316,9 @@ mod tests {
                 let mut frame = frame.clone();
                 for offset in 0..history {
                     frame.hour = 100 + offset as i32;
-                    if let replay::frame::TableView::Complete(replay::rows::TableRows::Countries(
-                        rows,
-                    )) = &mut *frame.tables[TableId::Countries.index()]
+                    if let replay_frame::frame::TableView::Complete(
+                        replay_data::rows::TableRows::Countries(rows),
+                    ) = &mut *frame.tables[TableId::Countries.index()]
                     {
                         rows.iter_mut()
                             .find(|row| row.canonical_slot == 7)
@@ -1326,8 +1329,8 @@ mod tests {
                 }
                 let before = prepared.work;
                 frame.hour += 1;
-                if let replay::frame::TableView::Complete(
-                    replay::rows::TableRows::CountryResources(rows),
+                if let replay_frame::frame::TableView::Complete(
+                    replay_data::rows::TableRows::CountryResources(rows),
                 ) = &mut *frame.tables[TableId::CountryResources.index()]
                 {
                     rows[0].produced += 1;
@@ -1349,7 +1352,7 @@ mod tests {
         use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
         let mut initial =
             resource_frame(100, 30, 9001, &[(51, 21, 9001, 12), (52, 0xdead, 9001, 1)]);
-        if let TableView::Complete(replay::rows::TableRows::CountryResources(rows)) =
+        if let TableView::Complete(replay_data::rows::TableRows::CountryResources(rows)) =
             &mut *initial.tables[TableId::CountryResources.index()]
         {
             let mut unnamed = rows[0].clone();
@@ -1365,7 +1368,7 @@ mod tests {
             let mut frame = initial.clone();
             frame.hour = hour;
             if hour >= 128
-                && let TableView::Complete(replay::rows::TableRows::ResourceExchanges(rows)) =
+                && let TableView::Complete(replay_data::rows::TableRows::ResourceExchanges(rows)) =
                     &mut *frame.tables[TableId::ResourceExchanges.index()]
             {
                 rows.clear();
@@ -1589,48 +1592,54 @@ mod tests {
     }
 
     fn pools(
-        frame: &mut replay::frame::DecodedFrame,
-    ) -> &mut Vec<replay::rows::CountryResourceRow> {
+        frame: &mut replay_frame::frame::DecodedFrame,
+    ) -> &mut Vec<replay_data::rows::CountryResourceRow> {
         match &mut *frame.tables[TableId::CountryResources.index()] {
-            TableView::Complete(replay::rows::TableRows::CountryResources(rows)) => rows,
+            TableView::Complete(replay_data::rows::TableRows::CountryResources(rows)) => rows,
             _ => unreachable!("fixture pools are complete"),
         }
     }
     fn exchanges(
-        frame: &mut replay::frame::DecodedFrame,
-    ) -> &mut Vec<replay::rows::ResourceExchangeRow> {
+        frame: &mut replay_frame::frame::DecodedFrame,
+    ) -> &mut Vec<replay_data::rows::ResourceExchangeRow> {
         match &mut *frame.tables[TableId::ResourceExchanges.index()] {
-            TableView::Complete(replay::rows::TableRows::ResourceExchanges(rows)) => rows,
+            TableView::Complete(replay_data::rows::TableRows::ResourceExchanges(rows)) => rows,
             _ => unreachable!("fixture deals are complete"),
         }
     }
     fn pool(
-        frame: &mut replay::frame::DecodedFrame,
+        frame: &mut replay_frame::frame::DecodedFrame,
         country: u32,
         resource: u32,
-    ) -> &mut replay::rows::CountryResourceRow {
+    ) -> &mut replay_data::rows::CountryResourceRow {
         pools(frame)
             .iter_mut()
             .find(|row| row.country == country && row.resource == resource)
             .expect("fixture pool")
     }
-    fn add_pool(frame: &mut replay::frame::DecodedFrame, row: replay::rows::CountryResourceRow) {
+    fn add_pool(
+        frame: &mut replay_frame::frame::DecodedFrame,
+        row: replay_data::rows::CountryResourceRow,
+    ) {
         let rows = pools(frame);
         rows.push(row);
         rows.sort_by_key(|row| (row.country, row.resource));
     }
     fn deal(
-        frame: &mut replay::frame::DecodedFrame,
+        frame: &mut replay_frame::frame::DecodedFrame,
         id: u64,
-    ) -> &mut replay::rows::ResourceExchangeRow {
+    ) -> &mut replay_data::rows::ResourceExchangeRow {
         exchanges(frame)
             .iter_mut()
             .find(|row| row.id == id)
             .expect("fixture deal")
     }
-    fn country(frame: &mut replay::frame::DecodedFrame, id: u32) -> &mut replay::rows::CountryRow {
+    fn country(
+        frame: &mut replay_frame::frame::DecodedFrame,
+        id: u32,
+    ) -> &mut replay_data::rows::CountryRow {
         match &mut *frame.tables[TableId::Countries.index()] {
-            TableView::Complete(replay::rows::TableRows::Countries(rows)) => rows
+            TableView::Complete(replay_data::rows::TableRows::Countries(rows)) => rows
                 .iter_mut()
                 .find(|row| row.id == id)
                 .expect("fixture country"),
@@ -1641,21 +1650,24 @@ mod tests {
     /// The recording codec: each input hour is encoded and decoded as the
     /// preparation pipeline reads it, with its recorded updates.
     struct Recorded {
-        encoder: replay::frame::FrameEncoder,
-        decoder: replay::frame::FrameDecoder,
+        encoder: replay_frame::frame::FrameEncoder,
+        decoder: replay_frame::frame::FrameDecoder,
     }
     impl Recorded {
         fn new() -> Self {
             Self {
-                encoder: replay::frame::FrameEncoder::new(),
-                decoder: replay::frame::FrameDecoder::new(),
+                encoder: replay_frame::frame::FrameEncoder::new(),
+                decoder: replay_frame::frame::FrameDecoder::new(),
             }
         }
         fn next(
             &mut self,
-            input: &replay::frame::DecodedFrame,
+            input: &replay_frame::frame::DecodedFrame,
             keyframe: bool,
-        ) -> (replay::frame::DecodedFrame, Arc<replay::frame::Frame>) {
+        ) -> (
+            replay_frame::frame::DecodedFrame,
+            Arc<replay_frame::frame::Frame>,
+        ) {
             let wire = self.encoder.encode(input.clone(), keyframe).unwrap();
             let decoded = self.decoder.advance(&wire).unwrap().clone();
             (decoded, Arc::new(wire))
@@ -1663,9 +1675,10 @@ mod tests {
     }
 
     /// `count` countries holding two pools each, each exporting steel to the next.
-    fn many_countries(count: u32) -> replay::frame::DecodedFrame {
-        use replay::rows::{
-            CountryLinkRow, CountryResourceRow, CountryRow, ResourceExchangeRow, TableRows,
+    fn many_countries(count: u32) -> replay_frame::frame::DecodedFrame {
+        use replay_data::{
+            rows::CountryLinkRow, rows::CountryResourceRow, rows::CountryRow,
+            rows::ResourceExchangeRow, rows::TableRows,
         };
         let mut frame = resource_frame(100, 0, 9001, &[]);
         *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
@@ -1720,10 +1733,10 @@ mod tests {
 
     fn assert_rows_observe_only_changed_countries(count: u32) {
         use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests::Work};
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let mut recorded = Recorded::new();
         let mut tracker = FrameChangeTracker::new();
-        let mut step = |prepared: &mut Prepared, frame: &replay::frame::DecodedFrame| {
+        let mut step = |prepared: &mut Prepared, frame: &replay_frame::frame::DecodedFrame| {
             let before = (prepared.work, prepared.row_hours);
             let (decoded, wire) = recorded.next(frame, false);
             let changes = tracker.observe_updates(&decoded, wire, format);
@@ -1840,11 +1853,12 @@ mod tests {
     #[test]
     fn resource_rows_observation_matches_whole_tables_and_scan_across_keyframe_gap_and_resume() {
         use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-        use replay::rows::{
-            CountryLinkRow, CountryResourceRow, CountryRow, LexicalTokenRow, ResourceDefinitionRow,
-            ResourceExchangeRow, TableRows,
+        use replay_data::{
+            rows::CountryLinkRow, rows::CountryResourceRow, rows::CountryRow,
+            rows::LexicalTokenRow, rows::ResourceDefinitionRow, rows::ResourceExchangeRow,
+            rows::TableRows,
         };
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let flag = AtomicBool::new(false);
         let mut frame = resource_frame(100, 30, 9001, &[(51, 21, 9001, 12), (52, 11, 31, 5)]);
         // A fourth country holding no resources, renamed later.

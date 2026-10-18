@@ -6,11 +6,9 @@ use dashboard_base::products::{
     force_census::{Countries, changed_ids},
 };
 use dashboard_text::metadata::{IdentityTrack, slot_read, validate_campaign};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder},
-    rows::{AirWingRow, TableId, WingEquipmentRow, tables},
-};
+use replay::container::Replay;
+use replay_data::{rows::AirWingRow, rows::TableId, rows::WingEquipmentRow, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
 use std::{
     collections::{HashMap, HashSet},
     sync::atomic::Ordering,
@@ -241,7 +239,7 @@ fn wing_counts(
         signature.push(UNIDENTIFIED.into());
     }
     counts.wings_by_tokens.insert(signature, 1);
-    let scale = engine::equipment_entry::FIXED_POINT_SCALE;
+    let scale = engine_native::equipment_entry::FIXED_POINT_SCALE;
     let summed: i128 = entries
         .iter()
         .map(|entry| i128::from(entry.amount_raw))
@@ -412,7 +410,7 @@ struct Census {
     reconciled: usize,
 }
 
-struct Inputs<'a, F: replay::frame::FrameSource + ?Sized> {
+struct Inputs<'a, F: replay_frame::frame::FrameSource + ?Sized> {
     decoded: &'a DecodedFrame,
     frame: &'a F,
     variants: &'a VariantCatalogue,
@@ -479,7 +477,7 @@ impl Census {
 
     fn update(
         &mut self,
-        inputs: Inputs<'_, impl replay::frame::FrameSource + ?Sized>,
+        inputs: Inputs<'_, impl replay_frame::frame::FrameSource + ?Sized>,
         result: &mut ScannedAir,
         pool: &mut HashSet<Arc<Counts>>,
         cancelled: &AtomicBool,
@@ -601,7 +599,7 @@ impl Census {
             } else if let Some([entry]) = equipment
                 && wing.planes > 0
                 && entry.amount_raw
-                    == i64::from(wing.planes) * engine::equipment_entry::FIXED_POINT_SCALE
+                    == i64::from(wing.planes) * engine_native::equipment_entry::FIXED_POINT_SCALE
             {
                 match single_designs.entry((wing.planes, entry.variant)) {
                     std::collections::hash_map::Entry::Occupied(entry) => Arc::clone(entry.get()),
@@ -719,9 +717,9 @@ impl Scan {
     /// Rebuild transient joins from the committed decoder frame without repeating its history or counters.
     pub(super) fn rejoin(
         &mut self,
-        frame: &(impl replay::frame::FrameSource + ?Sized),
+        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         if self.last_hour != Some(decoded.hour) || self.applied.is_some() {
@@ -741,9 +739,9 @@ impl Scan {
     }
     pub(super) fn step_changes(
         &mut self,
-        frame: &(impl replay::frame::FrameSource + ?Sized),
+        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         cancelled: &AtomicBool,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
     ) -> io::Result<()> {
@@ -800,8 +798,8 @@ impl Scan {
             if let Some(changes) = changes {
                 self.work.row_visits += <super::prepared::Air as crate::products::parts_race_prepared::Family>::SAMPLE_TABLES.iter()
                     .filter(|id| changes.rows_changed[id.index()])
-                    .map(|id| match &*decoded.tables[id.index()] { replay::frame::TableView::Complete(rows)
-                        | replay::frame::TableView::Truncated { rows, .. } => rows.len(), _ => 0 }).sum::<usize>();
+                    .map(|id| match &*decoded.tables[id.index()] { replay_frame::frame::TableView::Complete(rows)
+                        | replay_frame::frame::TableView::Truncated { rows, .. } => rows.len(), _ => 0 }).sum::<usize>();
             }
         }
         self.step(frame, decoded, format, cancelled)?;
@@ -820,9 +818,9 @@ impl Scan {
     }
     pub(super) fn step(
         &mut self,
-        frame: &(impl replay::frame::FrameSource + ?Sized),
+        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         let Self {

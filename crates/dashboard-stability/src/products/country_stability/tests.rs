@@ -1,9 +1,7 @@
 use dashboard_base::test_fixtures::{CAMPAIGN, records, stability_frame, stability_inputs};
-use replay::{
-    container::Replay,
-    frame::TableView,
-    rows::{TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::frame::TableView;
 use std::sync::{Arc, atomic::AtomicBool};
 
 #[test]
@@ -86,8 +84,8 @@ fn stability_formula_preserves_rounding_wrapping_and_clamps() {
 
 /// The country's CountryCommandPower row: the capacity modifiers' getter
 /// values and `allocated` command power.
-fn launch(allocated: i64) -> replay::rows::CountryCommandPowerRow {
-    replay::rows::CountryCommandPowerRow {
+fn launch(allocated: i64) -> replay_data::rows::CountryCommandPowerRow {
+    replay_data::rows::CountryCommandPowerRow {
         canonical_slot: 7,
         allocated_command_power_raw: allocated,
         max_command_power: Some(1_000_000),
@@ -217,7 +215,7 @@ fn stability_output_is_byte_identical_with_the_values_on_country_command_power()
         (None, Some(10_000), 0),
         (Some(5), None, 7),
     ] {
-        let launch = replay::rows::CountryCommandPowerRow {
+        let launch = replay_data::rows::CountryCommandPowerRow {
             canonical_slot: 7,
             allocated_command_power_raw: allocated,
             max_command_power: max,
@@ -263,7 +261,7 @@ fn stability_output_is_byte_identical_with_the_values_on_country_command_power()
 #[test]
 fn stability_product_runs_carry_reads_and_break_down_one_hour() {
     use crate::products::country_stability::scan;
-    use replay::rows::CountryStabilityLineRow as Line;
+    use replay_data::rows::CountryStabilityLineRow as Line;
     let line = |line, kind, identity: &[u8], value, text: &[u8]| Line {
         country: 9001,
         line,
@@ -477,14 +475,14 @@ fn stability_breakdown_index_preserves_first_tag_match_and_link_validation() {
     use dashboard_core::config::LoadContext;
     let mut frame = stability_frame(100, stability_inputs(), 100, vec![]);
     let mut countries = frame
-        .complete::<replay::rows::tables::Countries>()
+        .complete::<replay_data::rows::tables::Countries>()
         .unwrap()
         .to_vec();
     // The first GER row has no link. A later valid row with the same tag cannot
     // supply its identity.
     countries.insert(
         0,
-        replay::rows::CountryRow {
+        replay_data::rows::CountryRow {
             id: 1,
             canonical_slot: 1,
             tag: b"GER".to_vec(),
@@ -532,7 +530,7 @@ fn stability_full_selection_answers_five_thousand_countries_on_each_branch() {
         *frame.tables[TableId::CountryStabilityInputs.index()] =
             TableView::Complete(TableRows::CountryStabilityInputs(
                 (0..5_000)
-                    .map(|index| replay::rows::CountryStabilityInputRow {
+                    .map(|index| replay_data::rows::CountryStabilityInputRow {
                         country: 100_000 + index,
                         stability_raw: 50_000 + i64::from(index),
                         ..stability_inputs()
@@ -542,7 +540,7 @@ fn stability_full_selection_answers_five_thousand_countries_on_each_branch() {
         *frame.tables[TableId::CountryCommandPower.index()] =
             TableView::Complete(TableRows::CountryCommandPower(
                 (0..5_000)
-                    .map(|index| replay::rows::CountryCommandPowerRow {
+                    .map(|index| replay_data::rows::CountryCommandPowerRow {
                         canonical_slot: index,
                         ..launch(400_000)
                     })
@@ -550,7 +548,7 @@ fn stability_full_selection_answers_five_thousand_countries_on_each_branch() {
             ));
         *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(
             (0..5_000)
-                .map(|index| replay::rows::SliceReadRow {
+                .map(|index| replay_data::rows::SliceReadRow {
                     table: TableId::CountryStabilityInputs.index() as u32,
                     owner: 100_000 + index,
                     sample_hour: 100,
@@ -618,10 +616,10 @@ fn stability_oversized_breakdown_refuses_the_complete_reply_by_name() {
     use super::{CountryStability, CountryStabilityParams};
     use dashboard_base::products::{MAX_PRODUCT_REPLY_BYTES, Product};
     use dashboard_core::config::LoadContext;
-    let line = replay::rows::CountryStabilityLineRow {
+    let line = replay_data::rows::CountryStabilityLineRow {
         country: 9001,
         key: 0x8d,
-        kind: replay::rows::CountryStabilityLineRow::UNPAIRED,
+        kind: replay_data::rows::CountryStabilityLineRow::UNPAIRED,
         text: vec![b'x'; MAX_PRODUCT_REPLY_BYTES],
         ..Default::default()
     };
@@ -672,7 +670,7 @@ mod idea_names {
     /// through the Politics content loader.
     #[test]
     fn an_idea_name_is_its_selected_key_alone() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
             (
@@ -762,7 +760,7 @@ mod idea_names {
 #[test]
 fn breakdown_visits_only_its_country_lines_among_five_thousand_countries() {
     use super::{BREAKDOWN_LINE_VISITS, BreakdownInput, breakdown_of, modifiers};
-    use replay::rows::{CountryStabilityLineRow, tables};
+    use replay_data::{rows::CountryStabilityLineRow, rows::tables};
     let row = stability_inputs();
     let own = CountryStabilityLineRow {
         country: row.country,

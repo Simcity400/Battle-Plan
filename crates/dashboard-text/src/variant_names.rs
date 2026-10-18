@@ -5,13 +5,11 @@ use crate::{
     catalogue::{Catalogue, View},
     metadata::link_slot,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        CountryAppearanceRow, CountryLinkRow, CountryRow, LexicalTokenRow, VariantDefinitionRow,
-        tables,
-    },
+use replay_data::{
+    rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow,
+    rows::VariantDefinitionRow, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -65,7 +63,7 @@ pub fn compare_variants(
 
 /// Whether the equipment type has module slots enabled by the recorded DLC mask.
 pub fn enabled_module_slots(
-    database: &installed_content::equipment::Database,
+    database: &installed_content_core::equipment::Database,
     index: usize,
     frame: &DecodedFrame,
 ) -> Result<bool, String> {
@@ -88,7 +86,7 @@ pub fn enabled_module_slots(
 /// Recorded operands used to rank equipment variants; an unread operand
 /// refuses the rank rather than changing the winning design.
 pub fn variant_order(
-    database: &installed_content::equipment::Database,
+    database: &installed_content_core::equipment::Database,
     index: usize,
     variant: &VariantDefinitionRow,
     frame: &DecodedFrame,
@@ -358,7 +356,7 @@ pub trait Texts {
 /// Equipment and variant names resolve keys with the plain localiser: brackets
 /// are glyphs.
 #[cfg(any(test, feature = "test-support"))]
-impl Texts for installed_content::localisation::Localisation {
+impl Texts for installed_content_localisation::localisation::Localisation {
     fn has(&self, key: &str) -> bool {
         self.get(key).is_some()
     }

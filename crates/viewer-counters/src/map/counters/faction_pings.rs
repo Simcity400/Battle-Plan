@@ -18,7 +18,7 @@
 //! Hover highlights the union of theatre regions and leaving clears it, without
 //! a tooltip. Pointer state belongs to the view.
 
-use replay::rows::FactionTheatreRow;
+use replay_data::rows::FactionTheatreRow;
 use std::collections::HashMap;
 use viewer_foundation::map::free_icons::{IconAnchor, IconFamily};
 use viewer_foundation::map::gui_resources::contains;
@@ -566,7 +566,7 @@ mod tests {
 
     #[test]
     fn pin_hover_distinguishes_refused_alpha_from_native_pass_through() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use viewer_foundation::map::native_gui::lifecycle::Instance;
         let mut resources = test_support_gui::fixture();
@@ -600,7 +600,7 @@ mod tests {
 
     #[test]
     fn pin_refresh_uses_native_nested_inherited_controls_and_text() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use viewer_foundation::map::native_gui::{PartKind, lifecycle::Instance};
         let resources = test_support_gui::fixture();

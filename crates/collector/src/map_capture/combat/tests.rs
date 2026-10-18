@@ -1,8 +1,8 @@
 use super::*;
 use crate::map_capture::{MapCapacities, NoSources};
-use engine::{
-    carmy, cequipment_variant_pool as pool, cgame_state, cland_combatant as side, cprovince,
-    cstats_observer as stats, cunit,
+use engine_land_inputs::cstats_observer as stats;
+use engine_native::{
+    carmy, cequipment_variant_pool as pool, cgame_state, cland_combatant as side, cprovince, cunit,
 };
 
 struct World {
@@ -147,7 +147,7 @@ impl Memory for World {
             true
         } else {
             // Every native-looking span belongs to this independently authored fixture.
-            unsafe { engine::memory::LiveMemory::new() }.copy(address, output)
+            unsafe { engine_native::memory::LiveMemory::new() }.copy(address, output)
         }
     }
 }

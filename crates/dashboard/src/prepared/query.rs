@@ -100,7 +100,7 @@ fn reply_presentation(content: Option<&ContentOptions>) -> ReplyPresentation {
             dashboard_base::content::localisation_key(options).map_err(|error| error.to_string())
         }),
         force_pow2_textures: content.map(|options| {
-            installed_content::settings::read_keys(&options.options.user_dir)
+            installed_content_settings::settings::read_keys(&options.options.user_dir)
                 .map(|settings| settings.texture_decode().force_pow2_textures)
                 .map_err(|error| error.to_string())
         }),
@@ -1642,7 +1642,7 @@ fn query_data(
             // remaining block would compete with preparation before it can draw.
             // Reached values still read their own supplying block below.
             let experience_prefix = experience.is_some() && product == "series-summary";
-            let experience_sample = |frame: &replay::frame::DecodedFrame,
+            let experience_sample = |frame: &replay_frame::frame::DecodedFrame,
                                      requested: Option<&[(String, String)]>|
              -> io::Result<progressive::Samples> {
                 experience
@@ -1652,22 +1652,22 @@ fn query_data(
             };
             // Families whose requests name one measure per tag register here; others
             // expand their own request shape and call `progressive::tail` themselves.
-            let sampler: Option<(&[replay::rows::TableId], progressive::Sample<'_>)> = match family
-            {
-                Some("country-measure") => Some((
-                    crate::prepared_measure::TABLES,
-                    &crate::prepared_measure::sample,
-                )),
-                Some("country-stability") => Some((
-                    crate::prepared_stability::TABLES,
-                    &crate::prepared_stability::sample,
-                )),
-                Some("country-experience") if experience.is_some() => Some((
-                    crate::products::country_experience::SAMPLE_TABLES,
-                    &experience_sample,
-                )),
-                _ => None,
-            };
+            let sampler: Option<(&[replay_data::rows::TableId], progressive::Sample<'_>)> =
+                match family {
+                    Some("country-measure") => Some((
+                        crate::prepared_measure::TABLES,
+                        &crate::prepared_measure::sample,
+                    )),
+                    Some("country-stability") => Some((
+                        crate::prepared_stability::TABLES,
+                        &crate::prepared_stability::sample,
+                    )),
+                    Some("country-experience") if experience.is_some() => Some((
+                        crate::products::country_experience::SAMPLE_TABLES,
+                        &experience_sample,
+                    )),
+                    _ => None,
+                };
             let partial_events = matches!(product, "events-page" | "events-clusters");
             // Casualty totals sum lifetime counters through their hour, so no
             // frame samples them: a state read past the prepared prefix answers
@@ -1831,7 +1831,7 @@ fn query_data(
                             branch,
                             accepted.as_ref(),
                             tables,
-                            replay::cadence::STAGGER_PERIOD,
+                            replay_data::cadence::STAGGER_PERIOD,
                             &sampled_requested,
                             &crate::products::country_experience::Sampler::cache_keys(&requested),
                             &hours,
@@ -1886,7 +1886,7 @@ fn query_data(
                             branch,
                             accepted.as_ref(),
                             tables,
-                            replay::cadence::STAGGER_PERIOD,
+                            replay_data::cadence::STAGGER_PERIOD,
                             &sampled_requested,
                             &crate::products::country_experience::Sampler::cache_keys(&requested),
                             window,
@@ -2317,7 +2317,7 @@ pub fn query(
         product => product,
     };
     let _cpu = matches!(request.product.as_str(), "series-summary" | "series-state").then(|| {
-        replay::cpu::scope_named("prepared query", &format!("{}:{name}", request.product))
+        replay_frame::cpu::scope_named("prepared query", &format!("{}:{name}", request.product))
     });
     let branch = request
         .params
@@ -2349,7 +2349,7 @@ pub fn query(
             name
         };
         let publication = {
-            let _phase = replay::cpu::scope_phase("query:publication");
+            let _phase = replay_frame::cpu::scope_phase("query:publication");
             let mut pages = super::pipeline::query_pages(&store, &key, branch, name)?;
             if supplier != name {
                 pages.extend(super::pipeline::query_pages(

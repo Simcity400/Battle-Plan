@@ -5,12 +5,9 @@
 //! workers and its pipeline folds each family's facts in block order.
 
 use super::frame_changes::FrameChanges;
-use replay::{
-    container::{QuietHours, Replay, TableFields},
-    format::FormatVersion,
-    frame::DecodedFrame,
-    rows::TableId,
-};
+use replay::{container::QuietHours, container::Replay, container::TableFields};
+use replay_data::{format::FormatVersion, rows::TableId};
+use replay_frame::frame::DecodedFrame;
 use std::{any::Any, io, ops::Range};
 
 /// A family prepared from blocks: its [`Extract`] runs on a pre-pass worker
@@ -150,7 +147,7 @@ impl HeldBytes {
     }
 
     /// A kept table view, once per allocation.
-    pub fn view(&mut self, view: &replay::frame::SharedView) -> &mut Self {
+    pub fn view(&mut self, view: &replay_frame::frame::SharedView) -> &mut Self {
         if self.once(view.as_ptr()) {
             self.add(view_bytes(view));
         }
@@ -191,7 +188,7 @@ impl HeldBytes {
     }
 }
 
-type ViewSizes = std::collections::HashMap<usize, (replay::frame::ViewIdentity, usize)>;
+type ViewSizes = std::collections::HashMap<usize, (replay_frame::frame::ViewIdentity, usize)>;
 
 thread_local! {
     static VIEW_SIZES: std::cell::RefCell<Option<ViewSizes>> = const { std::cell::RefCell::new(None) };
@@ -214,7 +211,7 @@ pub fn share_view_sizes<T>(run: impl FnOnce() -> T) -> T {
     run()
 }
 
-fn view_bytes(view: &replay::frame::SharedView) -> usize {
+fn view_bytes(view: &replay_frame::frame::SharedView) -> usize {
     let size = || {
         #[cfg(any(test, feature = "test-support"))]
         SIZED_VIEWS.with(|count| count.set(count.get() + 1));
@@ -240,8 +237,8 @@ pub fn sized_views() -> usize {
 /// What one hour's recorded updates keep alive: the frame and every
 /// update's rows, values and keys at capacity, as a block's facts count
 /// them ([`HeldBytes`]).
-pub fn recorded_bytes(frame: &replay::frame::Frame) -> u64 {
-    let bytes = size_of::<replay::frame::Frame>()
+pub fn recorded_bytes(frame: &replay_frame::frame::Frame) -> u64 {
+    let bytes = size_of::<replay_frame::frame::Frame>()
         + frame
             .tables
             .iter()

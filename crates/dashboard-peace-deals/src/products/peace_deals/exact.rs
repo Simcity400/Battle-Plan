@@ -1,6 +1,7 @@
 //! Exact finalizer observations override the derived card of the same identity.
 use super::*;
-use replay::{frame::TableView, rows::SettledPeaceAction};
+use replay_data::rows::SettledPeaceAction;
+use replay_frame::frame::TableView;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]

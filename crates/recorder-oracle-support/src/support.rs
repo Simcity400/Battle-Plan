@@ -1,11 +1,11 @@
 //! Shared save-comparison inputs and exact joins.
 use super::report::Report;
 use installed_content_save::{ActualCountry, CountryEmissionIdentity, Save, SaveDocument};
-use replay::{
-    cadence::{self, Cadence},
-    frame::{DecodedFrame, TableView},
-    rows::{CountryRow, Recorded, TableId, TableRows, TableSchema, tables},
+use replay_data::{
+    cadence, cadence::Cadence, rows::CountryRow, rows::Recorded, rows::TableId, rows::TableRows,
+    rows::TableSchema, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -13,7 +13,7 @@ use std::{
 
 pub type TokenNames<'a> = BTreeMap<u32, &'a [u8]>;
 
-pub type Spellings<'a> = BTreeMap<installed_content::tokens::Token, Option<&'a [u8]>>;
+pub type Spellings<'a> = BTreeMap<installed_content_core::tokens::Token, Option<&'a [u8]>>;
 
 pub type ContentRead<'a, T> = Result<&'a T, String>;
 
@@ -22,7 +22,7 @@ pub type ContentRead<'a, T> = Result<&'a T, String>;
 /// Raw strings use the same first-NUL prefix in archive
 /// and memory streams.
 pub fn serialized_text<'a>(report: &mut Report, field: &str, bytes: &'a [u8]) -> &'a [u8] {
-    let text = installed_content::parser::c_string(bytes);
+    let text = installed_content_core::parser::c_string(bytes);
     if text.len() < bytes.len() {
         report.limitation("native text serialization ends at the first NUL; captured trailing bytes are not save-comparable", field);
     }
@@ -35,9 +35,9 @@ pub fn serialized_text<'a>(report: &mut Report, field: &str, bytes: &'a [u8]) ->
 pub fn reverse_spellings<'a>(tokens: &TokenNames<'a>) -> Spellings<'a> {
     let mut spellings = BTreeMap::new();
     for literal in tokens.values() {
-        let literal = installed_content::parser::c_string(literal);
+        let literal = installed_content_core::parser::c_string(literal);
         spellings
-            .entry(installed_content::tokens::Token::c_str(literal))
+            .entry(installed_content_core::tokens::Token::c_str(literal))
             .and_modify(|spelling| {
                 // Reserved reverse names can alias a later dynamic token.
                 // Equal writer bytes are certain; a disagreement stays so.
@@ -56,9 +56,12 @@ pub fn token_spelling<'a>(
     name: &[u8],
     subject: &str,
 ) -> io::Result<&'a [u8]> {
-    let identity = installed_content::tokens::Token::c_str(name);
+    let identity = installed_content_core::tokens::Token::c_str(name);
     let spelling = if identity.is_rejected() {
-        tokens.get(&0).copied().map(installed_content::parser::c_string)
+        tokens
+            .get(&0)
+            .copied()
+            .map(installed_content_core::parser::c_string)
     } else {
         spellings.get(&identity).copied().ok_or_else(|| {
             invalid(format!(
@@ -94,7 +97,7 @@ pub fn sampled_states(frame: &DecodedFrame) -> io::Result<impl Fn(u32) -> bool +
     let reads = complete::<tables::SliceReads>(frame)?;
     let hour = frame.hour;
     Ok(move |state| {
-        replay::sliced::read_hour(reads, TableId::StateResourceInputs, state) == Some(hour)
+        replay_data::sliced::read_hour(reads, TableId::StateResourceInputs, state) == Some(hour)
     })
 }
 
@@ -268,7 +271,7 @@ pub const CONVOY_LIMIT: i64 = 0x53e2_d620_fb40;
 pub fn convoy_total(
     country: &installed_content_save::Country,
     save: &Save,
-    equipment: &installed_content::equipment::Database,
+    equipment: &installed_content_core::equipment::Database,
 ) -> Result<i64, String> {
     let pool = country
         .convoy_equipment
@@ -303,7 +306,7 @@ pub fn convoy_total(
 /// is decided only when no module of the content adds the convoy bit and
 /// its own categories lack it; otherwise it is refused by name.
 pub fn convoy_variant(
-    equipment: &installed_content::equipment::Database,
+    equipment: &installed_content_core::equipment::Database,
     definition: &[u8],
 ) -> Result<bool, String> {
     let name = || String::from_utf8_lossy(definition).into_owned();
@@ -318,7 +321,7 @@ pub fn convoy_variant(
         flags &= allowed;
     }
     if kind.module_slots.is_empty() {
-        return Ok(installed_content::equipment::normalize_category(flags) & 1 != 0);
+        return Ok(installed_content_core::equipment::normalize_category(flags) & 1 != 0);
     }
     if flags & 1 == 0 && !equipment.modules_add(1) {
         return Ok(false);
@@ -349,7 +352,7 @@ pub fn compare_text(report: &mut Report, label: &str, actual: &[u8], saved: &[u8
     // Resource names and foreign-source strings use
     // an MSVC c_str, quoted even when empty,
     // scanned only through the first NUL in text mode.
-    let end = installed_content::parser::c_string(actual).len();
+    let end = installed_content_core::parser::c_string(actual).len();
     equal(report, label, &actual[..end], saved);
     if end < actual.len() {
         report.limitation(
@@ -369,7 +372,7 @@ pub fn eq<T: PartialEq + std::fmt::Debug>(r: &mut Report, label: &str, actual: T
 pub fn country_items<'a>(
     document: &'a SaveDocument,
     frame: &DecodedFrame,
-) -> io::Result<Vec<&'a installed_content::parser::Item>> {
+) -> io::Result<Vec<&'a installed_content_core::parser::Item>> {
     match country_emission_layout(frame) {
         Ok(Some(layout)) => document.representative_country_items(&layout),
         Ok(None) if document.has_repeated_country_tags()? => Err(invalid(

@@ -1,15 +1,12 @@
 //! Only combat-window assets; all interface bytes pass through the resolved layers.
-use installed_content::unit_leader::SubUnits;
-use installed_content::{
-    ResolvedLayers,
-    defines::Defines,
-    gui,
-    gui::native::{
-        resources::{self, Registry},
-        sprites::{Plain, SpriteFacts, SpriteKind, Sprites},
-    },
-    image::dds,
+use installed_content_core::unit_leader::SubUnits;
+use installed_content_core::{
+    ResolvedLayers, defines::Defines, gui, gui::native::resources,
+    gui::native::resources::Registry, gui::native::sprites::Plain,
+    gui::native::sprites::SpriteFacts, gui::native::sprites::SpriteKind,
+    gui::native::sprites::Sprites,
 };
+use installed_content_image::dds;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -47,7 +44,7 @@ pub struct Assets {
     pub convoy_weapon_bound: Result<[i64; 2], String>,
     /// The naval combat defines the window's positioning, screening and anti-air read;
     /// `None`, with a warning, when the content's defines do not load.
-    pub naval_defines: Option<installed_content::naval_combat_defines::Defines>,
+    pub naval_defines: Option<installed_content_naval_combat_defines::naval_combat_defines::Defines>,
     /// NNavy operands, loaded from the matching content stack.
     pub(super) naval_escape_defines: Result<super::naval_escape::Defines, String>,
     /// Loss-equipment tint from the resolved content.
@@ -55,24 +52,24 @@ pub struct Assets {
     pub(super) naval_escape_screening: super::naval_escape::Screening,
     pub(super) naval_air_groups: super::naval_air_groups::Content,
     /// six weather-event static accumulators, in event order.
-    pub(super) naval_weather_modifiers: Vec<Result<installed_content::modifiers::Modifiers, String>>,
+    pub(super) naval_weather_modifiers: Vec<Result<installed_content_core::modifiers::Modifiers, String>>,
     /// Full screening bonus blocks, formatted at the freshly computed screening scale.
-    pub(super) naval_screening_modifiers: [Result<installed_content::modifiers::Modifiers, String>; 2],
+    pub(super) naval_screening_modifiers: [Result<installed_content_core::modifiers::Modifiers, String>; 2],
     /// Effective named static blocks of the strategic templates' custom sea grid.
     pub(super) naval_custom_sea_modifiers:
-        BTreeMap<String, Result<installed_content::modifiers::Modifiers, String>>,
+        BTreeMap<String, Result<installed_content_core::modifiers::Modifiers, String>>,
     /// terrain category prefix for the naval background hover.
     pub(super) naval_terrain: Result<super::naval_terrain::Content, String>,
-    pub(super) land_terrain: Result<Arc<installed_content::terrain::TerrainDefinitions>, String>,
-    pub temperature: Result<installed_content::weather::TemperatureRanges, String>,
-    pub(super) border_events: installed_content::events::LazyEvents,
+    pub(super) land_terrain: Result<Arc<installed_content_core::terrain::TerrainDefinitions>, String>,
+    pub temperature: Result<installed_content_weather::weather::TemperatureRanges, String>,
+    pub(super) border_events: installed_content_events::events::LazyEvents,
     /// The land window's defines, or why the content lacks them.
     pub(crate) land_defines: Result<super::defines::LandDefines, String>,
     /// `NNavy.BATTLE_NAME_VP_FACTOR` and `BATTLE_NAME_VP_CUTOFF`,
     /// fixed5, or why they are unavailable.
     pub(crate) naval_name_defines: Result<[i64; 2], String>,
     /// Authored division name groups, which render the recorded selection.
-    pub division_names: Arc<installed_content::division_names::Database>,
+    pub division_names: Arc<installed_content_division_names::division_names::Database>,
     /// Authored leader traits and advisor ranks for the commander hovers.
     pub(super) commander_tooltips: super::commander_tooltips::Content,
     /// The content's tactic registry: triggers, weights, effects and
@@ -83,10 +80,12 @@ pub struct Assets {
     pub warnings: Vec<String>,
 }
 impl Assets {
-    pub fn movement_terrain(&self) -> Result<Arc<installed_content::terrain::TerrainDefinitions>, String> {
+    pub fn movement_terrain(
+        &self,
+    ) -> Result<Arc<installed_content_core::terrain::TerrainDefinitions>, String> {
         self.land_terrain.clone()
     }
-    pub fn sub_units(&self) -> Result<&installed_content::unit_leader::SubUnits, &str> {
+    pub fn sub_units(&self) -> Result<&installed_content_core::unit_leader::SubUnits, &str> {
         self.commander_tooltips.sub_units()
     }
     pub fn shared_sub_units(&self) -> Result<Arc<SubUnits>, String> {
@@ -113,7 +112,7 @@ impl Assets {
     pub fn load_gui(
         &mut self,
         layers: &ResolvedLayers,
-        localisation: &installed_content::localisation::Localisation,
+        localisation: &installed_content_localisation::localisation::Localisation,
         extra: &native_gui::Assets,
         images: &mut Vec<dds::Texture>,
     ) -> io::Result<Vec<String>> {
@@ -180,7 +179,7 @@ impl Assets {
     /// Inventoried once per GUI load, then shared by counter and combat ToolTip resources.
     pub fn localisation_assets(
         &self,
-        localisation: &installed_content::localisation::Localisation,
+        localisation: &installed_content_localisation::localisation::Localisation,
     ) -> (native_gui::Assets, Vec<String>) {
         let mut assets = tooltip_assets(&self.native_windows, localisation);
         let mut warnings = Vec::new();
@@ -324,12 +323,12 @@ impl Assets {
     /// count names: the one read every trigger consumer shares.
     pub fn set_count_trigger_names(
         &mut self,
-        buildings: &installed_content::buildings::Buildings,
-        ideologies: &installed_content::ideologies::Ideologies,
-        resources: &[installed_content::resources::Resource],
-    ) -> installed_content::trigger_keys::TriggerNames {
+        buildings: &installed_content_core::buildings::Buildings,
+        ideologies: &installed_content_core::ideologies::Ideologies,
+        resources: &[installed_content_core::resources::Resource],
+    ) -> installed_content_core::trigger_keys::TriggerNames {
         self.tactics
-            .set_count_names(installed_content::trigger_keys::CountTriggerNames::new(
+            .set_count_names(installed_content_core::trigger_keys::CountTriggerNames::new(
                 buildings, ideologies, resources,
             ));
         self.tactics.trigger_names()
@@ -462,7 +461,7 @@ fn native_templates(windows: &NativeWindows) -> impl Iterator<Item = &gui::nativ
 
 fn native_window_assets(
     windows: &NativeWindows,
-    localisation: &installed_content::localisation::Localisation,
+    localisation: &installed_content_localisation::localisation::Localisation,
 ) -> native_gui::Assets {
     let mut assets = native_gui::Assets::default();
     for root in native_templates(windows) {
@@ -477,7 +476,7 @@ fn native_window_assets(
 
 fn tooltip_assets(
     windows: &NativeWindows,
-    localisation: &installed_content::localisation::Localisation,
+    localisation: &installed_content_localisation::localisation::Localisation,
 ) -> native_gui::Assets {
     // inline icons use the global sprite registry.
     // Both combat drawing and the shared map tooltip painter load this inventory.
@@ -524,7 +523,7 @@ fn texture_sprite(name: String, texture: String) -> SpriteFacts {
     }
 }
 
-fn portrait_paths(items: &[installed_content::parser::Item], paths: &mut BTreeSet<String>) {
+fn portrait_paths(items: &[installed_content_core::parser::Item], paths: &mut BTreeSet<String>) {
     for item in items {
         if let Some(text) = item.value.scalar_str() {
             let p = path(text);
@@ -544,9 +543,9 @@ fn portrait_paths(items: &[installed_content::parser::Item], paths: &mut BTreeSe
 /// ([`CombatContent::warnings`]).
 #[derive(Debug)]
 pub struct CombatContent {
-    traits: installed_content::unit_leader::Traits,
+    traits: installed_content_core::unit_leader::Traits,
     tactics: super::tactics::Content,
-    division_names: installed_content::division_names::Database,
+    division_names: installed_content_division_names::division_names::Database,
     commander_tooltips: super::commander_tooltips::Content,
     /// The tooltip placement and timing defines, or why they are unreadable.
     tooltip_defines: Result<TooltipDefines, String>,
@@ -558,25 +557,26 @@ impl CombatContent {
         // The one trait-name inventory (trait registration) and the one
         // sub-unit database, for has_trait, has_artillery_ratio, the trait
         // sprites and the commander hovers.
-        let traits = installed_content::unit_leader::Traits::registered(layers)?;
+        let traits = installed_content_core::unit_leader::Traits::registered(layers)?;
         let sub_units =
-            installed_content::unit_leader::sub_units(layers).map_err(|error| error.to_string());
+            installed_content_core::unit_leader::sub_units(layers).map_err(|error| error.to_string());
         // The country-leader traits, which a character's has_trait and the
         // advisor-trait hover lines name.
-        let country_leader_traits = installed_content::leader_traits::read(layers)
+        let country_leader_traits = installed_content_core::leader_traits::read(layers)
             .map(|(traits, _)| Arc::new(traits))
             .map_err(|error| error.to_string());
         // The tactic registry as the game reads it: the file's one read
-        // (installed_content::combat_tactics).
+        // (installed_content_core::combat_tactics).
         let tactics =
-            super::tactics::Content::from_database(installed_content::combat_tactics::read(layers)?)
+            super::tactics::Content::from_database(installed_content_core::combat_tactics::read(layers)?)
                 .with_inventories(
                     traits.clone(),
                     sub_units.as_ref(),
-                    installed_content::scripted_triggers::read(layers)?,
+                    installed_content_core::scripted_triggers::read(layers)?,
                 )
                 .with_country_leader_traits(country_leader_traits.clone());
-        let (division_names, mut warnings) = installed_content::division_names::read(layers)?;
+        let (division_names, mut warnings) =
+            installed_content_division_names::division_names::read(layers)?;
         let (commander_tooltips, skills) = super::commander_tooltips::Content::load(
             layers,
             defines,
@@ -610,12 +610,12 @@ impl CombatContent {
     /// [`Assets::set_count_trigger_names`] does.
     pub fn set_count_trigger_names(
         &mut self,
-        buildings: &installed_content::buildings::Buildings,
-        ideologies: &installed_content::ideologies::Ideologies,
-        resources: &[installed_content::resources::Resource],
+        buildings: &installed_content_core::buildings::Buildings,
+        ideologies: &installed_content_core::ideologies::Ideologies,
+        resources: &[installed_content_core::resources::Resource],
     ) {
         self.tactics
-            .set_count_names(installed_content::trigger_keys::CountTriggerNames::new(
+            .set_count_names(installed_content_core::trigger_keys::CountTriggerNames::new(
                 buildings, ideologies, resources,
             ));
     }
@@ -640,7 +640,7 @@ impl Assets {
     #[allow(clippy::too_many_arguments)] // The client's content, windows and texture stores.
     pub fn load(
         shared: &Arc<ResolvedLayers>,
-        regions: &BTreeMap<u32, installed_content::regions::StrategicRegion>,
+        regions: &BTreeMap<u32, installed_content_regions::regions::StrategicRegion>,
         defines: &Defines,
         interface: &Interface,
         flags: &Arc<LazyFlags>,
@@ -670,7 +670,7 @@ impl Assets {
             .filter(|p| p.starts_with("common/characters/") && p.ends_with(".txt"))
         {
             portrait_paths(
-                &installed_content::characters::read_file(&layers.read(file)?, &names)
+                &installed_content_core::characters::read_file(&layers.read(file)?, &names)
                     .0
                     .items,
                 &mut direct_portraits,
@@ -731,7 +731,7 @@ impl Assets {
                 warnings.push(format!("Combat UI: {refusal} (1 gui_reader)."));
             }
         }
-        for sprite in installed_content::gui::native::sprites::registry(&registry.files).values() {
+        for sprite in installed_content_core::gui::native::sprites::registry(&registry.files).values() {
             let name = &sprite.name;
             let portrait = sprite
                 .kind
@@ -864,7 +864,7 @@ impl Assets {
                 lazy_sprites.len()
             ));
         }
-        let equipment = installed_content::equipment::Database::load(layers)?;
+        let equipment = installed_content_core::equipment::Database::load(layers)?;
         let (convoy_weapon_bound, misreads) =
             super::naval_environment::convoy_weapon_bound_from_database(&equipment);
         warnings.extend(misreads.into_iter().map(|misread| {
@@ -877,7 +877,8 @@ impl Assets {
                 "Naval weapon totals with live convoys stay dash: the convoy equipment's weapon values are unknown ({reason})."
             ));
         }
-        let naval_defines = match installed_content::naval_combat_defines::read(layers) {
+        let naval_defines = match installed_content_naval_combat_defines::naval_combat_defines::read(layers)
+        {
             Ok(defines) => Some(defines),
             Err(error) => {
                 warnings.push(format!(
@@ -892,7 +893,7 @@ impl Assets {
             super::naval_air_groups::Content::load(layers, &mut warnings, equipment);
         // six modifiers share registered names.
         let weather_modifiers = &super::naval_environment::WEATHER_MODIFIERS;
-        let naval_weather_modifiers = match installed_content::static_modifiers::read_blocks(
+        let naval_weather_modifiers = match installed_content_core::static_modifiers::read_blocks(
             layers,
             weather_modifiers,
         ) {
@@ -927,7 +928,7 @@ impl Assets {
             Err(error) => {
                 warnings.push(format!(
                     "Naval weather static modifiers ({}): {error}; all {} full accumulators unavailable.",
-                    installed_content::static_modifiers::DIRECTORY,
+                    installed_content_core::static_modifiers::DIRECTORY,
                     weather_modifiers.len()
                 ));
                 weather_modifiers
@@ -938,7 +939,7 @@ impl Assets {
         };
         let screening_names = ["screening_bonus", "capital_screening_bonus"];
         let naval_screening_modifiers =
-            match installed_content::static_modifiers::read_blocks(layers, &screening_names) {
+            match installed_content_core::static_modifiers::read_blocks(layers, &screening_names) {
                 Ok(blocks) => {
                     warnings.extend(
                         blocks
@@ -963,7 +964,7 @@ impl Assets {
                     Err(format!(
                         "{} in {}: {error}",
                         screening_names[index],
-                        installed_content::static_modifiers::DIRECTORY
+                        installed_content_core::static_modifiers::DIRECTORY
                     ))
                 }),
             };
@@ -977,7 +978,7 @@ impl Assets {
             BTreeMap::new()
         } else {
             let names: Vec<&str> = custom_names.iter().map(String::as_str).collect();
-            match installed_content::static_modifiers::read_blocks(layers, &names) {
+            match installed_content_core::static_modifiers::read_blocks(layers, &names) {
                 Ok(blocks) => {
                     warnings.extend(
                         blocks
@@ -1004,7 +1005,7 @@ impl Assets {
             }
         };
         // The one terrain database, shared by both combat views.
-        let land_terrain = installed_content::terrain::read_definitions(layers)
+        let land_terrain = installed_content_core::terrain::read_definitions(layers)
             .map(Arc::new)
             .map_err(|error| error.to_string());
         let naval_terrain = land_terrain.clone().and_then(|terrain| {
@@ -1031,9 +1032,9 @@ impl Assets {
             naval_custom_sea_modifiers,
             naval_terrain,
             land_terrain,
-            temperature: installed_content::weather::temperature_ranges(layers)
+            temperature: installed_content_weather::weather::temperature_ranges(layers)
                 .map_err(|error| error.to_string()),
-            border_events: installed_content::events::LazyEvents::new(Arc::clone(shared)),
+            border_events: installed_content_events::events::LazyEvents::new(Arc::clone(shared)),
             land_defines: super::defines::LandDefines::read(defines)
                 .map_err(|error| error.to_string()),
             naval_name_defines: ["BATTLE_NAME_VP_FACTOR", "BATTLE_NAME_VP_CUTOFF"]

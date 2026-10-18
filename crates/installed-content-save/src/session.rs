@@ -12,7 +12,7 @@
 use std::io;
 
 use super::{Decimal, GameDate, block, bytes, field, integer, invalid, required_bytes, scalar};
-use installed_content::parser::Item;
+use installed_content_core::parser::Item;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
@@ -104,7 +104,7 @@ mod tests {
     use super::*;
 
     fn pack(text: &[u8]) -> io::Result<Pack> {
-        parse(&installed_content::parser::parse(text)?.items)
+        parse(&installed_content_core::parser::parse(text)?.items)
     }
 
     #[test]

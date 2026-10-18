@@ -1,10 +1,10 @@
 use super::{COMPLETED_OWNER_INSPECTIONS, HeldFocusRead, completed_for_owner, ordered};
 use crate::test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag, source};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{CompletedFocusRow, CountryLinkRow, CountryRow, TableId, TableRows},
+use replay::container::Replay;
+use replay_data::{
+    rows::CompletedFocusRow, rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::TableRows,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::sync::atomic::AtomicBool;
 
 const PREPARATION_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(30);
@@ -251,7 +251,7 @@ fn completed_owner_range_preserves_boundaries_and_absent_owners() {
 
 #[test]
 fn selected_focus_history_inspects_logarithmic_completed_owner_keys_at_scale() {
-    use replay::rows::FocusRow;
+    use replay_data::rows::FocusRow;
     const COUNTRIES: u32 = 5_000;
     const COMPLETIONS: u32 = 40;
     let selected = COUNTRIES / 2;
@@ -299,7 +299,7 @@ fn selected_focus_history_inspects_logarithmic_completed_owner_keys_at_scale() {
 
 #[test]
 fn held_focus_hours_validate_once_across_hourly_balances_at_scale() {
-    use replay::rows::{FocusRow, tables};
+    use replay_data::{rows::FocusRow, rows::tables};
     const COUNTRIES: u32 = 5_000;
     const HOURS: i32 = 24;
     let selected = COUNTRIES / 2;
@@ -363,7 +363,7 @@ fn held_focus_hours_validate_once_across_hourly_balances_at_scale() {
 
 #[test]
 fn held_focus_read_invalidates_dependencies_identity_gaps_and_duplicate_tags() {
-    use replay::rows::tables;
+    use replay_data::rows::tables;
     let first = focus_countries_frame(1, 100, (9001, 7, &["a"]), &[]);
     let mut read = HeldFocusRead::default();
     read.begin(&first, first.complete::<tables::Countries>().unwrap());
@@ -466,7 +466,7 @@ fn focus_countries_frame(
     germany: (u32, u32, &[&str]),
     france: &[&str],
 ) -> DecodedFrame {
-    use replay::rows::{CompletedFocusRow, FocusRow};
+    use replay_data::{rows::CompletedFocusRow, rows::FocusRow};
     let mut frame = source(branch, hour, Some(1));
     let (german_id, german_slot, german_tokens) = germany;
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
@@ -523,7 +523,7 @@ fn focus_countries_frame(
 
 #[test]
 fn selected_focus_history_uses_raw_owner_alias_without_changing_identity() {
-    use replay::rows::FocusRow;
+    use replay_data::rows::FocusRow;
     let frames = [(100, 11, &['a', 'b'][..]), (101, 30, &['a', 'b', 'c'][..])]
         .into_iter()
         .map(|(hour, owner, tokens)| {
@@ -854,7 +854,7 @@ fn focus_dates_reset_when_list_shrinks_or_country_identity_changes() {
 
 #[test]
 fn focus_dates_preserve_unknown_start_repeats_gaps_and_as_of_history() {
-    use replay::rows::{CompletedFocusRow, FocusRow};
+    use replay_data::{rows::CompletedFocusRow, rows::FocusRow};
     let snapshot = |hour, tokens: &[&str]| {
         let mut frame = source(1, hour, Some(1));
         *frame.tables[TableId::Focus.index()] =
@@ -919,7 +919,7 @@ fn focus_dates_preserve_unknown_start_repeats_gaps_and_as_of_history() {
 
 #[test]
 fn focus_order_uses_exact_branch_country_links_and_complete_tables() {
-    use replay::rows::{CompletedFocusRow, FocusRow};
+    use replay_data::{rows::CompletedFocusRow, rows::FocusRow};
     let mut frame = source(1, 100, Some(1));
     *frame.tables[TableId::Focus.index()] = TableView::Complete(TableRows::Focus(vec![FocusRow {
         country: 11,
@@ -1034,7 +1034,7 @@ fn focus_progress_runs_compress_equal_hours_and_never_bridge_gaps() {
 
 #[test]
 fn focus_topic_cache_keeps_selected_countries_independent() {
-    use replay::rows::{CompletedFocusRow, FocusRow};
+    use replay_data::{rows::CompletedFocusRow, rows::FocusRow};
     const COUNTRIES: u32 = 3;
     // Hourly changes stay in each selected country's independent cache entry.
     let frames = (0..21)

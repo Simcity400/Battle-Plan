@@ -23,11 +23,8 @@ use viewer_foundation::map::textures::load_image;
 
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
-use installed_content::{
-    ResolvedLayers,
-    image::{IndexedImage, Rgba8Image, dds, native::Decode},
-    mesh::{self, Descriptors},
-};
+use installed_content_core::{ResolvedLayers, mesh, mesh::Descriptors};
+use installed_content_image::{IndexedImage, Rgba8Image, dds, native::Decode};
 
 use {
     super::shadow::{BUFFER_FORMAT, DEPTH_MAP_FORMAT},
@@ -923,7 +920,7 @@ impl TreePass {
             ));
         }
         let compiled = &cached.as_ref().expect("created above").1;
-        use installed_content::pdxshader::program::Stage;
+        use installed_content_core::pdxshader::program::Stage;
         use shader_pipeline::binding;
         let mut textures: BTreeMap<_, _> = inputs
             .textures
@@ -1049,7 +1046,7 @@ impl TreePass {
             return Ok(());
         };
         let fade = tree_fade(&frame.camera.defines, frame.camera.height);
-        use installed_content::pdxshader::program::Stage;
+        use installed_content_core::pdxshader::program::Stage;
         use shader_pipeline::binding;
         let mut textures: BTreeMap<_, _> = inputs
             .textures

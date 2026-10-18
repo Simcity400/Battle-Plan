@@ -1,9 +1,10 @@
 use super::super::tests::{base, frame, row};
 use super::*;
 use dashboard_base::{prepared::series::tests::Fixture, test_fixtures};
-use replay::{frame::TableView, rows::TableRows};
+use replay_data::rows::TableRows;
+use replay_frame::frame::TableView;
 
-fn source(frames: Vec<replay::frame::DecodedFrame>) -> Source {
+fn source(frames: Vec<replay_frame::frame::DecodedFrame>) -> Source {
     Source::from_replay(
         dashboard_base::source::SourceKey {
             source_id: "prepared-roster".into(),
@@ -372,7 +373,7 @@ fn intel_shared_driver_roster_equal_reads_are_flat_and_exact() {
 
 #[test]
 fn restored_intelligence_observer_publishes_what_continuous_observation_publishes() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for metadata tables");
     let (catalogue, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[(
         "common/defines/00_fixture.lua",
@@ -429,7 +430,7 @@ fn restored_intelligence_observer_publishes_what_continuous_observation_publishe
     .unwrap();
     assert_eq!(source.replay_ref().index.len(), 2);
     let options = dashboard_core::config::ContentOptions {
-        options: installed_content::ResolveOptions {
+        options: installed_content_core::ResolveOptions {
             game_dir: folder.0.clone(),
             user_dir: folder.0.join("user"),
             cache_dir: folder.0.join("cache"),
@@ -672,7 +673,11 @@ impl dashboard_base::prepared::coverage::Gates for IdentityGates {
 /// or has an operative under C before becoming A at hour 96.
 fn historical_roster(
     future_alias: bool,
-) -> (Source, std::path::PathBuf, Vec<replay::frame::DecodedFrame>) {
+) -> (
+    Source,
+    std::path::PathBuf,
+    Vec<replay_frame::frame::DecodedFrame>,
+) {
     static GATES: IdentityGates = IdentityGates;
     dashboard_base::prepared::coverage::install_gates(&GATES);
     let frames: Vec<_> = (0..120)
@@ -719,13 +724,17 @@ fn historical_roster(
     (source, root, frames)
 }
 
-fn publish_roster_prefix(source: &Source, frames: &[replay::frame::DecodedFrame], last: usize) {
+fn publish_roster_prefix(
+    source: &Source,
+    frames: &[replay_frame::frame::DecodedFrame],
+    last: usize,
+) {
     publish_prefixes(source, frames, last, last.min(48));
 }
 
 fn publish_prefixes(
     source: &Source,
-    frames: &[replay::frame::DecodedFrame],
+    frames: &[replay_frame::frame::DecodedFrame],
     identity_last: usize,
     roster_last: usize,
 ) {

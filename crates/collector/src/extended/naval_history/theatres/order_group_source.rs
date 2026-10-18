@@ -2,7 +2,7 @@
 
 use super::{NAVAL_PACK_N, NavalJob, OOB_MASK};
 use crate::raw::{RawLog, Recorded};
-use engine::{Memory, corders_group};
+use engine_native::{Memory, corders_group};
 
 pub(crate) struct OrderGroupSource<'a> {
     log: &'a RawLog<NAVAL_PACK_N>,

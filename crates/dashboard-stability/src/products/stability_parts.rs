@@ -25,12 +25,9 @@ use dashboard_text::{
     identity::NamingCountry,
     metadata::{mapped_slot, validate_campaign},
 };
-use replay::{
-    container::Replay,
-    frame::FrameDecoder,
-    frame::{SharedView, TableView},
-    rows::{TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::tables};
+use replay_frame::{frame::FrameDecoder, frame::SharedView, frame::TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -51,7 +48,7 @@ const MAX_RUNS: usize = 400_000;
 const NAMED_HOURS: usize = 24 * 8;
 /// Countries whose parts are kept per source.
 const CACHED_COUNTRIES: usize = 4;
-/// The formula terms and recorded modifier names (`engine::country_stability::KEY_NAMES`).
+/// The formula terms and recorded modifier names (`engine_stability::country_stability::KEY_NAMES`).
 const LINES_OF: [(&str, &str); 2] = [
     ("stabilityFactor", "stability_factor"),
     ("warSupportFactor", "war_support_factor"),
@@ -381,7 +378,7 @@ struct Scan {
     #[serde(skip)]
     native: country_stability::Native,
     #[serde(skip)]
-    lines: Option<BTreeMap<u32, Vec<replay::rows::CountryStabilityLineRow>>>,
+    lines: Option<BTreeMap<u32, Vec<replay_data::rows::CountryStabilityLineRow>>>,
     /// The last complete SliceReads read, held as the frame's own view.
     #[serde(skip)]
     reads: Option<SharedView>,
@@ -393,7 +390,7 @@ struct Scan {
     #[serde(skip)]
     naming_ticks: usize,
     #[serde(skip)]
-    appearances: BTreeMap<u32, replay::rows::CountryAppearanceRow>,
+    appearances: BTreeMap<u32, replay_data::rows::CountryAppearanceRow>,
     /// Whether `appearances` is this scan's own read. A new or restored scan
     /// knows no earlier appearance, so its first read renames every country.
     #[serde(skip)]
@@ -403,8 +400,10 @@ struct Scan {
     #[serde(skip)]
     line_dates: BTreeMap<u32, i32>,
 }
-fn appearance(row: &replay::rows::CountryAppearanceRow) -> replay::rows::CountryAppearanceRow {
-    replay::rows::CountryAppearanceRow {
+fn appearance(
+    row: &replay_data::rows::CountryAppearanceRow,
+) -> replay_data::rows::CountryAppearanceRow {
+    replay_data::rows::CountryAppearanceRow {
         country: row.country,
         name_tag: row.name_tag.clone(),
         cosmetic_tag: row.cosmetic_tag.clone(),
@@ -419,7 +418,7 @@ impl Scan {
     /// fields do not rename a part; a new row still enters the projection.
     fn apply_appearances(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
+        decoded: &replay_frame::frame::DecodedFrame,
         delta: Option<country_stability::Delta<'_>>,
         dirty: &mut BTreeSet<u32>,
     ) -> bool {
@@ -482,7 +481,7 @@ impl Scan {
     /// table is needed.
     fn apply_lines(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
+        decoded: &replay_frame::frame::DecodedFrame,
         delta: Option<country_stability::Delta<'_>>,
         dirty: &mut BTreeSet<u32>,
     ) -> bool {
@@ -522,7 +521,7 @@ impl Scan {
 
     fn step(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
+        decoded: &replay_frame::frame::DecodedFrame,
         selected: Option<&BTreeSet<&str>>,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
         mut sink: impl FnMut(
@@ -534,7 +533,7 @@ impl Scan {
             &NamingCountry,
         ) -> io::Result<()>,
     ) -> io::Result<()> {
-        let cpu = ::replay::cpu::scope_phase("stability:observe_apply");
+        let cpu = ::replay_frame::cpu::scope_phase("stability:observe_apply");
         let hour = decoded.hour;
         let previous = self.hour;
         let adjacent = previous.and_then(|hour| hour.checked_add(1)) == Some(hour);
@@ -709,7 +708,7 @@ impl Scan {
             return Ok(());
         };
         drop(cpu);
-        let _cpu = ::replay::cpu::scope_phase("stability:parts_projection_series");
+        let _cpu = ::replay_frame::cpu::scope_phase("stability:parts_projection_series");
         let mut seen = BTreeSet::new();
         for id in dirty {
             let Some(country) = self.native.country(id) else {
@@ -733,7 +732,7 @@ impl Scan {
                 continue;
             };
             let Some(read) =
-                replay::sliced::read_hour(reads, TableId::CountryStabilityInputs, row.country)
+                replay_data::sliced::read_hour(reads, TableId::CountryStabilityInputs, row.country)
             else {
                 continue;
             };
@@ -751,7 +750,7 @@ impl Scan {
             // Parts are known at an hour only if its lines table holds this read's
             // lines, whether or not the read's parts were worked out before.
             let lines_read =
-                replay::sliced::read_hour(reads, TableId::CountryStabilityLines, row.country);
+                replay_data::sliced::read_hour(reads, TableId::CountryStabilityLines, row.country);
             if decoded.complete::<tables::CountryStabilityLines>().is_err()
                 || lines_read.is_some_and(|lines_read| lines_read != read)
             {
@@ -769,7 +768,7 @@ impl Scan {
                 .as_ref()
                 .is_some_and(|(seen, at, _)| *seen == identity && *at == read);
             if fresh {
-                let _cpu = ::replay::cpu::scope_phase("stability:parts_breakdown");
+                let _cpu = ::replay_frame::cpu::scope_phase("stability:parts_breakdown");
                 #[cfg(test)]
                 {
                     self.calculated_reads += 1;
@@ -886,7 +885,7 @@ fn named(measure: &Measure, content: Option<&PoliticsContent>, tag: &str) -> Mea
                     script: script.as_deref(),
                     saved,
                     template: template.clone().map(|(tag, file, line, generated)| {
-                        installed_content::characters::BuiltTemplate {
+                        installed_content_core::characters::BuiltTemplate {
                             tag,
                             file,
                             line,
@@ -1007,7 +1006,7 @@ impl Product for StabilityParts {
 fn line_keys_are_the_engine_s_recorded_modifier_names() {
     for (_, key) in LINES_OF {
         assert!(
-            engine::country_stability::KEY_NAMES.contains(&key.as_bytes()),
+            engine_stability::country_stability::KEY_NAMES.contains(&key.as_bytes()),
             "{key}"
         );
     }
@@ -1036,7 +1035,7 @@ mod tests;
 // The existing checkpoint codec retains complete/truncated/unavailable inputs.
 mod recent_views {
     use super::*;
-    use replay::frame::DecodedFrame;
+    use replay_frame::frame::DecodedFrame;
     type Names = VecDeque<(i32, SharedView, SharedView)>;
     type Archive = (Vec<(i32, usize, usize)>, Vec<(usize, Vec<u8>)>);
     pub fn serialize<S: serde::Serializer>(
@@ -1092,7 +1091,7 @@ mod recent_views {
             .into_iter()
             .map(|(table, bytes)| {
                 let bytes = zstd::stream::decode_all(bytes.as_slice())?;
-                let mut decoder = replay::codec::Decoder::new(&bytes);
+                let mut decoder = replay_data::codec::Decoder::new(&bytes);
                 let frame = DecodedFrame::decode_checkpoint(&mut decoder)?;
                 decoder.finish()?;
                 frame
@@ -1152,23 +1151,23 @@ impl Prepared {
         self.batch.bytes()
     }
     #[cfg(any(test, feature = "test-support"))]
-    pub fn observe(&mut self, frame: &replay::frame::DecodedFrame) -> io::Result<()> {
+    pub fn observe(&mut self, frame: &replay_frame::frame::DecodedFrame) -> io::Result<()> {
         let changes = self
             .test_changes
             .get_or_insert_with(dashboard_base::prepared::frame_changes::FrameChangeTracker::new)
-            .observe(frame, replay::format::FormatVersion::CURRENT);
+            .observe(frame, replay_data::format::FormatVersion::CURRENT);
         self.observe_changes(frame, &changes)
     }
     pub fn observe_changes(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
-        let cpu = ::replay::cpu::scope_phase("stability:series_observe");
+        let cpu = ::replay_frame::cpu::scope_phase("stability:series_observe");
         self.last = frame.hour;
         self.batch.advance(frame.hour)?;
         drop(cpu);
-        let cpu = ::replay::cpu::scope_phase("stability:parts_projection_series");
+        let cpu = ::replay_frame::cpu::scope_phase("stability:parts_projection_series");
         let mut project = |tag: &str,
                            identity: (u32, u32),
                            read: i32,
@@ -1177,7 +1176,7 @@ impl Prepared {
                            values: Option<&[Value]>,
                            naming: &NamingCountry,
                            _samples: Option<&Samples>| {
-            let _cpu = ::replay::cpu::scope_phase("stability:parts_publish");
+            let _cpu = ::replay_frame::cpu::scope_phase("stability:parts_publish");
             let scanned = self.countries.entry(tag.into()).or_default();
             let measure = &mut scanned.measures[index];
             let field = ["stability", "warSupport"][index];
@@ -1293,7 +1292,7 @@ impl Prepared {
             )?;
         }
         drop(cpu);
-        let _cpu = ::replay::cpu::scope_phase("stability:pruning");
+        let _cpu = ::replay_frame::cpu::scope_phase("stability:pruning");
         for tag in &self.scan.removed {
             for field in ["stability", "warSupport"] {
                 if let Some(open) = self

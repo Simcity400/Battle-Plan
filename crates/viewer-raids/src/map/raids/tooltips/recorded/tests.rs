@@ -32,7 +32,7 @@ fn controller_flag_uses_native_control_and_three_codepoints() {
 #[test]
 fn facility_threshold_is_strict_and_first_program_controls_project_text() {
     use super::super::super::test_support::put;
-    use replay::rows::RaidFacilityRow;
+    use replay_data::rows::RaidFacilityRow;
     for (required, first_project) in [(1, Some(100)), (0, None), (0, Some(100))] {
         let mut assets = assets();
         assets
@@ -47,7 +47,7 @@ fn facility_threshold_is_strict_and_first_program_controls_project_text() {
             required,
             ..Default::default()
         });
-        let mut projects = installed_content::special_projects::Catalog::default();
+        let mut projects = installed_content_core::special_projects::Catalog::default();
         projects.projects = [("oilfield".into(), Default::default())].into();
         assets.tooltip.projects = Ok(projects);
         let mut frame = frame();
@@ -73,14 +73,14 @@ fn facility_threshold_is_strict_and_first_program_controls_project_text() {
         );
         put::<tables::CountryAppearance>(
             &mut frame,
-            vec![replay::rows::CountryAppearanceRow {
+            vec![replay_data::rows::CountryAppearanceRow {
                 country: 11,
                 ..Default::default()
             }],
         );
         put::<tables::Politics>(
             &mut frame,
-            vec![replay::rows::PoliticsRow {
+            vec![replay_data::rows::PoliticsRow {
                 country: 11,
                 ..Default::default()
             }],
@@ -97,7 +97,7 @@ fn facility_threshold_is_strict_and_first_program_controls_project_text() {
             scripted_content: &Err("no scripted content in this test".into()),
             ours: 0,
             nato: false,
-            countries: installed_content::country_names::CountryNames::read(&frame, &loc),
+            countries: installed_content_country_names::country_names::CountryNames::read(&frame, &loc),
             flag_exists: &|_| true,
             scripted: Default::default(),
         };
@@ -132,7 +132,7 @@ fn facility_threshold_is_strict_and_first_program_controls_project_text() {
 
 #[test]
 fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use super::super::super::test_support::put;
     for narrative in [None, Some("narrative"), Some("")] {
@@ -147,9 +147,9 @@ fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_
                 .specializations
                 .push("test".into());
             assets.tooltip.intel = Ok(intel::Defines::default());
-            let mut project = installed_content::special_projects::Project::default();
+            let mut project = installed_content_core::special_projects::Project::default();
             project.name = narrative.map(Into::into);
-            let mut projects = installed_content::special_projects::Catalog::default();
+            let mut projects = installed_content_core::special_projects::Catalog::default();
             projects.projects = [("oilfield".into(), project)].into();
             assets.tooltip.projects = Ok(projects);
             let mut frame = positive_frame();
@@ -157,7 +157,7 @@ fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_
             // its program occurs in the target controller's roster.
             put::<tables::RaidFacilities>(
                 &mut frame,
-                vec![replay::rows::RaidFacilityRow {
+                vec![replay_data::rows::RaidFacilityRow {
                     country: 11,
                     owner: 10,
                     province: 3,
@@ -167,7 +167,7 @@ fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_
             );
             put::<tables::CountryAppearance>(
                 &mut frame,
-                vec![replay::rows::CountryAppearanceRow {
+                vec![replay_data::rows::CountryAppearanceRow {
                     country: 10,
                     name_tag: b"ENG".to_vec(),
                     ..Default::default()
@@ -175,7 +175,7 @@ fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_
             );
             put::<tables::Politics>(
                 &mut frame,
-                vec![replay::rows::PoliticsRow {
+                vec![replay_data::rows::PoliticsRow {
                     country: 10,
                     ..Default::default()
                 }],
@@ -200,7 +200,7 @@ fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_
                 scripted_content: &scripted,
                 ours: 1,
                 nato: false,
-                countries: installed_content::country_names::CountryNames::read(&frame, &loc),
+                countries: installed_content_country_names::country_names::CountryNames::read(&frame, &loc),
                 flag_exists: &|_| true,
                 scripted: Default::default(),
             };
@@ -233,7 +233,7 @@ fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_
 #[test]
 fn captive_uses_original_leader_name_without_character_identity() {
     use super::super::super::test_support::put;
-    use replay::rows::UnitLeaderRow;
+    use replay_data::rows::UnitLeaderRow;
     let assets = assets();
     let mut frame = frame();
     put::<tables::UnitLeaders>(
@@ -260,7 +260,7 @@ fn captive_uses_original_leader_name_without_character_identity() {
         nato: false,
         flag_exists: &|_| true,
         scripted: Default::default(),
-        countries: installed_content::country_names::CountryNames::read(&frame, &loc),
+        countries: installed_content_country_names::country_names::CountryNames::read(&frame, &loc),
     };
     let scope = RaidScope {
         leader_reference: (7 << 32) | 84,
@@ -308,8 +308,8 @@ fn scripted_content_with_files(
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, contents).unwrap();
     }
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let content = installed_content::content::ResolvedContent {
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let content = installed_content_core::content::ResolvedContent {
         layers,
         stats: Default::default(),
     };
@@ -321,7 +321,7 @@ fn scripted_content_with_files(
 
 #[test]
 fn raid_custom_trigger_nested_effect_icons_follow_the_viewer_nato_toggle() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use super::super::super::test_support::put;
     let (scripted, root) = scripted_content_with_files(&[
@@ -340,7 +340,7 @@ fn raid_custom_trigger_nested_effect_icons_follow_the_viewer_nato_toggle() {
     let mut frame = positive_frame();
     put::<tables::PowerBalances>(
         &mut frame,
-        vec![replay::rows::PowerBalanceRow {
+        vec![replay_data::rows::PowerBalanceRow {
             balance: b"balance".to_vec(),
             active_range: b"active".to_vec(),
             ..Default::default()
@@ -348,7 +348,7 @@ fn raid_custom_trigger_nested_effect_icons_follow_the_viewer_nato_toggle() {
     );
     put::<tables::PowerBalanceMembers>(
         &mut frame,
-        vec![replay::rows::PowerBalanceMemberRow {
+        vec![replay_data::rows::PowerBalanceMemberRow {
             country: 10,
             ..Default::default()
         }],
@@ -374,7 +374,7 @@ fn raid_custom_trigger_nested_effect_icons_follow_the_viewer_nato_toggle() {
             scripted_content: &scripted,
             ours: 2,
             nato,
-            countries: installed_content::country_names::CountryNames::read(&frame, &loc),
+            countries: installed_content_country_names::country_names::CountryNames::read(&frame, &loc),
             flag_exists: &|_| true,
             scripted: Default::default(),
         };
@@ -425,18 +425,20 @@ fn with_context(run: impl FnOnce(&Context<'_, '_>)) {
         scripted_content: &scripted,
         ours: 2,
         nato: false,
-        countries: installed_content::country_names::CountryNames::read(&frame, &loc),
+        countries: installed_content_country_names::country_names::CountryNames::read(&frame, &loc),
         flag_exists: &|_| true,
         scripted: Default::default(),
     };
     run(&context);
 }
-fn triggers(text: &str) -> installed_content::triggers::Triggers {
-    installed_content::parser::parse(text.as_bytes()).unwrap().items
+fn triggers(text: &str) -> installed_content_core::triggers::Triggers {
+    installed_content_core::parser::parse(text.as_bytes())
+        .unwrap()
+        .items
 }
 #[test]
 fn trigger_inversion_indentation_custom_override_and_named_unsupported_leaf() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     with_context(|context| {
         let scope = Scopes::of(Scope::Country(2));
@@ -479,29 +481,29 @@ fn trigger_inversion_indentation_custom_override_and_named_unsupported_leaf() {
 fn raid_tooltip_regression_special_project_requirement_uses_native_name_and_inversion() {
     use super::super::super::test_support::put;
     let mut assets = assets();
-    let mut project = installed_content::special_projects::Project::default();
+    let mut project = installed_content_core::special_projects::Project::default();
     project.name = Some("project_name".into());
-    let mut projects = installed_content::special_projects::Catalog::default();
+    let mut projects = installed_content_core::special_projects::Catalog::default();
     projects.projects = [("oilfield".into(), project)].into();
     assets.tooltip.projects = Ok(projects);
     let mut frame = frame();
     put::<tables::CountryAppearance>(
         &mut frame,
-        vec![replay::rows::CountryAppearanceRow {
+        vec![replay_data::rows::CountryAppearanceRow {
             country: 10,
             ..Default::default()
         }],
     );
     put::<tables::Politics>(
         &mut frame,
-        vec![replay::rows::PoliticsRow {
+        vec![replay_data::rows::PoliticsRow {
             country: 10,
             ..Default::default()
         }],
     );
     put::<tables::Projects>(
         &mut frame,
-        vec![replay::rows::ProjectRow {
+        vec![replay_data::rows::ProjectRow {
             owner: 10,
             definition_id: 100,
             started: 0,
@@ -533,7 +535,7 @@ fn raid_tooltip_regression_special_project_requirement_uses_native_name_and_inve
         scripted_content: &Err("no scripted content in this test".into()),
         ours: 0,
         nato: false,
-        countries: installed_content::country_names::CountryNames::read(&frame, &loc),
+        countries: installed_content_country_names::country_names::CountryNames::read(&frame, &loc),
         flag_exists: &|_| true,
         scripted: Default::default(),
     };
@@ -573,7 +575,7 @@ fn raid_tooltip_regression_special_project_requirement_uses_native_name_and_inve
 
 #[test]
 fn custom_tooltip_uses_shared_scope_expansion_and_native_negative_key() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     with_context(|context| {
         let scopes = Scopes {
@@ -620,7 +622,7 @@ fn custom_tooltip_uses_shared_scope_expansion_and_native_negative_key() {
 /// through them is refused rather than guessed.
 #[test]
 fn custom_tooltip_chains_follow_the_raid_scopes_links() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     with_context(|context| {
         let raid = Scopes {
@@ -703,7 +705,7 @@ fn state_name_uses_the_stored_owner_name_in_the_recording_language_only() {
     let mut frame = frame();
     put::<tables::States>(
         &mut frame,
-        vec![replay::rows::StateRow {
+        vec![replay_data::rows::StateRow {
             id: 10,
             owner_name: b"owner cache $literal$".to_vec(),
             ..Default::default()
@@ -721,7 +723,7 @@ fn state_name_uses_the_stored_owner_name_in_the_recording_language_only() {
         scripted_content: &Err("no scripted content in this test".into()),
         ours: 0,
         nato: false,
-        countries: installed_content::country_names::CountryNames::read(&frame, &loc),
+        countries: installed_content_country_names::country_names::CountryNames::read(&frame, &loc),
         flag_exists: &|_| true,
         scripted: Default::default(),
     };
@@ -744,7 +746,7 @@ fn state_name_uses_the_stored_owner_name_in_the_recording_language_only() {
 fn phase_progress_uses_preparation_override_and_refuses_missing_flying_inputs() {
     with_context(|context| {
         let kind = RaidType {
-            tooltip: installed_content::raids::tooltips::Definition {
+            tooltip: installed_content_raids::raids::tooltips::Definition {
                 days_to_prepare: 2,
                 ..Default::default()
             },
@@ -776,7 +778,7 @@ fn phase_progress_uses_preparation_override_and_refuses_missing_flying_inputs() 
 #[ignore = "synthetic hover cost; release, affinity 0xF"]
 fn hover_build_cost() {
     use super::super::super::test_support::put;
-    use replay::rows::{CountryLinkRow, CountryRow};
+    use replay_data::{rows::CountryLinkRow, rows::CountryRow};
     let countries: u32 = std::env::var("BATTLE_PLAN_RAID_SCORE_COUNTRIES").or_else(|_| std::env::var("HOI4_RAID_SCORE_COUNTRIES"))
         .ok()
         .and_then(|v| v.parse().ok())
@@ -852,7 +854,7 @@ fn hover_build_cost() {
             nato: false,
             flag_exists: &|_| true,
             scripted: Default::default(),
-            countries: installed_content::country_names::CountryNames::read(&frame, &loc),
+            countries: installed_content_country_names::country_names::CountryNames::read(&frame, &loc),
         };
         let tooltip = context.raid(1, 84, false).unwrap();
         assert!(tooltip.refused.is_empty(), "{:?}", tooltip.refused);
@@ -869,7 +871,7 @@ fn hover_build_cost() {
 #[test]
 fn raid_target_names_refuse_unknown_owners_and_preserve_recorded_null_states() {
     use super::super::super::test_support::put;
-    use replay::rows::{Recorded, ReservedCountryNamingRow};
+    use replay_data::{rows::Recorded, rows::ReservedCountryNamingRow};
     let assets = assets();
     let loc: Localisation = [("VICTORY_POINTS_1".into(), "Wrong bare fallback".into())]
         .into_iter()
@@ -893,7 +895,7 @@ fn raid_target_names_refuse_unknown_owners_and_preserve_recorded_null_states() {
         }
         put::<tables::States>(
             &mut frame,
-            vec![replay::rows::StateRow {
+            vec![replay_data::rows::StateRow {
                 id: 10,
                 owner,
                 custom_name: b"Recorded state".to_vec(),
@@ -909,7 +911,7 @@ fn raid_target_names_refuse_unknown_owners_and_preserve_recorded_null_states() {
             scripted_content: &Err("no scripted content in this test".into()),
             ours: 0,
             nato: false,
-            countries: installed_content::country_names::CountryNames::read(&frame, &loc),
+            countries: installed_content_country_names::country_names::CountryNames::read(&frame, &loc),
             flag_exists: &|_| true,
             scripted: Default::default(),
         };

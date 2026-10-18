@@ -1,14 +1,13 @@
 //! Leader and battle frames shared by this product's tests and the dashboard's
 //! pipeline tests.
 use dashboard_core::test_fixtures::scale_frame;
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{
-        CharacterPortraitRow, CharacterRow, LandCombatDetailsRow, LandCombatResultsRow,
-        LandCombatSideDetails, LandResultSide, NavalMissionTaskForceRow, OrdersGroupRow, Recorded,
-        TableId, TableRows, TaskForceRow, UnitLeaderRow,
-    },
+use replay_data::{
+    rows::CharacterPortraitRow, rows::CharacterRow, rows::LandCombatDetailsRow,
+    rows::LandCombatResultsRow, rows::LandCombatSideDetails, rows::LandResultSide,
+    rows::NavalMissionTaskForceRow, rows::OrdersGroupRow, rows::Recorded, rows::TableId,
+    rows::TableRows, rows::TaskForceRow, rows::UnitLeaderRow,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 pub fn frame(hour: i32, countries: u32) -> DecodedFrame {
     branch_frame(1, hour, countries)

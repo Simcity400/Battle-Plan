@@ -363,8 +363,21 @@ fn display_choices_sent_while_no_viewer_runs_are_kept_for_its_launch() {
     );
     // A pop-out host shows the campaign map and reports through its owner.
     assert!(inner.pending.campaign_map);
-    assert!(inner.popout.as_ref().is_some_and(|window| window.parent == 1));
-    assert!(NativeHost::default().shared.0.lock().unwrap().popout.is_none());
+    assert!(
+        inner
+            .popout
+            .as_ref()
+            .is_some_and(|window| window.parent == 1)
+    );
+    assert!(
+        NativeHost::default()
+            .shared
+            .0
+            .lock()
+            .unwrap()
+            .popout
+            .is_none()
+    );
 }
 
 #[test]
@@ -508,7 +521,8 @@ fn only_the_latest_aircraft_choice_waits_for_the_viewer() {
         })
         .unwrap();
     }
-    host.map_action(MapAction::FlyAircraft { aircraft: None }).unwrap();
+    host.map_action(MapAction::FlyAircraft { aircraft: None })
+        .unwrap();
     let inner = host.shared.0.lock().unwrap();
     let queued: Vec<_> = inner.pending.actions.iter().cloned().collect();
     assert!(matches!(

@@ -1,12 +1,11 @@
 use super::*;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{
-        AirWingRow, CountryLinkRow, InvasionPreparationRow, LandTheatreRow, OrdersGroupPlanRow,
-        ParadropPreparationInputs, ParadropPreparationTerms, ParadropTransportModifiers,
-        ProvinceRow, Recorded, RowCodec, TableId, TableSchema,
-    },
+use replay_data::{
+    rows::AirWingRow, rows::CountryLinkRow, rows::InvasionPreparationRow, rows::LandTheatreRow,
+    rows::OrdersGroupPlanRow, rows::ParadropPreparationInputs, rows::ParadropPreparationTerms,
+    rows::ParadropTransportModifiers, rows::ProvinceRow, rows::Recorded, rows::RowCodec,
+    rows::TableId, rows::TableSchema,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 use viewer_foundation::map::memo::TableKey;
 use viewer_foundation::map::memo::project;
 
@@ -329,7 +328,7 @@ fn air_fixture() -> paradrop_counts::tests::Fixture {
 
 #[test]
 fn accepted_wing_capacity_threshold_and_duplicate_unit_demand_change_execution() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = air_fixture();
     let root = order(1, super::super::TYPE_MOVE);
@@ -389,7 +388,7 @@ fn accepted_wing_capacity_threshold_and_duplicate_unit_demand_change_execution()
 
 #[test]
 fn signed_invalid_source_and_ineligible_units_skip_later_demand_operands() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = air_fixture();
     let root = order(1, super::super::TYPE_MOVE);

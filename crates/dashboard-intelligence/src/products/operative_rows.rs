@@ -5,11 +5,12 @@ use dashboard_text::{
     catalogue::View,
     metadata::{link_slot, mapped_slot},
 };
-use installed_content::localisation::Localisation;
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryLinkRow, CountryRow, OperativeMembershipRow, TableId, tables},
+use installed_content_localisation::localisation::Localisation;
+use replay_data::{
+    rows::CountryLinkRow, rows::CountryRow, rows::OperativeMembershipRow, rows::TableId,
+    rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Current country operands shared by the intelligence observers. It contains
@@ -39,7 +40,7 @@ impl CountryInputs {
         frame: &DecodedFrame,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
     ) {
-        let _cpu = ::replay::cpu::scope_phase("intelligence:countries");
+        let _cpu = ::replay_frame::cpu::scope_phase("intelligence:countries");
         self.changed = false;
         let reached =
             |table: TableId| changes.is_none_or(|changes| changes.rows_changed[table.index()]);
@@ -334,7 +335,7 @@ pub fn saved_name(localisation: Option<&Localisation>, bytes: &[u8]) -> SavedNam
             name: (!name.is_empty()).then_some(name),
             missing: None,
             literal_fallback: localisation.is_none()
-                && !installed_content::parser::c_string(bytes).is_empty(),
+                && !installed_content_core::parser::c_string(bytes).is_empty(),
         },
         Err(reason) => SavedName {
             name: None,
@@ -382,7 +383,7 @@ pub fn cooldown(row: &OperativeMembershipRow) -> Result<Option<(u32, i32, i32)>,
 pub struct MembershipSnapshot {
     row: OperativeMembershipRow,
     owner: Result<CountryIdentity, u32>,
-    target: replay::rows::Recorded<Option<Result<CountryIdentity, u32>>>,
+    target: replay_data::rows::Recorded<Option<Result<CountryIdentity, u32>>>,
     capturer: Result<CountryIdentity, u32>,
 }
 
@@ -395,8 +396,10 @@ impl MembershipSnapshot {
         let resolve = |raw| identity(raw, links, countries).ok_or(raw);
         let owner = resolve(row.owner_country);
         let target = match &row.target_country {
-            replay::rows::Recorded::Value(raw) => replay::rows::Recorded::Value(raw.map(resolve)),
-            replay::rows::Recorded::NotRecorded => replay::rows::Recorded::NotRecorded,
+            replay_data::rows::Recorded::Value(raw) => {
+                replay_data::rows::Recorded::Value(raw.map(resolve))
+            }
+            replay_data::rows::Recorded::NotRecorded => replay_data::rows::Recorded::NotRecorded,
         };
         let capturer = resolve(row.capturer_country);
         let mut row = row.clone();
@@ -404,8 +407,8 @@ impl MembershipSnapshot {
         // not a distinct operative. Keep all other captured operands exact.
         row.owner_country = 0;
         row.roster_country = 0;
-        if matches!(row.target_country, replay::rows::Recorded::Value(_)) {
-            row.target_country = replay::rows::Recorded::Value(None);
+        if matches!(row.target_country, replay_data::rows::Recorded::Value(_)) {
+            row.target_country = replay_data::rows::Recorded::Value(None);
         }
         row.capturer_country = 0;
         Self {

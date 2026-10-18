@@ -8,13 +8,13 @@ use crate::{
     table_capture::{Arena, CaptureRows},
     table_conversion::{table, unavailable},
 };
-use engine::allocation::{copy_vec, owned_vec};
-use engine::{Memory, modifier_definition as native, walk::Outcome};
-use replay::{
-    cadence::{SKIPPED_REASON, should_walk},
-    frame::TableView,
-    rows::{ModifierDefinitionRow, TableId, tables},
+use engine_allocation::{copy_vec, owned_vec};
+use engine_native::{Memory, modifier_definition as native, walk::Outcome};
+use replay_data::{
+    cadence::SKIPPED_REASON, cadence::should_walk, rows::ModifierDefinitionRow, rows::TableId,
+    rows::tables,
 };
+use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ModifierDefinitions];
@@ -145,11 +145,11 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
 
     #[test]
     fn static_table_walks_on_full_hours_and_when_the_header_moved() {
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

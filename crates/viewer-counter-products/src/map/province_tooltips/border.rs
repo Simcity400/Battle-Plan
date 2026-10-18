@@ -1,10 +1,8 @@
 //! Border power and tooltip.
 use super::localise;
-use installed_content::localisation::{Argument as Arg, Localisation};
-use replay::{
-    frame::DecodedFrame,
-    rows::{DivisionRow, StateFlagRow, tables},
-};
+use installed_content_localisation::{localisation::Argument as Arg, localisation::Localisation};
+use replay_data::{rows::DivisionRow, rows::StateFlagRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 
 pub(super) struct Defines {
@@ -13,7 +11,7 @@ pub(super) struct Defines {
     victory: i64,
 }
 impl Defines {
-    pub(super) fn load(d: &installed_content::defines::Defines) -> io::Result<Self> {
+    pub(super) fn load(d: &installed_content_core::defines::Defines) -> io::Result<Self> {
         Ok(Self {
             org: d.fixed5("NMilitary", "COMBAT_VALUE_ORG_IMPORTANCE")?,
             strength: d.fixed5("NMilitary", "COMBAT_VALUE_STR_IMPORTANCE")?,
@@ -69,8 +67,8 @@ fn power(
     viewer_raw: u32,
     links: &BTreeMap<u32, u32>,
     state: u32,
-    states: &BTreeMap<u32, &replay::rows::StateRow>,
-    countries: &BTreeMap<u32, &replay::rows::CountryRow>,
+    states: &BTreeMap<u32, &replay_data::rows::StateRow>,
+    countries: &BTreeMap<u32, &replay_data::rows::CountryRow>,
 ) -> Result<[i64; 2], String> {
     let flags = frame
         .complete::<tables::StateFlags>()

@@ -1,9 +1,7 @@
 use crate::test_fixtures::{CAMPAIGN, records, source};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{CountryLinkRow, CountryRow, TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
@@ -12,7 +10,7 @@ use std::{
 /// A frame of Germany (slot 7, native id `germany`, named by its other link 11 in
 /// the factory table) and Italy (slot 8). `read` times the factory walk.
 fn factory_frame(hour: i32, read: bool, germany: u32, civilian_total_raw: i64) -> DecodedFrame {
-    use replay::rows::CountryFactoriesRow;
+    use replay_data::rows::CountryFactoriesRow;
     let mut frame = source(1, hour, Some(1));
     let country = |id, canonical_slot, tag: &[u8]| CountryRow {
         id,
@@ -211,7 +209,7 @@ fn factories_leave_out_rows_no_single_country_owns_and_hours_the_tables_cannot_t
 #[test]
 fn factory_groups_are_named_by_the_content_buildings_their_flags_count() {
     use crate::products::country_factories::{FactoryGroupKey, group_buildings};
-    use installed_content::buildings::{Buildings, FactoryFlags};
+    use installed_content_core::{buildings::Buildings, buildings::FactoryFlags};
     use std::collections::{BTreeMap, BTreeSet};
     let flags = |military_production, naval_production, general_production| FactoryFlags {
         military_production,
@@ -716,7 +714,7 @@ fn factory_types_follow_a_modded_content_stack() {
             ),
         ],
     );
-    let layers = installed_content::ResolvedLayers::from_folders(&[
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[
         (&vanilla, &[][..]),
         (&modded, &["common/buildings"][..]),
     ])
@@ -800,7 +798,7 @@ fn factory_types_follow_a_modded_content_stack() {
             "buildings = { arms_factory = { military_production = @factories } }",
         )],
     );
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&scripted, &[][..])]).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&scripted, &[][..])]).unwrap();
     let (groups, warnings, findings) = describe_groups_with_findings(&layers, |_| None);
     let _ = std::fs::remove_dir_all(&scripted);
     assert_eq!(groups.len(), 3);
@@ -824,7 +822,7 @@ fn factory_types_follow_a_modded_content_stack() {
             "buildings = { works = { military_production = 1 state_modifiers = { custom_modifier = { value = 1 } } } }",
         )],
     );
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&unsupported, &[][..])]).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&unsupported, &[][..])]).unwrap();
     let (groups, warnings, findings) = describe_groups_with_findings(&layers, |_| None);
     let _ = std::fs::remove_dir_all(&unsupported);
     assert_eq!(groups.len(), 3);
@@ -1168,7 +1166,7 @@ fn factory_read_confirmations_do_not_use_value_compression_as_provenance() {
 fn factories_scale_1500_and_5000_countries_preserves_every_country() {
     use crate::products::country_factories::scan;
     use crate::test_fixtures::scale_frame;
-    use replay::rows::CountryFactoriesRow;
+    use replay_data::rows::CountryFactoriesRow;
     const HOURS: i32 = 24;
     for (count, changing) in [1_500, 5_000]
         .into_iter()

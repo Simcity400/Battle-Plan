@@ -1,5 +1,5 @@
 use super::*;
-use engine::allocation::{owned_vec, reserve, vec};
+use engine_allocation::{owned_vec, reserve, vec};
 
 /// One refresh of raw character payload. Trait occurrences reference owned,
 /// verified definitions; all other observations retain the raw replay order.
@@ -145,7 +145,7 @@ impl CharacterSourceBindings {
 
     pub(super) fn grow(&mut self) {
         if self.overflowed {
-            let _ = engine::allocation::reserve(&mut self.sources, 1);
+            let _ = engine_allocation::reserve(&mut self.sources, 1);
             self.update_charge();
         }
     }
@@ -459,7 +459,7 @@ impl CharactersJob {
     }
 
     pub fn grow(&mut self) {
-        engine::allocation::advisory(|| self.grow_hints());
+        engine_allocation::advisory(|| self.grow_hints());
     }
 
     fn grow_hints(&mut self) {
@@ -1596,12 +1596,12 @@ pub(super) fn copy_advisors(
         let header = job.log.bytes[cache_header..cache_header + 16]
             .try_into()
             .unwrap();
-        let Some(array) = Array::from_header(header, engine::modifier_entry::STRIDE) else {
+        let Some(array) = Array::from_header(header, engine_native::modifier_entry::STRIDE) else {
             dead.advisors = true;
             return true;
         };
         let required = (array.count as usize)
-            .checked_mul(engine::modifier_entry::STRIDE)
+            .checked_mul(engine_native::modifier_entry::STRIDE)
             .and_then(|bytes| job.advisor_demand.bytes.checked_add(bytes));
         match required {
             Some(bytes) => job.advisor_demand.bytes = bytes,
@@ -1613,8 +1613,8 @@ pub(super) fn copy_advisors(
             if take_or_kill(
                 job,
                 memory,
-                array.element(first, engine::modifier_entry::STRIDE),
-                count * engine::modifier_entry::STRIDE,
+                array.element(first, engine_native::modifier_entry::STRIDE),
+                count * engine_native::modifier_entry::STRIDE,
                 MASK_ADVISORS,
                 &mut dead.advisors,
             )
@@ -2038,7 +2038,7 @@ impl<M: Memory> Memory for AppendedCopy<'_, M> {
 }
 
 fn copy_unit_codename(job: &mut CharactersJob, memory: &impl Memory, base: usize, unit: usize) {
-    use engine::cname_group_member as naming;
+    use engine_native::cname_group_member as naming;
     // Appended naming faults are replayed as a local refusal by read_unit;
     // they do not kill the existing unit fields or the other leader rows.
     let member = unit

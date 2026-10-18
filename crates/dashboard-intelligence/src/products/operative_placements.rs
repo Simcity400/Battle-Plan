@@ -4,10 +4,11 @@
 
 use super::operative_rows;
 use dashboard_base::products::Product;
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryLinkRow, CountryRow, OperativeMembershipRow, TableId, tables},
+use replay_data::{
+    rows::CountryLinkRow, rows::CountryRow, rows::OperativeMembershipRow, rows::TableId,
+    rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -23,7 +24,7 @@ use dashboard_core::config::LoadContext;
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::validate_campaign;
 #[cfg(any(test, feature = "test-support"))]
-use replay::frame::FrameDecoder;
+use replay_frame::frame::FrameDecoder;
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::Ordering;
 
@@ -118,7 +119,7 @@ fn resolve_rows<T: std::borrow::Borrow<CountryRow>>(
     rows: &[OperativeMembershipRow],
     countries: &HashMap<u32, T>,
     links: &[CountryLinkRow],
-    localisation: Option<&installed_content::localisation::Localisation>,
+    localisation: Option<&installed_content_localisation::localisation::Localisation>,
     warnings: &mut std::collections::BTreeSet<String>,
 ) -> Result<BTreeMap<PairKey, Vec<PlacedOperative>>, String> {
     let mut result: BTreeMap<PairKey, Vec<PlacedOperative>> = BTreeMap::new();

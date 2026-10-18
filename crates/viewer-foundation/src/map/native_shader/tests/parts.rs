@@ -2,7 +2,7 @@
 use super::*;
 use crate::map::{native_gui as gui, sprites};
 use eframe::wgpu;
-use installed_content::image::{Rgba8Image, dds};
+use installed_content_image::{Rgba8Image, dds};
 use std::sync::Arc;
 
 fn images() -> Vec<dds::Texture> {

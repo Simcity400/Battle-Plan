@@ -1,8 +1,8 @@
 //! Line order and conditions, apart from content and recorded-input joins.
 use super::Tooltip;
-use engine::craid_instance::{outcome_key, phase_key};
-use installed_content::localisation::Argument as Arg;
-use installed_content::localisation::Localisation;
+use engine_native::{craid_instance::outcome_key, craid_instance::phase_key};
+use installed_content_localisation::localisation::Argument as Arg;
+use installed_content_localisation::localisation::Localisation;
 use viewer_foundation::tooltip_text::localise;
 
 pub type Text = Result<String, String>;

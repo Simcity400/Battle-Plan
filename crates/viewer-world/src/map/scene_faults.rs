@@ -144,14 +144,15 @@ impl Probe {
             Effect Known { VertexShader = V PixelShader = P RasterizerState = Visible }
             Effect Unknown { VertexShader = V PixelShader = U RasterizerState = Visible }
         "#;
-        let program = installed_content::pdxshader::program::read_with(b"scene-test.shader", &|path| {
-            Some(if path == b"scene-test.shader" {
-                source.to_vec()
-            } else {
-                Vec::new()
+        let program =
+            installed_content_core::pdxshader::program::read_with(b"scene-test.shader", &|path| {
+                Some(if path == b"scene-test.shader" {
+                    source.to_vec()
+                } else {
+                    Vec::new()
+                })
             })
-        })
-        .map_err(io::Error::other)?;
+            .map_err(io::Error::other)?;
         let compiler = shader_pipeline::Compiler::discover().map_err(io::Error::other)?;
         let compiled = program
             .techniques
@@ -185,11 +186,11 @@ impl Probe {
         )
         .map_err(io::Error::other)?;
         let mut pass = shader_pipeline::gpu::Pass::packed(&compiled, &state, OUTPUT_FORMAT, 1);
-        let raster = installed_content::pdxshader::RasterizerState {
+        let raster = installed_content_core::pdxshader::RasterizerState {
             cull_mode: 0,
             ..Default::default()
         };
-        let depth = installed_content::pdxshader::DepthStencilState {
+        let depth = installed_content_core::pdxshader::DepthStencilState {
             depth_enable: false,
             depth_write_mask: 0,
             ..Default::default()
@@ -210,13 +211,13 @@ impl Probe {
             .bind_program(Some(selection), pass.vertices.clone());
         state
             .stream
-            .bind_rasterizer(installed_content::pdxshader::RasterizerState {
+            .bind_rasterizer(installed_content_core::pdxshader::RasterizerState {
                 cull_mode: 0,
                 ..Default::default()
             });
         state
             .stream
-            .bind_depth_stencil(installed_content::pdxshader::DepthStencilState {
+            .bind_depth_stencil(installed_content_core::pdxshader::DepthStencilState {
                 depth_enable: false,
                 depth_write_mask: 0,
                 ..Default::default()
@@ -234,7 +235,7 @@ impl Probe {
         state: &mut crate::map::shader_scene::State,
         texture: &wgpu::TextureView,
     ) -> io::Result<()> {
-        use installed_content::pdxshader::program::Stage;
+        use installed_content_core::pdxshader::program::Stage;
         use shader_pipeline::binding;
         let selection = self
             .effect

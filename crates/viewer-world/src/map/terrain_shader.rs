@@ -1,11 +1,11 @@
 //! Compiled content pdxmap passes with native vertex streams and constant bindings. The uniform
 //! terrain LOD is an approved fidelity limit.
 use eframe::wgpu::{self, util::DeviceExt};
-use installed_content::{
-    ResolvedLayers,
-    image::native::Decode,
-    pdxshader::{DepthStencilState, RasterizerState, program::Stage},
+use installed_content_core::{
+    ResolvedLayers, pdxshader::DepthStencilState, pdxshader::RasterizerState,
+    pdxshader::program::Stage,
 };
+use installed_content_image::native::Decode;
 use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
 use std::cell::RefCell;
 use std::{collections::BTreeMap, io, sync::Arc};

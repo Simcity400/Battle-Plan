@@ -1,6 +1,6 @@
 //! Political-map province selection from the camera ray and height cells.
 
-use installed_content::map::MapData;
+use installed_content_core::map::MapData;
 
 use super::{camera::Camera, province_admission};
 
@@ -79,12 +79,12 @@ fn ground(
     if camera.free().is_some() {
         // A free eye finds no ground above the horizon; the seam pick keeps x on the map's first
         // copy, the camera's own motion keeps the ray's copy.
-        return Ok(
-            free_ground(camera, screen, viewport, map, heightmap).map(|[x, y, z]| match mode {
+        return Ok(free_ground(camera, screen, viewport, map, heightmap).map(
+            |[x, y, z]| match mode {
                 Views::Seams => [x.rem_euclid(camera.map.x()), y, z],
                 Views::Own => [x, y, z],
-            }),
-        );
+            },
+        ));
     }
     let views = match mode {
         Views::Seams => views(*camera, viewport),

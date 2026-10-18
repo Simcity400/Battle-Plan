@@ -1,5 +1,5 @@
 use super::*;
-use engine::allocation::reserve;
+use engine_allocation::reserve;
 
 #[derive(Default)]
 pub(super) struct NativeShadow<R> {
@@ -112,7 +112,7 @@ pub(super) fn shadow_input<R: Copy + PartialEq>(
     let skipped = matches!(
         buffer.rows.outcome,
         Outcome::Unavailable {
-            reason: replay::cadence::SKIPPED_REASON
+            reason: replay_data::cadence::SKIPPED_REASON
         }
     );
     if !skipped {

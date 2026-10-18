@@ -2,8 +2,8 @@ use super::*;
 use crate::products::wars;
 use dashboard_base::prepared::series::tests::Fixture;
 use dashboard_base::test_fixtures::{CAMPAIGN, continuation_records, records};
-use replay::frame::{DecodedFrame, TableView};
-use replay::rows::TableRows;
+use replay_data::rows::TableRows;
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 fn source(chunks: &[Vec<DecodedFrame>]) -> Source {
     let first = records(1, chunks[0].clone());
@@ -233,7 +233,7 @@ fn earlier_ambiguous_native_holders_refuse_a_later_unambiguous_window() {
         if let TableView::Complete(TableRows::WarRelations(rows)) =
             &mut *frame.tables[TableId::WarRelations.index()]
         {
-            rows.push(replay::rows::WarRelationRow {
+            rows.push(replay_data::rows::WarRelationRow {
                 first_country: 2,
                 second_country: 3,
                 start_hour: 90,
@@ -245,7 +245,7 @@ fn earlier_ambiguous_native_holders_refuse_a_later_unambiguous_window() {
             &mut *frame.tables[TableId::WarOwnedRelations.index()]
         {
             for owner in [2, 3] {
-                rows.push(replay::rows::WarOwnedRelationRow {
+                rows.push(replay_data::rows::WarOwnedRelationRow {
                     owner,
                     ordinal: 1,
                     first_country: 2,

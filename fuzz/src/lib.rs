@@ -23,15 +23,15 @@ pub fn raw_recording(raw: &[u8]) -> std::io::Result<replay::container::Replay> {
     // Derive the index's hour span from complete decoded payloads. Arbitrary
     // malformed payloads retain the single-hour seed; valid mutated sequences
     // can now reach snapshot/delta baselines at every recorded hour.
-    let mut input = replay::codec::Decoder::new(raw);
+    let mut input = replay_data::codec::Decoder::new(raw);
     if let Ok(count) = input.count(4) {
         let mut first = None;
         let mut last = None;
         for _ in 0..count {
             let decoded = (|| {
                 let length = input.u32()? as usize;
-                let mut payload = replay::codec::Decoder::new(input.take(length)?);
-                let frame = replay::frame::Frame::decode(&mut payload)?;
+                let mut payload = replay_data::codec::Decoder::new(input.take(length)?);
+                let frame = replay_frame::frame::Frame::decode(&mut payload)?;
                 payload.finish()?;
                 Ok::<_, std::io::Error>(frame)
             })();
@@ -71,7 +71,10 @@ mod tests {
             panic!("delta is unreachable");
         };
         assert_eq!(
-            frame.complete::<replay::rows::tables::Countries>().unwrap()[0].command_power_raw,
+            frame
+                .complete::<replay_data::rows::tables::Countries>()
+                .unwrap()[0]
+                .command_power_raw,
             1
         );
     }

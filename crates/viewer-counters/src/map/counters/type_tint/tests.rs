@@ -1,12 +1,11 @@
 use super::*;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{
-        CountryCounterInputRow, CountryLinkRow, CountryRow, DirectedWars, FactionMemberRow,
-        Recorded, ReservedCountryNamingRow, ReservedReverseVisibilityInputs,
-        ReverseZeroVisibilityInputs, SubjectRow, TableRows, WarCell, WarRelationRow,
-    },
+use replay_data::{
+    rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryRow, rows::DirectedWars,
+    rows::FactionMemberRow, rows::Recorded, rows::ReservedCountryNamingRow,
+    rows::ReservedReverseVisibilityInputs, rows::ReverseZeroVisibilityInputs, rows::SubjectRow,
+    rows::TableRows, rows::WarCell, rows::WarRelationRow,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 use viewer_foundation::map::visibility::Relations;
 
 fn built(
@@ -146,7 +145,7 @@ fn world(
                 .map(|slot| CountryCounterInputRow {
                     country: 100 + slot,
                     directed_wars: Recorded::Value(Some(DirectedWars {
-                        sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+                        sample_hour: replay_data::rows::PacketHour::Stamped(frame.hour),
                         receiver_raw_id: (100 + slot) as i32,
                         receiver_slot: slot,
                         matrix_count: 8,
@@ -174,7 +173,7 @@ fn world(
             ReservedCountryNamingRow {
                 faction: Recorded::Value(Some(0)),
                 reverse_visibility: Recorded::Value(Some(ReservedReverseVisibilityInputs {
-                    sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+                    sample_hour: replay_data::rows::PacketHour::Stamped(frame.hour),
                     cells: (0..8)
                         .map(|slot| {
                             Some(ReverseZeroVisibilityInputs {
@@ -670,7 +669,7 @@ fn type_tint_unit_scale() {
                 .map(|slot| CountryCounterInputRow {
                     country: 10_000 + slot,
                     directed_wars: Recorded::Value(Some(DirectedWars {
-                        sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+                        sample_hour: replay_data::rows::PacketHour::Stamped(frame.hour),
                         receiver_raw_id: (10_000 + slot) as i32,
                         receiver_slot: slot,
                         matrix_count: n + 1,
@@ -760,14 +759,15 @@ fn mod_defines_override_all_three_type_colors_and_keep_texture_alpha() {
     std::fs::create_dir_all(addon.join("common/defines")).unwrap();
     std::fs::write(base.join("common/defines/00_base.lua"),b"NDefines={NGraphics={FRIEND_COLOR={0.1,0.2,0.3},ENEMY_COLOR={0.4,0.5,0.6},NEUTRAL_COLOR={0.7,0.8,0.9}}}").unwrap();
     std::fs::write(addon.join("common/defines/zz_tint.lua"),b"NDefines.NGraphics.FRIEND_COLOR={0.2,0.8,0.3};NDefines.NGraphics.ENEMY_COLOR={0.9,0.1,0.4};NDefines.NGraphics.NEUTRAL_COLOR={0.8,0.6,0.4}").unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&base, &[]), (&addon, &[])]).unwrap();
-    let defines = installed_content::defines::read(&layers).unwrap();
+    let layers =
+        installed_content_core::ResolvedLayers::from_folders(&[(&base, &[]), (&addon, &[])]).unwrap();
+    let defines = installed_content_core::defines::read(&layers).unwrap();
     let colors = Colors::read(&defines).unwrap();
     assert_eq!(colors, Colors::TEST);
     for side in [Side::Friend, Side::Enemy, Side::Neutral] {
         assert_eq!(colors.of(side)[3], 1.0);
     }
-    let defines = installed_content::defines::Defines::new().unwrap();
+    let defines = installed_content_core::defines::Defines::new().unwrap();
     for file in [
         base.join("common/defines/00_base.lua"),
         addon.join("common/defines/zz_tint.lua"),

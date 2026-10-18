@@ -278,7 +278,7 @@ mod tests {
             rig.nodes[0].clips[0]
                 .state
                 .events
-                .push(installed_content::mesh::EntityEvent {
+                .push(installed_content_core::mesh::EntityEvent {
                     particle: Some("wake".into()),
                     keep_particle: true,
                     ..Default::default()

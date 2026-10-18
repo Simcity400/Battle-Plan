@@ -7,18 +7,17 @@ fn refreshed_report() -> Report {
     let mut report = Report::default();
     report
         .observed_refresh
-        .push(replay::cadence::cadence(TableId::ResearchSlots));
+        .push(replay_data::cadence::cadence(TableId::ResearchSlots));
     report
 }
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{
-        ActiveIdeaRow, CompletedFocusRow, CountryTacticUnlockRow, DecisionCountsRow, DecisionRow,
-        DynamicModifierRow, LexicalTokenRow, PreferredTacticRow, ResearchSlotRow,
-        ResearchTechnologyRow, TableId, TableRows, TechSharingGroupRow, TechSharingMemberRow,
-        TechnologyDefinitionRow,
-    },
+use replay_data::{
+    rows::ActiveIdeaRow, rows::CompletedFocusRow, rows::CountryTacticUnlockRow,
+    rows::DecisionCountsRow, rows::DecisionRow, rows::DynamicModifierRow, rows::LexicalTokenRow,
+    rows::PreferredTacticRow, rows::ResearchSlotRow, rows::ResearchTechnologyRow, rows::TableId,
+    rows::TableRows, rows::TechSharingGroupRow, rows::TechSharingMemberRow,
+    rows::TechnologyDefinitionRow,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 
 fn compare_sharing_fixture(
     frame: &DecodedFrame,
@@ -33,7 +32,7 @@ fn compare_sharing_fixture(
 
 fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
     let country = CountryRow {
-        border_land_doctrine_level: replay::rows::Recorded::Value(None),
+        border_land_doctrine_level: replay_data::rows::Recorded::Value(None),
         id: 11,
         canonical_slot: 7,
         tag: b"AAA".to_vec(),
@@ -103,7 +102,7 @@ fn active_ideas_report(actual: &[&[u8]], expected: &[&[u8]], tokens: &[&[u8]]) -
 
 #[test]
 fn active_ideas_use_recorded_canonical_spelling_across_mod_files() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "oracle_idea_case_{}_{:?}",
@@ -128,8 +127,9 @@ fn active_ideas_use_recorded_canonical_spelling_across_mod_files() {
         std::fs::write(file, input).unwrap();
     }
     let layers =
-        installed_content::ResolvedLayers::from_folders(&[(&roots[0], &[]), (&roots[1], &[])]).unwrap();
-    let (ideas, _, diagnostics) = installed_content::ideas::read(&layers, &[]).unwrap();
+        installed_content_core::ResolvedLayers::from_folders(&[(&roots[0], &[]), (&roots[1], &[])])
+            .unwrap();
+    let (ideas, _, diagnostics) = installed_content_core::ideas::read(&layers, &[]).unwrap();
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     let (tokens, gap) = ideas.tokens();
     assert!(gap.is_none());
@@ -225,7 +225,12 @@ fn active_idea_canonical_spelling_scales_to_5000_countries() {
         });
     }
     input.push('}');
-    let pack = saved::parse(&installed_content::parser::parse(input.as_bytes()).unwrap().items).unwrap();
+    let pack = saved::parse(
+        &installed_content_core::parser::parse(input.as_bytes())
+            .unwrap()
+            .items,
+    )
+    .unwrap();
     let links = countries
         .iter()
         .map(|country| (country.id, country))
@@ -268,7 +273,7 @@ fn active_ideas_refuse_missing_and_ambiguous_recorded_spellings() {
 fn active_ideas_compare_lexer_case_identity_without_losing_order_or_other_bytes() {
     let (mut frame, _, country) = fixture();
     let parsed =
-        installed_content::parser::parse(b"countries={AAA={politics={ideas={MiXeD other}}}}").unwrap();
+        installed_content_core::parser::parse(b"countries={AAA={politics={ideas={MiXeD other}}}}").unwrap();
     let pack = saved::parse(&parsed.items).unwrap();
     let links = BTreeMap::from([(country.id, &country)]);
     let idea = |ordinal, token: &[u8]| ActiveIdeaRow {
@@ -305,7 +310,7 @@ fn active_ideas_compare_lexer_case_identity_without_losing_order_or_other_bytes(
 
 #[test]
 fn format99_rosters_compare_order_and_exact_values_for_5000_countries() {
-    use replay::rows::{DecisionRandomItemRow, TimedIdeaRow};
+    use replay_data::{rows::DecisionRandomItemRow, rows::TimedIdeaRow};
     let (mut frame, _, _) = fixture();
     let mut input = String::from("countries={");
     let mut countries = Vec::new();
@@ -337,7 +342,12 @@ fn format99_rosters_compare_order_and_exact_values_for_5000_countries() {
         }
     }
     input.push('}');
-    let pack = saved::parse(&installed_content::parser::parse(input.as_bytes()).unwrap().items).unwrap();
+    let pack = saved::parse(
+        &installed_content_core::parser::parse(input.as_bytes())
+            .unwrap()
+            .items,
+    )
+    .unwrap();
     let links = countries
         .iter()
         .map(|country| (country.id, country))
@@ -464,7 +474,7 @@ fn tactic_unlocks_cover_the_canonical_census() {
 fn unavailable_siblings_retain_independent_comparisons_and_aggregate_failure() {
     let (mut frame, _, country) = fixture();
     let links = BTreeMap::from([(11, &country)]);
-    let document = installed_content::parser::parse(
+    let document = installed_content_core::parser::parse(
         br#"countries={AAA={
         politics={ideas={idea}} focus={completed=focus}
         preferred_tactic=7 technology={technologies={technology={research_points=0.00002}}}
@@ -509,12 +519,13 @@ fn unavailable_siblings_retain_independent_comparisons_and_aggregate_failure() {
                 ..Default::default()
             },
         ]));
-    *frame.tables[TableId::SliceReads.index()] =
-        TableView::Complete(TableRows::SliceReads(vec![replay::rows::SliceReadRow {
+    *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(vec![
+        replay_data::rows::SliceReadRow {
             table: TableId::ResearchTechnologies.index() as u32,
             owner: 11,
             sample_hour: 0,
-        }]));
+        },
+    ]));
     for table in [
         TableId::PoliticalParties,
         TableId::Focus,
@@ -584,7 +595,7 @@ fn unavailable_siblings_retain_independent_comparisons_and_aggregate_failure() {
 fn party_names_and_tags_compare_by_the_writer_default_rule() {
     let (mut frame, _, country) = fixture();
     let links = BTreeMap::from([(11, &country)]);
-    let document = installed_content::parser::parse(
+    let document = installed_content_core::parser::parse(
         br#"countries={AAA={politics={parties={
         communism={default=no name="AAA_red" long_name="AAA_red_long" popularity=1}
         democratic={default=yes popularity=1}
@@ -594,7 +605,7 @@ fn party_names_and_tags_compare_by_the_writer_default_rule() {
     .unwrap();
     let pack = saved::parse(&document.items).unwrap();
     let party = |id, token: &[u8], tag, name_default, name: &[u8], long_name: &[u8]| {
-        replay::rows::PoliticalPartyRow {
+        replay_data::rows::PoliticalPartyRow {
             country: 11,
             id,
             popularity: 100_000,
@@ -634,7 +645,7 @@ fn party_names_and_tags_compare_by_the_writer_default_rule() {
 fn idle_research_slot_is_not_equivalent_to_a_new_assignment() {
     let (mut frame, _, country) = fixture();
     let links = BTreeMap::from([(11, &country)]);
-    let document = installed_content::parser::parse(
+    let document = installed_content_core::parser::parse(
         br#"countries={AAA={technology={
         slots={selected_technology={points_factor=1.35}}
     }}}"#,
@@ -644,12 +655,12 @@ fn idle_research_slot_is_not_equivalent_to_a_new_assignment() {
     let dictionary = BTreeMap::from([(5, (b"selected_technology".as_slice(), 1, 5))]);
     *frame.tables[TableId::ResearchSlots.index()] =
         TableView::Complete(TableRows::ResearchSlots(vec![ResearchSlotRow {
-            database_index: replay::rows::Recorded::Value(
-                (engine::cresearch_slot::IDLE_HANDLE) as i32,
+            database_index: replay_data::rows::Recorded::Value(
+                (engine_research::cresearch_slot::IDLE_HANDLE) as i32,
             ),
             country: 11,
             index: 0,
-            technology_handle: engine::cresearch_slot::IDLE_HANDLE,
+            technology_handle: engine_research::cresearch_slot::IDLE_HANDLE,
             technology_present: 0,
             research_speed_raw: 100_000,
             banked_days_raw: 0,
@@ -678,7 +689,7 @@ fn idle_research_slot_is_not_equivalent_to_a_new_assignment() {
         unreachable!()
     };
     rows[0].technology_handle = 5;
-    rows[0].database_index = replay::rows::Recorded::Value(5);
+    rows[0].database_index = replay_data::rows::Recorded::Value(5);
     rows[0].technology_present = 1;
     rows[0].research_speed_raw = 135_000;
     let mut report = Report::default();
@@ -690,18 +701,19 @@ fn idle_research_slot_is_not_equivalent_to_a_new_assignment() {
 fn shared_idle_handle_matches_saved_empty_without_a_technology_definition() {
     let (mut frame, _, country) = fixture();
     let links = BTreeMap::from([(11, &country)]);
-    let document =
-        installed_content::parser::parse(br#"countries={AAA={technology={slots={empty={points=3}}}}}"#)
-            .unwrap();
+    let document = installed_content_core::parser::parse(
+        br#"countries={AAA={technology={slots={empty={points=3}}}}}"#,
+    )
+    .unwrap();
     let pack = saved::parse(&document.items).unwrap();
     *frame.tables[TableId::ResearchSlots.index()] =
         TableView::Complete(TableRows::ResearchSlots(vec![ResearchSlotRow {
-            database_index: replay::rows::Recorded::Value(
-                (engine::cresearch_slot::IDLE_HANDLE) as i32,
+            database_index: replay_data::rows::Recorded::Value(
+                (engine_research::cresearch_slot::IDLE_HANDLE) as i32,
             ),
             country: 11,
-            technology_handle: engine::cresearch_slot::IDLE_HANDLE,
-            research_speed_raw: engine::cresearch_slot::RESEARCH_SPEED_SCALE,
+            technology_handle: engine_research::cresearch_slot::IDLE_HANDLE,
+            research_speed_raw: engine_research::cresearch_slot::RESEARCH_SPEED_SCALE,
             banked_days_raw: 300_000,
             ..Default::default()
         }]));
@@ -766,7 +778,7 @@ fn sharing_complete_names_preserve_order_exact_bonuses_and_empty_groups() {
         ..country.clone()
     };
     let links = BTreeMap::from([(11, &country), (12, &second)]);
-    let document = installed_content::parser::parse(
+    let document = installed_content_core::parser::parse(
         br#"countries={AAA={} BBB={}}
         tech_sharing_group={id=first countries={AAA BBB} bonuses={-21474.83649 0}}
         tech_sharing_group={id=second}
@@ -1061,7 +1073,7 @@ fn decisions_compare_signed_target_bits_and_detect_missing_source_rows() {
             country_target: u32::MAX,
             numeric_target: 0x8000_0000,
             ignore: 1,
-            description_seed: replay::rows::Recorded::Value(None),
+            description_seed: replay_data::rows::Recorded::Value(None),
         }]));
     let mut report = Report::default();
     compare_decisions(&frame, &pack, &links, &mut report).unwrap();
@@ -1135,7 +1147,7 @@ fn decision_description_seeds_compare_native_first_match_and_known_absence() {
             country_target,
             numeric_target,
             target_kind: if country_target as i32 > 0 { 1 } else { 2 },
-            description_seed: replay::rows::Recorded::Value(Some(Some(i32::MIN))),
+            description_seed: replay_data::rows::Recorded::Value(Some(Some(i32::MIN))),
             ..Default::default()
         };
         let compare = |row: DecisionRow, pack: &saved::Pack, frame: &mut DecodedFrame| {
@@ -1150,7 +1162,7 @@ fn decision_description_seeds_compare_native_first_match_and_known_absence() {
                 .differences
                 .is_empty()
         );
-        row.description_seed = replay::rows::Recorded::Value(Some(None));
+        row.description_seed = replay_data::rows::Recorded::Value(Some(None));
         let report = compare(row.clone(), &pack, &mut frame);
         assert_eq!(report.differences.len(), 1);
         assert!(report.differences[0].contains("description_seed"));
@@ -1167,9 +1179,9 @@ fn decision_description_seeds_compare_native_first_match_and_known_absence() {
                 .differences
                 .is_empty()
         );
-        row.description_seed = replay::rows::Recorded::Value(Some(Some(0)));
+        row.description_seed = replay_data::rows::Recorded::Value(Some(Some(0)));
         assert_eq!(compare(row.clone(), &pack, &mut frame).differences.len(), 1);
-        row.description_seed = replay::rows::Recorded::Value(None);
+        row.description_seed = replay_data::rows::Recorded::Value(None);
         assert!(compare(row, &pack, &mut frame).differences.is_empty());
     }
 }
@@ -1265,12 +1277,13 @@ fn scoped_research_technologies_need_a_full_refresh() {
     // alone would call it current; the scoped oracle carries it.
     *frame.tables[TableId::ResearchTechnologies.index()] =
         TableView::Complete(TableRows::ResearchTechnologies(Vec::new()));
-    *frame.tables[TableId::SliceReads.index()] =
-        TableView::Complete(TableRows::SliceReads(vec![replay::rows::SliceReadRow {
+    *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(vec![
+        replay_data::rows::SliceReadRow {
             table: TableId::ResearchTechnologies.index() as u32,
             owner: 12,
             sample_hour: -3,
-        }]));
+        },
+    ]));
     let carried = scoped(&frame, false);
     assert!(!carried.compared_tables.contains_key("ResearchTechnologies"));
     assert!(carried.differences.is_empty(), "{:?}", carried.differences);
@@ -1320,11 +1333,13 @@ fn stale_or_unknown_research_reads_skip_the_research_family() {
             },
         ]));
     let read_at = |hour| {
-        TableView::Complete(TableRows::SliceReads(vec![replay::rows::SliceReadRow {
-            table: TableId::ResearchTechnologies.index() as u32,
-            owner: 11,
-            sample_hour: hour,
-        }]))
+        TableView::Complete(TableRows::SliceReads(vec![
+            replay_data::rows::SliceReadRow {
+                table: TableId::ResearchTechnologies.index() as u32,
+                owner: 11,
+                sample_hour: hour,
+            },
+        ]))
     };
     let skipped = |frame: &DecodedFrame, mut report: Report| {
         let _ = compare_research(
@@ -1337,7 +1352,7 @@ fn stale_or_unknown_research_reads_skip_the_research_family() {
         report
             .limitations
             .keys()
-            .any(|reason| reason.contains(replay::cadence::STAGGER_LIMITATION))
+            .any(|reason| reason.contains(replay_data::cadence::STAGGER_LIMITATION))
     };
     // Country 11's roster was read at hour 0, the oracle hour.
     *frame.tables[TableId::SliceReads.index()] = read_at(0);
@@ -1397,7 +1412,7 @@ fn technology_occurrence_dictionary_accepts_shared_tokens_and_refuses_lexer_alia
 fn research_serializer_keeps_repeated_occurrences_order_and_exact_active_filter() {
     let (mut frame, _, country) = fixture();
     let links = BTreeMap::from([(11, &country)]);
-    let pack = saved::parse(&installed_content::parser::parse(b"countries={AAA={technology={technologies={repeat={level=1} repeat={research_points=0.5} repeat={ahead_reduction=0.00023}}}}}").unwrap().items).unwrap();
+    let pack = saved::parse(&installed_content_core::parser::parse(b"countries={AAA={technology={technologies={repeat={level=1} repeat={research_points=0.5} repeat={ahead_reduction=0.00023}}}}}").unwrap().items).unwrap();
     *frame.tables[TableId::TechnologyDefinitions.index()] =
         TableView::Complete(TableRows::TechnologyDefinitions(
             (1..=5)
@@ -1437,7 +1452,7 @@ fn research_serializer_keeps_repeated_occurrences_order_and_exact_active_filter(
             country: 11,
             technology_handle: 7,
             technology_present: 1,
-            database_index: replay::rows::Recorded::Value(4),
+            database_index: replay_data::rows::Recorded::Value(4),
             ..Default::default()
         }]));
     let dictionary =
@@ -1585,7 +1600,7 @@ fn has_elections_compares_both_saved_operands_and_skips_older_recordings() {
             .collect::<Vec<_>>()
     };
     let rows = |has_elections| {
-        TableView::Complete(TableRows::Politics(vec![replay::rows::PoliticsRow {
+        TableView::Complete(TableRows::Politics(vec![replay_data::rows::PoliticsRow {
             country: country.id,
             has_elections,
             ..Default::default()

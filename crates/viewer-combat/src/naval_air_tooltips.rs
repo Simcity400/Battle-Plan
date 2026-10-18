@@ -1,6 +1,6 @@
 //! Air-group icon hovers assembled from each recorded plane's operands.
-use installed_content::localisation::{Argument, Localisation};
-use replay::rows::NavalCombatPlane;
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use replay_data::rows::NavalCombatPlane;
 use viewer_foundation::tooltip_text::tooltip_keys;
 use viewer_foundation::tooltip_text::{TextIcons, builtin, displayable};
 
@@ -307,7 +307,7 @@ pub(super) fn carrier_org_suffix(
         } else {
             'G'
         };
-        let percent = installed_content::fixed5::fixed5_percent(organisation_ratio, 0, true);
+        let percent = installed_content_core::fixed5::fixed5_percent(organisation_ratio, 0, true);
         let value = format!("\u{11}{colour}{percent}\u{11}!");
         text.push_str(" (");
         text.push_str(&builtin(
@@ -372,13 +372,13 @@ pub(super) fn efficiency_prefix(
     )?;
     text.push('\n');
     // The game formats this base percent at precision zero, green H.
-    let base = installed_content::fixed5::fixed5_percent(base, 0, true);
+    let base = installed_content_core::fixed5::fixed5_percent(base, 0, true);
     text.push_str(&builtin(icons, loc, STAT_BASE_VALUE, &[])?);
     text.push_str(&format!("\u{11}H{base}\u{11}!\n"));
     text.push_str(member_breakdown);
     let coloured = |value, factor| {
         let colour = if value < ONE { 'R' } else { 'G' };
-        let value = installed_content::fixed5::fixed5_percent(value, 0, true);
+        let value = installed_content_core::fixed5::fixed5_percent(value, 0, true);
         format!(
             "\u{11}{colour}{}{value}\u{11}!",
             if factor { "x" } else { "" }
@@ -415,7 +415,7 @@ pub(super) fn efficiency_prefix(
                 text.push_str(": ");
                 // The game hard-codes green here, including a negative
                 // country modifier; the subtotal above retains its own red.
-                let country = installed_content::fixed5::fixed5_percent(country_night, 0, true);
+                let country = installed_content_core::fixed5::fixed5_percent(country_night, 0, true);
                 text.push_str(&format!("\u{11}G{country}\u{11}!"));
                 text.push('\n');
             }
@@ -449,7 +449,7 @@ pub(super) fn screening_line(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{NavalCombatAirWingKill, NavalCombatHit};
+    use replay_data::{rows::NavalCombatAirWingKill, rows::NavalCombatHit};
     use viewer_foundation::tooltip_text::NoIcons;
 
     fn loc() -> Localisation {
@@ -552,7 +552,7 @@ mod tests {
     fn sortie_breakdown_and_organisation_suffix_have_native_order_and_text() {
         let mut plane = NavalCombatPlane {
             wings: [vec![], vec![7]],
-            efficiency: replay::rows::NavalCombatAirEfficiency {
+            efficiency: replay_data::rows::NavalCombatAirEfficiency {
                 source: 3,
                 container_present: 1,
                 base_crowding: 75_000,

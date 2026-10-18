@@ -86,7 +86,7 @@ impl DisplayCapture {
         self.clear();
         self.header = grid.and_then(|header| {
             self.required = header.edge_bytes()?;
-            engine::walk::Buffer::Growing(&mut self.bytes).ensure(self.required)?;
+            engine_native::walk::Buffer::Growing(&mut self.bytes).ensure(self.required)?;
             header.read_edges(memory, &mut self.bytes)?;
             Ok(header)
         });
@@ -110,7 +110,7 @@ impl DisplayCapture {
             height: header.size[1],
             refresh_interval: header.refresh_interval,
             refresh_identity: header.refresh_identity,
-            edges: owned_vec(engine::allocation::copy_vec(&self.bytes[..self.required])),
+            edges: owned_vec(engine_allocation::copy_vec(&self.bytes[..self.required])),
         })
     }
 }

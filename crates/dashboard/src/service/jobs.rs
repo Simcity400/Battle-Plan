@@ -142,7 +142,7 @@ impl Admission {
 /// after it for bug reports. Cancellation and ordinary filesystem errors keep
 /// their existing meaning.
 fn recording_open_error(error: std::io::Error) -> String {
-    let sentence = if engine::allocation::is_allocation_error(&error) {
+    let sentence = if engine_allocation::is_allocation_error(&error) {
         "There isn't enough memory to open this recording."
     } else if matches!(
         error.kind(),
@@ -152,7 +152,7 @@ fn recording_open_error(error: std::io::Error) -> String {
     } else {
         return error.to_string();
     };
-    replay::codec::try_format(format_args!("{sentence} Details: {error}"))
+    replay_data::codec::try_format(format_args!("{sentence} Details: {error}"))
         .unwrap_or_else(|_| sentence.to_owned())
 }
 
@@ -1201,7 +1201,7 @@ impl Inner {
             .collect();
         let recorded: Vec<_> = recorded_mods
             .iter()
-            .map(|recorded| installed_content::content::visual::RecordedMod {
+            .map(|recorded| installed_content_core::content::visual::RecordedMod {
                 id: recorded.recorded_id.clone(),
                 name: recorded.name.clone(),
             })
@@ -1226,7 +1226,12 @@ impl Inner {
         drop(store);
         // The order the resolved selection mounts in, read from the descriptors alone. The
         // settings are saved by now, so a failure to read the mods is a note, not an error.
-        match installed_content::content::visual::plan(&options, &selected, &recorded, &request.cancelled) {
+        match installed_content_core::content::visual::plan(
+            &options,
+            &selected,
+            &recorded,
+            &request.cancelled,
+        ) {
             Ok(applied) => {
                 reply.applied_mods = applied.order;
                 reply.applied_notes = applied.warnings;
@@ -1266,13 +1271,13 @@ impl Inner {
             // Measurement only: the job's CPU by product, when enabled.
             let _cpu = match &job {
                 LoadJob::Product { body, .. } => {
-                    ::replay::cpu::scope_named("product load", &body.product)
+                    ::replay_frame::cpu::scope_named("product load", &body.product)
                 }
                 LoadJob::PreparedQuery { body, .. } => {
-                    ::replay::cpu::scope_named("prepared query", &body.product)
+                    ::replay_frame::cpu::scope_named("prepared query", &body.product)
                 }
-                LoadJob::Open(_) => ::replay::cpu::scope("service job", Some("open")),
-                _ => ::replay::cpu::scope("service job", Some("other")),
+                LoadJob::Open(_) => ::replay_frame::cpu::scope("service job", Some("open")),
+                _ => ::replay_frame::cpu::scope("service job", Some("other")),
             };
             let result = request_result(|| {
                 self.run_job(job, lane);
@@ -1694,7 +1699,7 @@ fn request_result<T>(read: impl FnOnce() -> Result<T, String>) -> Result<T, Stri
 
 /// The history cache's size, after clearing it when asked.
 fn history_cache(
-    options: &installed_content::ResolveOptions,
+    options: &installed_content_core::ResolveOptions,
     clear: bool,
     cancelled: &AtomicBool,
 ) -> Result<String, String> {
@@ -1717,7 +1722,7 @@ pub(super) struct MapSettingsJob {
     pub(super) settings: Option<CampaignMapSettings>,
     /// A setting to flip under the store's lock, the opposite of its value when it runs.
     pub(super) flip: Option<crate::protocol::MapSetting>,
-    pub(super) options: installed_content::ResolveOptions,
+    pub(super) options: installed_content_core::ResolveOptions,
 }
 
 pub(super) struct OpenJob {
@@ -1758,7 +1763,7 @@ pub(super) enum LoadJob {
     HistoryCache {
         request: Arc<Request>,
         clear: bool,
-        options: installed_content::ResolveOptions,
+        options: installed_content_core::ResolveOptions,
     },
     Open(OpenJob),
     Product {

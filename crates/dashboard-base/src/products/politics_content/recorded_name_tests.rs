@@ -7,7 +7,7 @@ fn fixed_ledger_text_resolves_once_per_key_without_caching_recorded_names() {
         prepared::observer_tests::{self, Work},
     };
     use std::sync::Arc;
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for politics content");
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (

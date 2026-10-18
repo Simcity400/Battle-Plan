@@ -1,7 +1,7 @@
 use super::*;
 use crate::triggers::scope_selector;
-use installed_content::fixed5::fixed5_percent;
-use replay::rows::ModifierDefinitionRow;
+use installed_content_core::fixed5::fixed5_percent;
+use replay_data::rows::ModifierDefinitionRow;
 
 impl Renderer<'_, '_, '_> {
     fn occupation_operand(&self, item: &Item, scopes: Scopes) -> Result<i64, String> {
@@ -76,7 +76,7 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         }
         let enabled = scope_selector(item).is_none()
-            && installed_content::parser::read_bool(scalar_operand(item)?).unwrap_or(false);
+            && installed_content_core::parser::read_bool(scalar_operand(item)?).unwrap_or(false);
         self.line(
             if enabled {
                 b"EFFECT_DEMILITARIZED_ZONE"
@@ -131,7 +131,7 @@ impl Renderer<'_, '_, '_> {
         let Some(state) = self.occupation_state(scopes)? else {
             return Ok(String::new());
         };
-        let clear = installed_content::parser::read_bool_field(children(item), "clear", false);
+        let clear = installed_content_core::parser::read_bool_field(children(item), "clear", false);
         let state = self.state_name(state)?;
         self.localised(
             if clear {
@@ -150,7 +150,7 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        let category = installed_content::parser::c_string(scalar_operand(item)?);
+        let category = installed_content_core::parser::c_string(scalar_operand(item)?);
         let database = self
             .context
             .content

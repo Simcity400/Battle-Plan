@@ -8,7 +8,7 @@ use std::io;
 
 use crate::codec::{Decoder, invalid_static as invalid};
 use crate::display::Step;
-use engine::allocation;
+use engine_allocation as allocation;
 
 pub trait Value: Sized {
     /// Lower bound for every encoding of this type, including absent/empty values.
@@ -616,14 +616,14 @@ macro_rules! value_struct {
             }
             fn recorded_bytes(&self) -> std::io::Result<usize> {
                 let size = 0;
-                $(let size = engine::allocation::add(size, <$field_ty as $crate::value::Value>::recorded_bytes(&self.$field)?)?;)*
-                $($(let size = engine::allocation::add(size, <$appended_ty as $crate::value::Value>::recorded_bytes(&self.$appended)?)?;)*)?
+                $(let size = engine_allocation::add(size, <$field_ty as $crate::value::Value>::recorded_bytes(&self.$field)?)?;)*
+                $($(let size = engine_allocation::add(size, <$appended_ty as $crate::value::Value>::recorded_bytes(&self.$appended)?)?;)*)?
                 Ok(size)
             }
             fn encoded_bytes(&self) -> std::io::Result<usize> {
                 let size = 0;
-                $(let size = engine::allocation::add(size, <$field_ty as $crate::value::Value>::encoded_bytes(&self.$field)?)?;)*
-                $($(let size = engine::allocation::add(size, <$appended_ty as $crate::value::Value>::encoded_bytes(&self.$appended)?)?;)*)?
+                $(let size = engine_allocation::add(size, <$field_ty as $crate::value::Value>::encoded_bytes(&self.$field)?)?;)*
+                $($(let size = engine_allocation::add(size, <$appended_ty as $crate::value::Value>::encoded_bytes(&self.$appended)?)?;)*)?
                 Ok(size)
             }
             fn try_clone(&self) -> std::io::Result<Self> {

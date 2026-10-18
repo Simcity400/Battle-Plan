@@ -2,8 +2,8 @@
 use super::*;
 use dashboard_text::metadata::CountryKeys;
 #[cfg(test)]
-use replay::frame::FrameDecoder;
-use replay::frame::ViewIdentity;
+use replay_frame::frame::FrameDecoder;
+use replay_frame::frame::ViewIdentity;
 use std::collections::{BTreeSet, HashSet};
 
 type StateKey = (u32, u32, u32);
@@ -21,19 +21,19 @@ pub(super) struct Scan<'a> {
     /// The recording's format, which dates its daily tables
     /// ([`dashboard_text::metadata::slot_read`]).
     #[serde(skip)]
-    pub(crate) format: replay::format::FormatVersion,
+    pub(crate) format: replay_data::format::FormatVersion,
     #[serde(skip)]
     cat: Option<&'a Catalogue>,
     #[serde(skip)]
     names: StateNames,
     #[serde(skip, default = "missing_laws")]
-    laws: Result<Arc<installed_content::occupation_laws::Laws>, String>,
+    laws: Result<Arc<installed_content_core::occupation_laws::Laws>, String>,
     #[serde(skip)]
     red_threshold: Option<i64>,
     #[serde(skip, default = "missing_powers")]
     strength_powers: Result<(i32, i32), String>,
     #[serde(skip, default = "missing_equipment")]
-    equipment: Result<Arc<installed_content::equipment::Database>, String>,
+    equipment: Result<Arc<installed_content_core::equipment::Database>, String>,
     pub(super) result: OccupiedScan,
     refused: Refusals,
     #[serde(skip)]
@@ -69,10 +69,10 @@ pub(super) struct Scan<'a> {
     pub(super) work: dashboard_base::prepared::observer_tests::Work,
 }
 
-fn missing_laws() -> Result<Arc<installed_content::occupation_laws::Laws>, String> {
+fn missing_laws() -> Result<Arc<installed_content_core::occupation_laws::Laws>, String> {
     Err("Occupation laws need the recorded content stack".into())
 }
-fn missing_equipment() -> Result<Arc<installed_content::equipment::Database>, String> {
+fn missing_equipment() -> Result<Arc<installed_content_core::equipment::Database>, String> {
     Err("Garrison equipment needs the recorded content stack".into())
 }
 fn missing_powers() -> Result<(i32, i32), String> {
@@ -133,8 +133,8 @@ impl<'a> Scan<'a> {
                 Err(_) => match cat
                     .content
                     .layers
-                    .derived::<catalogue::CachedResult<installed_content::defines::Defines>>()
-                    .get_or_init(|| installed_content::defines::read(&cat.content.layers))
+                    .derived::<catalogue::CachedResult<installed_content_core::defines::Defines>>()
+                    .get_or_init(|| installed_content_core::defines::read(&cat.content.layers))
                 {
                     Ok(defines) => {
                         fallback = defines;
@@ -179,8 +179,8 @@ impl<'a> Scan<'a> {
             .and_then(|cat| {
                 cat.content
                     .layers
-                    .derived::<catalogue::CachedResult<installed_content::occupation_laws::Laws>>()
-                    .get_or_init(|| installed_content::occupation_laws::read(&cat.content.layers))
+                    .derived::<catalogue::CachedResult<installed_content_core::occupation_laws::Laws>>()
+                    .get_or_init(|| installed_content_core::occupation_laws::read(&cat.content.layers))
                     .map_err(|e| e.to_string())
             });
         let equipment = cat
@@ -188,14 +188,14 @@ impl<'a> Scan<'a> {
             .and_then(|cat| {
                 cat.content
                     .layers
-                    .derived::<catalogue::CachedResult<installed_content::equipment::Database>>()
+                    .derived::<catalogue::CachedResult<installed_content_core::equipment::Database>>()
                     .get_or_init(|| {
-                        installed_content::equipment::Database::load_complete(&cat.content.layers)
+                        installed_content_core::equipment::Database::load_complete(&cat.content.layers)
                     })
                     .map_err(|error| error.to_string())
             });
         Self {
-            format: replay::format::FormatVersion::default(),
+            format: replay_data::format::FormatVersion::default(),
             cat,
             names,
             laws,
@@ -225,17 +225,17 @@ impl<'a> Scan<'a> {
                 content_loads: cat.map_or(0, |cat| {
                     cat.content
                         .layers
-                        .derived::<catalogue::CachedResult<installed_content::occupation_laws::Laws>>()
+                        .derived::<catalogue::CachedResult<installed_content_core::occupation_laws::Laws>>()
                         .loads()
                         + cat
                             .content
                             .layers
-                            .derived::<catalogue::CachedResult<installed_content::equipment::Database>>()
+                            .derived::<catalogue::CachedResult<installed_content_core::equipment::Database>>()
                             .loads()
                         + cat
                             .content
                             .layers
-                            .derived::<catalogue::CachedResult<installed_content::defines::Defines>>()
+                            .derived::<catalogue::CachedResult<installed_content_core::defines::Defines>>()
                             .loads()
                 }),
                 ..Default::default()
@@ -472,18 +472,18 @@ impl<'a> Scan<'a> {
             .collect();
         for (&controller, row) in &defaults {
             let groups = match &row.group_laws {
-                replay::rows::Recorded::NotRecorded => {
+                replay_data::rows::Recorded::NotRecorded => {
                     group_failures.insert(controller, GROUP_LAW_MISSING.to_owned());
                     continue;
                 }
-                replay::rows::Recorded::Value(None) => {
+                replay_data::rows::Recorded::Value(None) => {
                     group_failures.insert(
                         controller,
                         "The occupied-country law inventory capture failed".into(),
                     );
                     continue;
                 }
-                replay::rows::Recorded::Value(Some(groups)) => groups,
+                replay_data::rows::Recorded::Value(Some(groups)) => groups,
             };
             for group in groups {
                 let Some(occupied) = link_slot(links, group.occupied) else {
@@ -598,11 +598,11 @@ impl<'a> Scan<'a> {
             let fallback = settings
                 .ok_or_else(|| "The native database fallback law is missing".to_owned())
                 .and_then(|row| match &row.fallback_law {
-                    replay::rows::Recorded::Value(Some(bytes)) => Ok(bytes.as_slice()),
-                    replay::rows::Recorded::Value(None) => {
+                    replay_data::rows::Recorded::Value(Some(bytes)) => Ok(bytes.as_slice()),
+                    replay_data::rows::Recorded::Value(None) => {
                         Err("The native database fallback-law capture failed".into())
                     }
-                    replay::rows::Recorded::NotRecorded => {
+                    replay_data::rows::Recorded::NotRecorded => {
                         Err("The native database fallback law is not recorded".into())
                     }
                 });
@@ -1158,7 +1158,7 @@ pub(in crate::products) fn scan_history(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{CountryCollaborationRow, StateGarrisonRow, TableRows};
+    use replay_data::{rows::CountryCollaborationRow, rows::StateGarrisonRow, rows::TableRows};
 
     #[test]
     fn occupation_trend_ambiguous_canonical_slots_refuse_every_holder() {
@@ -1295,7 +1295,7 @@ mod tests {
 
     #[test]
     fn occupied_states_state_name_failure_keeps_exact_text_and_one_diagnostic() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (cat, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[]);
         let mut scan = Scan::new(Some(&cat));

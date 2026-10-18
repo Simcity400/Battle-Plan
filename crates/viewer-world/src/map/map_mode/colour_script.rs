@@ -19,8 +19,8 @@
 use super::{Inputs, ModeLayer, Style, finish, pack};
 use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, Link};
 use dashboard_text::triggers::{Eval, Evaluator};
-use installed_content::scripted_map_modes::{Layer, LayerType};
-use replay::rows::tables;
+use installed_content_core::{scripted_map_modes::Layer, scripted_map_modes::LayerType};
+use replay_data::rows::tables;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -370,7 +370,7 @@ fn targets(
     if layer.kind != LayerType::Country {
         return Err("a targets block on a state layer".into());
     }
-    let selection = installed_content::country_scorers::script_targets(block);
+    let selection = installed_content_core::country_scorers::script_targets(block);
     let graph = Rc::new(RefCell::new(EventScopes::new(vec![EventScope::of(
         EventObject::Country(viewer),
     )])));

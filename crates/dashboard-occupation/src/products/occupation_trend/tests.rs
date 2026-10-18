@@ -1,11 +1,9 @@
 use super::*;
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{
-        CountryCollaborationRow, CountryLinkRow, CountryRow, StateGarrisonRow, StateResistanceRow,
-        StateRow, TableId, TableRows,
-    },
+use replay_data::{
+    rows::CountryCollaborationRow, rows::CountryLinkRow, rows::CountryRow, rows::StateGarrisonRow,
+    rows::StateResistanceRow, rows::StateRow, rows::TableId, rows::TableRows,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 #[test]
 fn occupation_trend_manual_roots_clip_aliases_to_all_selected_native_holders() {
@@ -215,7 +213,7 @@ fn occupation_trend_gain_loss_unread_states_and_empty_occupier_are_honest() {
     );
     let mut partial = frame(102, &[(1, 1, 10)], &[(1, 1), (2, 1), (3, 1)]);
     let rows = partial
-        .complete::<replay::rows::tables::StateResistance>()
+        .complete::<replay_data::rows::tables::StateResistance>()
         .unwrap()
         .to_vec();
     *partial.tables[TableId::StateResistance.index()] = TableView::Truncated {
@@ -716,7 +714,7 @@ fn occupation_trend_collaboration_is_only_shipped_and_split_when_requested() {
 #[test]
 fn occupation_trend_name_changes_keep_the_same_series_and_hour_specific_looks() {
     use dashboard_base::products::country_styles::HourStyles;
-    use replay::rows::{CountryAppearanceRow, PoliticsRow};
+    use replay_data::{rows::CountryAppearanceRow, rows::PoliticsRow};
     let mut first = frame(100, &[(1, 10, 20)], &[(1, 1)]);
     *first.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {

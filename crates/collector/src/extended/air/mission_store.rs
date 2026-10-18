@@ -10,10 +10,10 @@
 //! sequence; a load, gap, recovery, table change, poison or running writer revokes it). register
 //! mission and unregister mission, both hooked, are the only run-time writers of the regional and
 //! all-active vectors; the carrier mission pass also inserts active-region ids, which moves that
-//! header ([`engine::regional_mission_mutations`]), so equal headers list the same ids. The walk
+//! header ([`engine_mutations::regional_mission_mutations`]), so equal headers list the same ids. The walk
 //! still checks each carried registration's wing in this hour's census exactly as it checks a read
 //! one and reads the object afresh on any disagreement
-//! ([`engine::cair_regional_mission::walk_carried`]), so the published rows and outcome are a fresh
+//! ([`engine_native::cair_regional_mission::walk_carried`]), so the published rows and outcome are a fresh
 //! walk's.
 //!
 //! When the domain's quiet token is the one taken before the held walk's
@@ -31,9 +31,9 @@ use crate::{
     mission_changes::{Changes, Counts},
     sampled_verify::Check,
 };
-use engine::{
-    allocation,
-    cair_regional_mission::{Carry, Registration, Root},
+use engine_allocation as allocation;
+use engine_native::{
+    cair_regional_mission::Carry, cair_regional_mission::Registration, cair_regional_mission::Root,
 };
 use std::ops::Range;
 

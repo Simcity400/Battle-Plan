@@ -11,7 +11,7 @@ fn equipment_losses_unprepared_spans_are_pending_until_drain_totals_are_publishe
 fn equipment_losses_unprepared_spans_are_pending_until_drain_totals_are_published_hourly() {
     use crate::products::{country_history::HistoryScan, equipment_losses::prepared::Prepared};
     use crate::test_fixtures::scale_tag;
-    use replay::rows::{EquipmentDestructionCause, EquipmentDestructionRow};
+    use replay_data::{rows::EquipmentDestructionCause, rows::EquipmentDestructionRow};
     use serde_json::{Value, json};
 
     let sample = |hour| {
@@ -23,7 +23,7 @@ fn equipment_losses_unprepared_spans_are_pending_until_drain_totals_are_publishe
                         country: 100_000,
                         cause: EquipmentDestructionCause::LandCombat,
                         variant: 17_u64 << 32
-                            | u64::from(engine::cequipment_variant::REFERENCE_TYPE),
+                            | u64::from(engine_native::cequipment_variant::REFERENCE_TYPE),
                         amount_raw: 100_001,
                         ..Default::default()
                     })
@@ -146,7 +146,7 @@ fn equipment_losses_unprepared_spans_are_pending_until_drain_totals_are_publishe
 fn equipment_losses_answer_their_prepared_prefix_once_the_identities_are_prepared() {
     use crate::products::{country_history::HistoryScan, equipment_losses::prepared::Prepared};
     use crate::test_fixtures::scale_tag;
-    use replay::rows::{EquipmentDestructionCause, EquipmentDestructionRow};
+    use replay_data::{rows::EquipmentDestructionCause, rows::EquipmentDestructionRow};
     use serde_json::{Value, json};
 
     let sample = |hour| {
@@ -156,7 +156,8 @@ fn equipment_losses_answer_their_prepared_prefix_once_the_identities_are_prepare
                 EquipmentDestructionRow {
                     country: 100_000,
                     cause: EquipmentDestructionCause::LandCombat,
-                    variant: 17_u64 << 32 | u64::from(engine::cequipment_variant::REFERENCE_TYPE),
+                    variant: 17_u64 << 32
+                        | u64::from(engine_native::cequipment_variant::REFERENCE_TYPE),
                     amount_raw: 100_001,
                     ..Default::default()
                 },
@@ -167,16 +168,18 @@ fn equipment_losses_answer_their_prepared_prefix_once_the_identities_are_prepare
     let mut tail = vec![sample(12), sample(13)];
     for frame in &mut tail {
         *frame.tables[TableId::SunkShips.index()] =
-            TableView::Complete(TableRows::SunkShips(vec![replay::rows::SunkShipsRow {
-                entries: vec![replay::rows::SunkShipEntry {
-                    ship_name: b"synthetic ship".to_vec(),
-                    victim_country: 100_000,
-                    sink_hour: 10,
-                    victim_equipment_variant: 17_u64 << 32
-                        | u64::from(engine::cequipment_variant::REFERENCE_TYPE),
-                    ..Default::default()
-                }],
-            }]));
+            TableView::Complete(TableRows::SunkShips(vec![
+                replay_data::rows::SunkShipsRow {
+                    entries: vec![replay_data::rows::SunkShipEntry {
+                        ship_name: b"synthetic ship".to_vec(),
+                        victim_country: 100_000,
+                        sink_hour: 10,
+                        victim_equipment_variant: 17_u64 << 32
+                            | u64::from(engine_native::cequipment_variant::REFERENCE_TYPE),
+                        ..Default::default()
+                    }],
+                },
+            ]));
     }
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, prefix.clone())]).unwrap();
     let replay = replay

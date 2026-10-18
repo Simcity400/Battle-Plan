@@ -1,6 +1,6 @@
 use super::*;
 use crate::value::value_struct;
-pub use engine::modifier_breakdown::Node as ModifierBreakdownNode;
+pub use engine_native::modifier_breakdown::Node as ModifierBreakdownNode;
 value_struct!(ModifierBreakdownNode { children: u32, value: i64, name: Vec<u8> });
 opaque_value!(Vec<ModifierBreakdownNode>);
 opaque_value!(Option<Vec<ModifierBreakdownNode>>);
@@ -71,7 +71,7 @@ pub fn printed_tree(nodes: &[ModifierBreakdownNode]) -> io::Result<Vec<ModifierB
     let root = &nodes[0];
     if root.children != 0 && output[0].children == 0 {
         output[0].children = 1;
-        engine::allocation::reserve(&mut output, 1)?;
+        engine_allocation::reserve(&mut output, 1)?;
         output.push(ModifierBreakdownNode::default());
     }
     Ok(output)
@@ -86,7 +86,7 @@ fn copy_printed(
     let node = &nodes[*cursor];
     *cursor += 1;
     let start = output.len();
-    engine::allocation::reserve(output, 1)?;
+    engine_allocation::reserve(output, 1)?;
     output.push(ModifierBreakdownNode::default());
     let mut kept = 0_u32;
     for _ in 0..node.children {
@@ -100,7 +100,7 @@ fn copy_printed(
     }
     // Only an original leaf prints; interior nodes keep no display bytes.
     let name = if node.children == 0 && node.value != 0 {
-        engine::allocation::copy_vec(&node.name)?
+        engine_allocation::copy_vec(&node.name)?
     } else {
         Vec::new()
     };

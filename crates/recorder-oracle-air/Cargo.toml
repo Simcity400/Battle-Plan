@@ -10,11 +10,12 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-installed-content.workspace = true
+installed-content-core.workspace = true
+replay-data.workspace = true
+replay-derive.workspace = true
+replay-frame.workspace = true
 installed-content-save.workspace = true
 recorder-oracle-support.workspace = true
-replay.workspace = true
-
 [dev-dependencies]
 recorder-test-support.workspace = true
 recorder-oracle-support = { workspace = true, features = ["test-support"] }

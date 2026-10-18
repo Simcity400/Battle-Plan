@@ -3,7 +3,7 @@ use viewer_foundation::tooltip_text::NoIcons;
 
 #[test]
 fn naval_convoy_chevrons_and_condition_bars_own_the_member_hover() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use viewer_foundation::map::{
         native_gui::lifecycle::Tick,
@@ -132,7 +132,7 @@ fn naval_sunk_group_keeps_every_separator_native_newlines_and_pointer_anchor() {
         .iter()
         .map(|row| ((row.side, row.battle_slot), row))
         .collect();
-    let country = replay::rows::CountryRow {
+    let country = replay_data::rows::CountryRow {
         id: 4,
         tag: b"AAA".to_vec(),
         ..Default::default()
@@ -210,7 +210,7 @@ fn naval_convoy_group_keeps_localised_separators_between_all_three_blocks() {
         .iter()
         .map(|row| ((row.side, row.battle_slot), row))
         .collect();
-    let country = replay::rows::CountryRow {
+    let country = replay_data::rows::CountryRow {
         id: 4,
         tag: b"AAA".to_vec(),
         ..Default::default()
@@ -269,7 +269,7 @@ fn naval_hidden_submarine_hover_warns_but_keeps_native_member_details() {
         base_organisation: 100_000,
         ..Default::default()
     };
-    let country = replay::rows::CountryRow {
+    let country = replay_data::rows::CountryRow {
         id: 4,
         tag: b"AAA".to_vec(),
         ..Default::default()
@@ -457,7 +457,7 @@ fn an_escaping_member_withholds_its_group_by_name_while_others_still_build() {
         .iter()
         .map(|row| ((row.side, row.battle_slot), row))
         .collect();
-    let country = replay::rows::CountryRow {
+    let country = replay_data::rows::CountryRow {
         id: 4,
         tag: b"AAA".to_vec(),
         ..Default::default()
@@ -487,25 +487,25 @@ fn an_escaping_member_withholds_its_group_by_name_while_others_still_build() {
 }
 
 fn escape_tree(
-    kind: replay::naval_trees::Kind,
+    kind: replay_data::naval_trees::Kind,
     owner: u64,
     key: u32,
     value: i64,
     name: &[u8],
-) -> replay::rows::NavalModifierTreeRow {
-    replay::rows::NavalModifierTreeRow {
+) -> replay_data::rows::NavalModifierTreeRow {
+    replay_data::rows::NavalModifierTreeRow {
         kind: kind as u8,
         owner,
         sub: 0,
-        trees: vec![replay::rows::NavalModifierKeyTree {
+        trees: vec![replay_data::rows::NavalModifierKeyTree {
             key,
             nodes: vec![
-                replay::rows::ModifierBreakdownNode {
+                replay_data::rows::ModifierBreakdownNode {
                     children: 1,
                     value,
                     name: Vec::new(),
                 },
-                replay::rows::ModifierBreakdownNode {
+                replay_data::rows::ModifierBreakdownNode {
                     children: 0,
                     value,
                     name: name.to_vec(),
@@ -520,7 +520,7 @@ fn escape_tree(
 /// side sources (0x5D) with their summed root in the chance.
 #[test]
 fn an_escaping_member_lists_its_source_trees_after_the_chance() {
-    use replay::naval_trees::Kind;
+    use replay_data::naval_trees::Kind;
     let mut localisation: Localisation = [
         ("ESCAPE_PROGRESS", "Progress $NUM|%0$"),
         ("CHANCE_TO_ESCAPE", "Chance $NUM|%0$"),
@@ -530,7 +530,7 @@ fn an_escaping_member_lists_its_source_trees_after_the_chance() {
     .map(|(key, value)| (key.to_owned(), value.to_owned()))
     .collect();
     localisation.language = "english".into();
-    let source = |scope| replay::rows::NavalShipModifierSource {
+    let source = |scope| replay_data::rows::NavalShipModifierSource {
         scope,
         ..Default::default()
     };
@@ -543,7 +543,7 @@ fn an_escaping_member_lists_its_source_trees_after_the_chance() {
         live_ship: 1,
         detection_state: 1,
         escape_progress: 50_000,
-        weapon_context: replay::rows::NavalShipWeaponContext {
+        weapon_context: replay_data::rows::NavalShipWeaponContext {
             task_force: 77,
             country: 7,
             commander: 66,
@@ -552,7 +552,7 @@ fn an_escaping_member_lists_its_source_trees_after_the_chance() {
         },
         ..Default::default()
     };
-    let mut combat = replay::rows::NavalCombatDetailsRow {
+    let mut combat = replay_data::rows::NavalCombatDetailsRow {
         combat: 42,
         ..Default::default()
     };
@@ -567,7 +567,7 @@ fn an_escaping_member_lists_its_source_trees_after_the_chance() {
         country,
         escape_tree(Kind::Commander, 66, 0x5b, 5_000, b"Trait"),
     ];
-    let definitions = [0x5b, 0x5d].map(|index| replay::rows::ModifierDefinitionRow {
+    let definitions = [0x5b, 0x5d].map(|index| replay_data::rows::ModifierDefinitionRow {
         index,
         precision: 2,
         ..Default::default()
@@ -668,7 +668,7 @@ fn one_unavailable_member_withholds_the_whole_group_and_counts_each_gap() {
         .iter()
         .map(|row| ((row.side, row.battle_slot), row))
         .collect();
-    let country = replay::rows::CountryRow {
+    let country = replay_data::rows::CountryRow {
         id: 4,
         tag: b"AAA".to_vec(),
         ..Default::default()

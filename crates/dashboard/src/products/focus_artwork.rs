@@ -4,11 +4,9 @@ use crate::{
     Artwork, Source,
     metadata::{check_cancel, validate_campaign},
 };
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder, TableView},
-    rows::TableId,
-};
+use replay::container::Replay;
+use replay_data::rows::TableId;
+use replay_frame::{frame::DecodedFrame, frame::FrameDecoder, frame::TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeSet, VecDeque},
@@ -209,7 +207,7 @@ impl FrameCache {
             self.frames.push_back(entry);
             return Ok(());
         }
-        let omitted = replay::frame::SharedView::from(TableView::Unavailable {
+        let omitted = replay_frame::frame::SharedView::from(TableView::Unavailable {
             reason: "Table not selected for reconstruction".into(),
         });
         let basic = DecodedFrame {
@@ -520,10 +518,8 @@ fn reply_within(
 mod tests {
     use super::*;
     use crate::test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag, source};
-    use replay::{
-        frame::{SharedView, TableView},
-        rows::{TableRows, tables},
-    };
+    use replay_data::{rows::TableRows, rows::tables};
+    use replay_frame::{frame::SharedView, frame::TableView};
     use std::cell::Cell;
 
     #[test]
@@ -645,7 +641,7 @@ mod tests {
         )
         .unwrap();
         let content = super::super::ContentOptions {
-            options: installed_content::ResolveOptions {
+            options: installed_content_core::ResolveOptions {
                 game_dir: root.to_owned(),
                 user_dir: root.join("user"),
                 cache_dir: root.join("cache"),
@@ -665,7 +661,7 @@ mod tests {
         replay: Replay,
     ) -> (Source, LoadContext, [crate::catalogue::tests::Folder; 2]) {
         use crate::catalogue::texture_tests::{png_bytes, texture_catalogue};
-        use installed_content::image::Rgba8Image;
+        use installed_content_image::Rgba8Image;
         let image = |value| {
             png_bytes(&Rgba8Image {
                 width: 1,
@@ -710,7 +706,7 @@ mod tests {
     }
 
     fn focus_scale_frame(hour: i32, count: u32, selected: u32, tokens: &[&str]) -> DecodedFrame {
-        use replay::rows::{CompletedFocusRow, FocusRow};
+        use replay_data::{rows::CompletedFocusRow, rows::FocusRow};
         let mut frame = scale_frame(1, hour, count);
         frame.tables[TableId::Focus.index()] = TableView::Complete(TableRows::Focus(
             (0..count)
@@ -895,7 +891,7 @@ mod tests {
     #[test]
     fn conditional_icon_only_product_uses_dated_operands_and_preserves_refusals() {
         use crate::catalogue::texture_tests::from_url;
-        use replay::rows::PoliticalPartyRow;
+        use replay_data::rows::PoliticalPartyRow;
         let mut frames: Vec<_> = (100..103)
             .map(|hour| focus_scale_frame(hour, 5_000, 2_500, &["conditional"]))
             .collect();

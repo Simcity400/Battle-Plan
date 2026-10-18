@@ -3,11 +3,12 @@
 //! one before it or starts a new epoch with its coverage marked, events stay
 //! in sequence, and the save hour's events join the recorded world.
 use super::Report;
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder},
-    rows::{MapEventFamily, MapEventFault, MapEventPayload, MapEventsRow, TableId, tables},
+use replay::container::Replay;
+use replay_data::{
+    rows::MapEventFamily, rows::MapEventFault, rows::MapEventPayload, rows::MapEventsRow,
+    rows::TableId, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
 use std::{collections::BTreeSet, io};
 
 pub fn compare(replay: &Replay, frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
@@ -205,7 +206,7 @@ fn joins(frame: &DecodedFrame, row: &MapEventsRow, report: &mut Report) -> io::R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{MapEventFamilyHealth, MapEventFaults};
+    use replay_data::{rows::MapEventFamilyHealth, rows::MapEventFaults};
 
     fn row(epoch: u64, hours: (i32, i32), sequences: (u64, u64), complete: bool) -> MapEventsRow {
         let mut faults = MapEventFaults::default();

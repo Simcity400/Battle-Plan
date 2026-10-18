@@ -10,7 +10,7 @@
 //! instead reads every hit afresh inside the capture.
 use super::*;
 use crate::sampled_verify::Check;
-use engine::allocation::{default_vec, owned_vec, reserve, reserve_exact, resize, vec};
+use engine_allocation::{default_vec, owned_vec, reserve, reserve_exact, resize, vec};
 use std::cell::Cell;
 #[cfg(feature = "advisor_profile")]
 pub(crate) mod profile;
@@ -288,8 +288,8 @@ impl Section {
                     roster: 0,
                     ordinal: 0,
                 },
-                engine::walk::Buffer::Fixed(&mut previous.rows),
-                engine::walk::Buffer::Fixed(&mut previous.bytes),
+                engine_native::walk::Buffer::Fixed(&mut previous.rows),
+                engine_native::walk::Buffer::Fixed(&mut previous.bytes),
             );
             let Outcome::Rows { len } = fresh.outcome else {
                 continue;
@@ -470,8 +470,8 @@ impl Section {
             Batch::new(&mut [], &mut [])
         } else if growing {
             Batch::storage(
-                engine::walk::Buffer::Growing(&mut self.current.rows),
-                engine::walk::Buffer::Growing(&mut self.current.bytes),
+                engine_native::walk::Buffer::Growing(&mut self.current.rows),
+                engine_native::walk::Buffer::Growing(&mut self.current.bytes),
             )
         } else {
             Batch::new(&mut self.current.rows, &mut self.current.bytes)
@@ -863,7 +863,7 @@ pub(crate) fn live_modifier_demand() -> cadvisor::ModifierDemand {
 
 pub(super) fn modifier_status() -> impl serde::Serialize {
     use std::sync::atomic::Ordering::Relaxed;
-    let failures = owned_vec(engine::allocation::copy_vec(
+    let failures = owned_vec(engine_allocation::copy_vec(
         &TOOLTIP_FAILURES
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
@@ -933,7 +933,7 @@ pub(super) fn record_modifiers(rows: &[cadvisor::Row]) {
 /// experience, both factories and the role update reach that rebuild.
 /// The factories and role update then copy and add the role's own block in
 /// the same call; a factory's role is a new object. Coverage is described in
-/// [`engine::character_role_mutations`]. A role whose character is not
+/// [`engine_mutations::character_role_mutations`]. A role whose character is not
 /// observed (disabled, poisoned, refused registration, a running writer, a
 /// new epoch after a load, gap or recovery) is read afresh. Every hour also
 /// reads the held roles of its sampled-verification slice afresh
@@ -995,15 +995,15 @@ impl Modifiers {
             }
             let span = *self.spans.get(index)?;
             let array = cadvisor::modifier_entries(memory, row.pointer).ok()?;
-            let len = (array.count as usize).checked_mul(engine::modifier_entry::STRIDE)?;
+            let len = (array.count as usize).checked_mul(engine_native::modifier_entry::STRIDE)?;
             let scratch = &mut self.scratch;
-            let read = engine::allocation::advisory(|| {
+            let read = engine_allocation::advisory(|| {
                 resize(scratch, len, 0).ok()?;
                 cadvisor::copy_modifier_entries(memory, array, &mut scratch[..len]).ok()?;
                 cadvisor::copy_tooltip_keys_buffer(
                     memory,
                     row.pointer,
-                    engine::walk::Buffer::GrowingFrom(scratch, len),
+                    engine_native::walk::Buffer::GrowingFrom(scratch, len),
                 )
                 .ok()
             })?;
@@ -1073,10 +1073,10 @@ impl Modifiers {
         }
         if (self.held.spans.len() < self.spans.len() || self.held.bytes.len() < self.bytes.len())
             && (!growing
-                || engine::walk::Buffer::Growing(&mut self.held.spans)
+                || engine_native::walk::Buffer::Growing(&mut self.held.spans)
                     .ensure(self.spans.len())
                     .is_err()
-                || engine::walk::Buffer::Growing(&mut self.held.bytes)
+                || engine_native::walk::Buffer::Growing(&mut self.held.bytes)
                     .ensure(self.bytes.len())
                     .is_err())
         {
@@ -1184,7 +1184,7 @@ impl Modifiers {
                     None => {
                         let array = cadvisor::modifier_entries(memory, row.pointer)?;
                         let len = (array.count as usize)
-                            .checked_mul(engine::modifier_entry::STRIDE)
+                            .checked_mul(engine_native::modifier_entry::STRIDE)
                             .ok_or("advisor modifier cache size overflow")?;
                         (Some(array), len)
                     }
@@ -1195,8 +1195,9 @@ impl Modifiers {
                     .ok_or("advisor byte count overflow")?;
                 self.required_rows = index.checked_add(1).ok_or("advisor row count overflow")?;
                 if growing {
-                    engine::walk::Buffer::Growing(&mut self.spans).ensure(self.required_rows)?;
-                    engine::walk::Buffer::Growing(&mut self.bytes).ensure(
+                    engine_native::walk::Buffer::Growing(&mut self.spans)
+                        .ensure(self.required_rows)?;
+                    engine_native::walk::Buffer::Growing(&mut self.bytes).ensure(
                         self.len
                             .checked_add(len)
                             .ok_or("advisor byte count overflow")?,
@@ -1238,11 +1239,11 @@ impl Modifiers {
             for (index, (_, row)) in rows.enumerate() {
                 let mut span = self.spans.get(index).copied().unwrap_or_default();
                 let mut destination = if growing {
-                    engine::walk::Buffer::GrowingFrom(&mut self.bytes, self.len)
+                    engine_native::walk::Buffer::GrowingFrom(&mut self.bytes, self.len)
                 } else if index < self.spans.len() {
-                    engine::walk::Buffer::Fixed(&mut self.bytes[self.len..])
+                    engine_native::walk::Buffer::Fixed(&mut self.bytes[self.len..])
                 } else {
-                    engine::walk::Buffer::Fixed(&mut [])
+                    engine_native::walk::Buffer::Fixed(&mut [])
                 };
                 let read = if span.carried {
                     let held = self.held.spans[index];
@@ -1389,10 +1390,10 @@ impl Cache {
                 let characters = demand[0]
                     .load(Relaxed)
                     .saturating_sub(storage.entries.len());
-                if engine::walk::Buffer::Growing(&mut storage.rows)
+                if engine_native::walk::Buffer::Growing(&mut storage.rows)
                     .ensure(demand[1].load(Relaxed))
                     .is_err()
-                    || engine::walk::Buffer::Growing(&mut storage.bytes)
+                    || engine_native::walk::Buffer::Growing(&mut storage.bytes)
                         .ensure(demand[2].load(Relaxed))
                         .is_err()
                     || reserve(&mut storage.entries, characters).is_err()
@@ -1916,10 +1917,10 @@ impl<M: Memory> Memory for Counted<'_, M> {
     }
     fn execute_read_plan(
         &self,
-        plan: &engine::read_plan::PreparedPlan,
+        plan: &engine_native::read_plan::PreparedPlan,
         destination: &mut [u8],
-    ) -> Option<engine::read_plan::Outcome> {
-        use engine::read_plan::Outcome as PlanOutcome;
+    ) -> Option<engine_native::read_plan::Outcome> {
+        use engine_native::read_plan::Outcome as PlanOutcome;
         #[cfg(feature = "advisor_profile")]
         let stamp = profile::Stamp::start();
         let result = self.memory.execute_read_plan(plan, destination);
@@ -2000,8 +2001,8 @@ impl<M: Memory> Memory for Counted<'_, M> {
     }
     fn copy_records(
         &self,
-        sources: engine::memory::RecordSources<'_>,
-        layout: &engine::memory::RecordLayout<'_>,
+        sources: engine_native::memory::RecordSources<'_>,
+        layout: &engine_native::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         let copied = self.memory.copy_records(sources, layout, destination);

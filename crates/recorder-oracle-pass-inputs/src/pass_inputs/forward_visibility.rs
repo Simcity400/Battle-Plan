@@ -3,7 +3,8 @@
 //! of CountryCounterInputs' unchanged saved-country comparisons. The existing
 //! hourly table dates the packet; it contains no separate sample-hour scalar.
 use super::{Report, invalid};
-use replay::{frame::DecodedFrame, rows::tables};
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 use std::io;
 
 const LABEL: &str = "CountryCounterInputs.forward_visibility";

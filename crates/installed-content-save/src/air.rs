@@ -5,7 +5,7 @@ use super::{
     Decimal, block, boolean, bytes, decimal, field, integer, invalid, object_id, required_block,
     required_bytes, scalar, typed_handle,
 };
-use installed_content::parser::{Item, Value};
+use installed_content_core::{parser::Item, parser::Value};
 
 /// Air-history metric indices; these are unrelated to region indices.
 pub const STATISTIC_CHANNELS: [usize; 24] = [
@@ -505,7 +505,7 @@ pub(super) fn parse_with_countries(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content::parser;
+    use installed_content_core::parser;
 
     #[test]
     fn ace_callsign_preserves_omitted_and_emitted_empty_keys() {

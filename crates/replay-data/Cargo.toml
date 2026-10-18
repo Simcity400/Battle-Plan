@@ -15,8 +15,16 @@ slow-tests = []
 test-support = []
 
 [dependencies]
+crc32fast = "1"
+engine-air-history.workspace = true
+engine-allocation.workspace = true
+engine-events.workspace = true
+engine-executable.workspace = true
+engine-fuel.workspace = true
+engine-native.workspace = true
+engine-naval-history.workspace = true
+engine-production.workspace = true
 weather-period.workspace = true
-engine.workspace = true
 replay-identity.workspace = true
 
 [dev-dependencies]

@@ -1,9 +1,8 @@
 //! Ordered loading of the map overlay assets.
 
-use installed_content::{
-    ResolvedLayers, gfx,
-    image::{dds, native::Decode},
-};
+use installed_content_core::ResolvedLayers;
+use installed_content_gfx::gfx;
+use installed_content_image::{dds, native::Decode};
 use std::{collections::BTreeMap, io, sync::Arc};
 use viewer_combat as combat;
 use viewer_foundation::map::native_windows::NativeWindows;
@@ -56,9 +55,12 @@ impl MapIcons {
     #[allow(clippy::too_many_arguments)] // The content stack plus the client's settings.
     pub fn load(
         layers: &ResolvedLayers,
-        (defines, graphics): (&installed_content::defines::Defines, &installed_content::defines::Defines),
-        map: &installed_content::map::MapData,
-        regions: &BTreeMap<u32, installed_content::regions::StrategicRegion>,
+        (defines, graphics): (
+            &installed_content_core::defines::Defines,
+            &installed_content_core::defines::Defines,
+        ),
+        map: &installed_content_core::map::MapData,
+        regions: &BTreeMap<u32, installed_content_regions::regions::StrategicRegion>,
         language: &str,
         map_size: [u32; 2],
         gui_viewport: [u32; 2],
@@ -77,8 +79,8 @@ impl MapIcons {
         let arrow_font = viewer_foundation::map::ribbon_content::arrow_text_font(layers)?;
         // Interface definitions and graphics files share registries, so later font and colour
         // overrides affect both world and GUI text.
-        let registry = installed_content::gui::native::resources::Registry::from_files(
-            installed_content::gui::native::sprites::read_object_layers(layers)?,
+        let registry = installed_content_core::gui::native::resources::Registry::from_files(
+            installed_content_core::gui::native::sprites::read_object_layers(layers)?,
         );
         let interface = Interface {
             sprites: gfx::SpriteSet::new(&registry.files),
@@ -198,7 +200,7 @@ impl MapIcons {
         counters: &mut CounterAssets,
         images: &mut Vec<dds::Texture>,
         layers: &ResolvedLayers,
-        localisation: &installed_content::localisation::Localisation,
+        localisation: &installed_content_localisation::localisation::Localisation,
     ) -> io::Result<Vec<String>> {
         // Both registries consume this one harvest of localisation and combat shortcut keycaps.
         let (extra, mut warnings) = combat.localisation_assets(localisation);

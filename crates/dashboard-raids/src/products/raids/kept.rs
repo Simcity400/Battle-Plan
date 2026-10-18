@@ -19,12 +19,12 @@
 
 use dashboard_base::prepared::frame_changes::FrameChanges;
 use dashboard_text::metadata::{CountryKeys, slot_read};
-use replay::{
-    container::QuietHours,
-    format::FormatVersion,
-    frame::{DecodedFrame, SharedView, TABLE_COUNT, TableView},
-    rows::{CountryRow, TableId, TableRows, tables},
+use replay::container::QuietHours;
+use replay_data::rows::TABLE_COUNT;
+use replay_data::{
+    format::FormatVersion, rows::CountryRow, rows::TableId, rows::TableRows, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView};
 use std::{io, ops::Range};
 
 /// The countries of kept frames reduced to the keys country identity reads
@@ -164,7 +164,7 @@ impl Evidence {
 
     /// The change facts of a quiet hour.
     fn changes(&self) -> FrameChanges {
-        let _cpu = ::replay::cpu::scope("frame changes", None);
+        let _cpu = ::replay_frame::cpu::scope("frame changes", None);
         FrameChanges {
             rows_changed: self.rows_changed,
             table_read: self.table_read,
@@ -295,12 +295,12 @@ pub fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Option<i32>, usize)> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let mut reached = None;
     let mut kept = 0;
     let mut last: Option<DecodedFrame> = None;
     for hour in hours {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         check()?;
         match hour {
             Hour::Kept { frame, changes } => {
@@ -308,7 +308,7 @@ pub fn fold(
                 let hour = frame.hour;
                 reached = Some(hour);
                 let result = {
-                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     observe(&frame, &changes)
                 };
                 last = Some(frame);
@@ -326,11 +326,11 @@ pub fn fold(
                     .ok_or_else(|| io::Error::other("Quiet hours came before the block's first"))?;
                 let changes = read.changes();
                 for hour in first..=end {
-                    let _cpu = ::replay::cpu::scope("fold driver", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
                     frame.hour = hour;
                     reached = Some(hour);
                     let result = {
-                        let _cpu = ::replay::cpu::scope("fold observe", None);
+                        let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                         observe(frame, &changes)
                     };
                     if !observed(hour, result)? {

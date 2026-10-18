@@ -1,6 +1,6 @@
 use super::*;
 use crate::raid_changes::{Target, Watches};
-use engine::raid_mutations::FIRST_ROUTE_SITE;
+use engine_mutations::raid_mutations::FIRST_ROUTE_SITE;
 
 fn key(country: u32, class: u8, other: u32) -> RouteKey {
     RouteKey {
@@ -47,7 +47,7 @@ fn select(
 fn slice(hour: i32) -> Vec<u32> {
     OWNERS
         .into_iter()
-        .filter(|&owner| replay::cadence::slice_active(owner, hour, false))
+        .filter(|&owner| replay_data::cadence::slice_active(owner, hour, false))
         .collect()
 }
 
@@ -111,7 +111,7 @@ fn touched_route_owners_are_read_within_the_hour_and_an_uncertified_hour_reads_a
 #[test]
 fn the_route_census_is_in_key_order_with_one_row_per_route() {
     let mut captured = Captured::with_capacities(&Capacities);
-    let delivery = key(7, engine::resource_map::DELIVERY_ROUTE_CLASS, 2);
+    let delivery = key(7, engine_resources::resource_map::DELIVERY_ROUTE_CLASS, 2);
     captured.origins = vec![
         native::OriginRow {
             state: 101,
@@ -144,7 +144,7 @@ fn the_route_census_is_in_key_order_with_one_row_per_route() {
         },
         native::ClientRow {
             handle: 3,
-            route: key(2, engine::resource_map::SUPPLY_ROUTE_CLASS, 3),
+            route: key(2, engine_resources::resource_map::SUPPLY_ROUTE_CLASS, 3),
             route_address: 0x300,
             ..Default::default()
         },
@@ -156,17 +156,17 @@ fn the_route_census_is_in_key_order_with_one_row_per_route() {
         captured.census,
         [
             (
-                key(2, engine::resource_map::ORIGIN_ROUTE_CLASS, 101),
+                key(2, engine_resources::resource_map::ORIGIN_ROUTE_CLASS, 101),
                 0x250,
                 false
             ),
             (
-                key(2, engine::resource_map::SUPPLY_ROUTE_CLASS, 3),
+                key(2, engine_resources::resource_map::SUPPLY_ROUTE_CLASS, 3),
                 0x300,
                 false
             ),
             (
-                key(7, engine::resource_map::ORIGIN_ROUTE_CLASS, 101),
+                key(7, engine_resources::resource_map::ORIGIN_ROUTE_CLASS, 101),
                 0x200,
                 false
             ),

@@ -2,11 +2,12 @@
 //! fold.
 
 use dashboard_base::test_fixtures::{CAMPAIGN, continuation_records, records, resource_frame};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{CountryRow, LexicalTokenRow, ResourceDefinitionRow, TableId, TableRows},
+use replay::container::Replay;
+use replay_data::{
+    rows::CountryRow, rows::LexicalTokenRow, rows::ResourceDefinitionRow, rows::TableId,
+    rows::TableRows,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::sync::Arc;
 
 fn countries(frame: &mut DecodedFrame) -> &mut Vec<CountryRow> {

@@ -41,7 +41,7 @@ breakdown_witness = ["collector-governance/breakdown_witness"]
 # names a deleted template.
 name_template_witness = []
 # Diagnostic checked-allocation injection; absent from normal builds.
-alloc-fault-injection = ["engine/alloc-fault-injection", "collector-memory/alloc-fault-injection"]
+alloc-fault-injection = ["engine-air-history/alloc-fault-injection", "engine-allocation/alloc-fault-injection", "engine-characters/alloc-fault-injection", "engine-decisions/alloc-fault-injection", "engine-deployment/alloc-fault-injection", "engine-dlc/alloc-fault-injection", "engine-events/alloc-fault-injection", "engine-fixed-layout/alloc-fault-injection", "engine-fuel/alloc-fault-injection", "engine-intelligence/alloc-fault-injection", "engine-land-inputs/alloc-fault-injection", "engine-map-air/alloc-fault-injection", "engine-mutations/alloc-fault-injection", "engine-native/alloc-fault-injection", "engine-naval-history/alloc-fault-injection", "engine-occupation/alloc-fault-injection", "engine-peace/alloc-fault-injection", "engine-production/alloc-fault-injection", "engine-raid-inputs/alloc-fault-injection", "engine-railways/alloc-fault-injection", "engine-research/alloc-fault-injection", "engine-scripts/alloc-fault-injection", "engine-stability/alloc-fault-injection", "engine-visibility/alloc-fault-injection", "collector-memory/alloc-fault-injection"]
 # Parent-run synthetic exception oracle; its native DLL is built separately.
 tap-foreign-probe = ["collector-observers/tap-foreign-probe"]
 # Diagnostic: read every carried advisor afresh and compare.
@@ -341,6 +341,35 @@ unit_leader_trait_changes = ["naval_tree_changes", "collector-observers/unit_lea
 unit_leader_trait_verify = ["unit_leader_trait_changes", "collector-observers/unit_leader_trait_verify"]
 
 [dependencies]
+replay.workspace = true
+engine-air-history.workspace = true
+engine-allocation.workspace = true
+engine-characters.workspace = true
+engine-decisions.workspace = true
+engine-deployment.workspace = true
+engine-dlc.workspace = true
+engine-events.workspace = true
+engine-executable.workspace = true
+engine-fixed-layout.workspace = true
+engine-fuel.workspace = true
+engine-intelligence.workspace = true
+engine-land-inputs.workspace = true
+engine-map-air.workspace = true
+engine-mutations.workspace = true
+engine-native.workspace = true
+engine-naval-history.workspace = true
+engine-occupation.workspace = true
+engine-peace.workspace = true
+engine-production.workspace = true
+engine-raid-inputs.workspace = true
+engine-railways.workspace = true
+engine-research.workspace = true
+engine-scripts.workspace = true
+engine-stability.workspace = true
+engine-visibility.workspace = true
+replay-data.workspace = true
+replay-derive.workspace = true
+replay-frame.workspace = true
 collector-politics.workspace = true
 collector-construction.workspace = true
 collector-railway-guns.workspace = true
@@ -397,8 +426,6 @@ collector-timing.workspace = true
 collector-hooks.workspace = true
 collector-primitives.workspace = true
 collector-status.workspace = true
-engine.workspace = true
-replay.workspace = true
 retour = "0.3"
 crossbeam-queue = "0.3"
 serde = { workspace = true, features = ["derive"] }
@@ -410,6 +437,7 @@ name = "tap_foreign_unwind"
 required-features = ["tap-foreign-probe"]
 
 [dev-dependencies]
+engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-politics = { workspace = true, features = ["test-support"] }
 collector-construction = { workspace = true, features = ["test-support"] }
 collector-railway-guns = { workspace = true, features = ["test-support"] }
@@ -463,5 +491,3 @@ collector-timing = { workspace = true, features = ["test-support"] }
 collector-hooks = { workspace = true, features = ["test-support"] }
 collector-primitives = { workspace = true, features = ["test-support"] }
 collector-test-support.workspace = true
-engine = { workspace = true, features = ["batch-fallback-test-counts"] }
-

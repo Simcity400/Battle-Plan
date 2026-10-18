@@ -8,8 +8,11 @@
 
 use super::{LoadContext, Product, recorded_rows, validate_tag};
 use crate::{Source, catalogue::plain_text, content, invalid};
-use installed_content::{country_names::CountryNames, localisation::Localisation};
-use replay::{container::SeekResult, frame::DecodedFrame, rows::tables};
+use installed_content_country_names::country_names::CountryNames;
+use installed_content_localisation::localisation::Localisation;
+use replay::container::SeekResult;
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -126,7 +129,7 @@ impl Product for CountryStyles {
                     .branch_id
                     .parse::<u64>()
                     .map_err(|_| invalid("Invalid country style branch"))?;
-                let tables = Some(&installed_content::country_names::TABLES[..]);
+                let tables = Some(&installed_content_country_names::country_names::TABLES[..]);
                 let frame = match source.replay().seek_selected(branch, params.hour, tables)? {
                     SeekResult::Frame(frame) => frame,
                     SeekResult::Gap { reason, .. } => {

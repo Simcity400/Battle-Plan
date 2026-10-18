@@ -3,7 +3,7 @@
 //! (CharacterRoleTraits) and each nonzero unit-leader reference with its
 //! object's operands (CharacterOperatives). Their writers (effects, commands
 //! and operative recruitment) run at any hour; see
-//! [`engine::character_inputs`].
+//! [`engine_characters::character_inputs`].
 //!
 //! Every hour the Gated job walks the roster job's admitted role census
 //! ([`super::characters::census`]) instead of the roster
@@ -17,17 +17,14 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
-use engine::allocation::{copy_vec, map_slice, owned_vec, vec};
-use engine::{
-    Memory,
-    character_inputs::{self as native, Role},
-    walk::Outcome,
+use engine_allocation::{copy_vec, map_slice, owned_vec, vec};
+use engine_characters::{character_inputs as native, character_inputs::Role};
+use engine_native::{Memory, walk::Outcome};
+use replay_data::{
+    cadence::SKIPPED_REASON, cadence::should_walk, rows::CharacterOperativeRow,
+    rows::CharacterRoleTraitRow, rows::Recorded, rows::TableId, rows::tables,
 };
-use replay::{
-    cadence::{SKIPPED_REASON, should_walk},
-    frame::TableView,
-    rows::{CharacterOperativeRow, CharacterRoleTraitRow, Recorded, TableId, tables},
-};
+use replay_frame::frame::TableView;
 
 mod role_store;
 pub(crate) use role_store::RoleStore;
@@ -155,7 +152,7 @@ impl NamingWork {
         let index = match self.refusals.binary_search_by_key(&reason, |entry| entry.0) {
             Ok(index) => index,
             Err(index) => {
-                engine::allocation::reserve(&mut self.refusals, 1)?;
+                engine_allocation::reserve(&mut self.refusals, 1)?;
                 self.refusals.insert(index, (reason, 0));
                 index
             }
@@ -580,10 +577,10 @@ pub(crate) fn allocation_failure_exercise() {
 }
 
 pub(super) fn operands(
-    name: engine::cname_group_member::Inputs,
+    name: engine_native::cname_group_member::Inputs,
     bytes: &[u8],
-) -> replay::rows::NameOperands {
-    replay::rows::NameOperands {
+) -> replay_data::rows::NameOperands {
+    replay_data::rows::NameOperands {
         kind: name.kind,
         order: name.order,
         ordered: name.ordered,
@@ -619,13 +616,13 @@ mod role_store_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::character_inputs::Leader;
-    use replay::rows::TableRows;
+    use engine_characters::character_inputs::Leader;
+    use replay_data::rows::TableRows;
 
     #[test]
     fn programmatic_override_survives_projection_when_native_shows_it() {
         let naming = operands(
-            engine::cname_group_member::Inputs {
+            engine_native::cname_group_member::Inputs {
                 kind: 2,
                 programmatic: 1,
                 custom: (0, 6),
@@ -695,7 +692,7 @@ mod tests {
             start: 0,
             len: 1,
             name: Some((0, 5)),
-            codename: Some(engine::cname_group_member::Inputs {
+            codename: Some(engine_native::cname_group_member::Inputs {
                 kind: 2,
                 order: -1,
                 ordered: 1,
@@ -750,7 +747,7 @@ mod tests {
                     owner: 9,
                     skill_level: None,
                     trait_definitions: vec![3],
-                    codename: Recorded::Value(Some(replay::rows::NameOperands {
+                    codename: Recorded::Value(Some(replay_data::rows::NameOperands {
                         kind: 2,
                         order: -1,
                         ordered: 1,
@@ -800,7 +797,7 @@ mod tests {
 
     #[test]
     fn walks_every_hour() {
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

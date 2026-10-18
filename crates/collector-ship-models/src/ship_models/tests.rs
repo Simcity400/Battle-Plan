@@ -1,13 +1,11 @@
 use super::*;
-use engine::memory::SliceMemory;
+use engine_native::memory::SliceMemory;
 
 #[test]
 fn projection_compares_every_model_field_and_preserves_encoded_boundaries() {
     use crate::projection::ProjectionScratch;
-    use replay::{
-        frame::{FrameEncoder, FrameInput, Metrics},
-        rows::TableRows,
-    };
+    use replay_data::rows::TableRows;
+    use replay_frame::{frame::FrameEncoder, frame::FrameInput, frame::Metrics};
 
     let fixture = || {
         let mut capture = Captured::with_capacities(&Capacities {
@@ -373,7 +371,7 @@ fn split_outcomes_and_rows_equal_the_unsplit_walk_at_every_boundary() {
         }
     }
     // Rows are byte-identical, in census order.
-    let [TableView::Complete(replay::rows::TableRows::ShipModels(rows))] =
+    let [TableView::Complete(replay_data::rows::TableRows::ShipModels(rows))] =
         captured(2049, 4, None).1
     else {
         panic!("complete")
@@ -533,7 +531,8 @@ fn model_conversion_preserves_primary_handles_text_and_counter_operands() {
     row.maximum_organisation = i64::MAX;
     row.positive_equipment_flags = u64::MAX;
     capture.rows.outcome = Outcome::Rows { len: 1 };
-    let [TableView::Complete(replay::rows::TableRows::ShipModels(rows))] = capture.tables() else {
+    let [TableView::Complete(replay_data::rows::TableRows::ShipModels(rows))] = capture.tables()
+    else {
         panic!("complete")
     };
     assert_eq!(
@@ -567,17 +566,15 @@ fn model_conversion_preserves_primary_handles_text_and_counter_operands() {
     // The port strike-force readiness operands are no longer read.
     assert_eq!(
         rows[0].strike,
-        replay::rows::Recorded::Value(replay::rows::Retired)
+        replay_data::rows::Recorded::Value(replay_data::rows::Retired)
     );
 }
 
 #[test]
 fn hull_projection_tracks_each_refused_scalar_and_null_ordinal() {
     use crate::projection::ProjectionScratch;
-    use replay::{
-        frame::{FrameEncoder, FrameInput, Metrics},
-        rows::{Recorded, TableRows},
-    };
+    use replay_data::{rows::Recorded, rows::TableRows};
+    use replay_frame::{frame::FrameEncoder, frame::FrameInput, frame::Metrics};
     let complete = cship::HullVariantInputs {
         definition_index: Some(7),
         module_count: Some(i32::MIN),
@@ -620,7 +617,7 @@ fn hull_projection_tracks_each_refused_scalar_and_null_ordinal() {
     };
     assert_eq!(
         rows[0].hull_variant,
-        Recorded::Value(Some(replay::rows::HullVariantInputs {
+        Recorded::Value(Some(replay_data::rows::HullVariantInputs {
             definition_index: Some(7),
             module_count: Some(i32::MIN),
             upgrade_level_sum: Some(-1),
@@ -758,7 +755,8 @@ fn cold_ship_models_use_only_original_census_and_later_population_demand() {
         }
         capture.finish_split();
         assert_eq!(capture.outcomes(), [Outcome::Rows { len: count }]);
-        let [TableView::Complete(replay::rows::TableRows::ShipModels(rows))] = capture.tables()
+        let [TableView::Complete(replay_data::rows::TableRows::ShipModels(rows))] =
+            capture.tables()
         else {
             panic!("complete original ship census");
         };

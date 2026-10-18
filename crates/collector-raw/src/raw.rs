@@ -30,7 +30,7 @@
 
 pub use crate::address_range::is_canonical_range;
 use crate::raw_plan::{Attempt, CapturePlan, Observations, Request};
-use engine::Memory;
+use engine_native::Memory;
 use std::cell::RefCell;
 use std::sync::Mutex;
 
@@ -176,7 +176,7 @@ pub struct RawBytes {
 impl RawBytes {
     fn with_capacity(capacity: usize) -> Self {
         let mut storage = Vec::new();
-        if engine::allocation::reserve_exact(&mut storage, capacity).is_ok() {
+        if engine_allocation::reserve_exact(&mut storage, capacity).is_ok() {
             storage.resize(storage.capacity(), 0);
         }
         Self {
@@ -368,7 +368,7 @@ impl<const N: usize> RawLog<N> {
     pub fn new(span_cap: usize, byte_cap: usize) -> Self {
         debug_assert!(N <= 32, "span masks cover at most 32 tables");
         let mut spans = Vec::new();
-        let allocated = engine::allocation::reserve_exact(&mut spans, span_cap).is_ok();
+        let allocated = engine_allocation::reserve_exact(&mut spans, span_cap).is_ok();
         let mut log = Self {
             spans,
             bytes: RawBytes::with_capacity(if allocated { byte_cap } else { 0 }),
@@ -433,8 +433,8 @@ impl<const N: usize> RawLog<N> {
         control_byte_capacity: usize,
     ) {
         let mut requests = Vec::new();
-        if engine::allocation::advisory(|| {
-            engine::allocation::reserve_exact(&mut requests, read_capacity)
+        if engine_allocation::advisory(|| {
+            engine_allocation::reserve_exact(&mut requests, read_capacity)
         })
         .is_err()
         {
@@ -495,7 +495,7 @@ impl<const N: usize> RawLog<N> {
             // Unsupported execution guarantees that no source read occurred.
             return false;
         };
-        use engine::read_plan::Outcome;
+        use engine_native::read_plan::Outcome;
         match outcome {
             Outcome::Complete => {
                 let completed = compiled.requests.len();
@@ -568,7 +568,7 @@ impl<const N: usize> RawLog<N> {
         if let Some(observations) = &self.bytes.observations {
             observations.borrow_mut().hint(address, len);
         }
-        engine::prefetch::span(address, len);
+        engine_native::prefetch::span(address, len);
     }
 
     /// Capacity exhaustion after a prepared source observation must not enter
@@ -628,14 +628,14 @@ impl<const N: usize> RawLog<N> {
     /// Off-thread live presizing. Retain the current prefix and verdicts;
     /// acquisition uses only the storage prepared here.
     pub fn presize(&mut self, spans: usize, bytes: usize) {
-        engine::allocation::advisory(|| self.presize_storage(spans, bytes));
+        engine_allocation::advisory(|| self.presize_storage(spans, bytes));
     }
 
     fn presize_storage(&mut self, spans: usize, bytes: usize) {
         let _phase = crate::allocation::enter(crate::allocation::Phase::Raw);
         if spans > self.spans.capacity() {
             let additional = spans.saturating_sub(self.spans.len());
-            let _ = engine::allocation::reserve_exact(&mut self.spans, additional);
+            let _ = engine_allocation::reserve_exact(&mut self.spans, additional);
         }
         if !crate::allocation::failed() {
             self.bytes.grow_to(bytes);
@@ -646,7 +646,7 @@ impl<const N: usize> RawLog<N> {
     /// Grow only exhausted storage off-thread. Span-heavy censuses must not
     /// repeatedly double a mostly empty byte arena (and vice versa).
     pub fn grow(&mut self) {
-        engine::allocation::advisory(|| self.grow_storage());
+        engine_allocation::advisory(|| self.grow_storage());
     }
 
     fn grow_storage(&mut self) {
@@ -1225,14 +1225,14 @@ impl<const N: usize> RawLog<N> {
                 })
                 .count()
         };
-        let fields = [engine::memory::RecordField {
+        let fields = [engine_native::memory::RecordField {
             source_offset: 0,
             destination_offset: 0,
             len: width,
         }];
-        let layout = engine::memory::RecordLayout::new(&fields, width)?;
+        let layout = engine_native::memory::RecordLayout::new(&fields, width)?;
         let completed = memory.copy_records(
-            engine::memory::RecordSources::Strided {
+            engine_native::memory::RecordSources::Strided {
                 base: address,
                 stride: width,
                 count: admitted,
@@ -1285,8 +1285,8 @@ impl<const N: usize> RawLog<N> {
     pub fn take_records(
         &mut self,
         memory: &impl Memory,
-        sources: engine::memory::RecordSources<'_>,
-        layout: &engine::memory::RecordLayout<'_>,
+        sources: engine_native::memory::RecordSources<'_>,
+        layout: &engine_native::memory::RecordLayout<'_>,
         mask: u32,
     ) -> Option<(usize, usize)> {
         if !self.allow_unplanned_operation() || self.overflowed {
@@ -1400,7 +1400,7 @@ pub fn lowest_table(mask: u32) -> usize {
 /// growth all use ordinary production APIs against stack-owned memory.
 #[cfg(any(test, feature = "test-support"))]
 pub fn allocation_exercise() -> bool {
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     let bytes = [7_u8; 64];
     let memory = SliceMemory {
         base: 0x1000,
@@ -1458,7 +1458,7 @@ pub fn allocation_exercise() -> bool {
     if crate::allocation::failed() {
         return false;
     }
-    engine::allocation::advisory(crate::raw_plan::allocation_exercise)
+    engine_allocation::advisory(crate::raw_plan::allocation_exercise)
 }
 
 #[cfg(test)]

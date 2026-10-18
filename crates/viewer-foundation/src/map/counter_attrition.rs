@@ -16,10 +16,10 @@ pub struct Content {
     /// ordinal minus one.
     pub terrains: Vec<Terrain>,
     /// The sub-unit database: the out-of-supply line's special-forces share reads it.
-    pub sub_units: Result<std::sync::Arc<installed_content::unit_leader::SubUnits>, String>,
+    pub sub_units: Result<std::sync::Arc<installed_content_core::unit_leader::SubUnits>, String>,
 }
 
-impl replay::eta_derive::frame_terms::SubUnitContent for Content {
+impl replay_derive::eta_derive::frame_terms::SubUnitContent for Content {
     fn special_forces(&self, name: &[u8]) -> Result<bool, String> {
         self.sub_units
             .as_ref()
@@ -46,9 +46,9 @@ pub struct Terrain {
 
 impl Content {
     pub fn read(
-        defines: &installed_content::defines::Defines,
-        terrain: &installed_content::terrain::TerrainDefinitions,
-        sub_units: Result<std::sync::Arc<installed_content::unit_leader::SubUnits>, String>,
+        defines: &installed_content_core::defines::Defines,
+        terrain: &installed_content_core::terrain::TerrainDefinitions,
+        sub_units: Result<std::sync::Arc<installed_content_core::unit_leader::SubUnits>, String>,
     ) -> io::Result<Self> {
         Ok(Self {
             training: defines.fixed5("NMilitary", "TRAINING_ATTRITION")?,

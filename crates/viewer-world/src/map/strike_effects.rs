@@ -41,7 +41,8 @@ use super::{
     entity_animation::{self, Clock, Request},
     models::{ModelInstance, ModelLibrary, WATER_HEIGHT},
 };
-use replay::{frame::DecodedFrame, rows::tables};
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io, sync::Arc};
 use viewer_foundation::{
     map::{camera::Camera, province_admission::Admission},
@@ -390,11 +391,9 @@ mod tests {
         entity_animation::{Clip, Node, Player, Rig},
         models::PaletteJoint,
     };
-    use installed_content::mesh::{self, EntityState, Transform};
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{NuclearStrikeRow, TableId, TableRows},
-    };
+    use installed_content_core::{mesh, mesh::EntityState, mesh::Transform};
+    use replay_data::{rows::NuclearStrikeRow, rows::TableId, rows::TableRows};
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     fn empty_frame() -> DecodedFrame {
         DecodedFrame {
@@ -587,16 +586,16 @@ mod tests {
 
     #[test]
     fn content_declares_the_effect_entities_and_a_missing_one_is_named() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let descriptors = installed_content::mesh::parse_descriptors(
+        let descriptors = installed_content_core::mesh::parse_descriptors(
             br#"entity={name=nuke_entity state={name=attack event={time=0.5 particle=mist keep_particle=yes sound={soundeffect=blast}}}}"#,
             "gfx/synthetic.asset",
         )
         .unwrap();
         let library = ModelLibrary::load(
-            &installed_content::ResolvedLayers::default(),
-            installed_content::image::native::Decode::default(),
+            &installed_content_core::ResolvedLayers::default(),
+            installed_content_image::native::Decode::default(),
             &descriptors,
             &[NUCLEAR_ENTITY.into()],
             &mut Vec::new(),

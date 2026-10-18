@@ -3,12 +3,10 @@ use crate::{
     table_capture::{Arena, CaptureRows},
     table_conversion::{table, unavailable},
 };
-use engine::allocation::{collect_vec, copy_vec, owned_vec};
-use engine::{Memory, cnaval_base, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{NavalBaseRow, TableId, tables},
-};
+use engine_allocation::{collect_vec, copy_vec, owned_vec};
+use engine_native::{Memory, cnaval_base, walk::Outcome};
+use replay_data::{rows::NavalBaseRow, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::NavalBases];
@@ -136,7 +134,7 @@ impl Captured {
                     &countries[r.countries_start..r.countries_start + r.countries_len as usize],
                 )),
                 countries_unreadable: r.countries_unreadable,
-                country_tags: replay::rows::Recorded::Value(
+                country_tags: replay_data::rows::Recorded::Value(
                     owned_vec(collect_vec(
                         self.country_tags
                             [r.countries_start..r.countries_start + r.countries_len as usize]
@@ -154,11 +152,11 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
 
     #[test]
     fn cold_storage_publishes_first_and_later_mod_sized_base_headers() {
-        use engine::{cgame_state, rail_anchor_selector as map};
+        use engine_native::{cgame_state, rail_anchor_selector as map};
         let mut capture = Captured::with_capacities(&Capacities::default());
         assert_eq!(capture.allocated_bytes(), 0);
         let game_state = 0x1000;
@@ -170,7 +168,7 @@ mod tests {
             let bases = buckets + (capacity + 1) * 0x18;
             let list = bases + count * cnaval_base::SIZE;
             let tags = list + list_len * 4;
-            let mut bytes = vec![0; tags + (list_len + 1) * engine::msvc_string::STRIDE];
+            let mut bytes = vec![0; tags + (list_len + 1) * engine_native::msvc_string::STRIDE];
             let mut put = |at: usize, value: &[u8]| {
                 bytes[at..at + value.len()].copy_from_slice(value);
             };
@@ -190,7 +188,7 @@ mod tests {
             for index in 0..list_len {
                 put(list + index * 4, &(index as u32 + 1).to_le_bytes());
                 let text = format!("T{}", index + 1);
-                let tag = tags + (index + 1) * engine::msvc_string::STRIDE;
+                let tag = tags + (index + 1) * engine_native::msvc_string::STRIDE;
                 put(tag, text.as_bytes());
                 put(tag + 16, &(text.len() as u64).to_le_bytes());
                 put(tag + 24, &15_u64.to_le_bytes());
@@ -236,11 +234,12 @@ mod tests {
                     .iter()
                     .all(|row| row.countries_len == list_len as u32)
             );
-            let [TableView::Complete(replay::rows::TableRows::NavalBases(rows))] = capture.tables()
+            let [TableView::Complete(replay_data::rows::TableRows::NavalBases(rows))] =
+                capture.tables()
             else {
                 panic!("readable naval bases were not published");
             };
-            let expected = replay::rows::Recorded::Value(Some(
+            let expected = replay_data::rows::Recorded::Value(Some(
                 (1..=list_len)
                     .map(|index| format!("T{index}").into_bytes())
                     .collect(),

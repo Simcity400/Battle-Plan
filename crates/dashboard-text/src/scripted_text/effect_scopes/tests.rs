@@ -1,12 +1,14 @@
 use super::*;
 use crate::triggers::{Eval, Evaluator, Scope};
-use replay::rows::{DivisionTemplateIconRow, DivisionTemplateRow, TableId, TableRows};
+use replay_data::{
+    rows::DivisionTemplateIconRow, rows::DivisionTemplateRow, rows::TableId, rows::TableRows,
+};
 
 use crate::scripted_text::tests::complete_frame as frame;
 
 #[test]
 fn template_fallback_uses_recorded_language_and_template_country() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         "",
@@ -20,7 +22,7 @@ fn template_fallback_uses_recorded_language_and_template_country() {
             DivisionTemplateRow {
                 template: 9,
                 owner: 100,
-                name_key: replay::rows::Recorded::Value(b"force".to_vec()),
+                name_key: replay_data::rows::Recorded::Value(b"force".to_vec()),
                 ..Default::default()
             },
         ]));
@@ -34,9 +36,9 @@ fn template_fallback_uses_recorded_language_and_template_country() {
         ]));
     let text = ScriptedText::new(&frame, &catalogue.localisation, content, 1);
     let evaluator = Evaluator::new(text.world().unwrap(), None);
-    let triggers = installed_content::triggers::read(
+    let triggers = installed_content_core::triggers::read(
         b"has_template = \"Intervention Force\"",
-        &installed_content::key_names::KeyNames::default(),
+        &installed_content_core::key_names::KeyNames::default(),
     )
     .items;
     assert_eq!(
@@ -63,7 +65,7 @@ fn template_fallback_uses_recorded_language_and_template_country() {
 
 #[test]
 fn entry_conditions_use_deep_links_and_description_variable_session() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         "entry = { name = Deep text = { trigger = { FROM.FROM = { tag = SOV } check_variable = { temp_var:x = 7 } } localization_key = YES } text = { localization_key = NO } }",
@@ -87,9 +89,9 @@ fn entry_conditions_use_deep_links_and_description_variable_session() {
     let evaluator = Evaluator::new(text.world().unwrap(), None);
     let caller = crate::triggers::Scopes::of(Scope::Country(1));
     evaluator.begin_description();
-    let set = installed_content::triggers::read(
+    let set = installed_content_core::triggers::read(
         b"set_temp_variable = { x = 7 }",
-        &installed_content::key_names::KeyNames::default(),
+        &installed_content_core::key_names::KeyNames::default(),
     )
     .items;
     assert_eq!(evaluator.evaluate(&set, caller), Eval::True);
@@ -102,7 +104,7 @@ fn entry_conditions_use_deep_links_and_description_variable_session() {
 
 #[test]
 fn text_target_priority_matches_trigger_context_and_saved_only_predicate() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue("", "");
     let content = catalogue.scripted_content().unwrap();
@@ -123,9 +125,9 @@ fn text_target_priority_matches_trigger_context_and_saved_only_predicate() {
     let evaluator = Evaluator::new(text.world().unwrap(), None)
         .with_event_scopes(std::rc::Rc::new(std::cell::RefCell::new(graph)));
     let caller = evaluator.event_scopes(0).unwrap();
-    let predicates = installed_content::triggers::read(
+    let predicates = installed_content_core::triggers::read(
         b"has_event_target = target",
-        &installed_content::key_names::KeyNames::default(),
+        &installed_content_core::key_names::KeyNames::default(),
     )
     .items;
     assert_eq!(evaluator.evaluate(&predicates, caller), Eval::False);
@@ -133,7 +135,7 @@ fn text_target_priority_matches_trigger_context_and_saved_only_predicate() {
 
 #[test]
 fn balance_nested_description_inherits_the_active_variable_session() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -154,7 +156,7 @@ fn balance_nested_description_inherits_the_active_variable_session() {
     let mut frame = frame();
     *frame.tables[TableId::PowerBalances.index()] =
         TableView::Complete(TableRows::from_rows::<tables::PowerBalances>(vec![
-            replay::rows::PowerBalanceRow {
+            replay_data::rows::PowerBalanceRow {
                 balance: b"balance".to_vec(),
                 active_range: b"active".to_vec(),
                 ..Default::default()
@@ -162,7 +164,7 @@ fn balance_nested_description_inherits_the_active_variable_session() {
         ]));
     *frame.tables[TableId::PowerBalanceMembers.index()] =
         TableView::Complete(TableRows::from_rows::<tables::PowerBalanceMembers>(vec![
-            replay::rows::PowerBalanceMemberRow {
+            replay_data::rows::PowerBalanceMemberRow {
                 country: 100,
                 ..Default::default()
             },
@@ -172,9 +174,9 @@ fn balance_nested_description_inherits_the_active_variable_session() {
     let evaluator = Evaluator::new(text.world().unwrap(), None);
     let caller = crate::triggers::Scopes::of(Scope::Country(1));
     evaluator.begin_description();
-    let set = installed_content::triggers::read(
+    let set = installed_content_core::triggers::read(
         b"set_temp_variable={x=7}",
-        &installed_content::key_names::KeyNames::default(),
+        &installed_content_core::key_names::KeyNames::default(),
     )
     .items;
     assert_eq!(evaluator.evaluate(&set, caller), Eval::True);
@@ -187,9 +189,9 @@ fn balance_nested_description_inherits_the_active_variable_session() {
         ),
         Ok("Activate:\nInherited\n".into())
     );
-    let check = installed_content::triggers::read(
+    let check = installed_content_core::triggers::read(
         b"check_variable={temp_var:x=7}",
-        &installed_content::key_names::KeyNames::default(),
+        &installed_content_core::key_names::KeyNames::default(),
     )
     .items;
     assert_eq!(evaluator.evaluate(&check, caller), Eval::True);

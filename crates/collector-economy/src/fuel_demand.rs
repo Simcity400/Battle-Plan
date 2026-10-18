@@ -1,13 +1,10 @@
 //! Daily Fuel supplying-read pack. Admission/growth is off the game thread;
 //! the callback owns every byte before worker conversion or replay encoding.
 use crate::table_capture::{grow_capacity, grow_vec};
-use engine::{
-    Memory,
-    allocation::{copy_vec, default_vec, filled, owned_vec},
-    corders_group as group, fuel_demand as native,
-    walk::Outcome,
-};
-use replay::rows::{self, Recorded};
+use engine_allocation::{copy_vec, default_vec, filled, owned_vec};
+use engine_fuel::fuel_demand as native;
+use engine_native::{Memory, corders_group as group, walk::Outcome};
+use replay_data::{rows, rows::Recorded};
 use std::{collections::HashSet, io, mem::size_of};
 
 const N: usize = 12;
@@ -200,17 +197,23 @@ impl Captured {
             wings: rows(&mut self.wings, growing),
             weather: rows(&mut self.weather, growing),
             contexts: rows(&mut self.contexts, growing),
-            context_slots: engine::walk::Buffer::for_worker(&mut self.context_slots, growing),
-            names: engine::walk::Buffer::for_worker(&mut self.names, growing),
+            context_slots: engine_native::walk::Buffer::for_worker(
+                &mut self.context_slots,
+                growing,
+            ),
+            names: engine_native::walk::Buffer::for_worker(&mut self.names, growing),
             name_len: 0,
             name_required: 0,
-            roots: engine::walk::Buffer::for_worker(&mut self.roots, growing),
-            groups: engine::walk::Buffer::for_worker(&mut self.groups, growing),
-            members: engine::walk::Buffer::for_worker(&mut self.members, growing),
-            children: engine::walk::Buffer::for_worker(&mut self.children, growing),
-            roster_scratch: engine::walk::Buffer::for_worker(&mut self.scratch, growing),
-            group_names: engine::walk::Buffer::for_worker(&mut self.group_names, growing),
-            group_countries: engine::walk::Buffer::for_worker(&mut self.group_countries, growing),
+            roots: engine_native::walk::Buffer::for_worker(&mut self.roots, growing),
+            groups: engine_native::walk::Buffer::for_worker(&mut self.groups, growing),
+            members: engine_native::walk::Buffer::for_worker(&mut self.members, growing),
+            children: engine_native::walk::Buffer::for_worker(&mut self.children, growing),
+            roster_scratch: engine_native::walk::Buffer::for_worker(&mut self.scratch, growing),
+            group_names: engine_native::walk::Buffer::for_worker(&mut self.group_names, growing),
+            group_countries: engine_native::walk::Buffer::for_worker(
+                &mut self.group_countries,
+                growing,
+            ),
             group_owner_reason: None,
             group_outcomes: None,
             roots_outcome: None,
@@ -257,14 +260,14 @@ impl Captured {
     /// once; no per-country full-world fleet/group scan or later memory read.
     pub fn owned(&self) -> io::Result<Vec<(u32, rows::FuelDemandRead)>> {
         let mut result = Vec::new();
-        engine::allocation::reserve_exact(&mut result, self.lengths[0])?;
+        engine_allocation::reserve_exact(&mut result, self.lengths[0])?;
         let fleets = index(&self.fleets[..self.lengths[2]], |row| row.country)?;
         let tasks = index(&self.tasks[..self.lengths[3]], |row| row.country)?;
         let groups = index(&self.group_countries[..self.lengths[9]], |country| *country)?;
         let group_refs = index(&self.groups[..self.lengths[9]], |group| group.handle)?;
         let members = index(&self.members[..self.lengths[10]], |row| row.group)?;
         let children = index(&self.children[..self.lengths[11]], |row| row.group)?;
-        let mut context_sums = engine::allocation::vec(self.lengths[7])?;
+        let mut context_sums = engine_allocation::vec(self.lengths[7])?;
         for context in &self.contexts[..self.lengths[7]] {
             let sums = if context.reason.is_some() {
                 None
@@ -404,7 +407,7 @@ impl Captured {
                                             )
                                         })?;
                                     let mapped = u32::try_from(pack.contexts.len())
-                                        .map_err(|_| engine::allocation::oom())?;
+                                        .map_err(|_| engine_allocation::oom())?;
                                     push(
                                         &mut pack.contexts,
                                         rows::FuelDemandContext {
@@ -416,7 +419,7 @@ impl Captured {
                                             })?,
                                         },
                                     )?;
-                                    engine::allocation::reserve(&mut contexts, 1)?;
+                                    engine_allocation::reserve(&mut contexts, 1)?;
                                     contexts.insert(position, (index, mapped));
                                     mapped
                                 }
@@ -481,12 +484,12 @@ fn context_slots(count: usize) -> io::Result<usize> {
         count
             .checked_mul(2)
             .and_then(usize::checked_next_power_of_two)
-            .ok_or_else(engine::allocation::oom)
+            .ok_or_else(engine_allocation::oom)
     }
 }
 fn rows<T>(rows: &mut Vec<T>, growing: bool) -> native::BufferRows<'_, T> {
     native::BufferRows {
-        rows: engine::walk::Buffer::for_worker(rows, growing),
+        rows: engine_native::walk::Buffer::for_worker(rows, growing),
         len: 0,
         required: 0,
     }
@@ -514,12 +517,12 @@ fn slice<T>(values: &[T], span: native::Span) -> io::Result<&[T]> {
         .ok_or_else(|| io::Error::other("fuel demand span outside owned arena"))
 }
 fn push<T>(values: &mut Vec<T>, value: T) -> io::Result<()> {
-    engine::allocation::reserve(values, 1)?;
+    engine_allocation::reserve(values, 1)?;
     values.push(value);
     Ok(())
 }
 fn index<T, K: Ord>(values: &[T], key: impl Fn(&T) -> K) -> io::Result<Vec<(K, usize)>> {
-    let mut result = engine::allocation::vec(values.len())?;
+    let mut result = engine_allocation::vec(values.len())?;
     result.extend(
         values
             .iter()
@@ -544,7 +547,7 @@ fn select_group(
     if reference == 0 || seen.contains(&reference) {
         return Ok(());
     }
-    engine::allocation::reserve_set(seen, 1)?;
+    engine_allocation::reserve_set(seen, 1)?;
     seen.insert(reference);
     match groups.binary_search_by_key(&reference, |&(reference, _)| reference) {
         Ok(index) => push(selected, groups[index].1)?,
@@ -574,13 +577,11 @@ const TRUNCATED_PARTS: &str =
 /// stay whole and its parts are unavailable, as are an unavailable read's,
 /// for its reason.
 pub fn attach(
-    table: &mut replay::frame::TableInput,
+    table: &mut replay_frame::frame::TableInput,
     captured: &Captured,
-) -> io::Result<replay::frame::TableView> {
-    use replay::{
-        frame::{TableInput, TableView},
-        rows::TableRows,
-    };
+) -> io::Result<replay_frame::frame::TableView> {
+    use replay_data::rows::TableRows;
+    use replay_frame::{frame::TableInput, frame::TableView};
     let (rows, complete) = match table {
         TableInput::Sampled(TableView::Complete(TableRows::CountryFuel(rows))) => (rows, true),
         TableInput::Sampled(TableView::Truncated {
@@ -637,7 +638,7 @@ pub fn attach(
             continue;
         }
         let (header, mut owned_parts) = pack.split(row.country)?;
-        engine::allocation::reserve(&mut parts, owned_parts.len())?;
+        engine_allocation::reserve(&mut parts, owned_parts.len())?;
         parts.append(&mut owned_parts);
         row.demand = Recorded::Value(header);
     }
@@ -648,7 +649,7 @@ pub fn attach(
     }
     // Each country's parts are in key order, whose highest bits are the
     // country, and CountryFuel holds a row a country.
-    parts.sort_unstable_by_key(replay::rows::RowCodec::key);
+    parts.sort_unstable_by_key(replay_data::rows::RowCodec::key);
     Ok(TableView::Complete(TableRows::FuelDemandParts(parts)))
 }
 

@@ -3,7 +3,7 @@
 //! only the main string. Side conditions and weights extend the delayed text.
 use super::super::tooltips::{Described, hover_text, set_hover, tactic_description};
 use super::*;
-use installed_content::fixed5::fixed5_percent;
+use installed_content_core::fixed5::fixed5_percent;
 
 /// the game resolves the last countered_by text against the completed registry.
 /// Buckets prepend entries, so repeated names resolve to their last definition.

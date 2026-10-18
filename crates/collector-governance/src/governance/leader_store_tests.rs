@@ -8,7 +8,7 @@ use crate::{
     party_leader_changes::{Counts, Pair, Watches},
     sampled_verify::{Check, ROTATION},
 };
-use engine::{
+use engine_native::{
     ccharacter, ccountry, ccountry_leader, cideology_group, cpolitical_party::LeaderRow,
     memory::SliceMemory,
 };
@@ -161,7 +161,7 @@ fn hour(bytes: &[u8], store: &mut LeaderStore, domains: &Domains, check: Check) 
         let first = rows.len();
         let outcome = reader.party_leaders_carried(
             index as u32 + 1,
-            engine::walk::Buffer::Growing(&mut rows).suffix(first),
+            engine_native::walk::Buffer::Growing(&mut rows).suffix(first),
             &mut reuse,
         );
         complete &= matches!(outcome, Outcome::Rows { len: 1 });

@@ -189,7 +189,7 @@ impl Prepared {
         tables: &dyn TableChanges,
         kept: Option<&Kept<'_>>,
     ) -> io::Result<bool> {
-        let cpu = ::replay::cpu::scope_phase("leaders:restore_results");
+        let cpu = ::replay_frame::cpu::scope_phase("leaders:restore_results");
         self.series.advance(frame.hour)?;
         let naval_changed = [
             TableId::NavalResults,
@@ -359,7 +359,7 @@ impl Prepared {
         content_errors: &[String],
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("leaders:presentation_flush");
+        let _cpu = ::replay_frame::cpu::scope_phase("leaders:presentation_flush");
         self.scan.seal();
         // Static presentation uses the existing content loaders once per new token.
         for token in &self.scan.token_list[self.scan.reply.traits.len()..] {
@@ -486,7 +486,7 @@ impl Prepared {
         self.scan.recount_pending();
         self.scan.formation_names.clear();
         self.series.through(self.through);
-        let cpu = ::replay::cpu::scope_phase("leaders:series_flush");
+        let cpu = ::replay_frame::cpu::scope_phase("leaders:series_flush");
         self.series.flush(writer, &section(branch), 0, cancelled)?;
         drop(cpu);
         series::write_catalogue(

@@ -1,5 +1,5 @@
 use super::*;
-use engine::{cgame_state, memory::SliceMemory};
+use engine_native::{cgame_state, memory::SliceMemory};
 use std::cell::{Cell, RefCell};
 
 struct Trace<'a> {
@@ -211,7 +211,7 @@ impl Memory for Inputs<'_> {
         if Some(at) == self.fault {
             return false;
         }
-        if at == engine::carmy::COUNTER_ATTRITION_THRESHOLD_RVA {
+        if at == engine_native::carmy::COUNTER_ATTRITION_THRESHOLD_RVA {
             output.copy_from_slice(&500_i64.to_le_bytes());
             return true;
         }
@@ -223,11 +223,11 @@ impl Memory for Inputs<'_> {
     }
 }
 
-fn seed() -> engine::carmy::DivisionSeed {
-    engine::carmy::DivisionSeed {
+fn seed() -> engine_native::carmy::DivisionSeed {
+    engine_native::carmy::DivisionSeed {
         pointer: 0x8000,
         division: 11,
-        primary_vtable: Some(engine::carmy::VTABLE_RVA as u64),
+        primary_vtable: Some(engine_native::carmy::VTABLE_RVA as u64),
         handle: Some(11),
         roster_owner: Some(2),
         expeditionary_owner: Some(0),
@@ -254,7 +254,7 @@ fn real_border_capture_isolates_faults_and_preserves_incomplete_censuses() {
     let mut bytes = doctrine_fixture();
     bytes.resize(0x9000, 0);
     bytes[0x7000..0x7008]
-        .copy_from_slice(&(engine::csub_unit_definition::VTABLE_RVA as u64).to_le_bytes());
+        .copy_from_slice(&(engine_native::csub_unit_definition::VTABLE_RVA as u64).to_le_bytes());
     let memory = Inputs {
         bytes: &bytes,
         fault: None,
@@ -282,7 +282,7 @@ fn real_border_capture_isolates_faults_and_preserves_incomplete_censuses() {
         (
             1,
             false,
-            Some(0x7000 + engine::csub_unit_definition::DEFENSE),
+            Some(0x7000 + engine_native::csub_unit_definition::DEFENSE),
             1,
         ),
         (1, true, None, 0),
@@ -368,7 +368,7 @@ fn real_border_capture_isolates_faults_and_preserves_incomplete_censuses() {
             );
             assert_eq!(
                 matches!(stats, Outcome::Unavailable { .. }),
-                fault == Some(0x7000 + engine::csub_unit_definition::DEFENSE)
+                fault == Some(0x7000 + engine_native::csub_unit_definition::DEFENSE)
             );
             if matches!(country_outcome, Outcome::Rows { .. }) {
                 assert_eq!(countries[0].border_land_doctrine_level, Some(-19));

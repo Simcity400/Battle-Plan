@@ -1,6 +1,6 @@
 //! One compact, campaign-wide ownership catalogue; no per-hour history retained.
 //! Names are resolved at each country's first observed hour in the user's game
-//! language (`installed_content::country_names`); without game content they are tags.
+//! language (`installed_content_country_names::country_names`); without game content they are tags.
 #[cfg(test)]
 use super::LoadContext;
 use super::Product;
@@ -14,14 +14,13 @@ use crate::{
     CountryMetadata, LandOwners,
     metadata::{CountryKeys, short_text},
 };
-use installed_content::{country_names::CountryNames, localisation::Localisation};
+use installed_content_country_names::country_names::CountryNames;
+use installed_content_localisation::localisation::Localisation;
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::tables};
 #[cfg(test)]
-use replay::frame::FrameDecoder;
-use replay::{
-    container::Replay,
-    frame::{TableView, ViewIdentity},
-    rows::{TableId, tables},
-};
+use replay_frame::frame::FrameDecoder;
+use replay_frame::{frame::TableView, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -132,7 +131,7 @@ impl Scan {
     }
     pub(crate) fn observe(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         localisation: Option<&Localisation>,
         changes: Option<&crate::prepared::frame_changes::FrameChanges>,
     ) -> io::Result<()> {
@@ -146,7 +145,7 @@ impl Scan {
         {
             return Ok(());
         }
-        let states = match &*frame.tables[replay::rows::TableId::States.index()] {
+        let states = match &*frame.tables[replay_data::rows::TableId::States.index()] {
             TableView::Complete(rows) => rows.rows::<tables::States>(),
             TableView::Truncated { rows, .. } => {
                 self.incomplete = true;

@@ -11,11 +11,9 @@ use crate::{
     Source, catalogue,
     metadata::{TaggedCountry, link_slot, slot_read, tagged_countries, validate_campaign},
 };
-use replay::{
-    container::Replay,
-    frame::{FrameDecoder, TableView},
-    rows::{Recorded, TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{rows::Recorded, rows::TableId, rows::tables};
+use replay_frame::{frame::FrameDecoder, frame::TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
@@ -442,7 +440,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                         seen.insert(key);
                         let refit = match kinds.get(&row.line) {
                             Some(kind) => {
-                                *kind == engine::cequipment_production_line::KIND_SHIP_REFIT
+                                *kind == engine_native::cequipment_production_line::KIND_SHIP_REFIT
                             }
                             None => {
                                 unlisted.insert(row.line);
@@ -650,7 +648,7 @@ pub(crate) struct VariantType {
 /// unknown, never assumed.
 #[derive(Clone, Copy, Default)]
 pub struct Named<'a> {
-    pub units: Option<&'a installed_content::equipment::Database>,
+    pub units: Option<&'a installed_content_core::equipment::Database>,
     pub texts: Option<&'a dyn Texts>,
 }
 
@@ -741,7 +739,7 @@ pub(crate) fn content(
     warnings: &mut Vec<String>,
 ) -> (
     Option<Arc<catalogue::Catalogue>>,
-    Option<Arc<installed_content::equipment::Database>>,
+    Option<Arc<installed_content_core::equipment::Database>>,
 ) {
     match context
         .content()

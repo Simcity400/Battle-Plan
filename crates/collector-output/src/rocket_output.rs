@@ -4,15 +4,12 @@
 //! dependency or line handle. Failed world/load coverage stays unavailable.
 use super::output_continuity::{self, Progress, Reasons, State};
 use crate::output_log::Drained;
-use engine::{
-    allocation::{collect_vec, mul, reserve_map},
-    line_output_sites::{RocketFailure, RocketTick, UNIT_SCALE},
+use engine_allocation::{collect_vec, mul, reserve_map};
+use engine_production::{
+    line_output_sites::RocketFailure, line_output_sites::RocketTick, line_output_sites::UNIT_SCALE,
 };
-use replay::{
-    BranchId,
-    frame::{TableInput, TableView},
-    rows::RocketProductionOutputRow,
-};
+use replay_data::{BranchId, rows::RocketProductionOutputRow};
+use replay_frame::{frame::TableInput, frame::TableView};
 use std::{collections::HashMap, io};
 
 /// Owned event only; no native receiver or pointer survives acquisition.
@@ -157,9 +154,9 @@ impl Totals {
         }
         if matches!(production_lines,
             TableInput::Sampled(TableView::Unavailable { reason })
-                if reason == replay::cadence::SKIPPED_REASON)
+                if reason == replay_data::cadence::SKIPPED_REASON)
         {
-            return Ok(Err(replay::cadence::SKIPPED_REASON));
+            return Ok(Err(replay_data::cadence::SKIPPED_REASON));
         }
         let mut rows = collect_vec(self.rows.values().cloned())?;
         rows.sort_unstable_by_key(|row| (row.country, row.variant));

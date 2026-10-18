@@ -1,8 +1,8 @@
 //! The province hover of a map mode other than the default and states modes: the mode's own
 //! lines alone, as the game shows them, without the location block, units or selection.
 use super::{Context, ModeHover, line};
-use installed_content::localisation::Argument as Arg;
-use replay::rows::{Recorded, tables};
+use installed_content_localisation::localisation::Argument as Arg;
+use replay_data::{rows::Recorded, rows::tables};
 use viewer_foundation::map::native_text::FLAG;
 use viewer_foundation::tooltip_text::Tooltip;
 
@@ -32,7 +32,7 @@ impl Context<'_> {
         )
     }
 
-    fn state_row(&self) -> Result<&replay::rows::StateRow, String> {
+    fn state_row(&self) -> Result<&replay_data::rows::StateRow, String> {
         let id = self.province.state;
         self.frame
             .complete::<tables::States>()
@@ -242,7 +242,7 @@ impl Context<'_> {
     /// effects sections; `refused` collects each line left out, by key.
     fn occupation_lines(
         &self,
-        row: &replay::rows::StateResistanceRow,
+        row: &replay_data::rows::StateResistanceRow,
         refused: &mut Vec<(&'static str, String)>,
     ) -> Result<String, String> {
         let defines = self
@@ -347,7 +347,7 @@ impl Context<'_> {
         );
         let base = format!(
             "\u{11}G{}\u{11}!",
-            installed_content::fixed5::fixed5_to_string(defines.compliance_growth_base, 3)
+            installed_content_core::fixed5::fixed5_to_string(defines.compliance_growth_base, 3)
         );
         lines.push(self.loc("MODIFIER_BASE_VALUE_STR", &[("VALUE", Arg::Text(&base))])?);
         refuse(
@@ -486,7 +486,7 @@ pub(super) struct OccupationDefines {
 }
 
 impl OccupationDefines {
-    pub(super) fn load(defines: &installed_content::defines::Defines) -> std::io::Result<Self> {
+    pub(super) fn load(defines: &installed_content_core::defines::Defines) -> std::io::Result<Self> {
         let value = |name: &str| defines.fixed5("NCountry", name);
         let pairs = defines.fixed5_array("NCountry", "RESISTANCE_TARGET_MODIFIER_STATE_VP")?;
         if pairs.len() % 2 != 0 {

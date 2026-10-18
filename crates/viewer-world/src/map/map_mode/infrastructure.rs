@@ -1,7 +1,7 @@
 //! The infrastructure mode: each state coloured by its infrastructure level over its maximum.
 //!
 //! The mode and its hover read one building type: the first one in database order declared
-//! `infrastructure = yes` ([`installed_content::buildings::Buildings::infrastructure`]). A state's level
+//! `infrastructure = yes` ([`installed_content_core::buildings::Buildings::infrastructure`]). A state's level
 //! is that type's level in the state's building status (zero without an entry). The game holds
 //! no maximum; it builds one on demand, and for this type in a state it is the smaller of:
 //!
@@ -36,14 +36,12 @@
 use super::{
     Inputs, LEVEL_GRADIENT, ModeDefines, ModeLayer, complete, finish, region_table_len, style,
 };
-use installed_content::{
-    buildings::Buildings, defines::Defines, state_categories, strategic_locations,
-    technology::Catalog,
+use installed_content_core::{
+    buildings::Buildings, defines::Defines, strategic_locations, technology::Catalog,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{Recorded, tables},
-};
+use installed_content_state_categories::state_categories;
+use replay_data::{rows::Recorded, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -211,7 +209,7 @@ impl Content {
                                 .map(|&(_, level)| level)
                                 .max();
                             (
-                                installed_content::parser::c_string(&definition.id).to_ascii_lowercase(),
+                                installed_content_core::parser::c_string(&definition.id).to_ascii_lowercase(),
                                 level,
                             )
                         })
@@ -309,7 +307,7 @@ impl Content {
         let mut joined = BTreeMap::new();
         let mut unjoined = BTreeMap::new();
         for row in definitions {
-            let id = installed_content::parser::c_string(&row.id).to_ascii_lowercase();
+            let id = installed_content_core::parser::c_string(&row.id).to_ascii_lowercase();
             if !enabling.contains(id.as_slice()) {
                 continue;
             }
@@ -333,7 +331,7 @@ impl Content {
         }
         let mut limits = Limits::default();
         for row in complete::<tables::ResearchTechnologies>(frame, mode)? {
-            let completed = row.classifier == engine::ctechnology::CLASSIFIER_COMPLETED;
+            let completed = row.classifier == engine_research::ctechnology::CLASSIFIER_COMPLETED;
             // A completion was applied, or for a partly researched one may have been.
             let applied = completed || row.level > 0;
             let unknown = if let Some(name) = unjoined.get(&row.database_index) {

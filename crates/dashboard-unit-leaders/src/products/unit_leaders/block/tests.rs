@@ -2,7 +2,10 @@ use super::*;
 use crate::products::unit_leaders::prepared::test_fixtures::{frame, set};
 use dashboard_base::prepared::frame_changes::FrameChangeTracker;
 use dashboard_core::test_fixtures::{CAMPAIGN, records};
-use replay::rows::{CountryCounterInputRow, Recorded, ScriptVariableEntry, ScriptVariablesRow};
+use replay_data::{
+    rows::CountryCounterInputRow, rows::Recorded, rows::ScriptVariableEntry,
+    rows::ScriptVariablesRow,
+};
 
 #[test]
 fn bound_content_keeps_variables_and_only_the_tag_resolvers_counter_field() {

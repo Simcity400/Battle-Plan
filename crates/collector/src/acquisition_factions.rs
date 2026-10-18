@@ -4,7 +4,7 @@ use crate::{
     acquisition_gather::{Report as GatherReport, Request as GatherRequest},
     sampling::qpc,
 };
-use engine::{Memory, cfaction, cfaction_system, country_memory::Cache, walk::Outcome};
+use engine_native::{Memory, cfaction, cfaction_system, country_memory::Cache, walk::Outcome};
 use std::sync::Arc;
 
 #[derive(Default)]
@@ -100,14 +100,14 @@ pub(crate) fn run_growing(request: &mut Request, memory: &impl Memory) -> Report
 }
 
 fn run_with(request: &mut Request, memory: &impl Memory, growing: bool) -> Report {
-    let _factions_reads = crate::read_accounting::table(replay::rows::TableId::Factions);
+    let _factions_reads = crate::read_accounting::table(replay_data::rows::TableId::Factions);
     let cached = request.countries.view(memory);
     let names = &mut request.factions;
     let (base, game_state) = (names.base, names.game_state);
     let started = qpc();
     let factions = names.run(|payload| payload.walk(&cached, base, game_state, growing));
     let faction_ticks = qpc().saturating_sub(started).max(0) as u64;
-    let _members_reads = crate::read_accounting::table(replay::rows::TableId::FactionMembers);
+    let _members_reads = crate::read_accounting::table(replay_data::rows::TableId::FactionMembers);
     let members = &mut request.members;
     let (base, game_state) = (members.base, members.game_state);
     let started = qpc();
@@ -129,7 +129,9 @@ fn run_with(request: &mut Request, memory: &impl Memory, growing: bool) -> Repor
 mod tests {
     use super::*;
     use crate::acquisition;
-    use engine::{ccountry, cdiplomacy_status, cgame_state, memory::SliceMemory, msvc_string};
+    use engine_native::{
+        ccountry, cdiplomacy_status, cgame_state, memory::SliceMemory, msvc_string,
+    };
     use std::cell::RefCell;
 
     const GS: usize = 0x1000;

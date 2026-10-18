@@ -63,7 +63,10 @@ pub fn demand(
             need(&mut demand.provinces, provinces.count as usize);
             let cores = array(pointer, cstate::CORES, 4)?;
             let claims = array(pointer, cstate::CLAIMS, 4)?;
-            core_links = add(core_links, add(cores.count as usize, claims.count as usize)?)?;
+            core_links = add(
+                core_links,
+                add(cores.count as usize, claims.count as usize)?,
+            )?;
             let locations = array(
                 pointer,
                 cstate::STRATEGIC_LOCATIONS,
@@ -398,10 +401,15 @@ fn state_cores_buffer(
                 }
                 let (core_count, claim_count) = (cores.count as usize, claims.count as usize);
                 let location_count = locations.count as usize;
-                let count = [core_count, claim_count, 2 * location_count, 2 * province_count]
-                    .into_iter()
-                    .try_fold(0_usize, usize::checked_add)
-                    .ok_or("state core link count overflow")?;
+                let count = [
+                    core_count,
+                    claim_count,
+                    2 * location_count,
+                    2 * province_count,
+                ]
+                .into_iter()
+                .try_fold(0_usize, usize::checked_add)
+                .ok_or("state core link count overflow")?;
                 *required = required
                     .checked_add(count)
                     .ok_or("state core link count overflow")?;

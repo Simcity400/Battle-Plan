@@ -3,15 +3,11 @@ use dashboard_text::{
     effect_description::{self, Context as EffectContext},
     scripted_text::{EventObject, EventScope, EventScopes, Link, ScriptedText},
 };
-use installed_content::{
-    events::Event,
-    localisation::{Argument, Localisation},
-    parser::Item,
-};
-use replay::{
-    frame::DecodedFrame,
-    rows::{LandBorderWarInputs, tables},
-};
+use installed_content_core::parser::Item;
+use installed_content_events::events::Event;
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use replay_data::{rows::LandBorderWarInputs, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
 use viewer_foundation::tooltip_text::state_name;
 use viewer_foundation::tooltip_text::tooltip_keys;
@@ -269,7 +265,7 @@ pub(super) fn append(
     let loc = &static_content.localisation;
     let icons = static_content.assets.as_ref();
     let flags = super::binding::flags(static_content, frame).map_err(|error| error.to_string())?;
-    let names = installed_content::country_names::CountryNames::read(frame, loc);
+    let names = installed_content_country_names::country_names::CountryNames::read(frame, loc);
     let country = |raw: i32, transfer: bool| {
         let name = names.name(canonical(raw, links)?)?;
         let flag = super::binding::country_flag(&flags, raw as u32)?;

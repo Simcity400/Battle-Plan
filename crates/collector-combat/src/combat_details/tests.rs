@@ -14,7 +14,7 @@ fn border_width_projection_preserves_signed_zero_and_ordinary_absence() {
             ..Default::default()
         });
         let views = captured.tables();
-        let TableView::Complete(replay::rows::TableRows::LandCombatDetails(rows)) = &views[0]
+        let TableView::Complete(replay_data::rows::TableRows::LandCombatDetails(rows)) = &views[0]
         else {
             panic!("border details withheld");
         };
@@ -33,7 +33,8 @@ fn border_width_projection_preserves_signed_zero_and_ordinary_absence() {
     }
     captured.details.rows[0].row.border_war = None;
     let views = captured.tables();
-    let TableView::Complete(replay::rows::TableRows::LandCombatDetails(rows)) = &views[0] else {
+    let TableView::Complete(replay_data::rows::TableRows::LandCombatDetails(rows)) = &views[0]
+    else {
         panic!("ordinary details withheld");
     };
     assert!(
@@ -96,7 +97,7 @@ fn side_inputs_project_the_copied_cas_and_commander_operands() {
     side.anti_air_attack = 7_654_321;
     side.damage = [1, 2, 3, 4, 1_234_567, 89];
     side.commander_experience = 345_678_900;
-    side.next_skill = Some(engine::naval_commander_inputs::SkillDefinition {
+    side.next_skill = Some(engine_native::naval_commander_inputs::SkillDefinition {
         present: 1,
         valid: 1,
         required_experience: 800,
@@ -109,7 +110,8 @@ fn side_inputs_project_the_copied_cas_and_commander_operands() {
     side.timed_traits_len = 2;
     side.learning_traits = cland_combat::Span { start: 0, len: 3 };
     let views = captured.tables();
-    let TableView::Complete(replay::rows::TableRows::LandCombatDetails(rows)) = &views[0] else {
+    let TableView::Complete(replay_data::rows::TableRows::LandCombatDetails(rows)) = &views[0]
+    else {
         panic!("details withheld");
     };
     let [inputs, other] = rows[0]
@@ -151,7 +153,7 @@ fn side_inputs_project_the_copied_cas_and_commander_operands() {
     // A side without a selected commander read no level: no progress.
     assert_eq!(
         other.skill_progress,
-        replay::rows::LandCombatSideInputs::NO_PROGRESS
+        replay_data::rows::LandCombatSideInputs::NO_PROGRESS
     );
     assert_eq!(other.learning_traits, Some(Vec::new()));
     assert_eq!(other.skill_modifiers, Some([0; 2]));
@@ -160,12 +162,13 @@ fn side_inputs_project_the_copied_cas_and_commander_operands() {
     let side = &mut captured.details.rows[0].row.sides[0];
     side.next_skill.as_mut().unwrap().valid = 0;
     let views = captured.tables();
-    let TableView::Complete(replay::rows::TableRows::LandCombatDetails(rows)) = &views[0] else {
+    let TableView::Complete(replay_data::rows::TableRows::LandCombatDetails(rows)) = &views[0]
+    else {
         panic!("details withheld");
     };
     assert_eq!(
         rows[0].side_inputs.require("side_inputs").unwrap()[0].skill_progress,
-        replay::rows::LandCombatSideInputs::NO_PROGRESS
+        replay_data::rows::LandCombatSideInputs::NO_PROGRESS
     );
     // A refused optional read leaves only its part unknown, never a value;
     // the row and its other parts stand.
@@ -175,13 +178,14 @@ fn side_inputs_project_the_copied_cas_and_commander_operands() {
     side.skill_modifiers = None;
     side.side_input_refusals = [Some("next"), Some("floor"), Some("block")];
     let views = captured.tables();
-    let TableView::Complete(replay::rows::TableRows::LandCombatDetails(rows)) = &views[0] else {
+    let TableView::Complete(replay_data::rows::TableRows::LandCombatDetails(rows)) = &views[0]
+    else {
         panic!("details withheld");
     };
     let inputs = &rows[0].side_inputs.require("side_inputs").unwrap()[0];
     assert_eq!(
         inputs.skill_progress,
-        replay::rows::LandCombatSideInputs::UNREAD_PROGRESS
+        replay_data::rows::LandCombatSideInputs::UNREAD_PROGRESS
     );
     assert_eq!(
         (&inputs.skill_modifiers, &inputs.learning_traits),
@@ -219,7 +223,7 @@ fn experience_ratio_keeps_the_native_sentinel_and_zero_requirement_words() {
 fn modifier_capacity_and_division_growth_keep_independent_failures() {
     let mut image = vec![0_u8; 0x4000];
     for (address, value) in [
-        (0x1000, engine::carmy::VTABLE_RVA as u64),
+        (0x1000, engine_native::carmy::VTABLE_RVA as u64),
         (0x1018, 0x1234_0000_0033),
         (0x1170, 0x3000),
         (0x1178, 2_u64 << 32 | 2),
@@ -230,7 +234,7 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
     ] {
         image[address..address + 8].copy_from_slice(&value.to_le_bytes());
     }
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: 0,
         bytes: &image,
     };
@@ -256,9 +260,9 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
         leaders: &mut cland_combat::Leaders::default(),
         images: &mut images,
         scratch: &mut scratch,
-        name_groups: &mut engine::cname_group_member::GroupKeys::default(),
-        names: engine::cname_group_member::NameArena {
-            bytes: engine::walk::Buffer::Growing(&mut Vec::new()),
+        name_groups: &mut engine_native::cname_group_member::GroupKeys::default(),
+        names: engine_native::cname_group_member::NameArena {
+            bytes: engine_native::walk::Buffer::Growing(&mut Vec::new()),
             len: 0,
             required: 0,
         },
@@ -325,9 +329,9 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
             pointer: 0,
             id: 62,
             sides: [0; 2],
-            attackers: engine::cpdx_array::Array { data: 0, count: 1 },
-            defenders: engine::cpdx_array::Array { data: 0, count: 0 },
-            provinces: engine::cpdx_array::Array { data: 0, count: 0 },
+            attackers: engine_native::cpdx_array::Array { data: 0, count: 1 },
+            defenders: engine_native::cpdx_array::Array { data: 0, count: 0 },
+            provinces: engine_native::cpdx_array::Array { data: 0, count: 0 },
         },
         cland_combat::Members::none(),
     );
@@ -391,7 +395,7 @@ fn roster_spans_project_committed_and_reserve_lists_in_arena_order() {
         }
     }
     let [
-        TableView::Complete(replay::rows::TableRows::LandCombatDetails(details)),
+        TableView::Complete(replay_data::rows::TableRows::LandCombatDetails(details)),
         _,
         _,
         _,
@@ -427,8 +431,8 @@ fn destination(c: &mut Captured) -> Destination<'_> {
         scratch: &mut c.scratch,
         reference: false,
         name_groups: &mut c.name_cache,
-        names: engine::cname_group_member::NameArena {
-            bytes: engine::walk::Buffer::Growing(&mut c.division_names.first),
+        names: engine_native::cname_group_member::NameArena {
+            bytes: engine_native::walk::Buffer::Growing(&mut c.division_names.first),
             len: 0,
             required: 0,
         },
@@ -550,7 +554,7 @@ fn an_overflowing_exile_division_is_counted_out_then_kept_after_growth() {
     captured.divisions.outcome = Outcome::Rows { len: 2 };
     let [
         _,
-        TableView::Complete(replay::rows::TableRows::LandCombatDivisions(rows)),
+        TableView::Complete(replay_data::rows::TableRows::LandCombatDivisions(rows)),
         _,
         _,
         ..,
@@ -578,7 +582,8 @@ fn cas_operands_project_onto_the_side_inputs_alone() {
     side.anti_air_attack = 1_234_567;
     side.damage = [1, 2, 3, 4, 250_000, i64::MAX];
     let views = captured.tables();
-    let TableView::Complete(replay::rows::TableRows::LandCombatDetails(rows)) = &views[0] else {
+    let TableView::Complete(replay_data::rows::TableRows::LandCombatDetails(rows)) = &views[0]
+    else {
         panic!("details withheld");
     };
     let defender = &rows[0].sides[1];
@@ -587,7 +592,7 @@ fn cas_operands_project_onto_the_side_inputs_alone() {
     assert_eq!(defender.ground_damage, RetiredNested::default());
     assert_eq!(defender.prevented_damage, RetiredKept::default());
     let mut row = rows[0].clone();
-    replay::rows::RowCodec::round_to_display(&mut row);
+    replay_data::rows::RowCodec::round_to_display(&mut row);
     let [attacker, defender] = row
         .side_inputs
         .require("LandCombatDetails.side_inputs")
@@ -656,7 +661,7 @@ fn naming_direction_and_exile_operands_project_onto_division_rows() {
         categories: 0x4000_0000_0000_0001,
         initiative: 2_500,
         commander: 0x1234_0000_0021,
-        naming: Some(engine::cname_group_member::Inputs {
+        naming: Some(engine_native::cname_group_member::Inputs {
             kind: 2,
             order: 14,
             ordered: 1,
@@ -690,7 +695,7 @@ fn naming_direction_and_exile_operands_project_onto_division_rows() {
     };
     let [
         _,
-        TableView::Complete(replay::rows::TableRows::LandCombatDivisions(divisions)),
+        TableView::Complete(replay_data::rows::TableRows::LandCombatDivisions(divisions)),
         _,
         _,
         ..,
@@ -734,7 +739,7 @@ fn naming_direction_and_exile_operands_project_onto_division_rows() {
     captured.divisions.rows[1].reserve_speed = Some(Err("refused"));
     let [
         _,
-        TableView::Complete(replay::rows::TableRows::LandCombatDivisions(refused)),
+        TableView::Complete(replay_data::rows::TableRows::LandCombatDivisions(refused)),
         _,
         _,
         ..,
@@ -781,7 +786,7 @@ fn source_failures_and_primary_arena_capacity_are_explicit() {
         learning_traits: 1,
     };
     let mut captured = Captured::with_capacities(&c);
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: 0,
         bytes: &[],
     };
@@ -861,7 +866,7 @@ fn combat_sides_project_independently_of_the_larger_tables() {
         TableView::Unavailable { .. },
         _,
         _,
-        TableView::Complete(replay::rows::TableRows::LandCombatSides(sides)),
+        TableView::Complete(replay_data::rows::TableRows::LandCombatSides(sides)),
         ..,
     ] = captured.tables()
     else {
@@ -941,7 +946,7 @@ fn modifier_entry(id: u32, value: i64) -> CombatModifierValue {
 fn land_combat_division_modifiers_hold_a_row_a_member_in_key_order() {
     let mut captured = modifier_capture();
     let tables = captured.tables();
-    let TableView::Complete(replay::rows::TableRows::LandCombatDivisionModifiers(rows)) =
+    let TableView::Complete(replay_data::rows::TableRows::LandCombatDivisionModifiers(rows)) =
         &tables[4]
     else {
         panic!("member rows were not projected")
@@ -965,7 +970,7 @@ fn land_combat_division_modifiers_hold_a_row_a_member_in_key_order() {
         },
     ];
     assert_eq!(rows, &expected);
-    let TableView::Complete(replay::rows::TableRows::LandCombatModifiers(sides)) = &tables[2]
+    let TableView::Complete(replay_data::rows::TableRows::LandCombatModifiers(sides)) = &tables[2]
     else {
         panic!("side rows were not projected")
     };
@@ -987,7 +992,7 @@ fn land_combat_division_modifiers_hold_a_row_a_member_in_key_order() {
     );
     let tables = captured.tables();
     let TableView::Truncated {
-        rows: replay::rows::TableRows::LandCombatDivisionModifiers(truncated),
+        rows: replay_data::rows::TableRows::LandCombatDivisionModifiers(truncated),
         missing,
     } = &tables[4]
     else {
@@ -1024,9 +1029,9 @@ fn border_values_survive_an_independent_country_set_failure() {
     let [
         _,
         _,
-        TableView::Complete(replay::rows::TableRows::LandCombatModifiers(sides)),
+        TableView::Complete(replay_data::rows::TableRows::LandCombatModifiers(sides)),
         TableView::Unavailable { .. },
-        TableView::Complete(replay::rows::TableRows::LandCombatDivisionModifiers(_)),
+        TableView::Complete(replay_data::rows::TableRows::LandCombatDivisionModifiers(_)),
         _,
     ] = captured.tables()
     else {
@@ -1077,7 +1082,7 @@ struct ReserveWorld(Vec<u8>);
 
 impl Memory for ReserveWorld {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        if address == engine::modifier_definition::TABLE_RVA && output.len() == 8 {
+        if address == engine_native::modifier_definition::TABLE_RVA && output.len() == 8 {
             output.copy_from_slice(&0x3000_0000_u64.to_le_bytes());
             return true;
         }
@@ -1085,7 +1090,7 @@ impl Memory for ReserveWorld {
             output.fill(0);
             return true;
         }
-        engine::memory::SliceMemory {
+        engine_native::memory::SliceMemory {
             base: 0,
             bytes: &self.0,
         }
@@ -1105,7 +1110,7 @@ impl ReserveWorld {
         self.put(at + 8, &0x1_0000_0001_u64.to_le_bytes());
         self.put(
             entries,
-            &engine::modifier_keys::LAND_REINFORCE_RATE.to_le_bytes(),
+            &engine_executable::modifier_keys::LAND_REINFORCE_RATE.to_le_bytes(),
         );
         self.put(entries + 8, &value.to_le_bytes());
         self.put(at + 0x48, b"Home");
@@ -1191,7 +1196,7 @@ fn reserve_tree_carries_stay_linear_at_five_thousand_sources() {
     struct Certificates(std::cell::Cell<bool>);
     impl naval_tree_changes::Changes for Certificates {
         fn sequence(&self, receiver: usize) -> Option<(u64, u64)> {
-            let accumulator = receiver.wrapping_add(engine::ccountry::MODIFIER_ACCUMULATOR);
+            let accumulator = receiver.wrapping_add(engine_native::ccountry::MODIFIER_ACCUMULATOR);
             let index = (accumulator - FIRST) / STRIDE;
             Some((1, if self.0.get() && index % 2 == 1 { 2 } else { 1 }))
         }

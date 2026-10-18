@@ -1,5 +1,5 @@
 use super::{Captured, INITIAL_CAPACITIES, elapsed, extended, qpc};
-use engine::walk::Outcome;
+use engine_native::walk::Outcome;
 
 /// One independently bounded owned division census, coverage counts and five detail tables.
 /// No address/span replay or live memory access remains on the decode worker.
@@ -13,7 +13,7 @@ pub(crate) struct DivisionsJob {
     pub(super) core_finished: bool,
     pub(super) overflowed: bool,
     pub(super) capacity_charge: crate::raw_memory::Charge,
-    pub(super) source_packet: Vec<engine::cequipment_variant_pool::DivisionSource>,
+    pub(super) source_packet: Vec<engine_native::cequipment_variant_pool::DivisionSource>,
     /// The country slots this hour's inputs walk, when parts walk the rest
     /// ([`crate::division_census::Census::capture_inputs_part`]); every slot
     /// otherwise.
@@ -54,7 +54,7 @@ impl DivisionsJob {
         self.overflowed || self.census.overflowed || self.census.counts_need_growth()
     }
     pub fn grow(&mut self) {
-        engine::allocation::advisory(|| self.grow_hints());
+        engine_allocation::advisory(|| self.grow_hints());
     }
 
     fn grow_hints(&mut self) {
@@ -154,11 +154,11 @@ impl Default for DivisionsCopyContext {
 /// of this job. A native failure remains attached to this exact input attempt.
 fn copy_divisions_inputs_pass(
     job: &mut DivisionsJob,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     context: DivisionsCopyContext,
     growing: bool,
 ) {
-    let _reads = crate::read_accounting::table(replay::rows::TableId::Divisions);
+    let _reads = crate::read_accounting::table(replay_data::rows::TableId::Divisions);
     job.clear();
     job.context = context;
     if !context.details_active {
@@ -186,7 +186,7 @@ fn copy_divisions_inputs_pass(
 }
 
 pub(crate) fn copy_divisions_inputs_refresh_growing(
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     ctx: DivisionsCopyContext,
     payload: &mut DivisionsJob,
 ) -> bool {
@@ -198,7 +198,7 @@ pub(crate) fn copy_divisions_inputs_refresh_growing(
 /// permits fallback only before any consumer has borrowed that packet.
 #[cfg(test)]
 pub(crate) fn copy_divisions_inputs_refresh(
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     ctx: DivisionsCopyContext,
     payload: &mut DivisionsJob,
 ) -> bool {
@@ -210,10 +210,10 @@ pub(crate) fn copy_divisions_inputs_refresh(
 /// reacquires its input packet, or retries an earlier core/detail acquisition.
 fn copy_divisions_core_pass(
     job: &mut DivisionsJob,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     context: DivisionsCopyContext,
 ) {
-    let _reads = crate::read_accounting::table(replay::rows::TableId::Divisions);
+    let _reads = crate::read_accounting::table(replay_data::rows::TableId::Divisions);
     // Context mismatch is a terminal orchestration failure. Keep the original
     // input owner intact so its other consumers can finish.
     if !job.inputs_captured || job.context != context {
@@ -239,7 +239,7 @@ fn copy_divisions_core_pass(
         context.source_capacity
     });
     if job.census.growing() {
-        if engine::walk::Buffer::Growing(&mut job.source_packet)
+        if engine_native::walk::Buffer::Growing(&mut job.source_packet)
             .ensure(sources.len())
             .is_err()
         {
@@ -274,7 +274,7 @@ fn divisions_copy_report(payload: &DivisionsJob) -> DivisionsCopyReport {
 
 /// A failure after input leasing is final for this callback; no source retry.
 pub(crate) fn copy_divisions_core_refresh(
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     ctx: DivisionsCopyContext,
     payload: &mut DivisionsJob,
 ) -> DivisionsCopyReport {
@@ -285,7 +285,7 @@ pub(crate) fn copy_divisions_core_refresh(
 /// Single composed acquisition for synthetic callers.
 #[cfg(test)]
 pub(crate) fn copy_divisions_refresh(
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     ctx: DivisionsCopyContext,
     payload: &mut DivisionsJob,
 ) -> DivisionsCopyReport {
@@ -316,7 +316,7 @@ pub(crate) fn decode_divisions_payload(
     decode_ticks: &mut [u64; 6],
 ) {
     let started = qpc();
-    frame.divisions_result = match engine::walk::Buffer::Growing(&mut frame.divisions)
+    frame.divisions_result = match engine_native::walk::Buffer::Growing(&mut frame.divisions)
         .ensure(job.census.outcome(usize::MAX).len())
     {
         Ok(_) => job.census.install_rows(&mut frame.divisions),

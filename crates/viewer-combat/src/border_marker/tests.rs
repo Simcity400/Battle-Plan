@@ -1,5 +1,5 @@
 use super::*;
-use replay::rows::LandBorderWarSide;
+use replay_data::rows::LandBorderWarSide;
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,7 +22,7 @@ fn localisation() -> Localisation {
 fn border_marker_tail_keeps_transfer_and_unbracketed_enemy_markers_in_native_order() {
     let border = LandBorderWarInputs {
         transfer_state: 128,
-        combat_width: replay::rows::Recorded::Value(0),
+        combat_width: replay_data::rows::Recorded::Value(0),
         sides: [
             LandBorderWarSide {
                 country: 7,
@@ -102,12 +102,12 @@ fn border_marker_membership_and_event_scopes_use_native_alias_and_copy_links() {
 
 #[test]
 fn border_marker_multi_option_enemy_event_appears_only_under_win() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let events = installed_content::events::parse(
+    let events = installed_content_events::events::parse(
         b"add_namespace=s country_event={id=s.5 title=VICTORY option={name=A} option={name=B}} country_event={id=s.6 title=DEFEAT option={name=A} option={name=B}}",
         "events/synthetic.txt",
-        &installed_content::key_names::KeyNames::default(),
+        &installed_content_core::key_names::KeyNames::default(),
     );
     let border = LandBorderWarInputs {
         sides: [
@@ -269,9 +269,9 @@ fn with_effects(loc: &Localisation, run: impl FnOnce(&EffectContext<'_, '_>)) {
         "1;1;1;1;land;false;synthetic;1\n",
     )
     .unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
     let content = dashboard_text::scripted_text::ScriptedContent::read(
-        Arc::new(installed_content::content::ResolvedContent {
+        Arc::new(installed_content_core::content::ResolvedContent {
             layers,
             stats: Default::default(),
         }),
@@ -282,31 +282,32 @@ fn with_effects(loc: &Localisation, run: impl FnOnce(&EffectContext<'_, '_>)) {
         branch: 1,
         hour: 10,
         tables: std::array::from_fn(|i| {
-            replay::frame::TableView::Complete(replay::rows::TableRows::empty(
-                replay::rows::TableId::ALL[i],
+            replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::empty(
+                replay_data::rows::TableId::ALL[i],
             ))
             .into()
         }),
         metrics: Default::default(),
     };
     for (id, tag) in [(7, "AAA"), (9, "BBB")] {
-        let replay::frame::TableView::Complete(replay::rows::TableRows::Countries(rows)) =
-            &mut *frame.tables[replay::rows::TableId::Countries.index()]
+        let replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::Countries(rows)) =
+            &mut *frame.tables[replay_data::rows::TableId::Countries.index()]
         else {
             unreachable!()
         };
-        rows.push(replay::rows::CountryRow {
+        rows.push(replay_data::rows::CountryRow {
             id,
             canonical_slot: id,
             tag: tag.as_bytes().to_vec(),
             ..Default::default()
         });
-        let replay::frame::TableView::Complete(replay::rows::TableRows::CountryLinks(rows)) =
-            &mut *frame.tables[replay::rows::TableId::CountryLinks.index()]
+        let replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::CountryLinks(
+            rows,
+        )) = &mut *frame.tables[replay_data::rows::TableId::CountryLinks.index()]
         else {
             unreachable!()
         };
-        rows.push(replay::rows::CountryLinkRow {
+        rows.push(replay_data::rows::CountryLinkRow {
             id,
             canonical_slot: id,
         });
@@ -318,9 +319,9 @@ fn with_effects(loc: &Localisation, run: impl FnOnce(&EffectContext<'_, '_>)) {
 
 #[test]
 fn border_marker_event_native_effects_or_title_follow_option_count() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let events = installed_content::events::parse(b"add_namespace=s country_event={id=s.1 title={text=IGNORED text=TITLE trigger={always=no}} immediate={custom_effect_tooltip=FIRST hidden_effect={custom_effect_tooltip=HIDDEN} add_political_power=2} option={name=A effect_tooltip={custom_effect_tooltip=SECOND}}}", "events/synthetic.txt", &installed_content::key_names::KeyNames::default());
+    let events = installed_content_events::events::parse(b"add_namespace=s country_event={id=s.1 title={text=IGNORED text=TITLE trigger={always=no}} immediate={custom_effect_tooltip=FIRST hidden_effect={custom_effect_tooltip=HIDDEN} add_political_power=2} option={name=A effect_tooltip={custom_effect_tooltip=SECOND}}}", "events/synthetic.txt", &installed_content_core::key_names::KeyNames::default());
     let mut event = events.get(b"S.01").unwrap().clone();
     let base = localisation();
     let loc = base
@@ -443,7 +444,7 @@ fn border_marker_empty_enemy_description_has_no_enemy_heading_and_counts_failure
 
 #[test]
 fn covered_events_keep_supported_operative_text_and_refuse_missing_scoped_readers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "hoi4-covered-border-events-{}-{:?}",
@@ -457,8 +458,8 @@ fn covered_events_keep_supported_operative_text_and_refuse_missing_scoped_reader
         b"add_namespace=s country_event={id=s.1 immediate={custom_effect_tooltip=TEXT}} operative_leader_event={id=s.2 immediate={custom_effect_tooltip=TEXT}} operative_leader_event={id=s.3 title=TITLE option={name=A hidden_effect={remove_unit_leader_role={character=fixture}}}}",
     )
     .unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
-    let events = installed_content::events::LazyEvents::new(Arc::new(layers));
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let events = installed_content_events::events::LazyEvents::new(Arc::new(layers));
     let render = |key: &[u8], _: &EventScopes| Ok(String::from_utf8_lossy(key).into_owned());
     let loc = localisation();
     with_effects(&loc, |context| {

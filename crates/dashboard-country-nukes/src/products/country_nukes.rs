@@ -23,12 +23,14 @@ use dashboard_base::{
 use dashboard_text::metadata::{
     IdentityTrack, link_slot, slot_read, tagged_countries, validate_campaign,
 };
-use engine::raid_tooltip_operands::{NUCLEAR_BOMB_TOKEN, THERMONUCLEAR_BOMB_TOKEN};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder},
-    rows::{CountryLinkRow, CountryRow, NukeRow, TableId, tables},
+use engine_native::{
+    raid_tooltip_operands::NUCLEAR_BOMB_TOKEN, raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN,
 };
+use replay::container::Replay;
+use replay_data::{
+    rows::CountryLinkRow, rows::CountryRow, rows::NukeRow, rows::TableId, rows::tables,
+};
+use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -189,7 +191,10 @@ fn empty_resolved(
 }
 
 /// A fresh complete supplying read, with the native empty-census decision.
-fn supplying_read(decoded: &DecodedFrame, format: replay::format::FormatVersion) -> Option<bool> {
+fn supplying_read(
+    decoded: &DecodedFrame,
+    format: replay_data::format::FormatVersion,
+) -> Option<bool> {
     if !slot_read(format, &decoded.metrics, TableId::Nukes, decoded.hour) {
         return None;
     }
@@ -335,7 +340,7 @@ impl Scan {
     pub(crate) fn observe(
         &mut self,
         decoded: &DecodedFrame,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
     ) {
         self.observe_changes(decoded, format, None);
         self.seal();
@@ -353,7 +358,7 @@ impl Scan {
     fn observe_changes(
         &mut self,
         decoded: &DecodedFrame,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
     ) {
         self.observed.clear();

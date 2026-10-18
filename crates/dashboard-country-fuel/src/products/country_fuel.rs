@@ -73,12 +73,12 @@ use dashboard_core::config::LoadContext;
 use dashboard_text::metadata::{
     IdentityTrack, link_slot, slot_read, tagged_countries, validate_campaign,
 };
-use engine::ccountry_fuel_status::{HISTORY_RING_ENTRIES, MODIFIER_SCALE, QUANTITY_SCALE};
-use replay::{
-    cadence,
-    frame::FrameDecoder,
-    rows::{CountryFuelRow, FuelAwardDay, TableId, tables},
+use engine_fuel::{
+    ccountry_fuel_status::HISTORY_RING_ENTRIES, ccountry_fuel_status::MODIFIER_SCALE,
+    ccountry_fuel_status::QUANTITY_SCALE,
 };
+use replay_data::{cadence, rows::CountryFuelRow, rows::FuelAwardDay, rows::TableId, rows::tables};
+use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -199,13 +199,13 @@ impl From<&AwardSums> for FuelAwardTotals {
 /// (`CountryFuel.award_day`): complete, of this read's country identity,
 /// observed since before its first update and ending at the read's hour.
 fn award_day(row: &CountryFuelRow, hour: i32) -> Result<&FuelAwardDay, String> {
-    let replay::rows::Recorded::Value(day) = &row.award_day else {
+    let replay_data::rows::Recorded::Value(day) = &row.award_day else {
         return Err("Applied fuel source and recipient history not recorded".into());
     };
     if !day.reason.is_empty() {
         return Err(String::from_utf8_lossy(&day.reason).into_owned());
     }
-    if !matches!(row.country_instance,replay::rows::Recorded::Value(Some(value)) if value == day.country_instance)
+    if !matches!(row.country_instance,replay_data::rows::Recorded::Value(Some(value)) if value == day.country_instance)
     {
         return Err("Applied fuel window belongs to another or unrecorded country identity".into());
     }
@@ -244,10 +244,10 @@ fn recipients_of(
     cancelled: &AtomicBool,
     mut format_name: impl FnMut(&[u8]) -> Result<String, String>,
 ) -> io::Result<Vec<FuelAwardPart>> {
-    let replay::rows::Recorded::Value(day) = &row.award_day else {
+    let replay_data::rows::Recorded::Value(day) = &row.award_day else {
         return Err(dashboard_core::invalid("Fuel awards not recorded"));
     };
-    let mut rows = engine::allocation::vec(day.recipients.len())?;
+    let mut rows = engine_allocation::vec(day.recipients.len())?;
     for part in &day.recipients {
         dashboard_text::metadata::check_cancel(cancelled)?;
         if part.kind > 2 {
@@ -319,11 +319,11 @@ pub struct FuelLabel {
 // The fuel-panel breakdown passes NUM text; oil also passes an OIL integer.
 // Markers describe the template, not fabricated historical operands or rates.
 fn fuel_label(
-    localisation: Option<&installed_content::localisation::Localisation>,
+    localisation: Option<&installed_content_localisation::localisation::Localisation>,
     key: &str,
     oil: bool,
 ) -> FuelLabel {
-    use installed_content::localisation::Argument;
+    use installed_content_localisation::localisation::Argument;
     let arguments = if oil {
         vec!["NUM".into(), "OIL".into()]
     } else {
@@ -668,7 +668,9 @@ type Identity = (u32, u32);
 /// not listed) and whether it owned a state; none when the tables do not tell.
 type Holding = Option<(Option<Identity>, bool)>;
 
-fn resolved_slots(links: &[replay::rows::CountryLinkRow]) -> std::collections::HashMap<u32, u32> {
+fn resolved_slots(
+    links: &[replay_data::rows::CountryLinkRow],
+) -> std::collections::HashMap<u32, u32> {
     links
         .iter()
         .filter_map(|row| link_slot(links, row.id).map(|slot| (row.id, slot)))
@@ -784,11 +786,11 @@ fn read_of(
     RawRead {
         country: row.country,
         country_instance: match row.country_instance {
-            replay::rows::Recorded::Value(value) => value,
+            replay_data::rows::Recorded::Value(value) => value,
             _ => None,
         },
         continuity_start_hour: match &row.award_day {
-            replay::rows::Recorded::Value(day) => day.continuity_start_hour,
+            replay_data::rows::Recorded::Value(day) => day.continuity_start_hour,
             _ => None,
         },
         first_hour: hour,
@@ -869,8 +871,8 @@ struct Scan {
 impl Scan {
     fn observe_changes(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
-        format: replay::format::FormatVersion,
+        decoded: &replay_frame::frame::DecodedFrame,
+        format: replay_data::format::FormatVersion,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
         cancelled: &AtomicBool,
     ) -> io::Result<bool> {
@@ -878,8 +880,8 @@ impl Scan {
     }
     fn observe_inner(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
-        format: replay::format::FormatVersion,
+        decoded: &replay_frame::frame::DecodedFrame,
+        format: replay_data::format::FormatVersion,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
         demand: Option<&[CountryFuelRow]>,
         cancelled: &AtomicBool,
@@ -1052,7 +1054,7 @@ impl Scan {
         );
         // A read's packs with their lists, which later formats record apart.
         let assembled = match fuel.filter(|_| demand.is_none()) {
-            Some(rows) if read => Some(replay::rows::with_demand_parts(
+            Some(rows) if read => Some(replay_frame::rows::with_demand_parts(
                 rows,
                 &decoded.tables[TableId::FuelDemandParts.index()],
                 format,
@@ -1155,11 +1157,11 @@ impl Scan {
                 continue;
             };
             let instance = match row.country_instance {
-                replay::rows::Recorded::Value(value) => value,
+                replay_data::rows::Recorded::Value(value) => value,
                 _ => None,
             };
             let continuity = match &row.award_day {
-                replay::rows::Recorded::Value(day) => day.continuity_start_hour,
+                replay_data::rows::Recorded::Value(day) => day.continuity_start_hour,
                 _ => None,
             };
             if country.instance != instance {
@@ -1271,7 +1273,7 @@ impl Scan {
 /// table's daily slot come first, then the others, each in hour order; a day is
 /// kept when its read is at least [`DAY_HOURS`] from every read kept before it,
 /// which every slot read is. Days already left out never hold another back.
-fn keep_days(format: replay::format::FormatVersion, reads: &mut [RawRead]) {
+fn keep_days(format: replay_data::format::FormatVersion, reads: &mut [RawRead]) {
     let slot = cadence::cadence_in(TableId::CountryFuel, format);
     let in_slot = |read: &RawRead| slot.is_refresh(read.first_hour);
     let mut kept = BTreeSet::new();

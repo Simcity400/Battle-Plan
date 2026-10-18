@@ -1,7 +1,7 @@
 //! Commanders' retreat bans (DivisionRetreatBans) carried between hours. The bans are each
 //! commander's `cannot_retreat_while_*` values in its two modifier blocks' accumulators (the
 //! ordinary and separate-HQ blocks), whose only runtime writers are the naval tree family's
-//! commander sites ([`engine::naval_tree_mutations`]): the leader modifier recalculation tail and
+//! commander sites ([`engine_mutations::naval_tree_mutations`]): the leader modifier recalculation tail and
 //! HQ scaling each clear both blocks, copy the base accumulator in and scale it. Construction, copy
 //! construction and destruction bound the leader's lifetime. Modifier recalculation also assigns
 //! the blocks' Display strings  (one per block), which the bans do not read. That family owns the
@@ -17,7 +17,7 @@
 //! difference poisons reuse for the attachment. `retreat_ban_verify`, for
 //! diagnosis, reads every commander afresh.
 use crate::watch_registry::{Notification, WatchRegistry};
-use engine::carmy_leader::RetreatBans;
+use engine_native::carmy_leader::RetreatBans;
 use std::{
     collections::HashMap,
     sync::{
@@ -193,14 +193,14 @@ impl<'a> Leaders<'a> {
             .filter(|held| held.certificate == certificate)
             .map(|held| held.bans);
         if held.is_some() && !self.check.covers((leader >> 4) as u64) {
-            if engine::allocation::reserve(&mut self.carried, 1).is_ok() {
+            if engine_allocation::reserve(&mut self.carried, 1).is_ok() {
                 self.carried.push(leader);
                 self.counts.reused += 1;
                 return held;
             }
             return None;
         }
-        if engine::allocation::reserve(&mut self.pending, 1).is_ok() {
+        if engine_allocation::reserve(&mut self.pending, 1).is_ok() {
             self.pending.push((leader, certificate, held));
         }
         None
@@ -230,7 +230,7 @@ impl<'a> Leaders<'a> {
                 self.counts.verified += 1;
                 self.counts.mismatches += u64::from(held != bans);
             }
-            if engine::allocation::reserve(&mut fresh, 1).is_ok() {
+            if engine_allocation::reserve(&mut fresh, 1).is_ok() {
                 fresh.push((leader, Held { certificate, bans }));
             }
         }
@@ -238,7 +238,7 @@ impl<'a> Leaders<'a> {
         self.store
             .held
             .retain(|leader, _| carried.binary_search(leader).is_ok());
-        if engine::allocation::reserve_map(&mut self.store.held, fresh.len()).is_ok() {
+        if engine_allocation::reserve_map(&mut self.store.held, fresh.len()).is_ok() {
             self.store.held.extend(fresh);
         }
         self.counts.leaders = (self.carried.len() + self.pending.len()) as u64;

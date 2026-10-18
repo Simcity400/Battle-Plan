@@ -724,7 +724,7 @@ impl Choices {
         hour: i32,
         numbers: &mut Numbers,
     ) -> io::Result<()> {
-        let cpu = ::replay::cpu::scope_phase("stockpile:group_inputs");
+        let cpu = ::replay_frame::cpu::scope_phase("stockpile:group_inputs");
         let coverage = [
             known_from(&scanned.stock, hour),
             known_from(&scanned.daily, hour),
@@ -935,7 +935,7 @@ impl Choices {
             }
         }
         drop(cpu);
-        let _cpu = ::replay::cpu::scope_phase("stockpile:group_projection");
+        let _cpu = ::replay_frame::cpu::scope_phase("stockpile:group_projection");
         let read = |field: usize, id: u64| match field {
             0 => operand(&scanned.stock, id, hour),
             5 => operand(&scanned.balance, id as u32, hour),

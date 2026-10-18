@@ -1,10 +1,8 @@
 use super::*;
 use crate::test_fixtures::{CAMPAIGN, records, source};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{LexicalTokenRow, TableRows, VariantDefinitionRow},
-};
+use replay::container::Replay;
+use replay_data::{rows::LexicalTokenRow, rows::TableRows, rows::VariantDefinitionRow};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 /// A frame whose variant table holds `variants`, read this hour when `read`.
 fn frame(branch: u64, hour: i32, read: bool, variants: &[(u64, u32, &str)]) -> DecodedFrame {
@@ -35,8 +33,8 @@ fn spelled(
             })
             .collect(),
     ));
-    *frame.tables[TableId::VariantDefinitions.index()] = TableView::Complete(
-        TableRows::VariantDefinitions(
+    *frame.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(TableRows::VariantDefinitions(
             variants
                 .iter()
                 .map(|&(id, equipment_token, model)| VariantDefinitionRow {
@@ -46,8 +44,7 @@ fn spelled(
                     ..Default::default()
                 })
                 .collect(),
-        ),
-    );
+        ));
     if read {
         frame.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
     }
@@ -80,12 +77,24 @@ fn recorded_designs_are_every_saved_model_of_every_branch_read() {
                 1,
                 100,
                 true,
-                &[(1, 7, "designer_plane_entity"), (2, 8, ""), (3, 8, "rifle_entity")],
+                &[
+                    (1, 7, "designer_plane_entity"),
+                    (2, 8, ""),
+                    (3, 8, "rifle_entity"),
+                ],
             ),
             // Not a read of the table: what it carries is not a new reading.
             frame(1, 101, false, &[(1, 7, "carried_entity")]),
         ],
-        vec![frame(2, 200, true, &[(1, 7, "designer_plane_entity"), (4, 7, "second_branch_entity")])],
+        vec![frame(
+            2,
+            200,
+            true,
+            &[
+                (1, 7, "designer_plane_entity"),
+                (4, 7, "second_branch_entity"),
+            ],
+        )],
     ]);
     let designs = recorded_designs(&source, &AtomicBool::new(false)).unwrap();
     assert_eq!(
@@ -109,8 +118,20 @@ fn recorded_designs_are_every_saved_model_of_every_branch_read() {
 #[test]
 fn recorded_designs_are_told_apart_by_their_spelling_not_their_session_numbers() {
     let source = recording(vec![
-        vec![spelled(1, 100, true, &[(7, "infantry_equipment_0")], &[(1, 7, "shared_entity")])],
-        vec![spelled(2, 200, true, &[(7, "fighter_equipment_1")], &[(1, 7, "shared_entity")])],
+        vec![spelled(
+            1,
+            100,
+            true,
+            &[(7, "infantry_equipment_0")],
+            &[(1, 7, "shared_entity")],
+        )],
+        vec![spelled(
+            2,
+            200,
+            true,
+            &[(7, "fighter_equipment_1")],
+            &[(1, 7, "shared_entity")],
+        )],
     ]);
     assert_eq!(
         recorded_designs(&source, &AtomicBool::new(false)).unwrap(),
@@ -164,13 +185,19 @@ const PLANES: &[(&str, &str)] = &[
 ];
 
 fn built(designs: &[(String, String)]) -> (Built, impl Drop) {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(PLANES);
     (Built::new(&Arc::new(catalogue), designs), folder)
 }
 
-fn page(built: &Built, scope: AircraftScope, query: &str, first: u32, count: u32) -> AircraftCatalogueReply {
+fn page(
+    built: &Built,
+    scope: AircraftScope,
+    query: &str,
+    first: u32,
+    count: u32,
+) -> AircraftCatalogueReply {
     built.page(&AircraftCatalogueParams {
         scope,
         query: query.into(),
@@ -180,12 +207,19 @@ fn page(built: &Built, scope: AircraftScope, query: &str, first: u32, count: u32
 }
 
 fn names(reply: &AircraftCatalogueReply) -> Vec<&str> {
-    reply.entries.iter().map(|entry| entry.name.as_str()).collect()
+    reply
+        .entries
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect()
 }
 
 #[test]
 fn pages_list_flyable_aircraft_first_with_their_titles_and_counted_refusals() {
-    let designs = [("fighter_equipment_1".to_owned(), "designer_plane_entity".to_owned())];
+    let designs = [(
+        "fighter_equipment_1".to_owned(),
+        "designer_plane_entity".to_owned(),
+    )];
     let (built, _folder) = built(&designs);
     let reply = page(&built, AircraftScope::Aircraft, "", 0, 100);
     assert_eq!(
@@ -243,17 +277,35 @@ fn queries_match_names_titles_and_references_without_case_and_pages_slice_them()
         ["ENG_fighter_equipment_1_entity"]
     );
     assert_eq!(
-        names(&page(&built, AircraftScope::Aircraft, " fighter_equipment ", 0, 10)),
-        ["ENG_fighter_equipment_1_entity", "light_plane_entity", "ghost_plane_entity", "missing_plane_entity"]
+        names(&page(
+            &built,
+            AircraftScope::Aircraft,
+            " fighter_equipment ",
+            0,
+            10
+        )),
+        [
+            "ENG_fighter_equipment_1_entity",
+            "light_plane_entity",
+            "ghost_plane_entity",
+            "missing_plane_entity"
+        ]
     );
     // The complete listing has what nothing references, a bare mesh among them.
     let all = page(&built, AircraftScope::All, "", 0, 100);
     for name in ["bare_mesh", "fighter_mesh", "rifle_entity"] {
         let entry = all.entries.iter().find(|entry| entry.name == name).unwrap();
-        assert!(entry.references.is_empty() && entry.refusal.is_none(), "{name}");
+        assert!(
+            entry.references.is_empty() && entry.refusal.is_none(),
+            "{name}"
+        );
     }
     assert_eq!(
-        all.entries.iter().find(|entry| entry.name == "bare_mesh").unwrap().kind,
+        all.entries
+            .iter()
+            .find(|entry| entry.name == "bare_mesh")
+            .unwrap()
+            .kind,
         AircraftKind::Mesh
     );
     // Pages cover the matching entries in order, and past the end answer none.
@@ -265,8 +317,15 @@ fn queries_match_names_titles_and_references_without_case_and_pages_slice_them()
         paged.extend(reply.entries.into_iter().map(|entry| entry.name));
     }
     assert_eq!(paged.join(" "), whole);
-    assert!(page(&built, AircraftScope::All, "", all.matching, 3).entries.is_empty());
-    assert_eq!(page(&built, AircraftScope::All, "no such plane", 0, 3).matching, 0);
+    assert!(
+        page(&built, AircraftScope::All, "", all.matching, 3)
+            .entries
+            .is_empty()
+    );
+    assert_eq!(
+        page(&built, AircraftScope::All, "no such plane", 0, 3).matching,
+        0
+    );
 }
 
 #[test]

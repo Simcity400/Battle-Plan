@@ -83,7 +83,7 @@ impl TrendScan {
 
     pub(super) fn collaboration(
         &mut self,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         frame: &DecodedFrame,
         hour: i32,
         identities: &HashMap<u32, u32>,
@@ -118,7 +118,7 @@ impl TrendScan {
         hour: i32,
         countries: Arc<CountryIndex>,
         links: &[CountryLinkRow],
-        garrisons: impl Iterator<Item = &'a replay::rows::StateGarrisonRow>,
+        garrisons: impl Iterator<Item = &'a replay_data::rows::StateGarrisonRow>,
         complete: bool,
     ) {
         // A state is added to or removed from the group vector and garrison map
@@ -403,7 +403,7 @@ impl TrendScan {
 mod tests {
     use super::*;
     use crate::products::occupation_trend::{OccupationTrendParams, reply};
-    use replay::rows::{CountryCollaborationRow, StateGarrisonRow, TableRows};
+    use replay_data::{rows::CountryCollaborationRow, rows::StateGarrisonRow, rows::TableRows};
 
     #[test]
     fn occupation_trend_collaboration_only_read_splits_after_unchanged_projection() {
@@ -467,7 +467,7 @@ mod tests {
         scan.state(&resistance, &state, &countries.identities, &links);
         scan.finish_read();
         scan.collaboration(
-            replay::format::FormatVersion::CURRENT,
+            replay_data::format::FormatVersion::CURRENT,
             &frame,
             100,
             &countries.identities,
@@ -490,7 +490,7 @@ mod tests {
             rows[0].progress = 23456;
         }
         scan.collaboration(
-            replay::format::FormatVersion::CURRENT,
+            replay_data::format::FormatVersion::CURRENT,
             &frame,
             102,
             &countries.identities,

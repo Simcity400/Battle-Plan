@@ -194,7 +194,7 @@ impl Prepared {
             && let Err(error) = frame.complete::<tables::Nukes>()
         {
             Some(
-                if let replay::frame::TableView::Unavailable { reason } =
+                if let replay_frame::frame::TableView::Unavailable { reason } =
                     &*frame.tables[TableId::Nukes.index()]
                 {
                     reason.clone()

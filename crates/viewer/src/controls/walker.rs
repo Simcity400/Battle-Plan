@@ -194,11 +194,16 @@ impl Walker {
             i8::from(pad.held(GamepadButton::DpadUp)) - i8::from(pad.held(GamepadButton::DpadDown)),
         );
         let [smallest, largest] = scale_limits(figure, world.ceiling);
-        self.scale = (self.scale * (grow.clamp(-1.0, 1.0) * dt / DOUBLING).exp2())
-            .clamp(smallest, largest);
+        self.scale =
+            (self.scale * (grow.clamp(-1.0, 1.0) * dt / DOUBLING).exp2()).clamp(smallest, largest);
         // The view: pointer motion is already an angle; the stick is a rate.
         self.turn = [0, 1].map(|axis| {
-            let rate = approach(self.turn[axis], pad.right[axis] * STICK_LOOK[axis], EASE, dt);
+            let rate = approach(
+                self.turn[axis],
+                pad.right[axis] * STICK_LOOK[axis],
+                EASE,
+                dt,
+            );
             if rate.abs() < 1e-4 { 0.0 } else { rate }
         });
         self.view_yaw = wrap_angle(self.view_yaw + frame.look[0] * MOUSE_LOOK + self.turn[0] * dt);
@@ -232,13 +237,16 @@ impl Walker {
         ];
         self.velocity = [0, 1].map(|axis| {
             let value = approach(self.velocity[axis], target[axis], EASE, dt);
-            if value.abs() < 1e-3 * height { 0.0 } else { value }
+            if value.abs() < 1e-3 * height {
+                0.0
+            } else {
+                value
+            }
         });
         if across != 0.0 || ahead != 0.0 {
             let toward = target[0].atan2(target[1]);
-            self.facing = wrap_angle(
-                self.facing + approach(0.0, wrap_angle(toward - self.facing), TURN, dt),
-            );
+            self.facing =
+                wrap_angle(self.facing + approach(0.0, wrap_angle(toward - self.facing), TURN, dt));
         }
         self.feet[0] = (self.feet[0] + self.velocity[0] * dt).rem_euclid(world.map[0].max(1.0));
         self.feet[2] = (self.feet[2] + self.velocity[1] * dt).clamp(0.0, world.map[1]);
@@ -288,8 +296,7 @@ impl Walker {
     /// Whether the figure walks: on the ground and moving at more than [`STANDING`] of its pace.
     pub fn walking(&self, figure: f32) -> bool {
         self.gait == Gait::Ground
-            && self.velocity[0].hypot(self.velocity[1])
-                > STANDING * WALK_PACE * self.height(figure)
+            && self.velocity[0].hypot(self.velocity[1]) > STANDING * WALK_PACE * self.height(figure)
     }
 
     /// The figure as the scene places it: its feet, facing and scale, playing `move` while it
@@ -320,11 +327,7 @@ impl Walker {
     /// figure from the view's distance rather than looking past it.
     pub fn camera(&self, base: Camera, figure: f32, world: &World<'_>) -> Camera {
         let height = self.height(figure);
-        let target = [
-            self.feet[0],
-            self.feet[1] + LOOK_AT * height,
-            self.feet[2],
-        ];
+        let target = [self.feet[0], self.feet[1] + LOOK_AT * height, self.feet[2]];
         let reach = self.distance * height;
         let forward = Free::new(self.view_yaw, self.view_pitch, Lens::MAP).forward();
         let mut eye = std::array::from_fn::<f32, 3, _>(|axis| target[axis] - forward[axis] * reach);

@@ -2,7 +2,7 @@
 
 use crate::movement_timing::MovementContent;
 use dashboard_text::triggers::{ContentFacts, LeaderRoles};
-use installed_content::buildings::Buildings;
+use installed_content_core::buildings::Buildings;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -10,24 +10,24 @@ use std::sync::Arc;
 pub struct TriggerContent {
     /// Scripted triggers and count-trigger names beyond the registry, loaded
     /// once with the document (empty until then).
-    pub triggers: Arc<installed_content::trigger_keys::TriggerNames>,
+    pub triggers: Arc<installed_content_core::trigger_keys::TriggerNames>,
     /// Loaded declarations for ideology specifiers and leader subtypes.
-    pub ideologies: Option<installed_content::ideologies::Ideologies>,
+    pub ideologies: Option<installed_content_core::ideologies::Ideologies>,
     pub continents: Result<Vec<String>, String>,
     /// The same loaded trait databases as the combat trigger evaluator.
     pub character_traits: Option<(
-        installed_content::unit_leader::Traits,
-        Result<Arc<installed_content::leader_traits::LeaderTraits>, String>,
+        installed_content_core::unit_leader::Traits,
+        Result<Arc<installed_content_core::leader_traits::LeaderTraits>, String>,
     )>,
     /// Tag alias database.
-    pub tag_aliases: Arc<installed_content::tag_aliases::TagAliases>,
+    pub tag_aliases: Arc<installed_content_core::tag_aliases::TagAliases>,
     pub buildings: Buildings,
     pub dlcs: BTreeSet<String>,
     /// Each state's provinces in its own order.
     pub state_provinces: BTreeMap<u32, Vec<u32>>,
     pub impassable: BTreeSet<u32>,
     /// Each state's neighbour states from the province graph
-    /// ([`ProvinceGraph::neighbor_states`](installed_content::province_graph::ProvinceGraph::neighbor_states)),
+    /// ([`ProvinceGraph::neighbor_states`](installed_content_core::province_graph::ProvinceGraph::neighbor_states)),
     /// or why they cannot be derived.
     pub neighbor_states: Result<BTreeMap<u32, Vec<u32>>, String>,
     /// The content movement map, whose static province terrain decides
@@ -44,7 +44,7 @@ pub struct TriggerContent {
     pub invasion_prepare_days: Result<i32, String>,
     /// The script constants a `constant:` operand reads, or why they are
     /// unread.
-    pub script_constants: Result<installed_content::script_constants::Constants, String>,
+    pub script_constants: Result<installed_content_core::script_constants::Constants, String>,
 }
 
 impl TriggerContent {

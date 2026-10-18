@@ -2,11 +2,9 @@
 //! Native reads and accumulation time belong to the shared Divisions read group.
 
 use crate::{division_census::Census, spooling::table, table_capture::CaptureRows};
-use engine::walk::Outcome;
-use replay::{
-    frame::TableView,
-    rows::{DivisionCensusRow, TableId, tables},
-};
+use engine_native::walk::Outcome;
+use replay_data::{rows::DivisionCensusRow, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::DivisionCensus];
@@ -53,7 +51,7 @@ impl Captured {
     }
     pub(crate) fn install(&mut self, census: &Census) {
         if let Err(reason) =
-            engine::walk::Buffer::Growing(&mut self.rows.rows).ensure(census.country_count())
+            engine_native::walk::Buffer::Growing(&mut self.rows.rows).ensure(census.country_count())
         {
             self.rows.outcome = Outcome::Unavailable { reason };
             return;

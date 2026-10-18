@@ -1,10 +1,10 @@
 use super::{Catalogue, tests::Folder};
 use crate::products::equipment_icon::IconContent;
-use installed_content::equipment::Database;
+use installed_content_core::equipment::Database;
 use std::sync::Arc;
 
 fn equipment_catalogue(equipment: &[(&str, &str)]) -> (Arc<Catalogue>, Folder) {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut files = vec![
         (

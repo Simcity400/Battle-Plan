@@ -3,11 +3,9 @@
 //! hours. The table is published shared with that store, so an hour that
 //! changed no held row hands the encoder the same rows again.
 use crate::{air_record_changes as family, clock::qpc, table_conversion::unavailable};
-use engine::{Memory, walk::Outcome};
-use replay::{
-    frame::TableInput,
-    rows::{TableId, TableRows},
-};
+use engine_native::{Memory, walk::Outcome};
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::frame::TableInput;
 use std::sync::Arc;
 
 pub const N: usize = 1;
@@ -82,7 +80,7 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::frame::TableView;
+    use replay_frame::frame::TableView;
 
     #[test]
     fn a_capture_publishes_its_shared_rows_or_its_refusal() {
@@ -92,7 +90,7 @@ mod tests {
             TableInput::Sampled(TableView::Unavailable { reason }) if reason == NOT_CAPTURED
         ));
         let rows = Arc::new(TableRows::AirRegionCombat(vec![
-            replay::rows::AirRegionCombatRow {
+            replay_data::rows::AirRegionCombatRow {
                 country: 2,
                 region: 7,
                 ..Default::default()

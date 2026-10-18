@@ -6,9 +6,10 @@
 //! order. A failed interval is unavailable; a fresh authenticated boundary can
 //! start the next complete interval.
 use crate::hook::{Hook, Registers, Tap};
-type Clock = engine::cgame_state::Clock<u64>;
-use engine::{Memory, ccountry, experience_gain_sites as native, read};
-use replay::rows::CountryExperienceGainRow;
+type Clock = engine_native::cgame_state::Clock<u64>;
+use engine_events::experience_gain_sites as native;
+use engine_native::{Memory, ccountry, read};
+use replay_data::rows::CountryExperienceGainRow;
 use std::{
     ops::Range,
     sync::{
@@ -127,9 +128,9 @@ impl Table {
     }
     fn new(slots: usize) -> Result<Self, &'static str> {
         let failed = |_| "experience gain allocation failed";
-        let mut owners = engine::allocation::vec(slots).map_err(failed)?;
+        let mut owners = engine_allocation::vec(slots).map_err(failed)?;
         owners.resize_with(slots, Slot::vacant);
-        let mut claims = engine::allocation::vec(slots).map_err(failed)?;
+        let mut claims = engine_allocation::vec(slots).map_err(failed)?;
         claims.resize_with(slots, AtomicUsize::default);
         Ok(Self {
             slots: owners,
@@ -308,7 +309,7 @@ impl Store {
     fn prepare_owners(&mut self, countries: usize) -> Result<(), &'static str> {
         if self.owners.len() < countries {
             let additional = countries - self.owners.len();
-            engine::allocation::reserve_exact(&mut self.owners, additional)
+            engine_allocation::reserve_exact(&mut self.owners, additional)
                 .map_err(|_| "experience gain allocation failed")?;
             self.owners.resize(countries, None);
         }
@@ -328,7 +329,7 @@ impl Store {
         if ready(&self.table) || ready(&self.offered) {
             return Ok(());
         }
-        let table = engine::allocation::boxed(Table::new(slots)?)
+        let table = engine_allocation::boxed(Table::new(slots)?)
             .map_err(|_| "experience gain allocation failed")?;
         if self.table.is_none() {
             self.lanes.publish(&table);
@@ -394,14 +395,19 @@ impl Store {
         state: usize,
         rows: &mut [CountryExperienceGainRow],
     ) -> Result<usize, &'static str> {
-        self.snapshot_buffer(memory, base, state, engine::walk::Buffer::Fixed(rows))
+        self.snapshot_buffer(
+            memory,
+            base,
+            state,
+            engine_native::walk::Buffer::Fixed(rows),
+        )
     }
     fn snapshot_buffer(
         &mut self,
         memory: &impl Memory,
         base: usize,
         state: usize,
-        mut rows: engine::walk::Buffer<'_, CountryExperienceGainRow>,
+        mut rows: engine_native::walk::Buffer<'_, CountryExperienceGainRow>,
     ) -> Result<usize, &'static str> {
         let countries = ccountry::Reader::new(memory, base, state)?;
         self.census = countries.count() as usize;
@@ -492,7 +498,7 @@ impl Store {
             memory,
             base,
             state,
-            engine::walk::Buffer::Fixed(rows),
+            engine_native::walk::Buffer::Fixed(rows),
             refused,
         )
     }
@@ -504,7 +510,7 @@ impl Store {
         memory: &impl Memory,
         base: usize,
         state: usize,
-        rows: engine::walk::Buffer<'_, CountryExperienceGainRow>,
+        rows: engine_native::walk::Buffer<'_, CountryExperienceGainRow>,
         refused: bool,
     ) -> Result<usize, &'static str> {
         if refused {
@@ -630,7 +636,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, site: usize) {
     {
         return;
     }
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     if let Err(reason) = LIVE.record(&memory, BASE.load(Ordering::Relaxed), registers, site) {
         refuse(reason);
     }
@@ -665,7 +671,7 @@ pub fn drain(
         memory,
         base,
         state,
-        engine::walk::Buffer::Growing(rows),
+        engine_native::walk::Buffer::Growing(rows),
         refused.is_some(),
     );
     if let Err(reason) = result {
@@ -797,7 +803,7 @@ impl Drop for Hooks {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{country_memory::Cache, memory::SliceMemory};
+    use engine_native::{country_memory::Cache, memory::SliceMemory};
 
     fn owner(pointer: usize, instance: u32) -> native::Owner {
         native::Owner { pointer, instance }
@@ -822,7 +828,8 @@ mod tests {
     /// Live countries in slots 1..slots (raw id = slot, instance = 7 * slot),
     /// each with an authenticated experience status, plus award cells.
     fn native_fixture(slots: usize, amounts: &[i64]) -> Vec<u8> {
-        use engine::{ccountry_experience_status as status, cgame_state};
+        use engine_events::ccountry_experience_status as status;
+        use engine_native::cgame_state;
         const POINTERS: usize = 0x1000;
         const LINKS: usize = 0x4000;
         let mut bytes = vec![0; COUNTRIES + slots * STRIDE];
@@ -1290,7 +1297,7 @@ mod tests {
 
     #[test]
     fn hourly_census_covers_zero_and_all_5000_countries_but_not_births_or_replacements() {
-        use engine::cgame_state;
+        use engine_native::cgame_state;
         static LANES: Lanes = Lanes::new();
         const COUNT: usize = 5001;
         const POINTERS: usize = 0x1000;
@@ -1337,7 +1344,7 @@ mod tests {
                         &cache.prepare(&initial_memory, 0, 0),
                         0,
                         0,
-                        engine::walk::Buffer::Growing(&mut growing_rows)
+                        engine_native::walk::Buffer::Growing(&mut growing_rows)
                     )
                     .unwrap(),
                 5000

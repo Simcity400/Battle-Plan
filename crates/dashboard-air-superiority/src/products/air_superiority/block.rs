@@ -55,11 +55,13 @@ use dashboard_base::{
 };
 use dashboard_text::metadata::CountryKeys;
 use replay::{
-    container::{BlockIndex, QuietHours, Replay, TableFields},
-    format::FormatVersion,
-    frame::DecodedFrame,
-    rows::{AirWingRow, CountryRow, TableId, TableRows, tables},
+    container::BlockIndex, container::QuietHours, container::Replay, container::TableFields,
 };
+use replay_data::{
+    format::FormatVersion, rows::AirWingRow, rows::CountryRow, rows::TableId, rows::TableRows,
+    rows::tables,
+};
+use replay_frame::frame::DecodedFrame;
 use std::{
     any::Any,
     collections::BTreeMap,
@@ -574,9 +576,9 @@ impl OwnBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<(Folded, Option<i32>)> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         let facts = {
-            let _cpu = ::replay::cpu::scope("fold facts", None);
+            let _cpu = ::replay_frame::cpu::scope("fold facts", None);
             facts
                 .downcast::<BlockFacts>()
                 .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -585,7 +587,7 @@ impl OwnBranch {
         note_frames(FAMILY.name, facts.frames);
         let mut reached = None;
         for hour in facts.hours {
-            let _cpu = ::replay::cpu::scope("fold driver", None);
+            let _cpu = ::replay_frame::cpu::scope("fold driver", None);
             check()?;
             match hour {
                 Hour::Observed {
@@ -597,7 +599,7 @@ impl OwnBranch {
                     #[cfg(any(test, feature = "test-support"))]
                     note_observed(FAMILY.name);
                     let live = {
-                        let _cpu = ::replay::cpu::scope("fold observe", None);
+                        let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                         self.observe(
                             &frame,
                             &changes,
@@ -615,7 +617,7 @@ impl OwnBranch {
                 }
                 Hour::Quiet { first, hours } => {
                     for (offset, quiet) in hours.into_iter().enumerate() {
-                        let _cpu = ::replay::cpu::scope("fold driver", None);
+                        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
                         // The span's hours are consecutive i32 hours.
                         let hour = first + offset as i32;
                         if !self.prepared.quiet_follows(hour) {
@@ -633,7 +635,7 @@ impl OwnBranch {
                         }
                         reached = Some(hour);
                         let result = {
-                            let _cpu = ::replay::cpu::scope("fold observe", None);
+                            let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                             let started = self.prepared.clock();
                             let groups = groups_outcome(
                                 hour,
@@ -682,7 +684,7 @@ impl OwnBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         let mut live = true;
         let reached = {
             let mut followed = |hour: i32, result: io::Result<()>| -> io::Result<bool> {
@@ -788,7 +790,8 @@ mod bytes_tests {
         prepared::{frame_changes::FrameChangeTracker, prepass::HeldBytes},
         test_fixtures::{CAMPAIGN, records, source},
     };
-    use replay::{frame::TableView, rows::RaidAirScoreRow};
+    use replay_data::rows::RaidAirScoreRow;
+    use replay_frame::frame::TableView;
 
     /// What a block's extract reports, and what its kept frames and change
     /// facts alone hold, when `regions` scores move at each of `hours` hours.

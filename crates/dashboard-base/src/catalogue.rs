@@ -16,7 +16,7 @@ fn load(source: &Source, options: &ContentOptions) -> io::Result<Catalogue> {
     let recorded_language = language.strip_prefix("l_").unwrap_or(language).to_owned();
     let content = source.content(&options.options)?;
     let mut warnings = Vec::new();
-    let settings = installed_content::settings::read_keys(&options.options.user_dir);
+    let settings = installed_content_settings::settings::read_keys(&options.options.user_dir);
     let language = match &settings {
         Ok(settings) => settings.language()?,
         Err(why) => {
@@ -107,7 +107,7 @@ mod loader_tests {
 
     #[test]
     fn missing_or_unreadable_settings_only_refuse_catalogue_artwork() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::test_fixtures::{CAMPAIGN, records, source};
         use replay::{container::Replay, spool::Record};

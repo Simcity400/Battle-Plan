@@ -1,5 +1,5 @@
 //! Army reach for one recorded hour. Join facts requested by
-//! `installed_content::unit_path` through `CountryLinks` to canonical slots.
+//! `installed_content_unit_path::unit_path` through `CountryLinks` to canonical slots.
 //! An incomplete required table gives a named error and leaves reach unknown.
 
 use crate::map::allegiance::NativeRelations;
@@ -11,16 +11,17 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-use installed_content::{
-    parser::Item,
-    unit_path::{
-        self, Army, ArmyCombat, CounterClass, CounterRequest, Country, Fact, MoveWorld, Mover,
-        Occupant, ReachKey, Reachable, Search, StraitFleet,
-    },
+use installed_content_core::parser::Item;
+use installed_content_unit_path::{
+    unit_path, unit_path::Army, unit_path::ArmyCombat, unit_path::CounterClass,
+    unit_path::CounterRequest, unit_path::Country, unit_path::Fact, unit_path::MoveWorld,
+    unit_path::Mover, unit_path::Occupant, unit_path::ReachKey, unit_path::Reachable,
+    unit_path::Search, unit_path::StraitFleet,
 };
-use replay::rows::{
-    DivisionMovementRow, DivisionRetreatBanRow, DivisionRow, DivisionStatusRow, ProvinceRow,
-    RelationLinkRow, TableSchema, TaskForceRow, tables,
+use replay_data::{
+    rows::DivisionMovementRow, rows::DivisionRetreatBanRow, rows::DivisionRow,
+    rows::DivisionStatusRow, rows::ProvinceRow, rows::RelationLinkRow, rows::TableSchema,
+    rows::TaskForceRow, rows::tables,
 };
 
 use dashboard_text::triggers::{Eval, Scope, Scopes, World};
@@ -28,13 +29,13 @@ use dashboard_text::triggers::{Eval, Scope, Scopes, World};
 /// Immutable movement reads shared by raid reach and counter hover queries.
 #[derive(Clone, Copy)]
 pub struct ReadOperands<'a> {
-    pub moves: &'a Result<installed_content::unit_path::MoveGraph, String>,
+    pub moves: &'a Result<installed_content_unit_path::unit_path::MoveGraph, String>,
     pub trigger_content: &'a crate::trigger_content::TriggerContent,
     pub regions: &'a BTreeMap<u32, u32>,
-    pub geometry: &'a installed_content::province_geometry::ProvinceGeometry,
+    pub geometry: &'a installed_content_core::province_geometry::ProvinceGeometry,
     pub combat_minimum_time: i32,
     pub avoid_enemy: bool,
-    pub day_night: &'a Result<replay::day_night::Defines, String>,
+    pub day_night: &'a Result<replay_data::day_night::Defines, String>,
     pub naval_combat_min_duration: &'a Result<i32, String>,
 }
 
@@ -44,7 +45,9 @@ impl ReadOperands<'_> {
         &self,
         from: u32,
         to: u32,
-    ) -> installed_content::unit_path::Fact<Option<installed_content::unit_path::SelectedNeighbour>> {
+    ) -> installed_content_unit_path::unit_path::Fact<
+        Option<installed_content_unit_path::unit_path::SelectedNeighbour>,
+    > {
         self.moves
             .as_ref()
             .map_err(Clone::clone)?
@@ -64,7 +67,7 @@ impl ReadOperands<'_> {
         &self,
         province: u32,
         hour: i32,
-    ) -> Result<replay::day_night::Clock, &'static str> {
+    ) -> Result<replay_data::day_night::Clock, &'static str> {
         let defines = self
             .day_night
             .as_ref()
@@ -74,8 +77,8 @@ impl ReadOperands<'_> {
             .centroids
             .get(&province)
             .ok_or("province has no recorded-content centroid for its day/night clock")?;
-        let operands = replay::day_night::HourOperands::new(hour, defines)?;
-        Ok(replay::day_night::ProvinceClock::new(
+        let operands = replay_data::day_night::HourOperands::new(hour, defines)?;
+        Ok(replay_data::day_night::ProvinceClock::new(
             *centroid,
             [self.geometry.width, self.geometry.height],
             defines,
@@ -204,7 +207,7 @@ impl<'w, 'a> Moves<'w, 'a> {
     /// Shared rule verdict, selecting the submarine or navy bit.
     pub fn naval_rule(
         &self,
-        rule: &installed_content::adjacency_rules::AdjacencyRule,
+        rule: &installed_content_core::adjacency_rules::AdjacencyRule,
         raw_owner: u32,
         submarine: bool,
     ) -> Fact<bool> {
@@ -216,9 +219,9 @@ impl<'w, 'a> Moves<'w, 'a> {
         Ok(rule.permits(
             mover.verdict(rule, self.slot(raw_owner)?)?,
             if submarine {
-                installed_content::adjacency_rules::SUBMARINE
+                installed_content_core::adjacency_rules::SUBMARINE
             } else {
-                installed_content::adjacency_rules::NAVY
+                installed_content_core::adjacency_rules::NAVY
             },
         ))
     }
@@ -255,7 +258,7 @@ impl<'w, 'a> Moves<'w, 'a> {
 
     pub fn railway_counter_route(
         &self,
-        row: &replay::rows::RailwayGunCounterInputRow,
+        row: &replay_data::rows::RailwayGunCounterInputRow,
         to: u32,
         mut request: CounterRequest,
     ) -> Fact<Vec<u32>> {

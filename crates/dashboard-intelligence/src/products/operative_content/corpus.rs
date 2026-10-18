@@ -2,7 +2,7 @@
 //! hash cache and report live only in the explicitly supplied scratch folder.
 
 use super::*;
-use installed_content::content::{GatherOptions, gather};
+use installed_content_core::{content::GatherOptions, content::gather};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -44,13 +44,13 @@ fn audit(options: &GatherOptions) -> io::Result<Value> {
     Ok(result)
 }
 
-fn audit_layers(layers: &installed_content::ResolvedLayers) -> io::Result<Value> {
+fn audit_layers(layers: &installed_content_core::ResolvedLayers) -> io::Result<Value> {
     println!("Audit phase: read operation metadata");
-    let operations = installed_content::intelligence::read(layers)?;
+    let operations = installed_content_core::intelligence::read(layers)?;
     println!("Audit phase: read operative skill definitions");
     let leaders = Leaders::<String>::load(layers, &|_| None)?;
     println!("Audit phase: read mission text-icon declaration");
-    let sprites = installed_content::gfx::read(layers)?;
+    let sprites = installed_content_gfx::gfx::read(layers)?;
     let mission_icon = catalogue::text_icon_sprite(&sprites, "operative_mission_icons_small")
         .map(|sprite| json!({"name": sprite.name, "frames": sprite.frames}))
         .map_err(|error| error.to_string());
@@ -85,7 +85,7 @@ fn descriptor_at(root: &Path) -> io::Result<Option<PathBuf>> {
 #[test]
 #[ignore = "Requires explicit external game/workshop/scratch/language paths; never runs a game"]
 fn operative_content_native_reader_corpus() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let game = required_path("BATTLE_PLAN_OPERATIVE_CORPUS_GAME");
     let workshop = required_path("BATTLE_PLAN_OPERATIVE_CORPUS_WORKSHOP");
@@ -156,7 +156,7 @@ fn operative_content_native_reader_corpus() {
         };
         installed += 1;
         let source = fs::read_to_string(&descriptor).unwrap();
-        let parsed = installed_content::parser::parse(source.as_bytes()).unwrap();
+        let parsed = installed_content_core::parser::parse(source.as_bytes()).unwrap();
         // Preserve all authored metadata, including replace_path and
         // dependencies. The injected first path identifies only the physical
         // read-only input; it does not change the source files.
@@ -288,7 +288,7 @@ fn operative_capture_define_reader_corpus() {
     let read = |label: &str, extra: Option<(&Path, &[&str])>| {
         let mut inputs = vec![(base.as_path(), &[][..])];
         inputs.extend(extra);
-        let result = installed_content::ResolvedLayers::from_folders(&inputs)
+        let result = installed_content_core::ResolvedLayers::from_folders(&inputs)
             .map_err(|error| error.to_string())
             .and_then(|layers| capture_duration_days(&layers));
         json!({"label": label, "captureDurationDays": result})
@@ -307,7 +307,7 @@ fn operative_capture_define_reader_corpus() {
         let label = root.file_name().unwrap().to_str().unwrap();
         let entry = (|| -> io::Result<Value> {
             let bytes = fs::read(&descriptor)?;
-            let parsed = installed_content::parser::parse(&bytes)?;
+            let parsed = installed_content_core::parser::parse(&bytes)?;
             if parsed.get(b"archive").is_some() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -363,8 +363,8 @@ fn reader_entry(
 ) -> Value {
     let mut inputs = vec![(base, &[][..])];
     inputs.extend(extra);
-    let result =
-        installed_content::ResolvedLayers::from_folders(&inputs).and_then(|layers| audit_layers(&layers));
+    let result = installed_content_core::ResolvedLayers::from_folders(&inputs)
+        .and_then(|layers| audit_layers(&layers));
     match result {
         Ok(result) => json!({"label": label, "inputRoots": originals, "result": result}),
         Err(error) => json!({"label": label, "inputRoots": originals, "error": error.to_string()}),
@@ -374,7 +374,7 @@ fn reader_entry(
 #[test]
 #[ignore = "Copies exact installed scripts to explicit external scratch; does not run a game or audit DLC/recording identity"]
 fn operative_content_script_reader_corpus() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let game = required_path("BATTLE_PLAN_OPERATIVE_CORPUS_GAME")
         .canonicalize()
@@ -434,7 +434,7 @@ fn operative_content_script_reader_corpus() {
         println!("Script audit: copy Workshop {label} common/interface bytes");
         let entry = (|| -> io::Result<Value> {
             let source = fs::read(&descriptor)?;
-            let parsed = installed_content::parser::parse(&source)?;
+            let parsed = installed_content_core::parser::parse(&source)?;
             if parsed.get(b"archive").is_some() {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Script mirror audit refuses archive source in {}; use the full gather audit for native archive proof", descriptor.display())));
             }

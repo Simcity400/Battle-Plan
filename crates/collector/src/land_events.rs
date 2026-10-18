@@ -3,7 +3,8 @@
 #[cfg(all(test, feature = "tap-foreign-probe"))]
 mod foreign_unwind;
 use crate::{hook::Hook, opinion_changes::Padded};
-use engine::{Memory, land_events as native};
+use engine_land_inputs::land_events as native;
+use engine_native::Memory;
 use std::{
     cell::Cell,
     ops::Range,
@@ -69,7 +70,7 @@ fn unless_foreign<T>(diverted: impl FnOnce() -> T, body: impl FnOnce() -> T) -> 
 /// Sizing thread: grow from complete attempted-word demand, including records
 /// that exceeded the old storage. No population or record ceiling is imposed.
 pub fn prepare() {
-    unless_foreign(|| (), || engine::allocation::advisory(prepare_storage));
+    unless_foreign(|| (), || engine_allocation::advisory(prepare_storage));
 }
 
 fn prepare_storage() {
@@ -88,9 +89,9 @@ fn prepare_storage() {
         return;
     }
     crate::table_capture::grow_capacity(&mut capacity, required);
-    if let Ok(mut words) = engine::allocation::vec(capacity) {
+    if let Ok(mut words) = engine_allocation::vec(capacity) {
         words.resize_with(capacity, || AtomicU64::new(0));
-        if let Ok(next) = engine::allocation::boxed(Storage::new(words, Default::default())) {
+        if let Ok(next) = engine_allocation::boxed(Storage::new(words, Default::default())) {
             swap.next = Some(next);
         }
     }
@@ -101,7 +102,7 @@ pub(crate) fn presize(words: usize) {
         || (),
         || {
             LOG_REQUIRED.fetch_max(words, Ordering::Relaxed);
-            engine::allocation::advisory(prepare_storage);
+            engine_allocation::advisory(prepare_storage);
         },
     );
 }
@@ -674,10 +675,18 @@ pub struct Drain {
 /// The next interval can restart; consumers cannot infer its preceding events.
 #[cfg(test)]
 pub fn drain(output: &mut [u64], hour: i32, invalidating: bool) -> Drain {
-    drain_buffer(engine::walk::Buffer::Fixed(output), hour, invalidating)
+    drain_buffer(
+        engine_native::walk::Buffer::Fixed(output),
+        hour,
+        invalidating,
+    )
 }
 pub(crate) fn drain_growing(output: &mut Vec<u64>, hour: i32, invalidating: bool) -> Drain {
-    drain_buffer(engine::walk::Buffer::Growing(output), hour, invalidating)
+    drain_buffer(
+        engine_native::walk::Buffer::Growing(output),
+        hour,
+        invalidating,
+    )
 }
 pub(crate) fn lost_drain(hour: i32, reason: &'static str) -> Drain {
     unless_foreign(|| diverted_drain(hour), || lost_drain_owned(hour, reason))
@@ -697,7 +706,11 @@ fn lost_drain_owned(hour: i32, reason: &'static str) -> Drain {
         reason,
     }
 }
-fn drain_buffer(output: engine::walk::Buffer<'_, u64>, hour: i32, invalidating: bool) -> Drain {
+fn drain_buffer(
+    output: engine_native::walk::Buffer<'_, u64>,
+    hour: i32,
+    invalidating: bool,
+) -> Drain {
     unless_foreign(
         || diverted_drain(hour),
         || drain_owned(output, hour, invalidating),
@@ -718,7 +731,11 @@ fn diverted_drain(hour: i32) -> Drain {
         reason: "land event log owned by another test",
     }
 }
-fn drain_owned(mut output: engine::walk::Buffer<'_, u64>, hour: i32, invalidating: bool) -> Drain {
+fn drain_owned(
+    mut output: engine_native::walk::Buffer<'_, u64>,
+    hour: i32,
+    invalidating: bool,
+) -> Drain {
     if invalidating {
         advance_epoch();
     }
@@ -833,7 +850,7 @@ fn observe(combat: usize) {
         return;
     }
     let start = crate::sampling::qpc();
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     let border = BORDER.get();
     if border.combat == combat {
@@ -884,7 +901,7 @@ unsafe extern "system-unwind" fn finalize(combat: usize) {
     _call.original(|| unsafe { original(combat) });
     if observing() {
         let start = crate::sampling::qpc();
-        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Relaxed);
         match native::LossesPlan::read(&memory, base, combat) {
             Ok(plan) => append(plan.words, |put| plan.copy(&memory, base, put)),
@@ -937,9 +954,9 @@ unsafe extern "system-unwind" fn observe_wipe(combatant: usize, army: usize) {
         return;
     }
     let start = crate::sampling::qpc();
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
-    match engine::land_wipe::WipePlan::read(&memory, base, combatant, army) {
+    match engine_land_inputs::land_wipe::WipePlan::read(&memory, base, combatant, army) {
         Ok(Some(plan)) => append(plan.words, |put| plan.copy(&memory, base, put)),
         Ok(None) => {}
         Err(reason) => {
@@ -984,7 +1001,7 @@ unsafe extern "system-unwind" fn destroyed(
     let _call = Call::enter();
     if observing() {
         let start = crate::sampling::qpc();
-        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Relaxed);
         let mut context = DESTRUCTION.get();
         let matches = context.army == army && context.from == from && context.to == to;
@@ -1022,7 +1039,7 @@ unsafe extern "system-unwind" fn destruction(army: usize, from: usize, to: usize
     let _restore = Restore::new(&DESTRUCTION);
     if observing() {
         let start = crate::sampling::qpc();
-        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Relaxed);
         match native::DestructionPlan::read(&memory, base, from, to, army, 0) {
             Ok(plan) => {
@@ -1073,18 +1090,23 @@ unsafe extern "system-unwind" fn border_finalize(combat: usize) {
     let start = crate::sampling::qpc();
     let _restore = Restore::new(&BORDER);
     if observing() {
-        let memory = unsafe { engine::memory::LiveMemory::new() };
-        let fields =
-            engine::read::<[u8; 3]>(&memory, combat + engine::cland_border_war_combat::END_FLAGS)
-                .zip(engine::read::<[u8; 16]>(
-                    &memory,
-                    combat + engine::cland_combat::ATTACKER,
-                ));
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let fields = engine_native::read::<[u8; 3]>(
+            &memory,
+            combat + engine_native::cland_border_war_combat::END_FLAGS,
+        )
+        .zip(engine_native::read::<[u8; 16]>(
+            &memory,
+            combat + engine_native::cland_combat::ATTACKER,
+        ));
         if let Some((flags, sides)) = fields {
             BORDER.set(Border {
                 combat,
-                handle: engine::read::<u64>(&memory, combat + engine::cland_combat::HANDLE)
-                    .unwrap_or(0),
+                handle: engine_native::read::<u64>(
+                    &memory,
+                    combat + engine_native::cland_combat::HANDLE,
+                )
+                .unwrap_or(0),
                 sides: [
                     u64::from_le_bytes(sides[..8].try_into().unwrap()) as usize,
                     u64::from_le_bytes(sides[8..].try_into().unwrap()) as usize,
@@ -1098,7 +1120,7 @@ unsafe extern "system-unwind" fn border_finalize(combat: usize) {
         }
     }
     if observing() {
-        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Relaxed);
         let border = BORDER.get();
         if border.combat == combat && border.handle != 0 {
@@ -1205,7 +1227,7 @@ unsafe extern "system-unwind" fn dispatch(combat: usize, loser: usize, winner: u
     let start = crate::sampling::qpc();
     let _restore = Restore::new(&DISPATCH);
     if observing() {
-        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
         match native::dispatch_inputs(&memory, BASE.load(Ordering::Relaxed), combat, loser, winner)
         {
             Ok((header, winner)) => {
@@ -1282,7 +1304,7 @@ unsafe fn leader_observation(call: &Call, side: usize, caller: usize, target: us
         let start = crate::sampling::qpc();
         match observed.slot(side, caller, BASE.load(Ordering::Relaxed)) {
             Ok(Some(n)) => {
-                let memory = unsafe { engine::memory::LiveMemory::new() };
+                let memory = unsafe { engine_native::memory::LiveMemory::new() };
                 match native::leader_reference(&memory, BASE.load(Ordering::Relaxed), result) {
                     Ok(handle) => {
                         observed.leaders[n] = handle;
@@ -1357,13 +1379,13 @@ impl Hooks {
             ),
             (
                 WIPE_ORIGINAL,
-                engine::land_wipe::LIFECYCLE_RVA,
-                engine::land_wipe::LIFECYCLE_SENTINEL,
+                engine_land_inputs::land_wipe::LIFECYCLE_RVA,
+                engine_land_inputs::land_wipe::LIFECYCLE_SENTINEL,
                 land_wipe_entry as *const () as usize,
             ),
         ];
         for (_, rva, sentinel, _) in sites {
-            if engine::read::<[u8; 16]>(memory, base + rva) != Some(sentinel) {
+            if engine_native::read::<[u8; 16]>(memory, base + rva) != Some(sentinel) {
                 return Err(format!("land event sentinel differs at RVA {rva:x}"));
             }
         }
@@ -1476,7 +1498,7 @@ pub fn status() -> impl serde::Serialize {
 fn verify_leader_taps(memory: &impl Memory, base: usize) -> Result<[[u8; 16]; 2], String> {
     let mut sentinels = [[0; 16]; 2];
     for (n, &rva) in native::DISPATCH_LEADER_CALLS.iter().enumerate() {
-        let sentinel = engine::read::<[u8; 16]>(memory, base + rva)
+        let sentinel = engine_native::read::<[u8; 16]>(memory, base + rva)
             .filter(|bytes| bytes[..6] == native::DISPATCH_LEADER_CALL_SENTINEL)
             .ok_or_else(|| {
                 format!(
@@ -2211,20 +2233,22 @@ mod tests {
         let world = crate::extended::combat_progress::tests::World::new(1);
         unsafe extern "system-unwind" fn flush(combat: usize) {
             let side = unsafe {
-                ptr::read_unaligned((combat + engine::cland_combat::ATTACKER) as *const usize)
+                ptr::read_unaligned(
+                    (combat + engine_native::cland_combat::ATTACKER) as *const usize,
+                )
             };
-            let observer = side + engine::cland_combatant::STATS_OBSERVER;
+            let observer = side + engine_native::cland_combatant::STATS_OBSERVER;
             unsafe {
                 ptr::write_unaligned(
-                    (observer + engine::cstats_observer::MANPOWER_LOSS) as *mut i32,
+                    (observer + engine_land_inputs::cstats_observer::MANPOWER_LOSS) as *mut i32,
                     73,
                 );
             }
             let entries = unsafe {
                 ptr::read_unaligned(
                     (observer
-                        + engine::cstats_observer::EQUIPMENT_LOSSES
-                        + engine::cequipment_variant_pool::ITEMS)
+                        + engine_land_inputs::cstats_observer::EQUIPMENT_LOSSES
+                        + engine_native::cequipment_variant_pool::ITEMS)
                         as *const usize,
                 )
             };
@@ -2269,8 +2293,8 @@ mod tests {
         drain(&mut output, 10, true);
         let lost = test_support::thread_lost();
         let unknown_side = 0u64;
-        let land_side = engine::cland_combatant::VTABLE_RVA as u64;
-        let unsupported_unit = [engine::carmy::VTABLE_RVA as u64, 1];
+        let land_side = engine_native::cland_combatant::VTABLE_RVA as u64;
+        let unsupported_unit = [engine_native::carmy::VTABLE_RVA as u64, 1];
         unsafe {
             observe_wipe(&unknown_side as *const _ as usize, 0);
             observe_wipe(
@@ -2451,7 +2475,10 @@ mod tests {
         let sentinel: [u8; 16] = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
             .try_into()
             .unwrap();
-        assert_eq!(sentinel[..5], engine::land_wipe::LIFECYCLE_SENTINEL[..5]);
+        assert_eq!(
+            sentinel[..5],
+            engine_land_inputs::land_wipe::LIFECYCLE_SENTINEL[..5]
+        );
         let mut hook =
             unsafe { Hook::new(site, land_wipe_entry as *const () as usize, sentinel) }.unwrap();
         let previous = ORIGINAL[WIPE_ORIGINAL].swap(hook.trampoline(), Ordering::SeqCst);
@@ -2600,11 +2627,12 @@ mod tests {
         .unwrap();
         let mut vtable = [0usize; 30];
         vtable[29] = native_target as *const () as usize;
-        let mut leader = vec![0u8; engine::cunit_leader::TYPE + 8];
+        let mut leader = vec![0u8; engine_native::cunit_leader::TYPE + 8];
         let pointer = leader.as_mut_ptr() as usize;
-        leader[..8]
-            .copy_from_slice(&((base + engine::carmy_leader::VTABLE_RVA) as u64).to_le_bytes());
-        leader[engine::cunit_leader::TYPE..].copy_from_slice(&17u64.to_le_bytes());
+        leader[..8].copy_from_slice(
+            &((base + engine_native::carmy_leader::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        leader[engine_native::cunit_leader::TYPE..].copy_from_slice(&17u64.to_le_bytes());
         // Both paths reset identical TLS context, so the paired delta includes
         // the real relay/stub, both in-flight atomics and the observation body.
         for with_commander in [false, true] {

@@ -1,8 +1,6 @@
 //! Engagement orchestration composed with counter marker reads.
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{TableId, TableRows},
-};
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::collections::{BTreeMap, BTreeSet};
 use viewer_counters::map::counters::test_support::{LandMarkers, kept_frames_at};
 use viewer_foundation::{
@@ -18,15 +16,16 @@ use viewer_foundation::{
 /// `naval` holds (combat, attacking owner): that owner's convoy against a CCC
 /// cruiser, which draws as the convoy variant.
 fn kept_frame_hour(
-    hour: replay::Hour,
+    hour: replay_data::Hour,
     allied: bool,
     land: &[(u64, Vec<u64>, bool, u8)],
     naval: &[(u64, u32)],
 ) -> DecodedFrame {
-    use replay::rows::{
-        CountryLinkRow, CountryRow, DivisionMovementRow, FactionMemberRow, HumanControllerRow,
-        LandCombatRow, LandCombatSideRow, NavalCombatDetailsRow, NavalCombatParticipantRow,
-        NavalCombatRow, PlayerRow, ShipRow,
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::DivisionMovementRow, rows::FactionMemberRow,
+        rows::HumanControllerRow, rows::LandCombatRow, rows::LandCombatSideRow,
+        rows::NavalCombatDetailsRow, rows::NavalCombatParticipantRow, rows::NavalCombatRow,
+        rows::PlayerRow, rows::ShipRow,
     };
     let mut frame = DecodedFrame {
         branch: 1,

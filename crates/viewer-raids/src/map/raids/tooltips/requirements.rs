@@ -1,12 +1,9 @@
 //! Unit requirement text.
 use super::rules::{Lines, Text};
-use installed_content::localisation::Argument as Arg;
-use installed_content::{
-    equipment::{Database, Groups},
-    localisation::Localisation,
-    parser,
-    raids::RaidType,
-};
+use installed_content_core::{equipment::Database, equipment::Groups, parser};
+use installed_content_localisation::localisation::Argument as Arg;
+use installed_content_localisation::localisation::Localisation;
+use installed_content_raids::raids::RaidType;
 use viewer_foundation::tooltip_text::value_limit;
 use viewer_foundation::tooltip_text::{ensure_newlines, localise};
 
@@ -172,7 +169,7 @@ mod tests {
 
     #[test]
     fn anonymous_wrapper_tests_none_before_expanding_members() {
-        let (equipment, groups) = installed_content::equipment::fixture::load(&[(
+        let (equipment, groups) = installed_content_core::equipment::fixture::load(&[(
             "common/equipment_groups/g.txt",
             "inner = { description = inner_name equipment_type = { b a } }
              cycle = { equipment_type = { cycle } }",
@@ -192,8 +189,8 @@ mod tests {
         .map(|(key, value)| (key.into(), value.into()))
         .collect();
         let kind = |names: &[&str]| RaidType {
-            unit_requirements: vec![installed_content::raids::UnitRequirement {
-                equipment: vec![installed_content::raids::EquipmentRequirement {
+            unit_requirements: vec![installed_content_raids::raids::UnitRequirement {
+                equipment: vec![installed_content_raids::raids::EquipmentRequirement {
                     types: names.iter().map(|name| (*name).into()).collect(),
                     min: Some(70),
                     ..Default::default()
@@ -251,7 +248,7 @@ mod tests {
 
     #[test]
     fn battalion_lines_require_active_definition_and_nonempty_limit() {
-        use installed_content::raids::{BattalionRequirement, UnitRequirement};
+        use installed_content_raids::{raids::BattalionRequirement, raids::UnitRequirement};
         let loc: Localisation = [
             ("value_limit_min", "$MIN$"),
             ("raid_unit_requirements_battalion", "$NAME$ $LIMIT$"),
@@ -337,7 +334,7 @@ mod tests {
         .into_iter()
         .map(|(k, v)| (k.into(), v.into()))
         .collect();
-        let (equipment, groups) = installed_content::equipment::fixture::load(&[
+        let (equipment, groups) = installed_content_core::equipment::fixture::load(&[
             (
                 "common/units/equipment/modules/m.txt",
                 "equipment_modules = { Gun_1 = { } }",
@@ -373,8 +370,8 @@ mod tests {
             "{cycle}"
         );
         let kind = RaidType {
-            unit_requirements: vec![installed_content::raids::UnitRequirement {
-                equipment: vec![installed_content::raids::EquipmentRequirement {
+            unit_requirements: vec![installed_content_raids::raids::UnitRequirement {
+                equipment: vec![installed_content_raids::raids::EquipmentRequirement {
                     types: vec!["a".into()],
                     modules: vec![vec!["GUN_1".into(), "missing".into()]],
                     ..Default::default()

@@ -1,5 +1,6 @@
 //! Native pass hints allocate only off-thread; failed hints retain every floor.
-use engine::{Memory, cgame_state, construction_ic_sites, read};
+use engine_native::{Memory, cgame_state, read};
+use engine_production::construction_ic_sites;
 
 static FAILURES: collector_extended_support::demand::DemandFailures =
     collector_extended_support::demand::DemandFailures::new();

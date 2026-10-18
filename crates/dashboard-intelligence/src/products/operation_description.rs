@@ -2,11 +2,9 @@
 use dashboard_base::{products::Product, source::Source};
 use dashboard_core::config::LoadContext;
 use dashboard_text::metadata::validate_campaign;
-use replay::{
-    container::Replay,
-    frame::FrameDecoder,
-    rows::{TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::tables};
+use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 use std::{
     io,
@@ -98,7 +96,7 @@ fn chunk(
 pub(super) fn completions_match(
     replay: &Replay,
     hour: i32,
-    incoming: &[&replay::rows::OperationCompletionRow],
+    incoming: &[&replay_data::rows::OperationCompletionRow],
     branch: u64,
 ) -> io::Result<bool> {
     let selected = [TableId::Campaign, TableId::OperationCompletions];

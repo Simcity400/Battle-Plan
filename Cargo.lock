@@ -632,8 +632,35 @@ dependencies = [
  "collector-war-overview",
  "collector-weather",
  "crossbeam-queue",
- "engine",
+ "engine-air-history",
+ "engine-allocation",
+ "engine-characters",
+ "engine-decisions",
+ "engine-deployment",
+ "engine-dlc",
+ "engine-events",
+ "engine-executable",
+ "engine-fixed-layout",
+ "engine-fuel",
+ "engine-intelligence",
+ "engine-land-inputs",
+ "engine-map-air",
+ "engine-mutations",
+ "engine-native",
+ "engine-naval-history",
+ "engine-occupation",
+ "engine-peace",
+ "engine-production",
+ "engine-raid-inputs",
+ "engine-railways",
+ "engine-research",
+ "engine-scripts",
+ "engine-stability",
+ "engine-visibility",
  "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
  "retour",
  "serde",
  "serde_json",
@@ -651,8 +678,12 @@ dependencies = [
  "collector-primitives",
  "collector-projection",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-characters",
+ "engine-mutations",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -670,8 +701,11 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
- "engine",
- "replay",
+ "engine-air-history",
+ "engine-allocation",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -690,8 +724,12 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
- "engine",
- "replay",
+ "engine-air-history",
+ "engine-allocation",
+ "engine-native",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -710,8 +748,12 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
- "engine",
- "replay",
+ "engine-air-history",
+ "engine-allocation",
+ "engine-events",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -724,8 +766,11 @@ dependencies = [
  "collector-primitives",
  "collector-projection",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-map-air",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -740,8 +785,9 @@ dependencies = [
  "collector-production",
  "collector-projection",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -753,8 +799,11 @@ dependencies = [
  "collector-primitives",
  "collector-status",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-mutations",
+ "engine-native",
+ "engine-research",
+ "replay-data",
  "serde",
 ]
 
@@ -768,8 +817,12 @@ dependencies = [
  "collector-projection",
  "collector-status",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-executable",
+ "engine-land-inputs",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
 ]
 
@@ -787,8 +840,12 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-land-inputs",
+ "engine-native",
+ "engine-resources",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
@@ -810,8 +867,16 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-deployment",
+ "engine-intelligence",
+ "engine-mutations",
+ "engine-native",
+ "engine-occupation",
+ "engine-production",
+ "engine-resources",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -829,8 +894,13 @@ dependencies = [
  "collector-projection",
  "collector-status",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-native",
+ "engine-naval-history",
+ "engine-occupation",
+ "engine-stability",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -848,8 +918,14 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-deployment",
+ "engine-executable",
+ "engine-land-inputs",
+ "engine-mutations",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -863,8 +939,16 @@ dependencies = [
  "collector-projection",
  "collector-raw",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-events",
+ "engine-fuel",
+ "engine-map-air",
+ "engine-native",
+ "engine-production",
+ "engine-railways",
+ "engine-resources",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -880,8 +964,11 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-events",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -894,8 +981,10 @@ dependencies = [
  "collector-primitives",
  "collector-status",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-land-inputs",
+ "engine-native",
+ "replay-data",
  "serde",
  "serde_json",
 ]
@@ -912,8 +1001,11 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-fuel",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -932,8 +1024,18 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-decisions",
+ "engine-focus",
+ "engine-governance-tests",
+ "engine-mutations",
+ "engine-native",
+ "engine-power-balance",
+ "engine-research",
+ "engine-stability",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -945,7 +1047,8 @@ dependencies = [
  "collector-primitives",
  "collector-status",
  "collector-test-support",
- "engine",
+ "engine-allocation",
+ "engine-mutations",
  "retour",
  "serde",
  "serde_json",
@@ -968,8 +1071,14 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-events",
+ "engine-intelligence",
+ "engine-mutations",
+ "engine-native",
+ "engine-scripts",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
@@ -984,8 +1093,10 @@ dependencies = [
  "collector-primitives",
  "collector-projection",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -1000,8 +1111,12 @@ dependencies = [
  "collector-primitives",
  "collector-projection",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-air-history",
+ "engine-allocation",
+ "engine-events",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -1016,8 +1131,10 @@ dependencies = [
  "collector-projection",
  "collector-raw",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -1030,7 +1147,8 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
- "engine",
+ "engine-mutations",
+ "engine-native",
  "serde",
  "windows-sys 0.61.2",
 ]
@@ -1044,7 +1162,9 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
- "engine",
+ "engine-allocation",
+ "engine-land-inputs",
+ "engine-native",
  "serde",
 ]
 
@@ -1058,8 +1178,10 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-events",
+ "engine-native",
+ "replay-data",
  "serde",
  "serde_json",
 ]
@@ -1073,8 +1195,12 @@ dependencies = [
  "collector-primitives",
  "collector-projection",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-native",
+ "engine-projects",
+ "engine-scripts",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -1084,8 +1210,9 @@ name = "collector-memory"
 version = "0.1.0"
 dependencies = [
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-native",
+ "replay-data",
  "windows-sys 0.61.2",
 ]
 
@@ -1095,8 +1222,15 @@ version = "0.1.0"
 dependencies = [
  "collector-status",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-dlc",
+ "engine-executable",
+ "engine-fixed-layout",
+ "engine-native",
+ "engine-research",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
@@ -1115,8 +1249,12 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-deployment",
+ "engine-mutations",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -1134,8 +1272,10 @@ dependencies = [
  "collector-projection",
  "collector-status",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
@@ -1154,8 +1294,11 @@ dependencies = [
  "collector-projection",
  "collector-status",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-native",
+ "engine-naval-history",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
@@ -1169,8 +1312,10 @@ dependencies = [
  "collector-primitives",
  "collector-status",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-native",
+ "engine-naval-history",
+ "replay-data",
  "serde",
  "serde_json",
 ]
@@ -1184,8 +1329,9 @@ dependencies = [
  "collector-primitives",
  "collector-projection",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -1205,8 +1351,17 @@ dependencies = [
  "collector-test-support",
  "collector-timing",
  "crossbeam-queue",
- "engine",
- "replay",
+ "engine-air-history",
+ "engine-allocation",
+ "engine-events",
+ "engine-mutations",
+ "engine-native",
+ "engine-naval-history",
+ "engine-raid-inputs",
+ "engine-railways",
+ "engine-research",
+ "engine-resources",
+ "replay-data",
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
@@ -1226,8 +1381,11 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-native",
+ "engine-production",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
@@ -1244,8 +1402,11 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-native",
+ "engine-peace",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
@@ -1263,8 +1424,16 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-decisions",
+ "engine-events",
+ "engine-focus",
+ "engine-land-inputs",
+ "engine-mutations",
+ "engine-native",
+ "engine-production",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
@@ -1276,7 +1445,8 @@ version = "0.1.0"
 dependencies = [
  "collector-status",
  "collector-test-support",
- "engine",
+ "engine-allocation",
+ "engine-native",
  "serde",
  "windows-sys 0.61.2",
 ]
@@ -1290,8 +1460,12 @@ dependencies = [
  "collector-projection",
  "collector-raw",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-deployment",
+ "engine-equipment",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -1303,8 +1477,11 @@ dependencies = [
  "collector-primitives",
  "collector-projection",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-native",
+ "engine-production",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -1316,8 +1493,10 @@ dependencies = [
  "collector-memory",
  "collector-status",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
 ]
 
@@ -1334,8 +1513,16 @@ dependencies = [
  "collector-raw",
  "collector-status",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-characters",
+ "engine-events",
+ "engine-native",
+ "engine-peace",
+ "engine-projects",
+ "engine-raid-inputs",
+ "engine-visibility",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -1351,8 +1538,13 @@ dependencies = [
  "collector-primitives",
  "collector-projection",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-mutations",
+ "engine-native",
+ "engine-raid-inputs",
+ "engine-resources",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -1368,8 +1560,14 @@ dependencies = [
  "collector-projection",
  "collector-status",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-executable",
+ "engine-fixed-layout",
+ "engine-native",
+ "engine-naval-history",
+ "engine-railways",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -1383,7 +1581,8 @@ dependencies = [
  "collector-snapshots",
  "collector-status",
  "collector-test-support",
- "engine",
+ "engine-allocation",
+ "engine-native",
  "serde",
 ]
 
@@ -1399,8 +1598,11 @@ dependencies = [
  "collector-projection",
  "collector-raw",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-native",
+ "engine-stability",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -1419,8 +1621,12 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-executable",
+ "engine-mutations",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
@@ -1436,8 +1642,11 @@ dependencies = [
  "collector-primitives",
  "collector-projection",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-land-inputs",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -1447,7 +1656,8 @@ name = "collector-snapshots"
 version = "0.1.0"
 dependencies = [
  "collector-test-support",
- "engine",
+ "engine-allocation",
+ "engine-native",
 ]
 
 [[package]]
@@ -1462,8 +1672,11 @@ dependencies = [
  "collector-projection",
  "collector-status",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-native",
+ "engine-stability",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -1473,7 +1686,7 @@ name = "collector-status"
 version = "0.1.0"
 dependencies = [
  "collector-test-support",
- "engine",
+ "engine-allocation",
  "serde",
  "serde_json",
 ]
@@ -1489,8 +1702,10 @@ dependencies = [
  "collector-projection",
  "collector-status",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -1526,8 +1741,14 @@ dependencies = [
  "collector-projection",
  "collector-status",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-dlc",
+ "engine-land-inputs",
+ "engine-native",
+ "engine-stability",
+ "engine-visibility",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -1541,8 +1762,10 @@ dependencies = [
  "collector-primitives",
  "collector-projection",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -1559,8 +1782,11 @@ dependencies = [
  "collector-projection",
  "collector-raw",
  "collector-test-support",
- "engine",
- "replay",
+ "engine-allocation",
+ "engine-executable",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
 ]
@@ -1907,11 +2133,28 @@ dependencies = [
  "dashboard-unit-leaders",
  "dashboard-wars",
  "dashboard-world-tension",
- "engine",
- "installed-content",
+ "engine-allocation",
+ "engine-executable",
+ "engine-native",
+ "engine-research",
+ "engine-stability",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-equipment-graphics",
+ "installed-content-events",
+ "installed-content-focus",
+ "installed-content-gfx",
+ "installed-content-image",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
+ "installed-content-settings",
+ "installed-content-states",
  "mimalloc",
  "png 0.18.1",
  "replay",
+ "replay-data",
+ "replay-frame",
  "rfd",
  "serde",
  "serde_json",
@@ -1931,9 +2174,12 @@ dependencies = [
  "dashboard-core",
  "dashboard-raids",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-localisation",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -1948,9 +2194,14 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-executable",
+ "engine-native",
+ "installed-content-core",
+ "installed-content-localisation",
+ "installed-content-regions",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -1966,11 +2217,31 @@ dependencies = [
  "blake3",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-allocation",
+ "engine-dlc",
+ "engine-events",
+ "engine-executable",
+ "engine-native",
+ "engine-production",
+ "engine-research",
+ "installed-content-abilities",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-equipment-graphics",
+ "installed-content-focus",
+ "installed-content-gfx",
+ "installed-content-image",
+ "installed-content-localisation",
+ "installed-content-province-area",
+ "installed-content-regions",
+ "installed-content-settings",
+ "installed-content-states",
  "job-priority",
  "png 0.18.1",
  "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -1988,10 +2259,16 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-executable",
+ "engine-native",
+ "installed-content-core",
+ "installed-content-gfx",
+ "installed-content-image",
+ "installed-content-states",
  "png 0.18.1",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2002,11 +2279,14 @@ dependencies = [
 name = "dashboard-core"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-allocation",
+ "engine-executable",
  "installed-content-core",
  "installed-content-settings",
  "job-priority",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "ts-rs",
@@ -2020,9 +2300,12 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-allocation",
+ "engine-fuel",
+ "installed-content-localisation",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2037,9 +2320,12 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-native",
+ "installed-content-core",
+ "installed-content-localisation",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2053,9 +2339,15 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-dlc",
+ "engine-executable",
+ "engine-land-inputs",
+ "engine-native",
+ "engine-resources",
+ "installed-content-core",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2069,9 +2361,15 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-allocation",
+ "engine-executable",
+ "engine-land-inputs",
+ "engine-native",
+ "engine-stability",
+ "installed-content-core",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2086,9 +2384,12 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-executable",
+ "engine-native",
+ "installed-content-core",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2104,8 +2405,12 @@ dependencies = [
  "dashboard-core",
  "dashboard-text",
  "dashboard-wars",
- "installed-content",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2119,9 +2424,15 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-executable",
+ "engine-native",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-gfx",
+ "installed-content-localisation",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2138,8 +2449,11 @@ dependencies = [
  "dashboard-core",
  "dashboard-text",
  "engine-executable",
- "installed-content",
+ "installed-content-core",
+ "installed-content-division-names",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2153,9 +2467,12 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-air-history",
+ "installed-content-core",
+ "installed-content-regions",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2171,9 +2488,14 @@ dependencies = [
  "dashboard-core",
  "dashboard-land-battles",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-executable",
+ "engine-native",
+ "installed-content-core",
+ "installed-content-localisation",
+ "installed-content-regions",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2190,9 +2512,14 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-gfx",
+ "installed-content-image",
+ "installed-content-localisation",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2207,9 +2534,12 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-country-names",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2225,9 +2555,12 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-peace",
+ "installed-content-core",
+ "installed-content-localisation",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2242,10 +2575,19 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-executable",
+ "engine-native",
+ "installed-content-abilities",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-focus",
+ "installed-content-image",
+ "installed-content-localisation",
+ "installed-content-settings",
  "png 0.18.1",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2261,9 +2603,15 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-executable",
+ "engine-native",
+ "installed-content-core",
+ "installed-content-localisation",
+ "installed-content-raids",
+ "installed-content-states",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2279,9 +2627,10 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-production",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2296,10 +2645,17 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-executable",
+ "engine-native",
+ "engine-projects",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-gfx",
+ "installed-content-localisation",
  "png 0.18.1",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2313,9 +2669,12 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-executable",
+ "engine-stability",
+ "installed-content-core",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2330,9 +2689,13 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-executable",
+ "engine-native",
+ "installed-content-core",
+ "installed-content-country-names",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2348,12 +2711,36 @@ dependencies = [
  "base64 0.22.1",
  "crc32fast",
  "dashboard-core",
- "engine",
- "installed-content",
+ "engine-allocation",
+ "engine-executable",
+ "engine-native",
+ "engine-power-balance",
+ "engine-projects",
+ "engine-research",
+ "installed-content-abilities",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-division-names",
+ "installed-content-equipment-graphics",
+ "installed-content-events",
+ "installed-content-focus",
+ "installed-content-gfx",
+ "installed-content-image",
+ "installed-content-localisation",
+ "installed-content-raids",
+ "installed-content-regions",
  "installed-content-save",
+ "installed-content-scripted-localisation",
+ "installed-content-settings",
+ "installed-content-state-categories",
+ "installed-content-states",
+ "installed-content-wargoals",
  "job-priority",
  "png 0.18.1",
  "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
  "serde",
  "serde_json",
  "shader-pipeline",
@@ -2369,10 +2756,14 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-executable",
+ "engine-native",
+ "installed-content-core",
+ "installed-content-image",
  "png 0.18.1",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2388,8 +2779,12 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "installed-content",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-localisation",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -2404,8 +2799,10 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
- "engine",
+ "engine-stability",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "store",
@@ -3424,7 +3821,8 @@ version = "0.1.0"
 dependencies = [
  "installed-content-core",
  "installed-content-localisation",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -3439,11 +3837,12 @@ dependencies = [
 name = "installed-content-equipment-graphics"
 version = "0.1.0"
 dependencies = [
- "engine",
  "engine-executable",
+ "engine-native",
  "installed-content-core",
  "installed-content-states",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -3518,7 +3917,8 @@ dependencies = [
  "installed-content-core",
  "installed-content-country-names",
  "installed-content-division-names",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -3534,8 +3934,9 @@ name = "installed-content-save"
 version = "0.1.0"
 dependencies = [
  "engine-executable",
- "installed-content",
- "replay",
+ "installed-content-core",
+ "installed-content-states",
+ "replay-data",
 ]
 
 [[package]]
@@ -3604,7 +4005,7 @@ dependencies = [
  "engine-executable",
  "installed-content-core",
  "installed-content-regions",
- "replay",
+ "replay-data",
 ]
 
 [[package]]
@@ -6095,8 +6496,10 @@ dependencies = [
 name = "recorder"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-allocation",
+ "engine-executable",
+ "engine-native",
+ "installed-content-core",
  "installed-content-save",
  "recorder-derived",
  "recorder-metrics",
@@ -6107,6 +6510,8 @@ dependencies = [
  "recorder-sizes",
  "recorder-test-support",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde_json",
  "windows-sys 0.61.2",
  "zstd",
@@ -6116,10 +6521,12 @@ dependencies = [
 name = "recorder-app"
 version = "0.1.0"
 dependencies = [
- "installed-content",
+ "installed-content-core",
+ "installed-content-country-names",
  "installed-content-image",
  "recorder",
  "replay",
+ "replay-data",
  "rfd",
  "serde",
  "serde_json",
@@ -6132,19 +6539,26 @@ dependencies = [
 name = "recorder-derived"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-regions",
+ "installed-content-weather",
  "recorder-platform",
  "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-metrics"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-allocation",
  "recorder-test-support",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde_json",
 ]
 
@@ -6152,8 +6566,10 @@ dependencies = [
 name = "recorder-movement-oracle"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-dlc",
+ "engine-executable",
+ "engine-native",
+ "installed-content-core",
  "recorder-platform",
  "serde_json",
 ]
@@ -6162,9 +6578,13 @@ dependencies = [
 name = "recorder-oracle"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-executable",
+ "engine-native",
+ "installed-content-core",
+ "installed-content-raids",
+ "installed-content-regions",
  "installed-content-save",
+ "installed-content-weather",
  "recorder-oracle-air",
  "recorder-oracle-air-ledger",
  "recorder-oracle-air-missions",
@@ -6212,29 +6632,36 @@ dependencies = [
  "recorder-oracle-weather",
  "recorder-platform",
  "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-air"
 version = "0.1.0"
 dependencies = [
- "installed-content",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-support",
  "recorder-test-support",
- "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-air-ledger"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-air-history",
+ "installed-content-core",
+ "installed-content-regions",
  "installed-content-save",
  "recorder-oracle-support",
  "recorder-test-support",
  "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -6244,107 +6671,123 @@ dependencies = [
  "installed-content-save",
  "recorder-oracle-relations",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-characters"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-native",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-intel",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-combat-details"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-native",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-combat-log"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-land-inputs",
+ "engine-native",
+ "engine-resources",
  "installed-content-save",
  "recorder-oracle-naval-history",
  "recorder-oracle-production",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-construction"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-executable",
+ "engine-native",
+ "engine-resources",
+ "installed-content-core",
  "installed-content-save",
+ "installed-content-states",
  "recorder-oracle-support",
  "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-core"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-native",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-counters"
 version = "0.1.0"
 dependencies = [
- "installed-content",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-country-rosters"
 version = "0.1.0"
 dependencies = [
- "installed-content",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-characters",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
 ]
 
 [[package]]
 name = "recorder-oracle-economy"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-air-history",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-fuel-demand",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-equipment-destruction"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-native",
  "installed-content-save",
  "recorder-oracle-support",
  "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -6353,6 +6796,8 @@ version = "0.1.0"
 dependencies = [
  "recorder-oracle-support",
  "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -6361,18 +6806,20 @@ version = "0.1.0"
 dependencies = [
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-factories"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-executable",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -6382,17 +6829,19 @@ dependencies = [
  "installed-content-save",
  "recorder-oracle-support",
  "recorder-test-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-fuel-demand"
 version = "0.1.0"
 dependencies = [
- "installed-content",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -6401,41 +6850,47 @@ version = "0.1.0"
 dependencies = [
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-governance"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-executable",
+ "engine-research",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-intel"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-native",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-land"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-land-inputs",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-military",
  "recorder-oracle-support",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde_json",
 ]
 
@@ -6443,65 +6898,72 @@ dependencies = [
 name = "recorder-oracle-map-inputs"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-native",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-military"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-executable",
+ "engine-native",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-combat-details",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-modifier-breakdowns"
 version = "0.1.0"
 dependencies = [
- "installed-content",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-modifiers"
 version = "0.1.0"
 dependencies = [
- "installed-content",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-naval-history"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-native",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-core",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-naval-missions"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-native",
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -6510,55 +6972,63 @@ version = "0.1.0"
 dependencies = [
  "recorder-oracle-support",
  "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-pass-inputs"
 version = "0.1.0"
 dependencies = [
- "installed-content",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-counters",
  "recorder-oracle-country-rosters",
  "recorder-oracle-naval-missions",
  "recorder-oracle-supply-trains",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-peace"
 version = "0.1.0"
 dependencies = [
- "installed-content",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-projects",
  "recorder-oracle-support",
  "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-plans"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-native",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-politics"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-executable",
+ "engine-native",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-characters",
  "recorder-oracle-governance",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -6567,39 +7037,46 @@ version = "0.1.0"
 dependencies = [
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-production"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-executable",
+ "engine-native",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-support",
  "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-projects"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-native",
+ "engine-projects",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-railway-guns"
 version = "0.1.0"
 dependencies = [
- "installed-content",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -6608,7 +7085,8 @@ version = "0.1.0"
 dependencies = [
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -6618,6 +7096,8 @@ dependencies = [
  "recorder-oracle-support",
  "recorder-test-support",
  "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -6627,17 +7107,19 @@ dependencies = [
  "installed-content-save",
  "recorder-oracle-counters",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-selected-routes"
 version = "0.1.0"
 dependencies = [
- "installed-content",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -6646,7 +7128,8 @@ version = "0.1.0"
 dependencies = [
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -6655,27 +7138,31 @@ version = "0.1.0"
 dependencies = [
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-supply-trains"
 version = "0.1.0"
 dependencies = [
- "installed-content",
+ "installed-content-core",
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-support"
 version = "0.1.0"
 dependencies = [
- "engine",
- "installed-content",
+ "engine-executable",
+ "installed-content-core",
  "installed-content-save",
  "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -6683,17 +7170,19 @@ name = "recorder-oracle-unit-combat-references"
 version = "0.1.0"
 dependencies = [
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-visibility"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-native",
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -6702,25 +7191,29 @@ version = "0.1.0"
 dependencies = [
  "installed-content-save",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-oracle-weather"
 version = "0.1.0"
 dependencies = [
- "installed-content",
+ "installed-content-core",
  "installed-content-save",
+ "installed-content-weather",
  "recorder-oracle-core",
  "recorder-oracle-support",
- "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
 ]
 
 [[package]]
 name = "recorder-platform"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-native",
  "replay",
  "windows-sys 0.61.2",
 ]
@@ -6729,12 +7222,13 @@ dependencies = [
 name = "recorder-replay"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-allocation",
  "recorder-metrics",
  "recorder-platform",
  "recorder-test-support",
  "replay",
  "replay-data",
+ "replay-frame",
  "serde_json",
  "windows-sys 0.61.2",
 ]
@@ -6745,6 +7239,8 @@ version = "0.1.0"
 dependencies = [
  "recorder-test-support",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde_json",
  "zstd",
 ]
@@ -6755,6 +7251,7 @@ version = "0.1.0"
 dependencies = [
  "replay",
  "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -6872,10 +7369,11 @@ name = "replay"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
- "engine",
+ "engine-allocation",
  "foldhash 0.2.0",
  "job-priority",
  "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
@@ -6886,10 +7384,34 @@ dependencies = [
 name = "replay-data"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "crc32fast",
+ "engine-air-history",
+ "engine-allocation",
+ "engine-events",
+ "engine-executable",
+ "engine-fuel",
+ "engine-native",
+ "engine-naval-history",
+ "engine-production",
  "replay-identity",
  "weather-period",
  "zstd",
+]
+
+[[package]]
+name = "replay-derive"
+version = "0.1.0"
+dependencies = [
+ "engine-executable",
+ "engine-fixed-layout",
+ "engine-land-inputs",
+ "engine-native",
+ "engine-naval-history",
+ "engine-production",
+ "engine-railways",
+ "engine-research",
+ "replay-data",
+ "replay-frame",
 ]
 
 [[package]]
@@ -6897,16 +7419,28 @@ name = "replay-desktop"
 version = "0.1.0"
 dependencies = [
  "dashboard",
- "engine",
- "installed-content",
+ "engine-executable",
+ "installed-content-settings",
  "gilrs",
  "replay",
+ "replay-data",
  "rfd",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tokio",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "replay-frame"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "engine-allocation",
+ "replay-data",
+ "serde_json",
  "windows-sys 0.61.2",
 ]
 
@@ -8585,14 +9119,30 @@ dependencies = [
  "dashboard",
  "dashboard-base",
  "eframe",
- "engine",
- "installed-content",
+ "engine-executable",
+ "engine-native",
+ "installed-content-abilities",
+ "installed-content-core",
+ "installed-content-division-names",
+ "installed-content-focus",
+ "installed-content-gfx",
+ "installed-content-image",
+ "installed-content-localisation",
+ "installed-content-raids",
+ "installed-content-regions",
+ "installed-content-scripted-localisation",
+ "installed-content-settings",
  "installed-content-sound",
+ "installed-content-state-categories",
+ "installed-content-states",
+ "installed-content-weather",
  "mimalloc",
  "png 0.18.1",
  "pollster 0.4.0",
  "raw-window-handle",
  "replay",
+ "replay-data",
+ "replay-frame",
  "serde",
  "serde_json",
  "sha2",
@@ -8625,9 +9175,22 @@ version = "0.1.0"
 dependencies = [
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
- "replay",
+ "engine-characters",
+ "engine-executable",
+ "engine-native",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-division-names",
+ "installed-content-events",
+ "installed-content-gfx",
+ "installed-content-image",
+ "installed-content-localisation",
+ "installed-content-naval-combat-defines",
+ "installed-content-regions",
+ "installed-content-weather",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
  "viewer-foundation",
 ]
 
@@ -8637,9 +9200,24 @@ version = "0.1.0"
 dependencies = [
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
+ "engine-allocation",
+ "engine-dlc",
+ "engine-executable",
+ "engine-native",
+ "engine-railways",
+ "installed-content-abilities",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-division-names",
+ "installed-content-localisation",
+ "installed-content-regions",
+ "installed-content-states",
+ "installed-content-unit-path",
+ "installed-content-weather",
  "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
  "viewer-foundation",
 ]
 
@@ -8649,9 +9227,21 @@ version = "0.1.0"
 dependencies = [
  "dashboard-core",
  "dashboard-text",
- "engine",
- "installed-content",
- "replay",
+ "engine-executable",
+ "engine-native",
+ "installed-content-abilities",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-gfx",
+ "installed-content-image",
+ "installed-content-localisation",
+ "installed-content-naval-path",
+ "installed-content-regions",
+ "installed-content-settings",
+ "installed-content-states",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
  "serde_json",
  "viewer-foundation",
 ]
@@ -8664,11 +9254,24 @@ dependencies = [
  "dashboard-core",
  "dashboard-text",
  "eframe",
- "engine",
- "installed-content",
+ "engine-executable",
+ "engine-native",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-gfx",
+ "installed-content-image",
+ "installed-content-localisation",
+ "installed-content-raids",
+ "installed-content-regions",
  "installed-content-save",
+ "installed-content-settings",
+ "installed-content-states",
+ "installed-content-unit-path",
  "pollster 0.4.0",
  "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
  "shader-pipeline",
  "windows-sys 0.61.2",
 ]
@@ -8680,9 +9283,20 @@ dependencies = [
  "dashboard-core",
  "dashboard-text",
  "eframe",
- "engine",
- "installed-content",
- "replay",
+ "engine-executable",
+ "engine-native",
+ "engine-research",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-equipment-graphics",
+ "installed-content-localisation",
+ "installed-content-raids",
+ "installed-content-regions",
+ "installed-content-states",
+ "installed-content-unit-path",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
  "viewer-foundation",
 ]
 
@@ -8694,10 +9308,25 @@ dependencies = [
  "dashboard-core",
  "dashboard-text",
  "eframe",
- "engine",
- "installed-content",
+ "engine-air-history",
+ "engine-executable",
+ "engine-native",
+ "engine-research",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-equipment-graphics",
+ "installed-content-image",
+ "installed-content-localisation",
+ "installed-content-raids",
+ "installed-content-regions",
+ "installed-content-state-categories",
+ "installed-content-states",
+ "installed-content-weather",
  "pollster 0.4.0",
  "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
  "serde_json",
  "shader-pipeline",
  "viewer-foundation",

@@ -88,7 +88,7 @@ fn reserve_trees(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
 /// group names. The trees themselves are runtime caches no save serializes;
 /// `recorder derived` checks them against the naval_tree_oracle samples.
 fn naval_trees(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
-    use replay::naval_trees::{self, SideSource};
+    use replay_data::{naval_trees, naval_trees::SideSource};
     let rows = frame.complete::<tables::NavalModifierTrees>()?;
     let details = frame.complete::<tables::NavalCombatDetails>()?;
     let ships = frame.complete::<tables::NavalCombatShips>()?;
@@ -295,7 +295,7 @@ fn equal<T: PartialEq + std::fmt::Debug>(
 
 // Text serialization consumes c_str; retain raw suffixes in the recording.
 fn text_projection<'a>(r: &mut Report, label: &str, value: &'a [u8]) -> &'a [u8] {
-    let prefix = installed_content::parser::c_string(value);
+    let prefix = installed_content_core::parser::c_string(value);
     if prefix.len() < value.len() {
         r.limitation(
             "text serialization stops at the first NUL; captured suffix bytes are not comparable",
@@ -335,7 +335,7 @@ struct CommanderSaveView<'a> {
     experience: Option<i64>,
     /// The leader's stored name token, which the save writes as `name`.
     name_token: Option<&'a [u8]>,
-    traits: &'a [replay::rows::LandCombatCommanderTrait],
+    traits: &'a [replay_data::rows::LandCombatCommanderTrait],
 }
 fn commander_values(
     r: &mut Report,
@@ -389,7 +389,7 @@ fn commander_values(
     );
     for (index, (a, b)) in a.traits.iter().zip(&b.traits).enumerate() {
         let label = format!("{label} assigned trait {index}");
-        if a.token_id == engine::cpdx_lexer::FIXED15_TOKEN as i32 || a.token.contains(&0) {
+        if a.token_id == engine_native::cpdx_lexer::FIXED15_TOKEN as i32 || a.token.contains(&0) {
             r.limitation("reserved numeric or interior-NUL trait token has no proven literal text projection",label);
         } else {
             equal(r, label, a.token.as_slice(), b.as_slice());
@@ -400,7 +400,7 @@ fn commander_values(
 fn naval_commander_values(
     r: &mut Report,
     label: &str,
-    a: &replay::rows::NavalCommanderInputs,
+    a: &replay_data::rows::NavalCommanderInputs,
     save: &Save,
     tokens: &TokenNames<'_>,
 ) -> io::Result<()> {
@@ -469,7 +469,7 @@ fn formations(save: &Save) -> io::Result<BTreeMap<u64, u64>> {
 fn formation(
     r: &mut Report,
     label: &str,
-    side: &replay::rows::LandCombatSideDetails,
+    side: &replay_data::rows::LandCombatSideDetails,
     formations: &BTreeMap<u64, u64>,
 ) {
     let actual = side.commander_formation;
@@ -494,7 +494,7 @@ fn timed_traits(
     label: &str,
     commander: u64,
     category: i32,
-    actual: &[replay::rows::LandCombatCommanderTimedTrait],
+    actual: &[replay_data::rows::LandCombatCommanderTimedTrait],
     save: &Save,
     tokens: &TokenNames<'_>,
 ) {
@@ -543,8 +543,8 @@ fn timed_traits(
 fn land_side_inputs(
     r: &mut Report,
     label: &str,
-    actual: &replay::rows::LandCombatSideDetails,
-    inputs: &replay::rows::LandCombatSideInputs,
+    actual: &replay_data::rows::LandCombatSideDetails,
+    inputs: &replay_data::rows::LandCombatSideInputs,
     saved: &save::combat_details::LandSide,
     save: &Save,
     tokens: &TokenNames<'_>,
@@ -564,7 +564,7 @@ fn land_side_inputs(
             Some(saved) => {
                 let expected = r.displayed(
                     "LandCombatDetails.side_inputs.prevented_damage",
-                    replay::rows::LandCombatSideInputs::PREVENTED_STEP,
+                    replay_data::rows::LandCombatSideInputs::PREVENTED_STEP,
                     saved.raw,
                 );
                 equal(r, field, value, expected);
@@ -607,7 +607,7 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let formations = formations(save)?;
     // Only timed traits need the dictionary; its absence limits them alone.
     let timed = rows.iter().any(|row| {
-        matches!(&row.side_inputs, replay::rows::Recorded::Value(sides)
+        matches!(&row.side_inputs, replay_data::rows::Recorded::Value(sides)
             if sides.iter().any(|side| !side.timed_traits.is_empty()))
     });
     let tokens = timed_trait_tokens(frame, r, timed);
@@ -944,10 +944,12 @@ impl<'a> Naming<'a> {
 
 /// The member template references a `name_template_witness` build recorded,
 /// by division.
-pub fn witnessed_name_templates(rows: &[replay::rows::DivisionStatusRow]) -> BTreeMap<u64, u64> {
+pub fn witnessed_name_templates(
+    rows: &[replay_data::rows::DivisionStatusRow],
+) -> BTreeMap<u64, u64> {
     rows.iter()
         .filter_map(|row| match &row.name_template {
-            replay::rows::Recorded::Value(replay::rows::Witnessed(Some(template))) => {
+            replay_data::rows::Recorded::Value(replay_data::rows::Witnessed(Some(template))) => {
                 Some((row.division, *template))
             }
             _ => None,
@@ -1062,8 +1064,8 @@ fn member_group<'t>(
     }
 }
 
-impl<'a> From<&'a replay::rows::LandCombatDivisionRow> for Naming<'a> {
-    fn from(row: &'a replay::rows::LandCombatDivisionRow) -> Self {
+impl<'a> From<&'a replay_data::rows::LandCombatDivisionRow> for Naming<'a> {
+    fn from(row: &'a replay_data::rows::LandCombatDivisionRow) -> Self {
         Self {
             kind: row.name_type,
             order: row.name_order,
@@ -1076,8 +1078,8 @@ impl<'a> From<&'a replay::rows::LandCombatDivisionRow> for Naming<'a> {
     }
 }
 
-impl<'a> From<&'a replay::rows::NameOperands> for Naming<'a> {
-    fn from(row: &'a replay::rows::NameOperands) -> Self {
+impl<'a> From<&'a replay_data::rows::NameOperands> for Naming<'a> {
+    fn from(row: &'a replay_data::rows::NameOperands) -> Self {
         Self {
             kind: row.kind,
             order: row.order,
@@ -1622,11 +1624,11 @@ fn ships(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
             row.detection_state,
             detail.detection_state.unwrap_or(-1),
         );
-        // Stored at its display step (replay::display); the save's exact
+        // Stored at its display step (replay_data::display); the save's exact
         // value is rounded the same way.
         let escape = r.displayed(
             "NavalCombatShips.escape_progress",
-            replay::rows::NavalCombatShipRow::ESCAPE_STEP,
+            replay_data::rows::NavalCombatShipRow::ESCAPE_STEP,
             detail.escape_progress.as_ref().map_or(0, |v| v.raw),
         );
         equal(
@@ -1776,7 +1778,7 @@ fn ships(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
             );
             let organisation = r.displayed(
                 "NavalCombatShips.organisation",
-                replay::rows::NavalCombatShipRow::ORGANISATION_STEP,
+                replay_data::rows::NavalCombatShipRow::ORGANISATION_STEP,
                 unit.organisation.raw,
             );
             equal(
@@ -1798,7 +1800,7 @@ fn ships(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
 fn hit_values(
     r: &mut Report,
     label: &str,
-    actual: &[replay::rows::NavalCombatHit],
+    actual: &[replay_data::rows::NavalCombatHit],
     saved: &[save::combat_details::NavalHit],
 ) {
     equal(
@@ -1825,7 +1827,7 @@ fn hit_values(
 fn air_hit_values(
     r: &mut Report,
     label: &str,
-    actual: &[replay::rows::NavalCombatAirHit],
+    actual: &[replay_data::rows::NavalCombatAirHit],
     saved: &[save::combat_details::AirHit],
     links: &BTreeMap<u32, &CountryRow>,
 ) -> io::Result<()> {
@@ -1856,7 +1858,7 @@ fn air_hit_values(
 fn plane_values(
     r: &mut Report,
     label: &str,
-    a: &replay::rows::NavalCombatPlane,
+    a: &replay_data::rows::NavalCombatPlane,
     b: &save::combat_details::NavalPlane,
     links: &BTreeMap<u32, &CountryRow>,
 ) -> io::Result<()> {
@@ -1907,7 +1909,7 @@ fn plane_values(
 fn result_ship_values(
     r: &mut Report,
     label: &str,
-    a: &replay::rows::NavalResultShip,
+    a: &replay_data::rows::NavalResultShip,
     b: &save::combat_details::NavalMemberDetails,
     links: &BTreeMap<u32, &CountryRow>,
 ) -> io::Result<()> {

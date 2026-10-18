@@ -50,7 +50,7 @@ pub(crate) struct AirStatsCopyContext {
 
 pub(super) fn sspan(
     log: &mut RawLog<AIR_STATS_N>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     addr: Option<usize>,
     len: usize,
     mask: u32,
@@ -72,11 +72,11 @@ fn stats_pool_u32(log: &RawLog<AIR_STATS_N>, start: usize) -> u32 {
 /// read fails for this history.
 fn copy_stats_history(
     log: &mut RawLog<AIR_STATS_N>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     history: usize,
 ) -> bool {
-    use engine::{
+    use engine_air_history::{
         cloop_history, cloop_history::air_stats, loop_history_record_fields, loop_history_window,
     };
     let vtable = match sspan(log, memory, Some(history), 8, STATS_MASK) {
@@ -278,13 +278,13 @@ fn copy_stats_history(
 /// scalar path preserves partial admission and growth requests at pool limits.
 pub(super) fn copy_stats_channels(
     log: &mut RawLog<AIR_STATS_N>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     values: Array,
 ) -> bool {
     let lengths = [32, 8, 8, 8, 72, 8, 8, 8, 40];
     let addresses = [0_usize, 10, 17, 24, 36, 51, 58, 65, 77].map(|index| {
         index
-            .checked_mul(engine::loop_history_record_fields::VALUE_STRIDE)
+            .checked_mul(engine_air_history::loop_history_record_fields::VALUE_STRIDE)
             .and_then(|offset| values.data.checked_add(offset))
     });
     if !log.overflowed
@@ -319,7 +319,7 @@ pub(super) fn copy_stats_channels(
 #[cfg(test)]
 fn copy_stats_pass(
     job: &mut AirStatsJob,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
     ticks: &mut [u64; AIR_STATS_N],
@@ -329,7 +329,7 @@ fn copy_stats_pass(
 
 fn copy_stats_pass_growing(
     job: &mut AirStatsJob,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
     ticks: &mut [u64; AIR_STATS_N],
@@ -339,7 +339,7 @@ fn copy_stats_pass_growing(
 
 fn copy_stats_pass_mode(
     job: &mut AirStatsJob,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
     ticks: &mut [u64; AIR_STATS_N],
@@ -367,15 +367,15 @@ fn copy_stats_pass_mode(
 /// point, mirroring the walk's fail-fast.
 fn copy_stats_owners(
     log: &mut RawLog<AIR_STATS_N>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
 ) {
-    use engine::{ccountry, cstrategic_air, cstrategic_air_manager};
+    use engine_native::{ccountry, cstrategic_air, cstrategic_air_manager};
     let countries = match sspan(
         log,
         memory,
-        game_state.checked_add(engine::cgame_state::COUNTRIES),
+        game_state.checked_add(engine_native::cgame_state::COUNTRIES),
         16,
         STATS_MASK,
     ) {
@@ -385,7 +385,7 @@ fn copy_stats_owners(
     let links = match sspan(
         log,
         memory,
-        game_state.checked_add(engine::cgame_state::COUNTRY_LINKS),
+        game_state.checked_add(engine_native::cgame_state::COUNTRY_LINKS),
         16,
         STATS_MASK,
     ) {
@@ -395,7 +395,7 @@ fn copy_stats_owners(
     let manager_ptr = match sspan(
         log,
         memory,
-        game_state.checked_add(engine::cgame_state::STRATEGIC_AIR_MANAGER),
+        game_state.checked_add(engine_native::cgame_state::STRATEGIC_AIR_MANAGER),
         8,
         STATS_MASK,
     )
@@ -594,7 +594,7 @@ pub(crate) fn copy_air_stats_refresh_growing(
     ctx: AirStatsCopyContext,
     job: &mut AirStatsJob,
 ) -> AirStatsCopyReport {
-    if !replay::cadence::should_walk(TableId::AirStatistics, ctx.hour, ctx.force_full) {
+    if !replay_data::cadence::should_walk(TableId::AirStatistics, ctx.hour, ctx.force_full) {
         job.clear();
         return AirStatsCopyReport::default();
     }
@@ -613,7 +613,7 @@ pub(crate) fn copy_air_stats_refresh(
     ctx: AirStatsCopyContext,
     job: &mut AirStatsJob,
 ) -> AirStatsCopyReport {
-    if !replay::cadence::should_walk(TableId::AirStatistics, ctx.hour, ctx.force_full) {
+    if !replay_data::cadence::should_walk(TableId::AirStatistics, ctx.hour, ctx.force_full) {
         job.clear();
         return AirStatsCopyReport::default();
     }
@@ -634,7 +634,7 @@ pub(crate) fn decode_air_stats_payload(
 ) {
     captured.active[4] = job.active;
     if !job.active {
-        captured.fail_air_stats_capture(replay::cadence::SKIPPED_REASON);
+        captured.fail_air_stats_capture(replay_data::cadence::SKIPPED_REASON);
         return;
     }
     let recorded = crate::raw::Recorded::build(&job.log);

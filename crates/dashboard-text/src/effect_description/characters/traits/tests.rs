@@ -4,7 +4,8 @@ use crate::{
     effect_description::tests::Fixture,
     scripted_text::{EventObject, EventScope, Link},
 };
-use replay::{frame::TableView, rows::*};
+use replay_data::rows::*;
+use replay_frame::frame::TableView;
 
 fn fixture() -> (Fixture, Folder) {
     let mut fixture = Fixture::new();
@@ -175,7 +176,7 @@ fn assert_render(body: &str, scopes: &mut EventScopes, expected: &str) {
 // A block selects a country trait for the current character.
 #[test]
 fn add_trait() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_trait={trait=syn_country}",
@@ -187,7 +188,7 @@ fn add_trait() {
 // Remove a trait selected by block.
 #[test]
 fn remove_trait() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "remove_trait={trait=syn_country}",
@@ -199,7 +200,7 @@ fn remove_trait() {
 // A scalar country trait uses the ruling leader.
 #[test]
 fn add_country_leader_trait() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_country_leader_trait=syn_country",
@@ -211,7 +212,7 @@ fn add_country_leader_trait() {
 // A scalar country trait uses the character leader.
 #[test]
 fn remove_country_leader_trait() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "remove_country_leader_trait=syn_country",
@@ -223,7 +224,7 @@ fn remove_country_leader_trait() {
 // Untimed scalar add/remove effects share viewing-country trait names and raw modifiers.
 #[test]
 fn scalar_unit_leader_traits_use_viewing_country_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     for (body, expected) in [
@@ -246,7 +247,7 @@ fn scalar_unit_leader_traits_use_viewing_country_name() {
 // consumes a trait/days block.
 #[test]
 fn untimed_unit_traits_do_not_read_timed_own_fields() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for key in ["add_unit_leader_trait", "remove_unit_leader_trait"] {
         assert_render(
@@ -260,7 +261,7 @@ fn untimed_unit_traits_do_not_read_timed_own_fields() {
 // Replace a ruling leader trait by removing and adding definitions.
 #[test]
 fn swap_ruler_traits() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "swap_ruler_traits={add=syn_new remove=syn_old}",
@@ -272,7 +273,7 @@ fn swap_ruler_traits() {
 // Replace a character leader trait with raw wrapper text.
 #[test]
 fn swap_country_leader_traits() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "swap_country_leader_traits={add=syn_new remove=syn_old}",
@@ -284,7 +285,7 @@ fn swap_country_leader_traits() {
 // The timed block accepts an integer with leading zeroes.
 #[test]
 fn add_timed_unit_leader_trait() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_timed_unit_leader_trait={days=017 trait=syn_unit}",
@@ -296,7 +297,7 @@ fn add_timed_unit_leader_trait() {
 // A list filters out already held traits before selecting.
 #[test]
 fn add_random_trait() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_random_trait={syn_unit syn_held}",
@@ -308,7 +309,7 @@ fn add_random_trait() {
 // Half-way fixed5 values round away from zero.
 #[test]
 fn add_max_trait() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_max_trait=6.5",
@@ -324,7 +325,7 @@ fn add_max_trait() {
 
 #[test]
 fn named_character_trait_uses_raw_modifiers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_trait={character=syn_character trait=syn_country}",
@@ -335,7 +336,7 @@ fn named_character_trait_uses_raw_modifiers() {
 
 #[test]
 fn empty_trait_gates_and_swap_error_literal() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_trait={trait=absent} remove_trait={trait=absent} add_country_leader_trait=absent remove_country_leader_trait=absent add_unit_leader_trait=absent remove_unit_leader_trait=absent",
@@ -356,7 +357,7 @@ fn empty_trait_gates_and_swap_error_literal() {
 
 #[test]
 fn numeric_trait_preserves_separator_and_raw_tooltip() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_unit_leader_trait=syn_numeric",
@@ -367,7 +368,7 @@ fn numeric_trait_preserves_separator_and_raw_tooltip() {
 
 #[test]
 fn unit_trait_body_preserves_block_order_and_fixed5_scale() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_trait={trait=syn_full}",
@@ -378,7 +379,7 @@ fn unit_trait_body_preserves_block_order_and_fixed5_scale() {
 
 #[test]
 fn unit_helper_override_suppresses_modifiers_and_separate_custom_lines() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_trait={trait=syn_override}",
@@ -389,7 +390,7 @@ fn unit_helper_override_suppresses_modifiers_and_separate_custom_lines() {
 
 #[test]
 fn country_helper_equipment_uses_stat_labels_and_polarity() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_country_leader_trait=syn_equipment",
@@ -400,7 +401,7 @@ fn country_helper_equipment_uses_stat_labels_and_polarity() {
 
 #[test]
 fn targeted_trait_uses_country_prefix_and_default_mask() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // Store the authored flag marker as control byte 0x12.
     assert_render(
@@ -414,7 +415,7 @@ fn targeted_trait_uses_country_prefix_and_default_mask() {
 // Resolve ROOT in a fresh empty scope rather than the caller scope.
 #[test]
 fn targeted_trait_keeps_raw_prefix_separator_and_empty_target_scope() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     fixture.with_renderer(&mut character(), Content::default(), |renderer| {
@@ -431,7 +432,7 @@ fn targeted_trait_keeps_raw_prefix_separator_and_empty_target_scope() {
 
 #[test]
 fn discarded_targeted_operand_refuses_instead_of_inventing_unprefixed_text() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let result = fixture.render(
@@ -450,7 +451,7 @@ fn discarded_targeted_operand_refuses_instead_of_inventing_unprefixed_text() {
 // keep the formatter's 24-bit default mask.
 #[test]
 fn trait_masks_keep_high_categories_only_in_primary_blocks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::ModifierDefinitions(definitions)) =
@@ -493,7 +494,7 @@ fn trait_masks_keep_high_categories_only_in_primary_blocks() {
 
 #[test]
 fn random_trait_reference_role_uses_recorded_assigned_definition_ordinals() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
@@ -523,7 +524,7 @@ fn random_trait_reference_role_uses_recorded_assigned_definition_ordinals() {
 
 #[test]
 fn empty_country_trait_keeps_name_and_bullet() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_country_leader_trait=syn_empty",
@@ -534,7 +535,7 @@ fn empty_country_trait_keeps_name_and_bullet() {
 
 #[test]
 fn unknown_trait_modifier_has_named_definition_refusal() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::ModifierDefinitions.index()] =
@@ -553,7 +554,7 @@ fn unknown_trait_modifier_has_named_definition_refusal() {
 
 #[test]
 fn sub_unit_modifiers_keep_first_nonempty_definition() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_trait={trait=syn_sub}",
@@ -564,7 +565,7 @@ fn sub_unit_modifiers_keep_first_nonempty_definition() {
 
 #[test]
 fn sub_unit_prefix_applies_to_every_numeric_row_and_no_custom_tooltip() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_trait={trait=syn_sub_full}",
@@ -575,7 +576,7 @@ fn sub_unit_prefix_applies_to_every_numeric_row_and_no_custom_tooltip() {
 
 #[test]
 fn sub_unit_buffer_appends_directly_after_corps_modifiers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_trait={trait=syn_corps_sub}",
@@ -586,7 +587,7 @@ fn sub_unit_buffer_appends_directly_after_corps_modifiers() {
 
 #[test]
 fn hidden_sub_unit_keeps_header_without_numeric_line() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_trait={trait=syn_hidden_sub}",
@@ -597,7 +598,7 @@ fn hidden_sub_unit_keeps_header_without_numeric_line() {
 
 #[test]
 fn trait_modifier_lookup_preserves_shared_token_ambiguity() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     fixture.with_renderer(&mut character(), Content::default(), |renderer| {
@@ -632,7 +633,7 @@ fn trait_modifier_lookup_preserves_shared_token_ambiguity() {
 
 #[test]
 fn conditional_unit_catalogue_preserves_shared_token_ambiguity() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let (catalogue, _conditional_folder) = folder_catalogue(&[
@@ -690,7 +691,7 @@ fn conditional_unit_catalogue_preserves_shared_token_ambiguity() {
 
 #[test]
 fn empty_plain_trait_needs_no_recorded_modifier_tables() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     for table in [TableId::ModifierDefinitions, TableId::LexicalTokens] {
@@ -710,7 +711,7 @@ fn empty_plain_trait_needs_no_recorded_modifier_tables() {
 
 #[test]
 fn swap_root_delta_does_not_copy_custom_tooltips_or_hidden_sets() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "swap_ruler_traits={remove=syn_old add=syn_hidden}",
@@ -726,7 +727,7 @@ fn swap_root_delta_does_not_copy_custom_tooltips_or_hidden_sets() {
 
 #[test]
 fn targeted_custom_trait_keeps_embedded_separator_and_trailing_lf() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_country_leader_trait=syn_targeted_custom",
@@ -737,7 +738,7 @@ fn targeted_custom_trait_keeps_embedded_separator_and_trailing_lf() {
 
 #[test]
 fn scoped_modifier_entry_point_allows_expressions_and_embedded_lf() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::ModifierDefinitions(definitions)) =

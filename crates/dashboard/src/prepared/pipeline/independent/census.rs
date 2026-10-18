@@ -34,12 +34,9 @@ use crate::{
     products::{country_factories, country_nukes},
 };
 use dashboard_base::prepared::kept::{Reduced, consecutive, kept_changes, observe_hours};
-use replay::{
-    container::{QuietHours, Replay, TableFields},
-    format::FormatVersion,
-    frame::DecodedFrame,
-    rows::{CountryRow, TableId},
-};
+use replay::{container::QuietHours, container::Replay, container::TableFields};
+use replay_data::{format::FormatVersion, rows::CountryRow, rows::TableId};
+use replay_frame::frame::DecodedFrame;
 use serde::{Serialize, de::DeserializeOwned};
 use std::{any::Any, io, ops::Range, sync::atomic::AtomicBool};
 
@@ -340,8 +337,8 @@ impl Extract for CensusExtract {
     /// hours between share the read flag of the hour before them.
     fn deadline(&self) -> Option<i32> {
         let (hour, read) = self.last?;
-        let cadence = replay::cadence::cadence_in(self.table, self.format);
-        (1..=replay::cadence::STAGGER_PERIOD)
+        let cadence = replay_data::cadence::cadence_in(self.table, self.format);
+        (1..=replay_data::cadence::STAGGER_PERIOD)
             .filter_map(|ahead| hour.checked_add(ahead))
             .find(|&next| cadence.is_refresh(next) != read)
     }
@@ -367,9 +364,9 @@ fn fold<C: Census>(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let facts = {
-        let _cpu = ::replay::cpu::scope("fold facts", None);
+        let _cpu = ::replay_frame::cpu::scope("fold facts", None);
         facts
             .downcast::<Facts>()
             .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -378,7 +375,7 @@ fn fold<C: Census>(
     dashboard_base::prepared::kept::note_frames(C::family().name, facts.frames);
     let mut reached = None;
     for hour in facts.hours {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         check()?;
         match hour {
             Hour::Observed { frame, changes } => {
@@ -386,7 +383,7 @@ fn fold<C: Census>(
                 #[cfg(test)]
                 dashboard_base::prepared::kept::note_observed(C::family().name);
                 let result = {
-                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     census.observe(&frame, block.replay, &changes)
                 };
                 if !observed(frame.hour, result)? {
@@ -395,11 +392,11 @@ fn fold<C: Census>(
             }
             Hour::Quiet { first, reads } => {
                 for (offset, read) in reads.into_iter().enumerate() {
-                    let _cpu = ::replay::cpu::scope("fold driver", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
                     // The span's hours are consecutive i32 hours.
                     let hour = first + offset as i32;
                     let advanced = {
-                        let _cpu = ::replay::cpu::scope("fold observe", None);
+                        let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                         census.advance_quiet(hour, read)
                     };
                     match advanced {
@@ -438,7 +435,7 @@ fn observe_block<C: Census>(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let family = C::family();
     observe_hours(
         block.replay,

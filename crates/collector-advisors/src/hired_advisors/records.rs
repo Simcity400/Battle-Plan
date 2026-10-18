@@ -2,8 +2,8 @@
 //! ([`crate::advisor_pool_changes`]).
 //!
 //! A row records one of a country's active or retired character records: its position and its
-//! character's id. Every writer of either array is a hooked site of the advisor pool Family 
-//! ([`engine::advisor_pool_mutations`]: character registration, character retirement, civil-war
+//! character's id. Every writer of either array is a hooked site of the advisor pool Family
+//! ([`engine_mutations::advisor_pool_mutations`]: character registration, character retirement, civil-war
 //! character transfer and retired-record copying, the generate-advisor command around its two
 //! registrations, and the pool's constructor and destructor); a character's id, and the name token
 //! the arrays sort by, are written after publication only by `repair_containers`, which the roster
@@ -20,7 +20,8 @@ use crate::{
     advisor_pool_changes::{Counts, Table},
     sampled_verify::Check,
 };
-use engine::{Memory, allocation, ccountry_characters as native, walk::Outcome};
+use engine_allocation as allocation;
+use engine_native::{Memory, ccountry_characters as native, walk::Outcome};
 
 /// Whether the character records carry a quiet hour.
 pub const CARRY: bool = cfg!(feature = "character_record_changes");
@@ -163,8 +164,8 @@ mod tests {
             bytes[at + 8..at + 12].copy_from_slice(&count.to_le_bytes());
             bytes[at + 12..at + 16].copy_from_slice(&count.to_le_bytes());
         };
-        header(engine::cgame_state::COUNTRIES, 0x1000, 2);
-        header(engine::cgame_state::COUNTRY_LINKS, 0x1100, 1);
+        header(engine_native::cgame_state::COUNTRIES, 0x1000, 2);
+        header(engine_native::cgame_state::COUNTRY_LINKS, 0x1100, 1);
         bytes
     }
 
@@ -183,7 +184,7 @@ mod tests {
     #[test]
     fn a_quiet_hour_publishes_the_held_records_and_its_rotation_hour_compares() {
         let world = empty_world();
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0x1000,
             bytes: &world,
         };

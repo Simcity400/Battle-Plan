@@ -25,16 +25,12 @@ use crate::{
     metadata::{CountryKeys, branch_bounds, link_slot, tagged_countries, validate_campaign},
     products::country_groups::HourSpan,
 };
-use installed_content::{
-    characters::BuiltTemplate,
-    coverage::Gap,
-    modifiers::{Modifier, Modifiers},
+use installed_content_core::{
+    characters::BuiltTemplate, coverage::Gap, modifiers::Modifier, modifiers::Modifiers,
 };
-use replay::{
-    container::Replay,
-    frame::FrameDecoder,
-    rows::{TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::tables};
+use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -93,7 +89,7 @@ pub struct IdeaCharacter {
     pub name: String,
 }
 
-/// One modifier as the game stores it (installed_content::modifiers), before
+/// One modifier as the game stores it (installed_content_core::modifiers), before
 /// formatting: one line per modifier, its last value.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
 #[serde(rename_all = "camelCase")]
@@ -420,13 +416,13 @@ pub struct ChangeMetadata {
 impl ChangeMetadata {
     pub fn definition_index(
         &self,
-    ) -> io::Result<Option<BTreeMap<String, replay::rows::ModifierDefinitionRow>>> {
+    ) -> io::Result<Option<BTreeMap<String, replay_data::rows::ModifierDefinitionRow>>> {
         self.definitions
             .as_ref()
             .map(|bytes| {
                 let bytes = crate::prepared::series::decompress(bytes.as_slice())?;
-                let mut input = replay::codec::Decoder::new(&bytes);
-                let frame = replay::frame::DecodedFrame::decode_checkpoint(&mut input)?;
+                let mut input = replay_data::codec::Decoder::new(&bytes);
+                let frame = replay_frame::frame::DecodedFrame::decode_checkpoint(&mut input)?;
                 input.finish()?;
                 Ok(super::idea_format::index_recorded(
                     frame.complete::<tables::ModifierDefinitions>()?,
@@ -457,12 +453,12 @@ struct CountryScan {
 }
 
 struct CountryRead<'a> {
-    country: &'a replay::rows::CountryRow,
+    country: &'a replay_data::rows::CountryRow,
     slot: u32,
-    ideas: Option<&'a Vec<&'a replay::rows::ActiveIdeaRow>>,
-    advisors: Option<&'a Vec<&'a replay::rows::HiredAdvisorRow>>,
-    appearance: Option<&'a replay::rows::CountryAppearanceRow>,
-    topic_appearance: Option<&'a replay::rows::CountryAppearanceRow>,
+    ideas: Option<&'a Vec<&'a replay_data::rows::ActiveIdeaRow>>,
+    advisors: Option<&'a Vec<&'a replay_data::rows::HiredAdvisorRow>>,
+    appearance: Option<&'a replay_data::rows::CountryAppearanceRow>,
+    topic_appearance: Option<&'a replay_data::rows::CountryAppearanceRow>,
 }
 
 impl CountryScan {
@@ -481,7 +477,7 @@ impl CountryScan {
 
     fn observe(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
+        decoded: &replay_frame::frame::DecodedFrame,
         read: CountryRead<'_>,
         feed: bool,
     ) {
@@ -722,17 +718,17 @@ pub struct Scan {
 struct IdeaInputs {
     complete: bool,
     keys: Option<CountryKeys>,
-    country_view: Option<replay::frame::ViewIdentity>,
-    countries: Option<Vec<replay::rows::CountryRow>>,
-    links: Option<Vec<replay::rows::CountryLinkRow>>,
+    country_view: Option<replay_frame::frame::ViewIdentity>,
+    countries: Option<Vec<replay_data::rows::CountryRow>>,
+    links: Option<Vec<replay_data::rows::CountryLinkRow>>,
     holders: BTreeMap<String, Option<(usize, u32)>>,
     slots: BTreeMap<u32, Vec<String>>,
-    idea_rows: Option<Vec<replay::rows::ActiveIdeaRow>>,
-    advisor_rows: Option<Vec<replay::rows::HiredAdvisorRow>>,
-    ideas: Option<BTreeMap<u32, Vec<replay::rows::ActiveIdeaRow>>>,
-    advisors: Option<BTreeMap<u32, Vec<replay::rows::HiredAdvisorRow>>>,
-    appearances: BTreeMap<u32, Vec<replay::rows::CountryAppearanceRow>>,
-    characters: Option<BTreeMap<u32, replay::rows::CharacterRow>>,
+    idea_rows: Option<Vec<replay_data::rows::ActiveIdeaRow>>,
+    advisor_rows: Option<Vec<replay_data::rows::HiredAdvisorRow>>,
+    ideas: Option<BTreeMap<u32, Vec<replay_data::rows::ActiveIdeaRow>>>,
+    advisors: Option<BTreeMap<u32, Vec<replay_data::rows::HiredAdvisorRow>>>,
+    appearances: BTreeMap<u32, Vec<replay_data::rows::CountryAppearanceRow>>,
+    characters: Option<BTreeMap<u32, replay_data::rows::CharacterRow>>,
     character_users: BTreeMap<u32, BTreeSet<String>>,
     lexical: Option<BTreeMap<u32, Vec<u8>>>,
     script_users: BTreeMap<u32, BTreeSet<String>>,
@@ -740,11 +736,11 @@ struct IdeaInputs {
 impl IdeaInputs {
     fn refresh(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         changes: Option<&crate::prepared::frame_changes::FrameChanges>,
         refused: &mut RefusedRows,
     ) -> BTreeSet<String> {
-        let _cpu = ::replay::cpu::scope_phase("ideas:inputs");
+        let _cpu = ::replay_frame::cpu::scope_phase("ideas:inputs");
         let changed =
             |table: TableId| changes.is_none_or(|changes| changes.rows_changed[table.index()]);
         let mut roster = false;
@@ -935,7 +931,7 @@ impl IdeaInputs {
                         .map(|row| {
                             (
                                 row.id,
-                                replay::rows::CharacterRow {
+                                replay_data::rows::CharacterRow {
                                     id: row.id,
                                     name_token_id: row.name_token_id,
                                     token: row.token.clone(),
@@ -1018,7 +1014,7 @@ impl Scan {
     #[cfg(any(test, feature = "test-support"))]
     pub fn prepare_changes(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         changes: &mut PreparedChanges,
         source: &Source,
         context: &LoadContext,
@@ -1035,7 +1031,7 @@ impl Scan {
     }
     pub fn prepare_changes_in(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         facts: &crate::prepared::frame_changes::FrameChanges,
         changes: &mut PreparedChanges,
         content: Option<&PoliticsContent>,
@@ -1076,13 +1072,13 @@ impl Scan {
             && frame.complete::<tables::ModifierDefinitions>().is_ok()
             && frame.complete::<tables::LexicalTokens>().is_ok()
         {
-            let _cpu = ::replay::cpu::scope_phase("ideas:definitions");
-            let packet = replay::frame::DecodedFrame {
+            let _cpu = ::replay_frame::cpu::scope_phase("ideas:definitions");
+            let packet = replay_frame::frame::DecodedFrame {
                 tables: std::array::from_fn(|index| {
                     if tables.contains(&TableId::ALL[index]) {
                         frame.tables[index].clone()
                     } else {
-                        replay::frame::TableView::Unavailable {
+                        replay_frame::frame::TableView::Unavailable {
                             reason: "Table not selected for reconstruction".into(),
                         }
                         .into()
@@ -1170,24 +1166,24 @@ impl Scan {
         }
     }
     #[cfg(any(test, feature = "test-support"))]
-    pub fn observe(&mut self, decoded: &replay::frame::DecodedFrame) -> io::Result<()> {
+    pub fn observe(&mut self, decoded: &replay_frame::frame::DecodedFrame) -> io::Result<()> {
         let changes = self
             .test_changes
             .get_or_insert_with(crate::prepared::frame_changes::FrameChangeTracker::new)
-            .observe(decoded, replay::format::FormatVersion::CURRENT);
+            .observe(decoded, replay_data::format::FormatVersion::CURRENT);
         self.observe_changes(decoded, &changes)
     }
     pub fn observe_changes(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
+        decoded: &replay_frame::frame::DecodedFrame,
         changes: &crate::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("ideas:observe");
+        let _cpu = ::replay_frame::cpu::scope_phase("ideas:observe");
         // Preserve the production scan's selected-table availability, including
         // reached naming refusals for operands outside its selection.
-        static OMITTED: std::sync::LazyLock<replay::frame::SharedView> =
+        static OMITTED: std::sync::LazyLock<replay_frame::frame::SharedView> =
             std::sync::LazyLock::new(|| {
-                replay::frame::TableView::Unavailable {
+                replay_frame::frame::TableView::Unavailable {
                     reason: "Table not selected for reconstruction".into(),
                 }
                 .into()
@@ -1202,7 +1198,7 @@ impl Scan {
     }
     fn observe_selected(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
+        decoded: &replay_frame::frame::DecodedFrame,
         requested: Option<&str>,
         changes: Option<&crate::prepared::frame_changes::FrameChanges>,
     ) -> io::Result<()> {
@@ -1220,9 +1216,9 @@ impl Scan {
                 .filter(|table| changes.is_none_or(|changes| changes.rows_changed[table.index()]))
             {
                 self.work.row_visits += match &*decoded.tables[table.index()] {
-                    replay::frame::TableView::Complete(rows)
-                    | replay::frame::TableView::Truncated { rows, .. } => rows.len(),
-                    replay::frame::TableView::Unavailable { .. } => 0,
+                    replay_frame::frame::TableView::Complete(rows)
+                    | replay_frame::frame::TableView::Truncated { rows, .. } => rows.len(),
+                    replay_frame::frame::TableView::Unavailable { .. } => 0,
                 };
             }
         }
@@ -1363,7 +1359,7 @@ impl Scan {
         last: i32,
         changes: &mut PreparedChanges,
     ) -> bool {
-        let _cpu = ::replay::cpu::scope_phase("ideas:quiet");
+        let _cpu = ::replay_frame::cpu::scope_phase("ideas:quiet");
         if last < first || self.previous_hour.and_then(|hour| hour.checked_add(1)) != Some(first) {
             return false;
         }
@@ -1622,9 +1618,9 @@ fn known<'a, T>(
 
 /// The content an idea is joined with; a catalogue's politics content, or test data.
 pub struct Joined<'a> {
-    pub ideas: &'a installed_content::ideas::IdeaContent,
-    pub characters: &'a installed_content::characters::Characters,
-    pub traits: &'a installed_content::leader_traits::LeaderTraits,
+    pub ideas: &'a installed_content_core::ideas::IdeaContent,
+    pub characters: &'a installed_content_core::characters::Characters,
+    pub traits: &'a installed_content_core::leader_traits::LeaderTraits,
     pub localise: &'a dyn Fn(&str, View) -> Option<String>,
 }
 
@@ -1642,7 +1638,7 @@ impl<'a> Joined<'a> {
     }
 }
 
-fn targeted(groups: &[installed_content::modifiers::TargetedModifier]) -> Vec<EffectGroup> {
+fn targeted(groups: &[installed_content_core::modifiers::TargetedModifier]) -> Vec<EffectGroup> {
     groups
         .iter()
         .map(|group| EffectGroup {
@@ -1654,7 +1650,7 @@ fn targeted(groups: &[installed_content::modifiers::TargetedModifier]) -> Vec<Ef
         .collect()
 }
 
-fn equipment(bonuses: &[installed_content::modifiers::EquipmentBonus]) -> Vec<EffectGroup> {
+fn equipment(bonuses: &[installed_content_core::modifiers::EquipmentBonus]) -> Vec<EffectGroup> {
     bonuses
         .iter()
         .map(|bonus| EffectGroup {
@@ -1683,7 +1679,7 @@ fn lines(modifiers: &Modifiers) -> Vec<EffectLine> {
 /// resolve is still placed. Otherwise the slot comes from content (the
 /// character's advisor role, or the idea's own group). `built` is the latest
 /// holder's template, which decides a role the character's alternatives
-/// disagree on ([`installed_content::characters::Characters::held_advisor`]), or why
+/// disagree on ([`installed_content_core::characters::Characters::held_advisor`]), or why
 /// it is not known.
 pub fn prepare_info(
     content: &Joined,

@@ -1,8 +1,8 @@
 use super::*;
-use engine::{
+use engine_map_air::map_air_base_reference::BaseReference;
+use engine_native::{
     air_mission, cair_base, cair_wing_pool, ccountry_air_container, cgame_state, cstrategic_region,
-    csub_unit_definition, cweather_manager, map_air_base_reference::BaseReference,
-    memory::SliceMemory, sweather_per_region,
+    csub_unit_definition, cweather_manager, memory::SliceMemory, sweather_per_region,
 };
 use std::cell::Cell;
 
@@ -120,8 +120,8 @@ impl Memory for Counting<'_> {
     }
     fn copy_records(
         &self,
-        sources: engine::memory::RecordSources<'_>,
-        layout: &engine::memory::RecordLayout<'_>,
+        sources: engine_native::memory::RecordSources<'_>,
+        layout: &engine_native::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         self.count();
@@ -394,7 +394,7 @@ fn cas_ratio_projection_preserves_zero_signed_values_and_field_local_faults() {
             &fixture.witnesses,
         );
         let tables = sorties.tables();
-        let TableView::Complete(replay::rows::TableRows::AirMissionInputs(rows)) = &tables[0]
+        let TableView::Complete(replay_data::rows::TableRows::AirMissionInputs(rows)) = &tables[0]
         else {
             panic!("complete mission inputs expected");
         };
@@ -405,7 +405,10 @@ fn cas_ratio_projection_preserves_zero_signed_values_and_field_local_faults() {
             } else {
                 Some(values[index])
             };
-            assert_eq!(row.cas_ratio_raw, replay::rows::Recorded::Value(expected));
+            assert_eq!(
+                row.cas_ratio_raw,
+                replay_data::rows::Recorded::Value(expected)
+            );
             assert_eq!(row.coverage_raw, 90_000);
         }
     }

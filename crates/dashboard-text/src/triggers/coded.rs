@@ -3,8 +3,8 @@
 
 use std::collections::BTreeSet;
 
-use installed_content::parser::{Item, Operator};
-use replay::rows::{UnitLeaderRow, tables};
+use installed_content_core::{parser::Item, parser::Operator};
+use replay_data::{rows::UnitLeaderRow, rows::tables};
 
 use super::{
     Eval, Scope, Scopes,
@@ -58,8 +58,8 @@ impl Evaluator<'_, '_> {
         ) {
             // These getters read country identities and their own tables,
             // independently of the map.
-            world.table_status(replay::rows::TableId::Countries)?;
-            world.table_status(replay::rows::TableId::CountryLinks)?;
+            world.table_status(replay_data::rows::TableId::Countries)?;
+            world.table_status(replay_data::rows::TableId::CountryLinks)?;
             let raw = world
                 .raw_country(slot)
                 .ok_or_else(|| format!("Countries lacks country slot {slot}"))?;
@@ -268,7 +268,7 @@ impl Evaluator<'_, '_> {
                 })
             }
             // Compare the country's focus tree by its id, byte for byte; a country without one is
-            // false. Focus holds the game's value every hour (replay::cadence).
+            // false. Focus holds the game's value every hour (replay_data::cadence).
             "has_focus_tree" => {
                 let wanted = scalar.ok_or("has_focus_tree needs a focus tree")?;
                 let raw = world
@@ -427,7 +427,7 @@ impl Evaluator<'_, '_> {
                 .ok_or("has_dynamic_modifier name is not a scalar")?;
             // The scalar loader stops at the first NUL; the block's string field
             // also checks LF, through the shared read_string below.
-            return Ok((installed_content::parser::c_string(name), None));
+            return Ok((installed_content_core::parser::c_string(name), None));
         };
         let mut name = b"".as_slice();
         for field in block {
@@ -568,7 +568,7 @@ impl Evaluator<'_, '_> {
                         (Some("activated"), Some("no")) => activated = Some(false),
                         // Read fixed5 preparation.
                         (Some("preparation"), Some(value)) => {
-                            let threshold = installed_content::fixed5::script_fixed5(value.as_bytes())
+                            let threshold = installed_content_core::fixed5::script_fixed5(value.as_bytes())
                                 .ok_or_else(|| {
                                     format!("{name} preparation {value} is not a number")
                                 })?;
@@ -864,7 +864,7 @@ impl Evaluator<'_, '_> {
     /// (false at the first neighbour that fails; its `count` is read and
     /// ignored) over the scope state's
     /// template list, which content decides
-    /// ([`ProvinceGraph::neighbor_states`](installed_content::province_graph::ProvinceGraph::neighbor_states)).
+    /// ([`ProvinceGraph::neighbor_states`](installed_content_core::province_graph::ProvinceGraph::neighbor_states)).
     pub(super) fn neighbor_state(&self, name: &str, block: &[Item], scopes: Scopes) -> Eval {
         let mut count: i64 = 1;
         let mut body = Vec::new();
@@ -1017,7 +1017,7 @@ impl Evaluator<'_, '_> {
                     ruling_only = entry
                         .value
                         .scalar()
-                        .and_then(installed_content::parser::read_bool)
+                        .and_then(installed_content_core::parser::read_bool)
                         .unwrap_or(ruling_only);
                 }
                 _ => {

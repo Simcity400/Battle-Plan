@@ -11,12 +11,12 @@
 
 use super::politics_content::PoliticsContent;
 use crate::{catalogue, metadata::validate_campaign};
-use installed_content::localisation::Argument;
-use replay::{
-    container::Replay,
-    frame::{FrameDecoder, SharedView, TableView},
-    rows::{LexicalTokenRow, ModifierDefinitionRow, TableId, tables},
+use installed_content_localisation::localisation::Argument;
+use replay::container::Replay;
+use replay_data::{
+    rows::LexicalTokenRow, rows::ModifierDefinitionRow, rows::TableId, rows::tables,
 };
+use replay_frame::{frame::FrameDecoder, frame::SharedView, frame::TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -202,7 +202,7 @@ pub fn content_formats(
 }
 
 /// The formats of `keys`, each a modifier as the game identifies it (its
-/// name folded, installed_content::modifiers::Modifier::name): recorded first, else
+/// name folded, installed_content_core::modifiers::Modifier::name): recorded first, else
 /// scripted in content, whose definition the lexer finds whatever its case.
 /// Also says whether a recorded argument (text the game localised in its own
 /// language when it loaded) was used.

@@ -32,7 +32,8 @@ use dashboard_base::{
     source::Source,
 };
 use dashboard_core::config::LoadContext;
-use replay::{container::Replay, frame::DecodedFrame};
+use replay::container::Replay;
+use replay_frame::frame::DecodedFrame;
 use std::{any::Any, io, sync::atomic::AtomicBool};
 
 /// A block's facts for the fold.
@@ -325,7 +326,7 @@ where
     let chunk = hours.len().div_ceil(threads);
     let running = &running;
     // Measurement only: the projections' CPU is the fold's family's.
-    let cpu_family = replay::cpu::family();
+    let cpu_family = replay_frame::cpu::family();
     std::thread::scope(|scope| {
         let handles: Vec<_> = hours
             .chunks_mut(chunk)
@@ -333,7 +334,7 @@ where
                 let priority = JobPriority::current();
                 scope.spawn(move || {
                     priority.enter(Level::Normal);
-                    let _cpu = replay::cpu::scope("fold projection", cpu_family);
+                    let _cpu = replay_frame::cpu::scope("fold projection", cpu_family);
                     rows.iter_mut()
                         .map(|rows| {
                             rows.renumber(numbering);
@@ -380,10 +381,8 @@ mod bytes_tests {
     #[test]
     fn navy_block_keeps_sparse_deltas_after_its_first_hour_scan() {
         use dashboard_base::prepared::observer_tests;
-        use replay::{
-            frame::FrameEncoder,
-            rows::{TableId, TableRows},
-        };
+        use replay_data::{rows::TableId, rows::TableRows};
+        use replay_frame::frame::FrameEncoder;
         use std::sync::Arc;
 
         let mut frame = test_fixtures::frame(100, 32);
@@ -398,7 +397,7 @@ mod bytes_tests {
         for hour in 100..103 {
             frame.hour = hour;
             if hour > 100 {
-                let replay::frame::TableView::Complete(TableRows::Ships(rows)) =
+                let replay_frame::frame::TableView::Complete(TableRows::Ships(rows)) =
                     &mut *frame.tables[TableId::Ships.index()]
                 else {
                     unreachable!()

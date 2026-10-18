@@ -1,13 +1,11 @@
 use super::*;
 use dashboard_base::test_fixtures::{CAMPAIGN, continuation_records, records};
-use replay::{
-    container::Replay,
-    frame::TableView,
-    rows::{
-        CountryRow, LexicalTokenRow, ProjectProgramRow, ScriptVariableEntry, ScriptVariablesRow,
-        TableRows,
-    },
+use replay::container::Replay;
+use replay_data::{
+    rows::CountryRow, rows::LexicalTokenRow, rows::ProjectProgramRow, rows::ScriptVariableEntry,
+    rows::ScriptVariablesRow, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 
 pub(super) fn frame(hour: i32, read: bool, countries: u32) -> DecodedFrame {
     let mut frame = dashboard_base::test_fixtures::source(1, hour, None);
@@ -47,7 +45,7 @@ pub(super) fn frame(hour: i32, read: bool, countries: u32) -> DecodedFrame {
                 definition_id: 8,
                 started: 1,
                 program_reference: (u64::from(owner) << 32) | 83,
-                state: replay::rows::ProjectState {
+                state: replay_data::rows::ProjectState {
                     current_offset: 0x18,
                     not_completed: 1,
                     prototype_progress: (owner % 100) as i32,
@@ -172,7 +170,8 @@ fn hourly_country_balances_do_not_retain_hourly_country_snapshots() {
 
 #[test]
 fn spans_keep_only_the_person_rows_a_projection_reads() {
-    use replay::{frame::SharedView, rows::CharacterRow};
+    use replay_data::rows::CharacterRow;
+    use replay_frame::frame::SharedView;
     // Program 1 names scientist 73 of a 5000-character roster read anew each hour.
     let frames: Vec<_> = (100..104)
         .map(|hour| {
@@ -181,7 +180,8 @@ fn spans_keep_only_the_person_rows_a_projection_reads() {
                 TableView::Complete(TableRows::ProjectPrograms(vec![ProjectProgramRow {
                     id: 1,
                     owner: 1,
-                    scientist: (73_u64 << 32) | u64::from(engine::ccharacter::REFERENCE_TYPE),
+                    scientist: (73_u64 << 32)
+                        | u64::from(engine_native::ccharacter::REFERENCE_TYPE),
                     ..Default::default()
                 }]))
                 .into();
@@ -297,7 +297,7 @@ pub(super) fn content(root: &std::path::Path, project_name: &str) {
     ignore = "slow: runs in the full suite (--features slow-tests)"
 )]
 fn scoped_world_variable_names_share_one_pass_and_failures_belong_only_to_the_requested_actor() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let folder = tests::TempRoot::new("shared-scope");
     content(&folder.0, "[ROOT.ProjectStage]");
@@ -332,7 +332,7 @@ fn scoped_world_variable_names_share_one_pass_and_failures_belong_only_to_the_re
             }
             // Scripted text's strict World needs complete core scope tables.
             frame.tables[TableId::States.index()] =
-                TableView::Complete(TableRows::States(vec![replay::rows::StateRow {
+                TableView::Complete(TableRows::States(vec![replay_data::rows::StateRow {
                     id: 1,
                     owner: 1,
                     controller: 1,
@@ -340,7 +340,7 @@ fn scoped_world_variable_names_share_one_pass_and_failures_belong_only_to_the_re
                 }]))
                 .into();
             frame.tables[TableId::Provinces.index()] =
-                TableView::Complete(TableRows::Provinces(vec![replay::rows::ProvinceRow {
+                TableView::Complete(TableRows::Provinces(vec![replay_data::rows::ProvinceRow {
                     id: 1,
                     state: 1,
                     owner: 1,
@@ -353,13 +353,13 @@ fn scoped_world_variable_names_share_one_pass_and_failures_belong_only_to_the_re
                     std::iter::once(ScriptVariablesRow {
                         scope_kind: 0,
                         scope_id: 0,
-                        seed: replay::rows::Recorded::Value(None),
+                        seed: replay_data::rows::Recorded::Value(None),
                         entries: vec![],
                     })
                     .chain((1..=5000).map(|id| ScriptVariablesRow {
                         scope_kind: 1,
                         scope_id: id,
-                        seed: replay::rows::Recorded::Value(None),
+                        seed: replay_data::rows::Recorded::Value(None),
                         entries: vec![ScriptVariableEntry {
                             name: b"project_flag".to_vec(),
                             value_raw: if hour == 100 { 0 } else { 100_000 },
@@ -422,7 +422,7 @@ fn scoped_world_variable_names_share_one_pass_and_failures_belong_only_to_the_re
 
 #[test]
 fn content_readiness_changes_rename_cached_data_without_another_recording_scan() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let folder = tests::TempRoot::new("shared-ready");
     content(&folder.0, "Prepared project");
@@ -478,9 +478,12 @@ fn content_readiness_changes_rename_cached_data_without_another_recording_scan()
 
 #[test]
 fn scientist_name_refusals_stay_local_through_person_and_reply_caches() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{CharacterPortrait, CharacterPortraitRow, CharacterRow, PORTRAIT_LARGE};
+    use replay_data::{
+        rows::CharacterPortrait, rows::CharacterPortraitRow, rows::CharacterRow,
+        rows::PORTRAIT_LARGE,
+    };
 
     let folder = tests::TempRoot::new("scientist-refusals");
     content(&folder.0, "Prepared project");

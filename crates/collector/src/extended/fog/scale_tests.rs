@@ -1,8 +1,8 @@
 use super::*;
-use engine::{
+use engine_native::{
     carmy, cgame_state, cprovince, cradars_pool, cstate, cunit, modifier_definition,
-    visibility_inputs,
 };
+use engine_visibility::visibility_inputs;
 use std::collections::BTreeMap;
 
 const GS: usize = 0x1000;
@@ -52,9 +52,9 @@ impl World {
         world.array(GS + cgame_state::COUNTRY_LINKS, LINKS, countries + 1);
         world.array(GS + cgame_state::STATES, STATES, countries + 1);
         world.u64(GS + cgame_state::STRATEGIC_NAVY_MANAGER, MANAGER);
-        world.u64(MANAGER, engine::cstrategic_navy_manager::VTABLE_RVA);
+        world.u64(MANAGER, engine_native::cstrategic_navy_manager::VTABLE_RVA);
         world.array(
-            MANAGER + engine::cstrategic_navy_manager::NAVIES,
+            MANAGER + engine_native::cstrategic_navy_manager::NAVIES,
             NAVIES,
             countries + 1,
         );
@@ -68,11 +68,14 @@ impl World {
             world.u32(country + ccountry::ID, slot as u32);
             let navy = country + 0x1800;
             world.u64(NAVIES + slot * 8, navy);
-            world.u64(navy, engine::cstrategic_navy::VTABLE_RVA);
-            world.u64(navy + 8, engine::cstrategic_navy::SECONDARY_VTABLE_RVA);
-            world.u32(navy + engine::cstrategic_navy::OWNER, slot as u32);
+            world.u64(navy, engine_native::cstrategic_navy::VTABLE_RVA);
+            world.u64(
+                navy + 8,
+                engine_native::cstrategic_navy::SECONDARY_VTABLE_RVA,
+            );
+            world.u32(navy + engine_native::cstrategic_navy::OWNER, slot as u32);
             world.array(
-                navy + engine::cstrategic_navy::ACCESS_MODES,
+                navy + engine_native::cstrategic_navy::ACCESS_MODES,
                 country + 0x4100,
                 population,
             );
@@ -186,8 +189,8 @@ impl Memory for World {
         &self,
         _at: usize,
         _key: u32,
-    ) -> Option<Result<engine::modifier_accumulator::Value, &'static str>> {
-        Some(Ok(engine::modifier_accumulator::Value {
+    ) -> Option<Result<engine_native::modifier_accumulator::Value, &'static str>> {
+        Some(Ok(engine_native::modifier_accumulator::Value {
             raw: 2,
             present: true,
         }))
@@ -205,7 +208,7 @@ fn first_and_later_fog_visibility_samples_grow_from_five_thousand_country_header
     let mut fog = Captured::with_capacities(&capacity);
     let mut visibility_countries = vec![visibility_inputs::CountryRow::default(); 1];
     let mut visibility_states = vec![visibility_inputs::StateRow::default(); 1];
-    let mut access = vec![engine::cstrategic_navy::AccessRow::default(); 1];
+    let mut access = vec![engine_native::cstrategic_navy::AccessRow::default(); 1];
     for (hour, population) in [1, 5].into_iter().enumerate() {
         let world = World::new(5_000, population);
         let mut hint = capacity;
@@ -255,7 +258,7 @@ fn first_and_later_fog_visibility_samples_grow_from_five_thousand_country_header
             Outcome::Rows { len: 5_000 }
         );
         assert_eq!(
-            engine::cstrategic_navy::access_modes_growing(&world, 0, GS, &mut access),
+            engine_native::cstrategic_navy::access_modes_growing(&world, 0, GS, &mut access),
             Outcome::Rows {
                 len: 5_000 * population
             }

@@ -3,7 +3,8 @@
 //! projection.
 
 use crate::extended::PhysicalNavyCapacities;
-use engine::{Memory, ccountry, cfleet, country_naval_movement_inputs as native};
+use engine_native::{Memory, ccountry, cfleet};
+use engine_naval_history::country_naval_movement_inputs as native;
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Demand {
@@ -12,7 +13,7 @@ pub(crate) struct Demand {
     pub name_bytes: usize,
     /// Sum of independently valid origin headers, not a complete capture.
     pub supply_origins: usize,
-    pub port: engine::ctask_force::port_mission::Demand,
+    pub port: engine_native::ctask_force::port_mission::Demand,
     first_reason: Option<&'static str>,
 }
 
@@ -52,7 +53,8 @@ impl Demand {
         self.port.avoided = self.port.avoided.max(observed.port.avoided);
         self.port.bytes = self.port.bytes.max(observed.port.bytes);
         self.port.references = self.port.references.max(observed.port.references);
-        if engine::ctask_force::port_mission::reference_slots(self.port.references).is_none() {
+        if engine_native::ctask_force::port_mission::reference_slots(self.port.references).is_none()
+        {
             self.port
                 .refusal
                 .get_or_insert("port reference sizing overflow");
@@ -72,7 +74,7 @@ struct TaskForces {
     name_failure: Option<&'static str>,
     supply_origins: usize,
     supply_failure: Option<&'static str>,
-    port: engine::ctask_force::port_mission::Demand,
+    port: engine_native::ctask_force::port_mission::Demand,
 }
 
 fn task_forces<M: Memory>(
@@ -87,7 +89,7 @@ fn task_forces<M: Memory>(
         name_failure: None,
         supply_origins: 0,
         supply_failure: None,
-        port: engine::ctask_force::port_mission::Demand::default(),
+        port: engine_native::ctask_force::port_mission::Demand::default(),
     };
     let walk = cfleet::visit_task_forces(memory, base, countries, |event| {
         let cfleet::Visit::TaskForce(visit, _) = event else {
@@ -104,7 +106,7 @@ fn task_forces<M: Memory>(
                     .get_or_insert("task-force name sizing row overflow");
             }
         }
-        match engine::ctask_force::cached_name_demand(memory, base, visit.task, visit.id) {
+        match engine_native::ctask_force::cached_name_demand(memory, base, visit.task, visit.id) {
             Ok(bytes) => match observed.name_bytes.checked_add(bytes) {
                 Some(count) => observed.name_bytes = count,
                 None => {
@@ -119,7 +121,7 @@ fn task_forces<M: Memory>(
         }
         // The same authenticated primary CUnit owns the supply header. A
         // failed optional header cannot erase the name floors.
-        match engine::cunit_supply_inputs::origin_demand(memory, visit.task) {
+        match engine_native::cunit_supply_inputs::origin_demand(memory, visit.task) {
             Ok(count) => match observed.supply_origins.checked_add(count) {
                 Some(count) => observed.supply_origins = count,
                 None => {
@@ -136,7 +138,8 @@ fn task_forces<M: Memory>(
         // after the established name/supply observations. Nothing allocates
         // or follows a searcher here; only headers/string boundaries size the
         // independent prepared arenas.
-        let port = engine::ctask_force::port_mission::demand(memory, base, visit.task, visit.kind);
+        let port =
+            engine_native::ctask_force::port_mission::demand(memory, base, visit.task, visit.kind);
         for (total, count) in [
             (&mut observed.port.searchers, port.searchers),
             (&mut observed.port.avoided, port.avoided),
@@ -189,7 +192,7 @@ pub(crate) fn observe(memory: &impl Memory, base: usize, state: usize) -> Demand
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{
+    use engine_native::{
         cgame_state, cprovince, cstrategic_navy, cstrategic_navy_manager, ctask_force, ctheatre,
         cunit,
     };
@@ -326,7 +329,7 @@ mod tests {
                 world.word(province + cprovince::ID, id);
                 world.pointer(province + cprovince::CONTROLLER_AREA, area);
                 if area != 0 {
-                    world.pointer(area, engine::ccontroller_area::VTABLE_RVA);
+                    world.pointer(area, engine_native::ccontroller_area::VTABLE_RVA);
                 }
             }
             for (country, roster, theatre, owner, id, areas, values) in [
@@ -419,7 +422,11 @@ mod tests {
         let mut world = World::new();
         for (task, data, count) in [(TASK, 0x100000, 10_000), (0xdc00, 0x200000, 20_000)] {
             world.word(task + cunit::ORDINARY_ROUTE_COUNT, 0);
-            world.array(task + engine::cunit_supply_inputs::ORIGINS, data, count);
+            world.array(
+                task + engine_native::cunit_supply_inputs::ORIGINS,
+                data,
+                count,
+            );
         }
         let demand = observe(&world, 0, STATE);
         assert_eq!(demand.refusal(), None);
@@ -427,13 +434,13 @@ mod tests {
         assert_eq!(demand.name_rows, 2);
         assert!(!world.touches(
             0x100000,
-            10_000 * engine::cunit_supply_inputs::ORIGIN_STRIDE
+            10_000 * engine_native::cunit_supply_inputs::ORIGIN_STRIDE
         ));
         assert!(!world.touches(
             0x200000,
-            20_000 * engine::cunit_supply_inputs::ORIGIN_STRIDE
+            20_000 * engine_native::cunit_supply_inputs::ORIGIN_STRIDE
         ));
-        assert!(!world.touches(TASK + engine::cunit_supply_inputs::ASKED, 8));
+        assert!(!world.touches(TASK + engine_native::cunit_supply_inputs::ASKED, 8));
         assert!(!world.touches(NAVY, 0x90));
         let mut capacity = crate::extended::naval_counters::Capacities::default();
         let initial = capacity;
@@ -462,11 +469,11 @@ mod tests {
             world.word(task + ctask_force::MISSION, 2);
             world.pointer(
                 task + ctask_force::NAVAL_MISSION,
-                engine::cnaval_mission::VTABLE_RVA,
+                engine_native::cnaval_mission::VTABLE_RVA,
             );
             world.pointer(task + ctask_force::NAVAL_MISSION + 8, task);
             world.word(
-                task + ctask_force::NAVAL_MISSION + engine::cnaval_mission::ENGAGEMENT_RULE,
+                task + ctask_force::NAVAL_MISSION + engine_native::cnaval_mission::ENGAGEMENT_RULE,
                 2,
             );
             world.array(task + 0x610, refs, count);
@@ -498,7 +505,7 @@ mod tests {
         capacity.raise_for_port(observed.port).unwrap();
         let grown = capacity;
         capacity
-            .raise_for_port(engine::ctask_force::port_mission::Demand::default())
+            .raise_for_port(engine_native::ctask_force::port_mission::Demand::default())
             .unwrap();
         assert!(capacity == grown);
     }
@@ -507,9 +514,9 @@ mod tests {
     fn invalid_supply_header_keeps_other_supply_and_name_floors() {
         let mut world = World::new();
         // A positive count with no data is a failure, not an empty origin list.
-        world.array(TASK + engine::cunit_supply_inputs::ORIGINS, 0, 3);
+        world.array(TASK + engine_native::cunit_supply_inputs::ORIGINS, 0, 3);
         world.array(
-            0xdc00 + engine::cunit_supply_inputs::ORIGINS,
+            0xdc00 + engine_native::cunit_supply_inputs::ORIGINS,
             0x100000,
             7000,
         );
@@ -522,9 +529,9 @@ mod tests {
     #[test]
     fn supply_header_fault_is_named_and_preserves_independent_hints() {
         let mut world = World::new();
-        world.fault = Some(TASK + engine::cunit_supply_inputs::ORIGINS);
+        world.fault = Some(TASK + engine_native::cunit_supply_inputs::ORIGINS);
         world.array(
-            0xdc00 + engine::cunit_supply_inputs::ORIGINS,
+            0xdc00 + engine_native::cunit_supply_inputs::ORIGINS,
             0x100000,
             7000,
         );

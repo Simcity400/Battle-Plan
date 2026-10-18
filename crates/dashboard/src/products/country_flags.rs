@@ -10,11 +10,10 @@
 use super::{LoadContext, Product, validate_tag};
 pub use crate::flag_choices::{FlagChoice, choices, ruling_groups};
 use crate::{Source, catalogue::Catalogue, content, invalid};
-use installed_content::{ResolveOptions, content::ResolvedContent, flags::FlagSet, image::Rgba8Image};
-use replay::{
-    container::{Replay, SeekResult},
-    rows::TableId,
-};
+use installed_content_core::{ResolveOptions, content::ResolvedContent, flags::FlagSet};
+use installed_content_image::Rgba8Image;
+use replay::{container::Replay, container::SeekResult};
+use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -242,7 +241,7 @@ struct FlagState {
 /// refused shield is not decoded again on every request.
 type CachedShield = (
     Arc<ResolvedContent>,
-    installed_content::image::native::Decode,
+    installed_content_image::native::Decode,
     Result<Arc<ShieldStyle>, String>,
 );
 
@@ -266,14 +265,14 @@ impl ShieldStyle {
             ))
         })?;
         let mut warnings = Vec::new();
-        let name = installed_content::gui::native::window_button_sprite(
+        let name = installed_content_core::gui::native::window_button_sprite(
             catalogue.guis()?,
             TOP_BAR,
             PLAYER_FLAG,
             &mut warnings,
         )?;
         let sprite = crate::catalogue::created_gui_sprite(&catalogue.sprites, &name)?;
-        let installed_content::gui::native::sprites::SpriteKind::MaskedShield { shield, .. } =
+        let installed_content_core::gui::native::sprites::SpriteKind::MaskedShield { shield, .. } =
             &sprite.facts.kind
         else {
             return Err(invalid(format!("{name} is not a maskedShieldType")));
@@ -325,8 +324,8 @@ pub(crate) enum FlagSearch {
     Absent,
 }
 
-pub(crate) fn flag_cells(layers: &installed_content::ResolvedLayers) -> io::Result<[[u32; 2]; 3]> {
-    let defines = installed_content::defines::read(layers)?;
+pub(crate) fn flag_cells(layers: &installed_content_core::ResolvedLayers) -> io::Result<[[u32; 2]; 3]> {
+    let defines = installed_content_core::defines::read(layers)?;
     Ok([
         FlagSet::Normal.cell(&defines)?,
         FlagSet::Medium.cell(&defines)?,
@@ -337,7 +336,7 @@ pub(crate) fn flag_cells(layers: &installed_content::ResolvedLayers) -> io::Resu
 #[derive(Clone)]
 enum FlagFile {
     Missing,
-    Refused(installed_content::flags::DecodeFailure),
+    Refused(installed_content_core::flags::DecodeFailure),
     Image(Arc<Rgba8Image>),
 }
 
@@ -355,7 +354,7 @@ pub(crate) struct FlagCache {
 /// A candidate [`safe_flag_key`] refuses stops the search, because falling
 /// past it would draw a flag the game does not.
 pub(crate) fn find_flag(
-    layers: &installed_content::ResolvedLayers,
+    layers: &installed_content_core::ResolvedLayers,
     sets: &[FlagSet],
     cells: &[[u32; 2]; 3],
     candidates: &[String],
@@ -382,7 +381,7 @@ pub(crate) fn find_flag(
             let cache_key = (set_index, asset.clone());
             if !cache.files.contains_key(&cache_key) {
                 let file = match layers.read_uncovered(&asset) {
-                    Ok(bytes) => match installed_content::flags::decode_checked(&bytes, cell) {
+                    Ok(bytes) => match installed_content_core::flags::decode_checked(&bytes, cell) {
                         Ok(image) => FlagFile::Image(Arc::new(image)),
                         Err(reason) => FlagFile::Refused(reason),
                     },
@@ -401,16 +400,16 @@ pub(crate) fn find_flag(
                     // This reader also refuses truncated reads.
                     let mut finding = Finding::new(
                         match reason {
-                            installed_content::flags::DecodeFailure::EngineRefused => Kind::Content,
-                            installed_content::flags::DecodeFailure::Truncated => Kind::Refused,
+                            installed_content_core::flags::DecodeFailure::EngineRefused => Kind::Content,
+                            installed_content_core::flags::DecodeFailure::Truncated => Kind::Refused,
                         },
                         key,
                         match reason {
-                            installed_content::flags::DecodeFailure::EngineRefused => format!(
+                            installed_content_core::flags::DecodeFailure::EngineRefused => format!(
                                 "flag decoder refused {asset} at cell {}x{}; this file was skipped",
                                 cell[0], cell[1]
                             ),
-                            installed_content::flags::DecodeFailure::Truncated => format!(
+                            installed_content_core::flags::DecodeFailure::Truncated => format!(
                                 "flag decoder cannot safely read {asset} at cell {}x{}; this reader refuses this input but the game does not check read status",
                                 cell[0], cell[1]
                             ),
@@ -777,19 +776,17 @@ impl FlagContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::frame::DecodedFrame;
+    use replay_frame::frame::DecodedFrame;
 
     fn flag_frame(
-        original: replay::rows::Recorded<Option<Vec<u8>>>,
+        original: replay_data::rows::Recorded<Option<Vec<u8>>>,
         cosmetic: &[u8],
     ) -> DecodedFrame {
-        use replay::{
-            frame::{Metrics, TableView},
-            rows::{
-                CountryAppearanceRow, CountryLinkRow, CountryRow, PoliticalPartyRow, PoliticsRow,
-                TableId, TableRows,
-            },
+        use replay_data::{
+            rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow,
+            rows::PoliticalPartyRow, rows::PoliticsRow, rows::TableId, rows::TableRows,
         };
+        use replay_frame::{frame::Metrics, frame::TableView};
         let mut frame = DecodedFrame {
             branch: 1,
             hour: 1,
@@ -816,7 +813,7 @@ mod tests {
                 name_tag: b"GEN".to_vec(),
                 cosmetic_tag: cosmetic.to_vec(),
                 original_tag: original,
-                original_tag_reference: replay::rows::Recorded::Value(Some(1)),
+                original_tag_reference: replay_data::rows::Recorded::Value(Some(1)),
                 ..Default::default()
             }]));
         *frame.tables[TableId::Politics.index()] =
@@ -837,7 +834,7 @@ mod tests {
 
     #[test]
     fn flag_choices_use_exact_original_and_keep_known_cosmetic_before_suffix_refusals() {
-        use replay::rows::Recorded;
+        use replay_data::rows::Recorded;
         for (captured, tail) in [
             (Recorded::Value(Some(b"ORI".to_vec())), "ORI"),
             (Recorded::Value(Some(Vec::new())), ""),
@@ -884,9 +881,9 @@ mod tests {
         for reference in [0, -7] {
             let mut frame = flag_frame(Recorded::Value(None), b"COS");
             let appearance =
-                match &mut *frame.tables[replay::rows::TableId::CountryAppearance.index()] {
-                    replay::frame::TableView::Complete(
-                        replay::rows::TableRows::CountryAppearance(rows),
+                match &mut *frame.tables[replay_data::rows::TableId::CountryAppearance.index()] {
+                    replay_frame::frame::TableView::Complete(
+                        replay_data::rows::TableRows::CountryAppearance(rows),
                     ) => &mut rows[0],
                     _ => unreachable!(),
                 };
@@ -904,9 +901,9 @@ mod tests {
         ] {
             let mut frame = flag_frame(Recorded::Value(Some(b"ORI".to_vec())), b"COS");
             let appearance =
-                match &mut *frame.tables[replay::rows::TableId::CountryAppearance.index()] {
-                    replay::frame::TableView::Complete(
-                        replay::rows::TableRows::CountryAppearance(rows),
+                match &mut *frame.tables[replay_data::rows::TableId::CountryAppearance.index()] {
+                    replay_frame::frame::TableView::Complete(
+                        replay_data::rows::TableRows::CountryAppearance(rows),
                     ) => &mut rows[0],
                     _ => unreachable!(),
                 };
@@ -920,10 +917,11 @@ mod tests {
 
     #[test]
     fn flag_choices_preserve_unknown_ruling_groups_before_plain_candidates() {
-        use replay::{
-            frame::TableView,
-            rows::{PoliticalPartyRow, PoliticsRow, Recorded, TableId, TableRows},
+        use replay_data::{
+            rows::PoliticalPartyRow, rows::PoliticsRow, rows::Recorded, rows::TableId,
+            rows::TableRows,
         };
+        use replay_frame::frame::TableView;
         let mut frame = flag_frame(Recorded::Value(Some(b"ORI".to_vec())), b"COS");
         *frame.tables[TableId::Politics.index()] =
             TableView::Complete(TableRows::Politics(vec![PoliticsRow {
@@ -1019,10 +1017,8 @@ mod tests {
 
     #[test]
     fn flag_aliases_use_the_resolved_country_objects_operands() {
-        use replay::{
-            frame::TableView,
-            rows::{CountryLinkRow, Recorded, TableId, TableRows},
-        };
+        use replay_data::{rows::CountryLinkRow, rows::Recorded, rows::TableId, rows::TableRows};
+        use replay_frame::frame::TableView;
         let mut frame = flag_frame(Recorded::Value(Some(b"ORI".to_vec())), b"COS");
         *frame.tables[TableId::CountryLinks.index()] =
             TableView::Complete(TableRows::CountryLinks(vec![
@@ -1077,7 +1073,7 @@ mod tests {
 
     #[test]
     fn live_flag_reply_warns_only_for_unreproduced_draws() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let image = vec![
             0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 32, 0x28, 30, 20, 10, 255,
@@ -1228,7 +1224,7 @@ mod tests {
 
     #[test]
     fn shield_png_padding_and_every_refusal_use_the_shared_gui_path() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::catalogue::texture_tests::{png_bytes, refusal_textures, texture_catalogue};
         let mask = Rgba8Image {
@@ -1259,18 +1255,18 @@ mod tests {
             ],
             &textures,
         );
-        catalogue.gui_decode = Ok(installed_content::image::native::Decode {
+        catalogue.gui_decode = Ok(installed_content_image::native::Decode {
             force_pow2_textures: true,
         });
         let loaded = ShieldStyle::load(&catalogue).unwrap();
         assert_eq!((loaded.mask.width, loaded.mask.height), (4, 2));
         assert_eq!(loaded.overlay.unwrap().width, 4);
         for (path, _, expected) in refusals {
-            let facts = installed_content::gui::native::sprites::read_sprites(format!(
+            let facts = installed_content_core::gui::native::sprites::read_sprites(format!(
                 "spriteTypes = {{ maskedShieldType = {{ name = GFX_mod_shield textureFile2 = \"{path}\" }} }}"
             ).as_bytes());
             catalogue.sprites =
-                installed_content::gfx::SpriteSet::new(&[("interface/art.gfx".into(), facts)]);
+                installed_content_gfx::gfx::SpriteSet::new(&[("interface/art.gfx".into(), facts)]);
             let why = ShieldStyle::load(&catalogue).err().unwrap().to_string();
             assert!(why.contains(expected), "{path}: {why}");
             assert_shield_warning(&catalogue, &why);

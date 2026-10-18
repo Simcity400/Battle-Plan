@@ -1,4 +1,4 @@
-//! Nuclear strikes as impact events ([`engine::nuclear_strike_sites`]), not
+//! Nuclear strikes as impact events ([`engine_events::nuclear_strike_sites`]), not
 //! stockpile snapshots. A strike appears once, in the hourly drain after its
 //! impact; `hour` is the impact-time clock read. Outcomes are what the
 //! impact did before the authored `on_nuke_drop` effects ran.

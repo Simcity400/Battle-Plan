@@ -1,6 +1,6 @@
 //! CPU RGBA8 decoding for division-template icon preparation.
 use crate::errors::invalid;
-use installed_content::image::{Rgba8Image, dds, rgba::bc_block};
+use installed_content_image::{Rgba8Image, dds, rgba::bc_block};
 use std::io;
 
 /// Decodes a BC1/BC2/BC3 texture's base level to RGBA8 at its exact extent.

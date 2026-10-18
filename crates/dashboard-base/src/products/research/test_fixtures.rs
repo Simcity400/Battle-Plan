@@ -1,10 +1,8 @@
 //! Recorded research frames for tests here and in the crates above.
 
 use crate::test_fixtures::{fixture_research_inputs, source};
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{TableId, TableRows},
-};
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 /// One recorded hour with the given research rows.
 pub fn research_frame(
@@ -13,7 +11,9 @@ pub fn research_frame(
     assignments: &[Option<u32>],
     completed: &[u32],
 ) -> DecodedFrame {
-    use replay::rows::{ResearchSlotRow, ResearchTechnologyRow, TechnologyDefinitionRow};
+    use replay_data::{
+        rows::ResearchSlotRow, rows::ResearchTechnologyRow, rows::TechnologyDefinitionRow,
+    };
     let mut frame = source(branch, hour, Some(1));
     *frame.tables[TableId::ResearchInputs.index()] = TableView::Unavailable {
         reason: "fixture hourly research".into(),
@@ -23,7 +23,7 @@ pub fn research_frame(
             .iter()
             .enumerate()
             .map(|(index, handle)| ResearchSlotRow {
-                database_index: replay::rows::Recorded::Value((handle.unwrap_or(0)) as i32),
+                database_index: replay_data::rows::Recorded::Value((handle.unwrap_or(0)) as i32),
                 country: 11,
                 index: index as u32,
                 technology_handle: handle.unwrap_or(0),
@@ -44,9 +44,9 @@ pub fn research_frame(
                         level: i32::from(done),
                         researched: u8::from(done),
                         classifier: if done {
-                            engine::ctechnology::CLASSIFIER_COMPLETED
+                            engine_research::ctechnology::CLASSIFIER_COMPLETED
                         } else {
-                            engine::ctechnology::CLASSIFIER_ACTIVE
+                            engine_research::ctechnology::CLASSIFIER_ACTIVE
                         },
                         ..Default::default()
                     }

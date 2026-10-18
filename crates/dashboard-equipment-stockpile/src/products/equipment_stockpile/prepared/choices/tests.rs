@@ -20,7 +20,7 @@ fn resolved_content() -> Content {
 }
 
 fn classification_frame(variants: bool) -> DecodedFrame {
-    use replay::rows::{LogisticsEquipmentRow, TableRows};
+    use replay_data::{rows::LogisticsEquipmentRow, rows::TableRows};
     let mut frame = stockpile_frame(
         dashboard_core::test_fixtures::slot_hour(TableId::Stockpiles),
         true,
@@ -44,14 +44,14 @@ fn classification_frame(variants: bool) -> DecodedFrame {
             token: 1,
             balance_raw: -5,
             stock_raw: 7,
-            available_raw: replay::rows::Recorded::Value(Some(3)),
+            available_raw: replay_data::rows::Recorded::Value(Some(3)),
         }]));
     frame
 }
 
 #[test]
 fn repeated_reads_reclassify_learned_logistics_and_variant_names() {
-    use replay::rows::{LexicalTokenRow, TableRows};
+    use replay_data::{rows::LexicalTokenRow, rows::TableRows};
     for variants in [false, true] {
         let content = resolved_content();
         let mut frame = classification_frame(variants);
@@ -156,7 +156,7 @@ fn repeated_reads_reclassify_learned_logistics_and_variant_names() {
 
 #[test]
 fn repeating_reads_reclassify_a_changed_content_binding() {
-    use replay::rows::{LexicalTokenRow, TableRows};
+    use replay_data::{rows::LexicalTokenRow, rows::TableRows};
     for variants in [false, true] {
         let mut frame = classification_frame(variants);
         *frame.tables[TableId::LexicalTokens.index()] =
@@ -194,7 +194,7 @@ fn repeating_reads_reclassify_a_changed_content_binding() {
 #[test]
 fn logistics_coverage_loss_closes_known_totals_with_unchanged_completeness_across_resume() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use replay::rows::{LexicalTokenRow, LogisticsEquipmentRow, TableRows};
+    use replay_data::{rows::LexicalTokenRow, rows::LogisticsEquipmentRow, rows::TableRows};
 
     let content = resolved_content();
     let mut initial = classification_frame(false);
@@ -213,7 +213,7 @@ fn logistics_coverage_loss_closes_known_totals_with_unchanged_completeness_acros
             token: 2,
             balance_raw: -9,
             stock_raw: 4,
-            available_raw: replay::rows::Recorded::Value(Some(2)),
+            available_raw: replay_data::rows::Recorded::Value(Some(2)),
         });
     }
     let frames: Vec<_> = (0..=4)
@@ -557,7 +557,7 @@ fn logistics_representatives_match_full_evaluator_after_two_commits_resume_and_a
 #[cfg(feature = "slow-tests")]
 fn stockpile_static_content_resolves_once_before_success_and_refusal_observation() {
     use dashboard_base::prepared::observer_tests::{self, Work};
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = stockpile_frame(0, true, &[(10, 100)], Some(&[]));
     let source = Source::from_replay(
@@ -589,7 +589,7 @@ fn stockpile_static_content_resolves_once_before_success_and_refusal_observation
             catalogue::tests::folder_catalogue(&[("common/units/equipment/mod.txt", text)]);
         let catalogue = Arc::new(catalogue);
         let options = dashboard_core::config::ContentOptions {
-            options: installed_content::ResolveOptions {
+            options: installed_content_core::ResolveOptions {
                 game_dir: folder.0.clone(),
                 user_dir: folder.0.clone(),
                 cache_dir: folder.0.join("cache"),

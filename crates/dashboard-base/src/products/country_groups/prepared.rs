@@ -26,11 +26,10 @@ use crate::{
     products::LoadContext,
 };
 use replay::{
-    container::{BlockIndex, QuietHours, Replay, TableFields},
-    format::FormatVersion,
-    frame::{DecodedFrame, SharedView, TableView},
-    rows::{TableId, TableRows, tables},
+    container::BlockIndex, container::QuietHours, container::Replay, container::TableFields,
 };
+use replay_data::{format::FormatVersion, rows::TableId, rows::TableRows, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView};
 use std::{any::Any, io, ops::Range, sync::Arc};
 
 /// The tables the groups read.
@@ -267,9 +266,9 @@ pub fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let facts = {
-        let _cpu = ::replay::cpu::scope("fold facts", None);
+        let _cpu = ::replay_frame::cpu::scope("fold facts", None);
         facts
             .downcast::<BlockFacts>()
             .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -278,7 +277,7 @@ pub fn fold(
     FRAMES.with(|count| count.set(count.get() + facts.frames));
     let mut reached = None;
     for hour in facts.hours {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         check()?;
         match hour {
             Hour::Observed {
@@ -289,7 +288,7 @@ pub fn fold(
                 #[cfg(any(test, feature = "test-support"))]
                 OBSERVED.with(|count| count.set(count.get() + 1));
                 let result = {
-                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     changes.observe_changed(scan, &frame, &facts, source, context)
                 };
                 if !observed(frame.hour, result)? {
@@ -317,7 +316,7 @@ pub fn fold(
                 }
                 reached = Some(last);
                 let result = {
-                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     changes.advance_quiet(scan, first, last)
                 };
                 if !observed(last, result)? {
@@ -344,7 +343,7 @@ pub fn observe_block(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let mut tracker = FrameChangeTracker::new();
     let mut reached = None;
     let mut stopped = false;
@@ -353,7 +352,7 @@ pub fn observe_block(
         index,
         TABLES,
         |raw, frame| {
-            let _cpu = ::replay::cpu::scope("fold driver", None);
+            let _cpu = ::replay_frame::cpu::scope("fold driver", None);
             let facts = tracker.observe_updates(frame, Arc::new(raw), replay.format);
             if stopped || from.is_some_and(|from| frame.hour < from) {
                 return Ok(());
@@ -362,7 +361,7 @@ pub fn observe_block(
             #[cfg(any(test, feature = "test-support"))]
             OBSERVED.with(|count| count.set(count.get() + 1));
             let result = {
-                let _cpu = ::replay::cpu::scope("fold observe", None);
+                let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                 changes.observe_changed(scan, frame, &facts, source, context)
             };
             match observed(frame.hour, result) {

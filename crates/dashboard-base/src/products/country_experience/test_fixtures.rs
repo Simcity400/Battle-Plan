@@ -1,25 +1,23 @@
 //! Country experience frames for tests here and in the crates above.
 
 use crate::test_fixtures::source;
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{CountryLinkRow, CountryRow, TableId, TableRows},
-};
+use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 /// Experience fixture with an opaque tag and an alternate raw country link.
 /// Test hours are relative to a day's CountryExperience slot hour, so hours 0,
 /// 24, 48, … are the table's cadence reads; `read` adds a timed (full-hour) read.
 pub fn slot_base() -> i32 {
-    let replay::cadence::Cadence::Daily(slot) =
-        replay::cadence::cadence(TableId::CountryExperience)
+    let replay_data::cadence::Cadence::Daily(slot) =
+        replay_data::cadence::cadence(TableId::CountryExperience)
     else {
         panic!("CountryExperience is read in a daily slot");
     };
-    1000 * replay::cadence::STAGGER_PERIOD + slot as i32
+    1000 * replay_data::cadence::STAGGER_PERIOD + slot as i32
 }
 
 pub fn experience_frame(hour: i32, read: bool, id: u32) -> DecodedFrame {
-    use replay::rows::CountryExperienceRow;
+    use replay_data::rows::CountryExperienceRow;
     let mut frame = source(1, slot_base() + hour, Some(1));
     *frame.tables[TableId::Countries.index()] =
         TableView::Complete(TableRows::Countries(vec![CountryRow {
@@ -57,8 +55,8 @@ pub fn experience_frame(hour: i32, read: bool, id: u32) -> DecodedFrame {
             .into_iter()
             .find(|table| {
                 *table != TableId::CountryExperience
-                    && replay::cadence::cadence(*table)
-                        == replay::cadence::cadence(TableId::CountryExperience)
+                    && replay_data::cadence::cadence(*table)
+                        == replay_data::cadence::cadence(TableId::CountryExperience)
             })
             .unwrap();
         frame.metrics.table_ns[anchor.index()] = 1;
@@ -67,7 +65,7 @@ pub fn experience_frame(hour: i32, read: bool, id: u32) -> DecodedFrame {
 }
 
 pub fn renamed_frame(hour: i32) -> DecodedFrame {
-    use replay::rows::CountryExperienceGainRow;
+    use replay_data::rows::CountryExperienceGainRow;
     let mut frame = experience_frame(hour, false, 9001);
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *frame.tables[TableId::Countries.index()]
@@ -109,7 +107,7 @@ pub fn renamed_frame(hour: i32) -> DecodedFrame {
     {
         for (from, id) in [(13, 9002), (50, 9003)] {
             if hour >= from {
-                rows.push(replay::rows::CountryExperienceRow {
+                rows.push(replay_data::rows::CountryExperienceRow {
                     country: id,
                     army_raw: 999 * 32_768,
                     ..Default::default()

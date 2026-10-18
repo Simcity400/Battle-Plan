@@ -4,13 +4,11 @@ use super::{
     binding::{Bindings, Flags, NavalEntry, TEXT, country_flag, fill, hide, text},
     tooltips::{hover_text, set_hover},
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        AirBaseRow, AirWingRow, CountryRow, NavalCombatPlane, NavalCombatShipRow,
-        VariantDefinitionRow, tables,
-    },
+use replay_data::{
+    rows::AirBaseRow, rows::AirWingRow, rows::CountryRow, rows::NavalCombatPlane,
+    rows::NavalCombatShipRow, rows::VariantDefinitionRow, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use std::{cmp::Reverse, collections::BTreeMap, io};
 use viewer_foundation::map::native_gui::container_frame;
 use viewer_foundation::table_access::Available;
@@ -243,13 +241,13 @@ fn push_air_entry(
 fn sortie_member_breakdown(
     plane: &NavalCombatPlane,
     sortie_efficiency: i64,
-    detail: &replay::rows::NavalCombatDetailsRow,
+    detail: &replay_data::rows::NavalCombatDetailsRow,
     side_index: u8,
     joins: &super::naval_air_groups::CarrierJoins<'_>,
     trees: &super::naval_trees::Sources<'_>,
     content: &super::naval_air_groups::Content,
     icons: &dyn TextIcons,
-    loc: &installed_content::localisation::Localisation,
+    loc: &installed_content_localisation::localisation::Localisation,
 ) -> Result<String, String> {
     let mut text = String::new();
     if plane.carrier_member_present == 0 || sortie_efficiency == 100_000 {
@@ -719,7 +717,7 @@ pub(super) fn column(row: &NavalCombatShipRow, pool_flags: u64) -> Option<&'stat
 
 fn pool_flags(
     row: &NavalCombatShipRow,
-    models: &BTreeMap<u64, &replay::rows::ShipModelRow>,
+    models: &BTreeMap<u64, &replay_data::rows::ShipModelRow>,
     incomplete: Option<&str>,
 ) -> Result<u64, String> {
     // These branches of the game do not depend on the equipment predicate.
@@ -791,9 +789,9 @@ fn active(
     if table.rows().is_empty() && !table.is_complete() {
         return Ok(());
     }
-    let organisation_admitted = match replay::fixed_layout::validate_recording(
+    let organisation_admitted = match replay_derive::fixed_layout::validate_recording(
         frame,
-        replay::fixed_layout::SHIP_ORGANISATION,
+        replay_derive::fixed_layout::SHIP_ORGANISATION,
     ) {
         Ok(()) => true,
         Err(reason) => {
@@ -1125,7 +1123,7 @@ pub(super) fn organisation_maximum(row: &NavalCombatShipRow) -> Result<i64, Stri
     }
     let modifier = |key: u32| {
         super::naval_environment::modifier(&context, key).ok_or_else(|| {
-            let name = engine::modifier_keys::name(key).unwrap_or("an unnamed key");
+            let name = engine_executable::modifier_keys::name(key).unwrap_or("an unnamed key");
             format!(
                 "naval_environment::modifier gives no {name} ({key:#x}) from its recorded weapon-context sources"
             )
@@ -1133,10 +1131,12 @@ pub(super) fn organisation_maximum(row: &NavalCombatShipRow) -> Result<i64, Stri
     };
     let base = row
         .base_organisation
-        .wrapping_add(modifier(engine::modifier_keys::NAVY_ORG)?);
+        .wrapping_add(modifier(engine_executable::modifier_keys::NAVY_ORG)?);
     let factor = 100_000_i64
-        .wrapping_add(modifier(engine::modifier_keys::NAVY_ORG_FACTOR)?)
-        .wrapping_add(modifier(engine::modifier_keys::MAX_ORGANISATION)?);
+        .wrapping_add(modifier(engine_executable::modifier_keys::NAVY_ORG_FACTOR)?)
+        .wrapping_add(modifier(
+            engine_executable::modifier_keys::MAX_ORGANISATION,
+        )?);
     Ok((base.wrapping_mul(factor) / 100_000).max(100))
 }
 fn show(values: &mut Values, key: &str) {

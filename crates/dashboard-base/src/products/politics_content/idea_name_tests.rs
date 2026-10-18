@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 #[test]
 fn idea_case_aliases_use_authored_name_description_and_picture_keys() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -46,7 +46,7 @@ fn idea_case_aliases_use_authored_name_description_and_picture_keys() {
 
 #[test]
 fn unknown_gui_decode_reaches_idea_and_portrait_problems() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -95,7 +95,7 @@ fn unknown_gui_decode_reaches_idea_and_portrait_problems() {
 /// of an idea without keys in a category of type 0.
 #[test]
 fn an_idea_is_named_for_its_country() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -223,13 +223,11 @@ fn an_idea_is_named_for_its_country() {
 
 #[test]
 fn generated_advisor_names_read_the_ungated_original_only_after_cosmetic_miss() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::identity::NamingCountry;
-    use replay::{
-        frame::TableView,
-        rows::{Recorded, TableId, TableRows, tables},
-    };
+    use replay_data::{rows::Recorded, rows::TableId, rows::TableRows, rows::tables};
+    use replay_frame::frame::TableView;
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "localisation/test_l_english.yml",
@@ -260,7 +258,7 @@ fn generated_advisor_names_read_the_ungated_original_only_after_cosmetic_miss() 
     ]);
     let content = PoliticsContent::load(Arc::new(catalogue)).unwrap();
     let mut frame = crate::scope::tests::positive_frame();
-    let name = |frame: &replay::frame::DecodedFrame, token| {
+    let name = |frame: &replay_frame::frame::DecodedFrame, token| {
         let row = &frame.complete::<tables::Countries>().unwrap()[0];
         let naming = NamingCountry::read(frame, row);
         content.idea_name(token, naming.for_tag("GER"))
@@ -357,16 +355,14 @@ fn generated_advisor_names_read_the_ungated_original_only_after_cosmetic_miss() 
 /// only while the cosmetic tag is empty.
 #[test]
 fn a_dynamic_country_in_civil_war_skips_its_keys() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::identity::NamingCountry;
-    use replay::{
-        frame::{DecodedFrame, TableView},
-        rows::{
-            CountryCivilWarRow, CountryCounterInputRow, CountryWarRow, TableId, TableRows,
-            WarRelationRow, tables,
-        },
+    use replay_data::{
+        rows::CountryCivilWarRow, rows::CountryCounterInputRow, rows::CountryWarRow, rows::TableId,
+        rows::TableRows, rows::WarRelationRow, rows::tables,
     };
+    use replay_frame::{frame::DecodedFrame, frame::TableView};
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "localisation/test_l_english.yml",
@@ -405,8 +401,8 @@ fn a_dynamic_country_in_civil_war_skips_its_keys() {
             &mut *frame.tables[TableId::CountryAppearance.index()]
         {
             rows[1].name_tag = b"GER".to_vec();
-            rows[1].original_tag_reference = replay::rows::Recorded::Value(Some(100));
-            rows[1].original_tag = replay::rows::Recorded::Value(Some(b"GER".to_vec()));
+            rows[1].original_tag_reference = replay_data::rows::Recorded::Value(Some(100));
+            rows[1].original_tag = replay_data::rows::Recorded::Value(Some(b"GER".to_vec()));
         }
         *frame.tables[TableId::CountryCivilWars.index()] =
             TableView::Complete(TableRows::CountryCivilWars(civil));

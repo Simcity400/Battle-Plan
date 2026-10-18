@@ -32,14 +32,11 @@ use std::{collections::BTreeMap, io};
 use viewer_foundation::map::textures::load_image;
 
 use eframe::wgpu;
-use installed_content::{
-    ResolvedLayers,
-    defines::Defines,
-    image::{Rgba8Image, native::Decode},
-    map::{MapData, ProvinceKind},
-    parser::{self, Value},
-    regions::StrategicRegion,
+use installed_content_core::{
+    ResolvedLayers, defines::Defines, map::MapData, map::ProvinceKind, parser, parser::Value,
 };
+use installed_content_image::{Rgba8Image, native::Decode};
+use installed_content_regions::regions::StrategicRegion;
 
 use viewer_foundation::map::{
     camera::{Camera, MapSize},

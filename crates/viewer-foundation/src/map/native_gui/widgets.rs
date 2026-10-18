@@ -79,7 +79,7 @@ pub(super) fn scrollbar_part_names(
 }
 
 /// A name's bytes to its first NUL, as each C-string consumer reads it.
-use installed_content::parser::c_string;
+use installed_content_core::parser::c_string;
 
 /// `(i64)((x >= 0) + x * 100000.0f - 0.5f)`: a value in the scrollbars' fixed point, rounded half
 /// away from zero.
@@ -1450,8 +1450,8 @@ impl<'a> Walk<'a> {
                 let anchor = control_anchor(icon.orientation, content);
                 (
                     [
-                        installed_content::crt::truncate_f32(icon.position[0]).wrapping_add(anchor[0]),
-                        installed_content::crt::truncate_f32(icon.position[1]).wrapping_add(anchor[1]),
+                        installed_content_core::crt::truncate_f32(icon.position[0]).wrapping_add(anchor[0]),
+                        installed_content_core::crt::truncate_f32(icon.position[1]).wrapping_add(anchor[1]),
                     ],
                     drawable(&icon.sprite, icon.scale)?,
                 )

@@ -7,7 +7,7 @@
 //! clipped to the viewport.
 
 use super::*;
-use installed_content::gui::native::{Element, Kind};
+use installed_content_core::{gui::native::Element, gui::native::Kind};
 use viewer_foundation::map::{
     camera::Camera,
     gui_resources::{count_noted, count_refused},
@@ -662,7 +662,7 @@ mod tests {
 
     #[test]
     fn operative_portrait_setter_uses_its_own_fallback_and_recovers_after_withheld() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let windows = gui::windows(br#"guiTypes = {
             containerWindowType = { name = operative_map_icon_entry size = { width = 68 height = 48 }

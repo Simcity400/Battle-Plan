@@ -6,20 +6,18 @@ use crate::{
     sampling::qpc,
     table_capture::{Arena, CaptureRows, bounded, grow_capacity, grow_vec},
 };
-use engine::allocation::{copy_vec, owned_vec, reserve, resize};
-use engine::{
-    Memory, cair_base, ccontroller_area, ccountry, ctheatre,
-    memory::{RecordLayout, RecordSources},
-    radar_group, unit_viewer_entry,
-    walk::Outcome,
+use engine_allocation::{copy_vec, owned_vec, reserve, resize};
+use engine_map_air::radar_group;
+use engine_native::{
+    Memory, cair_base, ccontroller_area, ccountry, ctheatre, memory::RecordLayout,
+    memory::RecordSources, walk::Outcome,
 };
-use replay::{
-    frame::TableInput,
-    rows::{self, TableId, tables},
-};
+use engine_visibility::unit_viewer_entry;
+use replay_data::{rows, rows::TableId, rows::tables};
+use replay_frame::frame::TableInput;
 
 #[cfg(test)]
-use replay::frame::TableView;
+use replay_frame::frame::TableView;
 
 pub const N: usize = 7;
 pub const TABLES: [TableId; N] = [
@@ -147,7 +145,7 @@ pub struct Captured {
 }
 
 const SKIPPED: Outcome = Outcome::Unavailable {
-    reason: replay::cadence::SKIPPED_REASON,
+    reason: replay_data::cadence::SKIPPED_REASON,
 };
 
 impl Captured {
@@ -260,7 +258,8 @@ impl Captured {
     }
 
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
-        self.active = TABLES.map(|table| replay::cadence::should_walk(table, hour, force_full));
+        self.active =
+            TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
     }
 
     /// Fixed fixture readers preserve capacity refusals. Areas and stationed
@@ -348,9 +347,9 @@ impl Captured {
                 base,
                 game_state,
                 if growing {
-                    engine::walk::Buffer::Growing(&mut self.volunteers.rows)
+                    engine_native::walk::Buffer::Growing(&mut self.volunteers.rows)
                 } else {
-                    engine::walk::Buffer::Fixed(&mut self.volunteers.rows)
+                    engine_native::walk::Buffer::Fixed(&mut self.volunteers.rows)
                 },
             ),
             self.volunteers.rows.len(),
@@ -366,9 +365,9 @@ impl Captured {
                 base,
                 game_state,
                 if growing {
-                    engine::walk::Buffer::Growing(rows)
+                    engine_native::walk::Buffer::Growing(rows)
                 } else {
-                    engine::walk::Buffer::Fixed(rows)
+                    engine_native::walk::Buffer::Fixed(rows)
                 },
             ),
             self.sent_volunteers.rows.len(),
@@ -386,19 +385,19 @@ impl Captured {
             ctheatre::StationedStorage {
                 areas_active: self.active[2],
                 areas: if growing {
-                    engine::walk::Buffer::Growing(&mut self.areas.rows)
+                    engine_native::walk::Buffer::Growing(&mut self.areas.rows)
                 } else {
-                    engine::walk::Buffer::Fixed(&mut self.areas.rows)
+                    engine_native::walk::Buffer::Fixed(&mut self.areas.rows)
                 },
                 area_provinces: if growing {
-                    engine::walk::Buffer::Growing(&mut self.area_provinces.first)
+                    engine_native::walk::Buffer::Growing(&mut self.area_provinces.first)
                 } else {
-                    engine::walk::Buffer::Fixed(&mut self.area_provinces.first)
+                    engine_native::walk::Buffer::Fixed(&mut self.area_provinces.first)
                 },
                 units: if growing {
-                    engine::walk::Buffer::Growing(&mut self.units.rows)
+                    engine_native::walk::Buffer::Growing(&mut self.units.rows)
                 } else {
-                    engine::walk::Buffer::Fixed(&mut self.units.rows)
+                    engine_native::walk::Buffer::Fixed(&mut self.units.rows)
                 },
             },
         );
@@ -431,9 +430,9 @@ impl Captured {
                     base,
                     game_state,
                     if growing {
-                        engine::walk::Buffer::Growing(&mut self.intel.rows)
+                        engine_native::walk::Buffer::Growing(&mut self.intel.rows)
                     } else {
-                        engine::walk::Buffer::Fixed(&mut self.intel.rows)
+                        engine_native::walk::Buffer::Fixed(&mut self.intel.rows)
                     },
                     None,
                 ),

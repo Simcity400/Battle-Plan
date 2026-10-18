@@ -39,16 +39,11 @@ use crate::{
     table_capture::{CaptureRows, grow_capacity},
     table_conversion::table,
 };
-use engine::{
-    Memory,
-    air_kamikaze::{self as native, WindowState},
-    allocation, ccountry,
-    walk::Outcome,
-};
-use replay::{
-    frame::TableView,
-    rows::{AirNavalPatrolHistoryRow, TableId, tables},
-};
+use engine_air_history::{air_kamikaze as native, air_kamikaze::WindowState};
+use engine_allocation as allocation;
+use engine_native::{Memory, ccountry, walk::Outcome};
+use replay_data::{rows::AirNavalPatrolHistoryRow, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 use std::sync::{Mutex, MutexGuard};
 
 pub const N: usize = 1;
@@ -1485,7 +1480,7 @@ impl Held {
                         index,
                         enemy_ships_sunk_raw: values[0],
                         our_fighters_lost_raw: values[1],
-                        scenario_channels: replay::rows::Recorded::Value(
+                        scenario_channels: replay_data::rows::Recorded::Value(
                             history
                                 .scenario_failures
                                 .binary_search_by_key(&(record as u32), |&(slot, _)| slot)
@@ -1685,11 +1680,11 @@ mod tests {
         assert_eq!(rows[0].our_fighters_lost_raw, 2);
         assert_eq!(
             rows[0].scenario_channels,
-            replay::rows::Recorded::Value(Some([0; 7]))
+            replay_data::rows::Recorded::Value(Some([0; 7]))
         );
         assert_eq!(
             rows[1].scenario_channels,
-            replay::rows::Recorded::Value(None)
+            replay_data::rows::Recorded::Value(None)
         );
         assert_eq!(
             (rows[1].enemy_ships_sunk_raw, rows[1].our_fighters_lost_raw),
@@ -1736,7 +1731,7 @@ mod tests {
         assert_eq!(rows[0], AirNavalPatrolHistoryRow::availability_witness(0));
         assert_eq!(
             rows[1].scenario_channels,
-            replay::rows::Recorded::Value(Some([10, 17, 51, 58, 44, 24, 65]))
+            replay_data::rows::Recorded::Value(Some([10, 17, 51, 58, 44, 24, 65]))
         );
         assert_eq!(rows[1].index, 1);
         assert_eq!(rows[2], AirNavalPatrolHistoryRow::availability_witness(1));
@@ -1769,17 +1764,17 @@ mod tests {
         let mut image = vec![0; 0x1000];
         qword(
             &mut image,
-            GAME_STATE + engine::cgame_state::STRATEGIC_AIR_MANAGER,
+            GAME_STATE + engine_native::cgame_state::STRATEGIC_AIR_MANAGER,
             MANAGER as u64,
         );
         qword(
             &mut image,
             MANAGER,
-            (BASE + engine::cstrategic_air_manager::VTABLE_RVA) as u64,
+            (BASE + engine_native::cstrategic_air_manager::VTABLE_RVA) as u64,
         );
         vector(
             &mut image,
-            MANAGER + engine::cstrategic_air_manager::COUNTRY_AIR,
+            MANAGER + engine_native::cstrategic_air_manager::COUNTRY_AIR,
             ROOTS,
             (PARTS + 1) as u32,
         );
@@ -1807,7 +1802,7 @@ mod tests {
                 })
                 .collect();
         }
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &image,
         };
@@ -1857,43 +1852,45 @@ mod tests {
         qword(
             &mut image,
             HISTORY,
-            (BASE + engine::cloop_history::VTABLE_RVA) as u64,
+            (BASE + engine_air_history::cloop_history::VTABLE_RVA) as u64,
         );
         dword(
             &mut image,
-            HISTORY + engine::cloop_history::FIELD_COUNT,
-            engine::cloop_history::air_stats::FIELD_COUNT,
+            HISTORY + engine_air_history::cloop_history::FIELD_COUNT,
+            engine_air_history::cloop_history::air_stats::FIELD_COUNT,
         );
         qword(
             &mut image,
-            HISTORY + engine::cloop_history::DAILY_WINDOW,
+            HISTORY + engine_air_history::cloop_history::DAILY_WINDOW,
             WINDOW as u64,
         );
         qword(
             &mut image,
             WINDOW,
-            (BASE + engine::loop_history_window::VTABLE_RVA) as u64,
+            (BASE + engine_air_history::loop_history_window::VTABLE_RVA) as u64,
         );
         vector(
             &mut image,
-            WINDOW + engine::loop_history_window::RECORDS,
+            WINDOW + engine_air_history::loop_history_window::RECORDS,
             RECORDS,
             1,
         );
         dword(
             &mut image,
-            WINDOW + engine::loop_history_window::CAPACITY,
+            WINDOW + engine_air_history::loop_history_window::CAPACITY,
             1,
         );
-        image[WINDOW + engine::loop_history_window::WRAPPED] = 1;
+        image[WINDOW + engine_air_history::loop_history_window::WRAPPED] = 1;
         qword(&mut image, RECORDS, RECORD as u64);
         qword(&mut image, RECORD, VALUES as u64);
         qword(
             &mut image,
-            VALUES + native::ENEMY_SHIPS_SUNK * engine::loop_history_record_fields::VALUE_STRIDE,
+            VALUES
+                + native::ENEMY_SHIPS_SUNK
+                    * engine_air_history::loop_history_record_fields::VALUE_STRIDE,
             1,
         );
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &image,
         };

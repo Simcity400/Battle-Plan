@@ -1,7 +1,7 @@
 //! Country-owned goal references and their serialized payloads.
 
 use super::{block, bytes, field, integer_list, invalid, null_permitted_handle, object_id};
-use installed_content::parser::Item;
+use installed_content_core::parser::Item;
 use std::{collections::BTreeMap, io};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

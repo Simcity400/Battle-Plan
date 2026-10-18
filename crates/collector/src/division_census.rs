@@ -3,15 +3,10 @@
 //! authenticate their own inputs without walking the country rosters again.
 //! DivisionCensus counts accumulate in the core projection, charged to Divisions.
 
-use engine::{
-    Memory, carmy, ccountry,
-    cequipment_variant_pool::DivisionSource,
-    cgame_state,
-    cpdx_array::Array,
-    cprovince, creferenced_division_template,
-    memory::{RecordField, RecordLayout, RecordSources},
-    read,
-    walk::Outcome,
+use engine_native::{
+    Memory, carmy, ccountry, cequipment_variant_pool::DivisionSource, cgame_state,
+    cpdx_array::Array, cprovince, creferenced_division_template, memory::RecordField,
+    memory::RecordLayout, memory::RecordSources, read, walk::Outcome,
 };
 
 use std::sync::Arc;
@@ -20,7 +15,7 @@ const BATCH: usize = 64;
 
 #[cfg(test)]
 mod batching_tests;
-pub(crate) use engine::unit_viewer_entry::DivisionSource as Entry;
+pub(crate) use engine_visibility::unit_viewer_entry::DivisionSource as Entry;
 
 /// Immutable, callback-local native fields shared by independently bounded
 /// consumers. The pointer census outcome excludes private core row failures.
@@ -34,11 +29,11 @@ pub(crate) struct UnitInputs {
 impl UnitInputs {
     pub(crate) fn new(capacity: usize) -> Self {
         Self {
-            seeds: engine::allocation::owned_vec(engine::allocation::vec(capacity)),
+            seeds: engine_allocation::owned_vec(engine_allocation::vec(capacity)),
             outcome: Outcome::Unavailable {
                 reason: "division census not captured",
             },
-            roster_slots: engine::allocation::owned_vec(engine::allocation::vec(
+            roster_slots: engine_allocation::owned_vec(engine_allocation::vec(
                 capacity.saturating_mul(2),
             )),
             intel_outcome: Outcome::Unavailable {
@@ -52,8 +47,10 @@ impl UnitInputs {
     pub(crate) fn outcome(&self) -> Outcome {
         self.outcome
     }
-    pub(crate) fn intel_sources(&self) -> engine::unit_viewer_entry::DivisionSources<'_> {
-        engine::unit_viewer_entry::DivisionSources {
+    pub(crate) fn intel_sources(
+        &self,
+    ) -> engine_visibility::unit_viewer_entry::DivisionSources<'_> {
+        engine_visibility::unit_viewer_entry::DivisionSources {
             entries: &self.roster_slots,
             outcome: self.intel_outcome,
         }
@@ -103,7 +100,7 @@ pub(crate) fn parts_for(entries: usize) -> usize {
 
 #[derive(Debug)]
 pub(crate) struct Census {
-    counts: Vec<Option<replay::rows::DivisionCensusRow>>,
+    counts: Vec<Option<replay_data::rows::DivisionCensusRow>>,
     required_counts: usize,
     counts_error: Option<&'static str>,
     entries: Vec<Entry>,
@@ -163,13 +160,13 @@ impl Census {
     #[cfg(test)]
     pub fn new() -> Self {
         Self {
-            counts: engine::allocation::owned_vec(engine::allocation::default_vec(
+            counts: engine_allocation::owned_vec(engine_allocation::default_vec(
                 crate::country_scale::census_rows(512),
             )),
-            entries: engine::allocation::owned_vec(engine::allocation::vec(8192)),
+            entries: engine_allocation::owned_vec(engine_allocation::vec(8192)),
             unit_inputs: Some(Arc::new(UnitInputs::new(8192))),
-            rows: engine::allocation::owned_vec(engine::allocation::vec(8192)),
-            sources: engine::allocation::owned_vec(engine::allocation::vec(8192)),
+            rows: engine_allocation::owned_vec(engine_allocation::vec(8192)),
+            sources: engine_allocation::owned_vec(engine_allocation::vec(8192)),
             ..Self::default()
         }
     }
@@ -245,32 +242,32 @@ impl Census {
         }
         let target = self.required;
         let additional = target.saturating_sub(self.entries.len());
-        if engine::allocation::reserve_exact(&mut self.entries, additional).is_err() {
+        if engine_allocation::reserve_exact(&mut self.entries, additional).is_err() {
             return;
         }
         if let Some(shared) = &mut self.unit_inputs {
             let inputs =
                 Arc::get_mut(shared).expect("division input leases released before growth");
             let additional = target.saturating_sub(inputs.seeds.len());
-            if engine::allocation::reserve_exact(&mut inputs.seeds, additional).is_err() {
+            if engine_allocation::reserve_exact(&mut inputs.seeds, additional).is_err() {
                 return;
             }
             // The overflowed census kept counting every remaining roster, so
             // one step reaches the observed requirement.
             let slots = self.required_slots;
             let additional = slots.saturating_sub(inputs.roster_slots.len());
-            if engine::allocation::reserve_exact(&mut inputs.roster_slots, additional).is_err() {
+            if engine_allocation::reserve_exact(&mut inputs.roster_slots, additional).is_err() {
                 return;
             }
         } else {
             self.unit_inputs = Some(Arc::new(UnitInputs::new(target)));
         }
         let additional = target.saturating_sub(self.rows.len());
-        if engine::allocation::reserve_exact(&mut self.rows, additional).is_err() {
+        if engine_allocation::reserve_exact(&mut self.rows, additional).is_err() {
             return;
         }
         let additional = target.saturating_sub(self.sources.len());
-        let _ = engine::allocation::reserve_exact(&mut self.sources, additional);
+        let _ = engine_allocation::reserve_exact(&mut self.sources, additional);
     }
     /// Grow retained storage only while the frame is off the callback.
     pub(crate) fn reserve_sources(&mut self, capacity: usize) {
@@ -288,9 +285,9 @@ impl Census {
         self.census_result
     }
     #[cfg(test)]
-    pub fn intel_sources(&self) -> engine::unit_viewer_entry::DivisionSources<'_> {
+    pub fn intel_sources(&self) -> engine_visibility::unit_viewer_entry::DivisionSources<'_> {
         self.unit_inputs.as_ref().map_or(
-            engine::unit_viewer_entry::DivisionSources {
+            engine_visibility::unit_viewer_entry::DivisionSources {
                 entries: &[],
                 outcome: self.census_result,
             },
@@ -438,11 +435,11 @@ impl Census {
             return Ok(());
         }
         let offset = self.entries.len() as u32;
-        engine::allocation::reserve(&mut self.entries, part.entries.len())
+        engine_allocation::reserve(&mut self.entries, part.entries.len())
             .map_err(|_| "division census allocation failed")?;
-        engine::allocation::reserve(&mut inputs.seeds, part_inputs.seeds.len())
+        engine_allocation::reserve(&mut inputs.seeds, part_inputs.seeds.len())
             .map_err(|_| "division seed allocation failed")?;
-        engine::allocation::reserve(&mut inputs.roster_slots, part_inputs.roster_slots.len())
+        engine_allocation::reserve(&mut inputs.roster_slots, part_inputs.roster_slots.len())
             .map_err(|_| "division roster allocation failed")?;
         self.entries.extend_from_slice(&part.entries);
         inputs.seeds.extend_from_slice(&part_inputs.seeds);
@@ -455,8 +452,8 @@ impl Census {
             }
         }
         self.counts_error = self.counts_error.or(part.counts_error);
-        if engine::allocation::advisory(|| {
-            engine::allocation::reserve(&mut self.slot_ends, part.slot_ends.len())
+        if engine_allocation::advisory(|| {
+            engine_allocation::reserve(&mut self.slot_ends, part.slot_ends.len())
         })
         .is_ok()
         {
@@ -505,16 +502,16 @@ impl Census {
     pub(crate) fn reserve_join(&mut self, capacity: JoinCapacity) {
         let entries = capacity.entries.saturating_sub(self.entries.len());
         let countries = capacity.countries.saturating_sub(self.slot_ends.len());
-        let _ = engine::allocation::advisory(|| {
-            engine::allocation::reserve(&mut self.entries, entries)?;
-            engine::allocation::reserve(&mut self.slot_ends, countries)?;
+        let _ = engine_allocation::advisory(|| {
+            engine_allocation::reserve(&mut self.entries, entries)?;
+            engine_allocation::reserve(&mut self.slot_ends, countries)?;
             if let Some(inputs) = self.unit_inputs.as_mut().and_then(Arc::get_mut) {
                 let seeds = capacity.entries.saturating_sub(inputs.seeds.len());
                 let slots = capacity
                     .roster_slots
                     .saturating_sub(inputs.roster_slots.len());
-                engine::allocation::reserve(&mut inputs.seeds, seeds)?;
-                engine::allocation::reserve(&mut inputs.roster_slots, slots)?;
+                engine_allocation::reserve(&mut inputs.seeds, seeds)?;
+                engine_allocation::reserve(&mut inputs.roster_slots, slots)?;
             }
             Ok::<(), std::io::Error>(())
         });
@@ -581,7 +578,7 @@ impl Census {
         // The hourly update uses the live country roster.
         // This worker keeps the original header even when a load outgrows hints.
         if self.growing {
-            engine::walk::Buffer::Growing(&mut self.counts).ensure(self.required_counts)?;
+            engine_native::walk::Buffer::Growing(&mut self.counts).ensure(self.required_counts)?;
         } else if self.counts.len() < self.required_counts {
             self.counts_error = Some("division coverage country capacity exhausted");
         }
@@ -619,7 +616,7 @@ impl Census {
             };
             let (pointer, canonical) = (country.pointer, country.canonical_slot);
             if let Some(count) = self.counts.get_mut(country.id as usize) {
-                *count = Some(replay::rows::DivisionCensusRow {
+                *count = Some(replay_data::rows::DivisionCensusRow {
                     country: country.id,
                     ..Default::default()
                 });
@@ -642,11 +639,11 @@ impl Census {
                     .as_mut()
                     .and_then(Arc::get_mut)
                     .ok_or("division input packet still leased")?;
-                engine::allocation::reserve(&mut inputs.roster_slots, roster.count as usize)
+                engine_allocation::reserve(&mut inputs.roster_slots, roster.count as usize)
                     .map_err(|_| "division roster allocation failed")?;
-                engine::allocation::reserve(&mut inputs.seeds, roster.count as usize)
+                engine_allocation::reserve(&mut inputs.seeds, roster.count as usize)
                     .map_err(|_| "division seed allocation failed")?;
-                engine::allocation::reserve(&mut self.entries, roster.count as usize)
+                engine_allocation::reserve(&mut self.entries, roster.count as usize)
                     .map_err(|_| "division census allocation failed")?;
             }
             if counting {
@@ -712,8 +709,8 @@ impl Census {
             // Advisory, and only for the growing worker census: only the next
             // hour's split reads it.
             if self.growing
-                && engine::allocation::advisory(|| {
-                    engine::allocation::reserve(&mut self.slot_ends, 1)
+                && engine_allocation::advisory(|| {
+                    engine_allocation::reserve(&mut self.slot_ends, 1)
                 })
                 .is_ok()
             {
@@ -795,9 +792,9 @@ impl Census {
             self.entries.len().min(capacity)
         };
         if self.growing {
-            engine::allocation::reserve(&mut self.rows, take)
+            engine_allocation::reserve(&mut self.rows, take)
                 .map_err(|_| "division row allocation failed")?;
-            engine::allocation::reserve(&mut self.sources, take)
+            engine_allocation::reserve(&mut self.sources, take)
                 .map_err(|_| "division source allocation failed")?;
         }
         if take > self.rows.capacity() || take > self.sources.capacity() {
@@ -865,7 +862,7 @@ impl Census {
         Ok(())
     }
     fn count_division(
-        counts: &mut [Option<replay::rows::DivisionCensusRow>],
+        counts: &mut [Option<replay_data::rows::DivisionCensusRow>],
         country_count: usize,
         counts_error: &mut Option<&'static str>,
         row: &carmy::Row,
@@ -880,7 +877,7 @@ impl Census {
         if owner as usize >= country_count {
             *counts_error = Some("division owner outside country links");
         } else if let Some(count) = counts.get_mut(owner as usize) {
-            let count = count.get_or_insert_with(|| replay::rows::DivisionCensusRow {
+            let count = count.get_or_insert_with(|| replay_data::rows::DivisionCensusRow {
                 country: owner,
                 ..Default::default()
             });
@@ -898,7 +895,10 @@ impl Census {
             *counts_error = Some("division coverage country capacity exhausted");
         }
     }
-    pub(crate) fn install_counts(&self, output: &mut [replay::rows::DivisionCensusRow]) -> Outcome {
+    pub(crate) fn install_counts(
+        &self,
+        output: &mut [replay_data::rows::DivisionCensusRow],
+    ) -> Outcome {
         if let Some(reason) = self.counts_error {
             return Outcome::Unavailable { reason };
         }
@@ -1192,17 +1192,17 @@ impl CoreIdentities {
         let vtable = u64::from_le_bytes(identity[..8].try_into().unwrap());
         let normal = self
             .base
-            .checked_add(engine::corders_group::VTABLE_RVA)
+            .checked_add(engine_native::corders_group::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         let army = self
             .base
-            .checked_add(engine::carmy_group::VTABLE_RVA)
+            .checked_add(engine_native::carmy_group::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         if vtable != normal && vtable != army {
             return Err("division orders group vtable mismatch");
         }
         let handle = u64::from_le_bytes(identity[8..].try_into().unwrap());
-        if handle as u32 != engine::corders_group::REFERENCE_TYPE {
+        if handle as u32 != engine_native::corders_group::REFERENCE_TYPE {
             return Err("division orders group reference type mismatch");
         }
         self.groups[slot] = CoreIdentity {

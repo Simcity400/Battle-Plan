@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn saved_unit_withdrawal_is_shared_and_omission_means_false() {
     for (suffix, expected) in [("", false), ("withdraw=yes", true), ("withdraw=no", false)] {
-        let division = installed_content::parser::parse(
+        let division = installed_content_core::parser::parse(
             format!("id={{id=7 type=51}} logical_country=AAA strength=0 organisation=0 {suffix}")
                 .as_bytes(),
         )
@@ -15,7 +15,7 @@ fn saved_unit_withdrawal_is_shared_and_omission_means_false() {
                 .withdrawal,
             expected
         );
-        let gun = installed_content::parser::parse(
+        let gun = installed_content_core::parser::parse(
             format!("id={{id=7 type=74}} logical_country=AAA strength=0 {suffix}").as_bytes(),
         )
         .unwrap();
@@ -23,7 +23,7 @@ fn saved_unit_withdrawal_is_shared_and_omission_means_false() {
             parse_railway_gun(b"AAA", &gun.items).unwrap().withdrawal,
             expected
         );
-        let force = installed_content::parser::parse(
+        let force = installed_content_core::parser::parse(
             format!("id={{id=7 type=51}} logical_country=AAA mission={{mission=0}} {suffix}")
                 .as_bytes(),
         )
@@ -36,7 +36,7 @@ fn saved_unit_withdrawal_is_shared_and_omission_means_false() {
         );
     }
     for suffix in ["withdraw=bad", "withdraw={yes}", "withdraw=yes withdraw=no"] {
-        let document = installed_content::parser::parse(
+        let document = installed_content_core::parser::parse(
             format!("id={{id=7 type=74}} logical_country=AAA strength=0 {suffix}").as_bytes(),
         )
         .unwrap();
@@ -47,7 +47,7 @@ fn saved_unit_withdrawal_is_shared_and_omission_means_false() {
 #[test]
 fn division_priority_retains_the_writer_enum_and_default_omission() {
     let parse = |suffix: &str| {
-        let document = installed_content::parser::parse(
+        let document = installed_content_core::parser::parse(
             format!("id={{id=7 type=51}} logical_country=AAA strength=0 organisation=0 {suffix}")
                 .as_bytes(),
         )?;
@@ -78,7 +78,7 @@ fn division_priority_retains_the_writer_enum_and_default_omission() {
 #[test]
 fn task_force_saved_progress_is_exact_and_retreat_is_boolean() {
     let parse = |suffix: &str| {
-        let document = installed_content::parser::parse(
+        let document = installed_content_core::parser::parse(
             format!("id={{id=7 type=51}} logical_country=AAA mission={{mission=0}} {suffix}")
                 .as_bytes(),
         )?;
@@ -103,7 +103,7 @@ fn task_force_saved_progress_is_exact_and_retreat_is_boolean() {
 #[test]
 fn task_force_exile_preserves_saved_truth_and_refuses_malformed_fields() {
     let parse = |suffix: &str| {
-        let document = installed_content::parser::parse(
+        let document = installed_content_core::parser::parse(
             format!("id={{id=7 type=51}} logical_country=AAA mission={{mission=0}} {suffix}")
                 .as_bytes(),
         )?;
@@ -125,7 +125,7 @@ fn task_force_exile_preserves_saved_truth_and_refuses_malformed_fields() {
 #[test]
 fn division_exile_keeps_saved_truth_and_rejects_malformed_fields() {
     let parse = |suffix: &str| {
-        let document = installed_content::parser::parse(
+        let document = installed_content_core::parser::parse(
             format!("id={{id=7 type=51}} logical_country=AAA strength=0 organisation=0 {suffix}")
                 .as_bytes(),
         )?;
@@ -148,7 +148,7 @@ fn division_exile_keeps_saved_truth_and_rejects_malformed_fields() {
 #[test]
 fn railway_gun_exile_keeps_saved_truth_and_rejects_malformed_fields() {
     let parse = |suffix: &str| {
-        let document = installed_content::parser::parse(
+        let document = installed_content_core::parser::parse(
             format!("id={{id=7 type=74}} logical_country=AAA strength=0 {suffix}").as_bytes(),
         )?;
         parse_railway_gun(b"AAA", &document.items)
@@ -171,7 +171,7 @@ fn railway_gun_names_keep_presence_and_unescaped_bytes() {
     let parse = |suffix: &[u8]| {
         let mut text = b"id={id=7 type=74} logical_country=AAA strength=0 ".to_vec();
         text.extend_from_slice(suffix);
-        let document = installed_content::parser::parse(&text)?;
+        let document = installed_content_core::parser::parse(&text)?;
         parse_railway_gun(b"AAA", &document.items)
     };
     assert_eq!(parse(b"").unwrap().name, None);
@@ -190,7 +190,7 @@ fn task_force_names_keep_presence_and_unescaped_bytes() {
     let parse = |suffix: &[u8]| {
         let mut text = b"id={id=7 type=51} logical_country=AAA mission={mission=0} ".to_vec();
         text.extend_from_slice(suffix);
-        let document = installed_content::parser::parse(&text)?;
+        let document = installed_content_core::parser::parse(&text)?;
         parse_task_force(b"AAA", 1, &document.items)
     };
     assert_eq!(parse(b"").unwrap().name, None);
@@ -207,7 +207,7 @@ fn task_force_names_keep_presence_and_unescaped_bytes() {
 #[test]
 fn template_fallback_key_is_saved_independently_of_explicit_name() {
     let parse = |fields: &str| {
-        let document = installed_content::parser::parse(
+        let document = installed_content_core::parser::parse(
             format!("division_templates={{division_template={{id={{id=3 type=52}} country=AAA template_counter=0 ingame_set_template_counter=no {fields}}}}}").as_bytes(),
         )?;
         parse_division_templates(&document.items)
@@ -230,7 +230,7 @@ fn template_name_fields_keep_omitted_empty_and_nonempty_presence_independently()
     // The writer omits stored-empty strings, but
     // emits an empty scalar for a stored-nonempty string with a leading NUL.
     let parse = |fields: &str| {
-        let document = installed_content::parser::parse(
+        let document = installed_content_core::parser::parse(
             format!("division_templates={{division_template={{id={{id=3 type=52}} country=AAA template_counter=0 ingame_set_template_counter=no {fields}}}}}").as_bytes(),
         )?;
         parse_division_templates(&document.items)
@@ -267,7 +267,7 @@ fn template_name_fields_keep_omitted_empty_and_nonempty_presence_independently()
 #[test]
 fn cached_division_demand_preserves_signed_zero_omission_and_rejects_malformed_present_values() {
     let parse = |suffix: &str| {
-        let document = installed_content::parser::parse(
+        let document = installed_content_core::parser::parse(
             format!("id={{id=7 type=29}} logical_country=AAA strength=0 organisation=0 {suffix}")
                 .as_bytes(),
         )?;
@@ -306,7 +306,7 @@ fn task_force_stored_name_retains_empty_non_utf8_and_refuses_duplicate_or_block(
     let parse = |suffix: &[u8]| {
         let mut text = b"id={id=7 type=51} logical_country=AAA mission={mission=0} ".to_vec();
         text.extend_from_slice(suffix);
-        let document = installed_content::parser::parse(&text)?;
+        let document = installed_content_core::parser::parse(&text)?;
         parse_task_force(b"AAA", 9, &document.items)
     };
     assert_eq!(parse(b"").unwrap().name, None);
@@ -322,14 +322,14 @@ fn task_force_stored_name_retains_empty_non_utf8_and_refuses_duplicate_or_block(
 
 #[test]
 fn fleet_reads_stored_name_and_full_leader_reference_without_generation() {
-    let document = installed_content::parser::parse(
+    let document = installed_content_core::parser::parse(
         b"id={id=7 type=61} name=\"Synthetic command name\" leader={id=2147483648 type=4713}",
     )
     .unwrap();
     let fleet = parse_fleet(b"MOD", &document.items).unwrap();
     assert_eq!(fleet.name.as_deref(), Some(&b"Synthetic command name"[..]));
     assert_eq!(fleet.leader, Some((2_147_483_648_u64 << 32) | 4713));
-    let document = installed_content::parser::parse(b"id={id=7 type=61}").unwrap();
+    let document = installed_content_core::parser::parse(b"id={id=7 type=61}").unwrap();
     let fleet = parse_fleet(b"MOD", &document.items).unwrap();
     assert_eq!(fleet.name, None);
     assert_eq!(fleet.leader, None);

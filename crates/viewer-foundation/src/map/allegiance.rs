@@ -15,10 +15,8 @@
 //! sentinel is not required.
 use std::{collections::BTreeMap, io};
 
-use replay::{
-    frame::DecodedFrame,
-    rows::{Recorded, tables},
-};
+use replay_data::{rows::Recorded, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::{
     tables::{Available, rows},
@@ -35,7 +33,7 @@ pub struct Tints {
 }
 
 impl Tints {
-    pub fn read(defines: &installed_content::defines::Defines) -> io::Result<Self> {
+    pub fn read(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
         let color = |name: &str| -> io::Result<[f32; 4]> {
             let values = defines.numbers("NGraphics", name)?;
             <[f64; 4]>::try_from(values)
@@ -280,14 +278,12 @@ fn native_input<T: Clone>(value: &Recorded<Option<T>>, field: &str) -> Result<T,
 mod tests {
     use super::*;
     use crate::map::test_support::allegiance::*;
-    use replay::{
-        frame::TableView,
-        rows::{CountryLinkRow, PlayerRow, TableId, TableRows},
-    };
+    use replay_data::{rows::CountryLinkRow, rows::PlayerRow, rows::TableId, rows::TableRows};
+    use replay_frame::frame::TableView;
 
     #[test]
     fn multiplayer_switch_and_observer_use_only_the_clients_stored_viewpoint() {
-        use replay::rows::LocalPlayerRow;
+        use replay_data::rows::LocalPlayerRow;
         let mut frame = frame(Vec::new(), Vec::new());
         let links: BTreeMap<_, _> = (1..=5_000).map(|slot| (slot + 10_000, slot)).collect();
         *frame.tables[TableId::Players.index()] = TableView::Complete(TableRows::Players(
@@ -399,7 +395,7 @@ mod tests {
 
     #[test]
     fn a_faction_partner_is_blue_and_a_country_at_war_is_red() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (relations, links) = relations_of(&[(100, 102)], &[(100, 1), (101, 1), (102, 2)]);
         let table = counter_table(&relations, &links, 0);
@@ -411,7 +407,7 @@ mod tests {
 
     #[test]
     fn a_faction_partner_still_at_war_with_us_stays_red() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (relations, links) = relations_of(&[(101, 100)], &[(100, 1), (101, 1)]);
         assert_eq!(
@@ -422,9 +418,9 @@ mod tests {
 
     #[test]
     fn native_cache_and_zero_war_refusals_are_independent_and_named() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use replay::rows::CountryCounterInputRow;
+        use replay_data::rows::CountryCounterInputRow;
         let frame = native_frame(vec![
             CountryCounterInputRow {
                 co_belligerents: Recorded::NotRecorded,
@@ -453,7 +449,7 @@ mod tests {
 
     #[test]
     fn truncated_native_rows_remain_known_and_missing_owners_stay_unknown() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = native_frame(vec![]);
         let links = links(&frame);
@@ -483,7 +479,7 @@ mod tests {
 
     #[test]
     fn malformed_native_operands_and_alias_collisions_do_not_poison_other_owners() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = native_frame(vec![
             native_row(101, vec![2, 0], [0, 0]),
@@ -525,7 +521,7 @@ mod tests {
 
     #[test]
     fn native_cache_keeps_the_complete_recorded_target_domain() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = native_frame(vec![native_row(101, (0..=5_000).collect(), [0, 0])]);
         let mut links = links(&frame);

@@ -9,7 +9,7 @@
 //! log-wide order each record carries, releases each slot after copying it,
 //! and frees ring space only over a released prefix, so out-of-order
 //! publication never lets a producer overwrite an unread slot.
-use engine::allocation;
+use engine_allocation as allocation;
 use std::{
     cell::UnsafeCell,
     io,

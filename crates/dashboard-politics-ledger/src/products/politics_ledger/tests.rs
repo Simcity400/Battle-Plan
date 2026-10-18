@@ -10,7 +10,8 @@ fn observe(
     *reply = super::spending::present(scan, frame.branch, tag, None, &AtomicBool::new(false))?;
     Ok(())
 }
-use replay::frame::{TABLE_COUNT, TableView};
+use replay_data::rows::TABLE_COUNT;
+use replay_frame::frame::TableView;
 fn frame(hour: i32, tag: &[u8], instance: u32) -> DecodedFrame {
     let mut frame = DecodedFrame {
         branch: 1,

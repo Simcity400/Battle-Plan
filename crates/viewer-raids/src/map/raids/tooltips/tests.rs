@@ -1,5 +1,5 @@
 use super::rules::*;
-use installed_content::localisation::Localisation;
+use installed_content_localisation::localisation::Localisation;
 fn loc() -> Localisation {
     [
         ("raid_inst_progress_desc", "$PHASE$ $PROGRESS|0%$"),

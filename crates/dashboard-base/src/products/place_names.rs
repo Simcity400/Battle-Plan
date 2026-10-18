@@ -11,7 +11,7 @@
 //! A nonempty victory-point name is the battle name; otherwise use the state's
 //! display name, without prefixing a province id or appending another name.
 //! Provinces without a state use their strategic-region name;
-//! region membership/names use installed_content::regions.
+//! region membership/names use installed_content_regions::regions.
 //! Land requests use the approved primary name -> state -> unnamed ladder:
 //! empty primary names try the state, and state-less provinces stay unnamed.
 //! A known primary name needs no state-name lookup. Unresolved names remain null;
@@ -29,11 +29,9 @@ use crate::{
     scripted_text::{self, ScriptedText, StateNames},
     transport::json_len,
 };
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder},
-    rows::{TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -130,7 +128,7 @@ fn region_names(source: &Source, cat: &Arc<Catalogue>) -> Result<Arc<RegionNames
     {
         return names.clone();
     }
-    let names = installed_content::regions::read(&cat.content.layers)
+    let names = installed_content_regions::regions::read(&cat.content.layers)
         .map(|regions| {
             let mut provinces = BTreeMap::new();
             for region in regions.regions.values() {

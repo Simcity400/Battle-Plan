@@ -35,8 +35,8 @@ typed_codec!(CountryProductionModifiersRow, 32, |row| row.country as u128,
 { 0 => (power_raw): I64, 1 => (base_start): I32, 2 => (base_cap): I32,
   3 => (gain_raw): I64, 4 => (balance_raw): I64, 5 => (factory_speed): Opaque,
   6 => (trees): Opaque, 7 => (retention): Opaque, 8 => (conversion_raw): I64 }, |row| {
-    if row.trees.len() != engine::production_modifiers::KEYS.len()
-        || row.trees.iter().zip(engine::production_modifiers::KEYS).any(|(tree, key)| tree.key != key) {
+    if row.trees.len() != engine_production::production_modifiers::KEYS.len()
+        || row.trees.iter().zip(engine_production::production_modifiers::KEYS).any(|(tree, key)| tree.key != key) {
         return Err(invalid("production modifier keys differ from native request catalogue"));
     }
     for tree in &row.trees {
@@ -76,6 +76,6 @@ typed_codec!(ProductionLineModifiersRow, 64, |row| row.line as u128,
   7 => (conversion): Bool, 8 => (bonuses): Opaque, 9 => (factory_efficiencies): Opaque,
   10 => (naval_efficiency): Bool, 11 => (naval_output): Bool, 12 => (licensed): Bool,
   13 => (conversion_output): Bool, 14 => (refit_output): Bool },
-|row| if row.kind > engine::cequipment_production_line::KIND_RAILWAY_GUN {
+|row| if row.kind > engine_native::cequipment_production_line::KIND_RAILWAY_GUN {
     Err(invalid("production modifier line identity invalid"))
 } else { Ok(()) });

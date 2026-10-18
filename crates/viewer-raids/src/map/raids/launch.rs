@@ -28,14 +28,16 @@ use viewer_foundation::map::memo::TableKey;
 use viewer_foundation::parallel::Beside;
 use viewer_foundation::parallel::Workers;
 
-use installed_content::raids::{
-    EquipmentRequirement, RaidType, SourceKind, StartingPoint, UnitRequirement,
+use installed_content_raids::{
+    raids::EquipmentRequirement, raids::RaidType, raids::SourceKind, raids::StartingPoint,
+    raids::UnitRequirement,
 };
-use replay::rows::{
-    AceRangeInputRow, AirBaseRow, AirWingRow, CountryCommandPowerRow, CountryRow, DivisionRow,
-    DivisionTemplateIconRow, NukeRow, RaidAirSiteRow, RaidCountryInputRow, RaidPathDistanceRow,
-    RaidScope, ReservedCountryNamingRow, ReservedLaunchSources, TableId, TableSchema, TaskForceRow,
-    VariantDefinitionRow, tables,
+use replay_data::{
+    rows::AceRangeInputRow, rows::AirBaseRow, rows::AirWingRow, rows::CountryCommandPowerRow,
+    rows::CountryRow, rows::DivisionRow, rows::DivisionTemplateIconRow, rows::NukeRow,
+    rows::RaidAirSiteRow, rows::RaidCountryInputRow, rows::RaidPathDistanceRow, rows::RaidScope,
+    rows::ReservedCountryNamingRow, rows::ReservedLaunchSources, rows::TableId, rows::TableSchema,
+    rows::TaskForceRow, rows::VariantDefinitionRow, rows::tables,
 };
 
 pub use super::paths::Asked;
@@ -1070,7 +1072,7 @@ impl<'w, 'a> Launcher<'w, 'a> {
                     .ok()
                     .filter(|table| std::ptr::eq(table.as_ptr(), memo.as_ptr()))?;
                 let key = IndexKey {
-                    memo: TableKey::of(frame, &[replay::rows::TableId::RaidPathDistances]),
+                    memo: TableKey::of(frame, &[replay_data::rows::TableId::RaidPathDistances]),
                     provinces: recorded
                         .provinces
                         .iter()
@@ -2311,14 +2313,14 @@ impl<'w, 'a> Context<'w, 'a> {
         visit: &mut impl FnMut(Source<'a>) -> bool,
     ) -> Result<bool, String> {
         let bases = match &self.reserved_launch()?.naval_bases {
-            replay::rows::LaunchNavalBases::Bases(bases) => bases,
-            replay::rows::LaunchNavalBases::NativeNull => {
+            replay_data::rows::LaunchNavalBases::Bases(bases) => bases,
+            replay_data::rows::LaunchNavalBases::NativeNull => {
                 return Err(
                     "ReservedCountryNaming.launch_sources.naval_bases native provider is null"
                         .into(),
                 );
             }
-            replay::rows::LaunchNavalBases::Unavailable => {
+            replay_data::rows::LaunchNavalBases::Unavailable => {
                 return Err(
                     "ReservedCountryNaming.launch_sources.naval_bases refused this hour".into(),
                 );
@@ -2843,7 +2845,7 @@ impl<'w, 'a> Context<'w, 'a> {
             let members = table::<tables::FactionMembers>(self.world)?;
             // A member row whose country links to no slot may be ours, or a
             // partner whose sources the list would miss.
-            let unlinked = |row: &replay::rows::FactionMemberRow| {
+            let unlinked = |row: &replay_data::rows::FactionMemberRow| {
                 format!(
                     "a FactionMembers row's country {} has no CountryLinks row",
                     row.country

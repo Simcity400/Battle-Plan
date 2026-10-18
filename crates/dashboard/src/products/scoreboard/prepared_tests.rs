@@ -1,6 +1,7 @@
 use super::*;
 use crate::test_fixtures::continuation_records;
-use replay::{publication::replace_file, rows::*};
+use replay::publication::replace_file;
+use replay_data::rows::*;
 use std::path::PathBuf;
 
 struct Fixture {

@@ -10,9 +10,9 @@
 //! [`NOT_RECORDED`].
 
 use super::fresh_search::Inputs;
-use engine::{carmy::MovementSpeedInputs, cunit::eta_ratio};
-use installed_content::unit_path::{CounterRequest, Fact, MoveWorld};
-use replay::rows::{FreshRailwayCounterEta, RailwayGunCounterInputRow, tables};
+use engine_native::{carmy::MovementSpeedInputs, cunit::eta_ratio};
+use installed_content_unit_path::{unit_path::CounterRequest, unit_path::Fact, unit_path::MoveWorld};
+use replay_data::{rows::FreshRailwayCounterEta, rows::RailwayGunCounterInputRow, rows::tables};
 use viewer_foundation::map::movement_reads::Moves;
 
 /// A sea leg in a region with no recorded speed for its owner: capture
@@ -197,14 +197,16 @@ fn remaining(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content::movement::{MovementMap, Neighbour, ProvinceTerrain, RailMovementDefines};
-    use replay::{
-        frame::DecodedFrame,
-        rows::{
-            OwnerTransportSpeedRow, RailCooldownRow, RailEdgeRow, RailwayBuildingHealth,
-            RailwayBuildingState, RailwayGunEtaOperands, Recorded, TableRows,
-        },
+    use installed_content_core::{
+        movement::MovementMap, movement::Neighbour, movement::ProvinceTerrain,
+        movement::RailMovementDefines,
     };
+    use replay_data::{
+        rows::OwnerTransportSpeedRow, rows::RailCooldownRow, rows::RailEdgeRow,
+        rows::RailwayBuildingHealth, rows::RailwayBuildingState, rows::RailwayGunEtaOperands,
+        rows::Recorded, rows::TableRows,
+    };
+    use replay_frame::frame::DecodedFrame;
     use {
         viewer_foundation::map::test_support::test_frame,
         viewer_foundation::map::test_support::test_put as put,
@@ -241,7 +243,7 @@ mod tests {
                 ),
                 (3, ProvinceTerrain { flags: 1, index: 3 }, vec![]),
             ]),
-            defines: replay::eta_derive::Defines {
+            defines: replay_derive::eta_derive::Defines {
                 embark_distance: 400_000,
                 transport_scale: 100_000,
                 outer_scale: 100_000,
@@ -270,7 +272,7 @@ mod tests {
 
     fn land() -> FreshRailwayCounterEta {
         FreshRailwayCounterEta {
-            sample_hour: replay::rows::PacketHour::Stamped(20),
+            sample_hour: replay_data::rows::PacketHour::Stamped(20),
             maximum_speed: Some(200_000),
             land_supply_factor: Some(50_000),
             ..Default::default()
@@ -342,7 +344,7 @@ mod tests {
 
     #[test]
     fn railway_bonus_is_directed_and_applies_supply_after_land_scale() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = frame();
         rails(&mut frame);
@@ -472,7 +474,7 @@ mod tests {
 
     #[test]
     fn actual_progress_is_demanded_only_for_the_same_first_edge() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = frame();
         rails(&mut frame);
@@ -499,7 +501,7 @@ mod tests {
 
     #[test]
     fn zero_speed_stops_before_progress_or_later_land_operands() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = frame();
         rails(&mut frame);
@@ -523,7 +525,7 @@ mod tests {
 
     #[test]
     fn earlier_edge_division_overflow_is_not_hidden_by_later_zero_speed() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = frame();
         put(
@@ -602,7 +604,7 @@ mod tests {
 
     #[test]
     fn land_common_refusals_never_become_an_army_fallback() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = frame();
         rails(&mut frame);

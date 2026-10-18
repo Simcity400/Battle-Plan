@@ -1,6 +1,6 @@
 use super::*;
 use crate::{acquisition_jobs::OrdersRequest, map_capture::Orders, raw::RawLog};
-use engine::memory::SliceMemory;
+use engine_native::memory::SliceMemory;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 #[test]
@@ -38,7 +38,7 @@ fn abandoned_orders_loan_retires_once_on_drop_and_callback_unwind() {
         let identity = payload.log.bytes.as_ptr();
         let request = OrdersRequest {
             countries: std::sync::Arc::new(
-                engine::country_memory::Cache::try_with_capacity(0).unwrap(),
+                engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
             ),
             base: 0,
             game_state: 0,

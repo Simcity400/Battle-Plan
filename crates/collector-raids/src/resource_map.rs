@@ -1,5 +1,5 @@
 //! The resources map mode's inputs and every trade-route line
-//! ([`engine::resource_map`]): ResourceOrigins, ResourceRights, CountryOilFactors,
+//! ([`engine_resources::resource_map`]): ResourceOrigins, ResourceRights, CountryOilFactors,
 //! StateTemporaryResources and ConvoyClients are read every hour, as the game refreshes
 //! origins and convoy efficiency in its hourly trade task. TradeRoutes is the sliced
 //! `trade_routes` family (owner: the country holding each route): each hour reads its owner
@@ -16,15 +16,10 @@ use crate::{
     slicing::{SliceFingerprints, SliceSelection},
     table_conversion::{table, unavailable},
 };
-use engine::{
-    Memory, ccountry, cstrategic_resource,
-    resource_map::{self as native, RouteKey},
-    walk::{Buffer, Outcome},
-};
-use replay::{
-    frame::TableView,
-    rows::{self, TableId, tables},
-};
+use engine_native::{Memory, ccountry, walk::Buffer, walk::Outcome};
+use engine_resources::{cstrategic_resource, resource_map as native, resource_map::RouteKey};
+use replay_data::{rows, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 
 pub const N: usize = 7;
 pub const TABLES: [TableId; N] = [
@@ -291,7 +286,7 @@ impl Captured {
                     market.then_some(game_state),
                     &mut self.path,
                 )?;
-                engine::allocation::reserve(&mut self.routes, 1)
+                engine_allocation::reserve(&mut self.routes, 1)
                     .map_err(|_| "trade route allocation failed")?;
                 self.routes.push(row);
             }
@@ -357,7 +352,7 @@ impl Captured {
             return Err("trade route census needs complete origins and convoy clients");
         };
         self.census.clear();
-        engine::allocation::reserve(&mut self.census, origins + clients)
+        engine_allocation::reserve(&mut self.census, origins + clients)
             .map_err(|_| "trade route census allocation failed")?;
         // Own and rights-holder origins alike: each carries its route to its list's owner.
         for origin in &self.origins[..origins] {
@@ -418,7 +413,7 @@ impl Captured {
     /// the storage fails.
     fn route_hashes(&mut self) -> bool {
         self.hashes.clear();
-        if engine::allocation::reserve(&mut self.hashes, self.routes.len()).is_err() {
+        if engine_allocation::reserve(&mut self.hashes, self.routes.len()).is_err() {
             return false;
         }
         for route in &self.routes {
@@ -534,7 +529,7 @@ impl Captured {
                         to: row.to,
                         source_state: row.source_state,
                         destination_state: row.destination_state,
-                        path: engine::allocation::owned_vec(engine::allocation::copy_vec(
+                        path: engine_allocation::owned_vec(engine_allocation::copy_vec(
                             path(row).unwrap(),
                         )),
                     }

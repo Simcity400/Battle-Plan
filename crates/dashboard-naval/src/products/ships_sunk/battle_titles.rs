@@ -13,13 +13,11 @@ use dashboard_text::{
     metadata::{check_cancel, recorded_rows, validate_campaign},
     naval_battle_name::{Picker, battle_name_candidates},
 };
-use installed_content::{
-    localisation::Argument, province_geometry::ProvinceGeometry, regions::StrategicRegion,
-};
-use replay::{
-    frame::{DecodedFrame, FrameDecoder},
-    rows::{TableId, tables},
-};
+use installed_content_core::province_geometry::ProvinceGeometry;
+use installed_content_localisation::localisation::Argument;
+use installed_content_regions::regions::StrategicRegion;
+use replay_data::{rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -71,13 +69,13 @@ struct Geography {
 }
 impl Geography {
     fn read(cat: &Catalogue) -> Result<Self, String> {
-        let regions =
-            installed_content::regions::read(&cat.content.layers).map_err(|error| error.to_string());
+        let regions = installed_content_regions::regions::read(&cat.content.layers)
+            .map_err(|error| error.to_string());
         Self::from_regions(cat, regions.as_ref())
     }
     fn from_regions(
         cat: &Catalogue,
-        regions: Result<&installed_content::regions::StrategicRegions, &String>,
+        regions: Result<&installed_content_regions::regions::StrategicRegions, &String>,
     ) -> Result<Self, String> {
         let geometry =
             ProvinceGeometry::read(&cat.content.layers).map_err(|error| error.to_string())?;

@@ -13,8 +13,12 @@ doctest = false
 test-support = ["collector-extended-support/test-support", "collector-lifetime/test-support", "collector-observers/test-support", "collector-primitives/test-support"]
 
 [dependencies]
-engine.workspace = true
-replay.workspace = true
+engine-air-history.workspace = true
+engine-allocation.workspace = true
+engine-events.workspace = true
+engine-native.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
 serde = { workspace = true, features = ["derive"] }
 collector-extended-support.workspace = true
 collector-lifetime.workspace = true
@@ -23,9 +27,9 @@ collector-primitives.workspace = true
 collector-projection.workspace = true
 
 [dev-dependencies]
+engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-test-support.workspace = true
 serde_json.workspace = true
-engine = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-extended-support = { workspace = true, features = ["test-support"] }
 collector-observers = { workspace = true, features = ["default", "test-support"] }
 collector-primitives = { workspace = true, features = ["test-support"] }

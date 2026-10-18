@@ -1,5 +1,7 @@
 use super::*;
-use engine::{cgame_state, cnaval_base, cprovince, cstrategic_navy, cstrategic_navy_manager};
+use engine_native::{
+    cgame_state, cnaval_base, cprovince, cstrategic_navy, cstrategic_navy_manager,
+};
 use std::cell::RefCell;
 
 mod launch;
@@ -14,7 +16,7 @@ const FOREIGN_NAVY: usize = 0xb800;
 /// domains. The fixture keeps them populated; this pass must not read them.
 const NEAREST_BASES: usize = 0x30;
 const FOREIGN_NAVY_SLOTS: usize = 0x48;
-const SUPPLY_HUBS: usize = engine::naval_mission_inputs::HUBS;
+const SUPPLY_HUBS: usize = engine_native::naval_mission_inputs::HUBS;
 const PROVINCES: [usize; 3] = [0xe000, 0xe200, 0xe400];
 
 struct TestMemory {

@@ -17,7 +17,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use installed_content::{movement::ProvinceTerrain, regions::StrategicRegion, terrain::TerrainDefinitions};
+use installed_content_core::{movement::ProvinceTerrain, terrain::TerrainDefinitions};
+use installed_content_regions::regions::StrategicRegion;
 
 use super::{ModeLayer, Style, pack};
 
@@ -84,7 +85,10 @@ fn category(
 
 /// Builds the layer from the content.
 pub fn build(sources: &Sources, defines: &Defines) -> Built {
-    let len = sources.provinces.last().map_or(1, |&last| last as usize + 1);
+    let len = sources
+        .provinces
+        .last()
+        .map_or(1, |&last| last as usize + 1);
     let mut region_of = vec![0; len];
     let mut styles = BTreeMap::new();
     let mut refused = BTreeMap::<String, BTreeSet<u32>>::new();

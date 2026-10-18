@@ -103,7 +103,7 @@ pub const TOTALS: usize = 8;
 
 /// Stored Q15 propaganda stability penalty, clamped weekly. Serialization
 /// converts to fixed5 with five decimals truncated toward zero
-/// (`replay::fixed_point::q15_to_saved_fixed5`).
+/// (`replay_data::fixed_point::q15_to_saved_fixed5`).
 pub const PROPAGANDA_STABILITY_PENALTY: usize = 0x14c0;
 /// Q15 being-bombed war-support penalty, consumed by displayed war support
 /// and written under the being_bombed_support_penalty token (0x3c50).

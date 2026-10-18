@@ -21,13 +21,13 @@ use crate::{
     slicing::{SliceFingerprints, SliceSelection},
     table_conversion::{table, unavailable},
 };
-use engine::allocation::{copy_vec, default_vec, owned_vec, reserve_exact, vec};
-use engine::{Memory, ccountry, raid_state_inputs as native, walk::Outcome};
-use replay::{
-    cadence::{SKIPPED_REASON, should_walk},
-    frame::TableView,
-    rows::{self, TableId, tables},
+use engine_allocation::{copy_vec, default_vec, owned_vec, reserve_exact, vec};
+use engine_native::{Memory, ccountry, walk::Outcome};
+use engine_raid_inputs::raid_state_inputs as native;
+use replay_data::{
+    cadence::SKIPPED_REASON, cadence::should_walk, rows, rows::TableId, rows::tables,
 };
+use replay_frame::frame::TableView;
 
 pub const N: usize = 5;
 pub const TABLES: [TableId; N] = [
@@ -673,7 +673,7 @@ fn state_hashes(
         return false;
     };
     let rows = inputs.len() + resources.len() + modifiers.len() + cores.len();
-    if engine::allocation::reserve(hashes, rows).is_err() {
+    if engine_allocation::reserve(hashes, rows).is_err() {
         return false;
     }
     for input in inputs {
@@ -734,7 +734,10 @@ fn state_hashes(
             list(core.start, core.len),
             list(core.claims_start, core.claims_len),
             list(core.locations_start, 2 * core.locations_len),
-            list(core.province_locations_start, 2 * core.province_locations_len),
+            list(
+                core.province_locations_start,
+                2 * core.province_locations_len,
+            ),
         ) else {
             return false;
         };
@@ -762,7 +765,7 @@ fn country_hashes(
         return false;
     };
     let read = &buffers.read_countries;
-    if engine::allocation::reserve(hashes, read.len() + overrides.len()).is_err() {
+    if engine_allocation::reserve(hashes, read.len() + overrides.len()).is_err() {
         return false;
     }
     for &country in read {
@@ -791,7 +794,7 @@ fn country_hashes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
 
     /// A state a hooked writer marked is read within the hour, outside its
     /// daily slice; an unmarked state outside the slice is not. An hour whose
@@ -802,14 +805,14 @@ mod tests {
         let base = 0x10_0000;
         let mut bytes = vec![0_u8; 0x1000];
         // The state array: slot 0 is null, states 1 to 4 follow.
-        let (header, data) = (engine::cgame_state::STATES, 0x800);
+        let (header, data) = (engine_native::cgame_state::STATES, 0x800);
         bytes[header..header + 8].copy_from_slice(&((base + data) as u64).to_le_bytes());
         bytes[header + 8..header + 12].copy_from_slice(&5_u32.to_le_bytes());
         bytes[header + 12..header + 16].copy_from_slice(&5_u32.to_le_bytes());
         for slot in 1..5 {
             bytes[data + slot * 8..][..8].copy_from_slice(&0x2000_u64.to_le_bytes());
         }
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base,
             bytes: &bytes,
         };

@@ -260,7 +260,7 @@ fn answer(key: *const Hook, len: usize, enabled: bool) -> Option<Result<bool, St
     if let Some((outcome, ticks, allocation_failed)) = found {
         REPORTED_TICKS.set(Some(ticks));
         if allocation_failed {
-            let _ = engine::allocation::oom();
+            let _ = engine_allocation::oom();
         }
         Some(outcome)
     } else {

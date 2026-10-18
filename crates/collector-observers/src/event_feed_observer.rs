@@ -5,7 +5,8 @@ use crate::{
     event_feed_history::{DetachLosses, Snapshot, Store, Ticket},
     hook::{Hook, TapSafety},
 };
-use engine::{Memory, event_feed_sites as native};
+use engine_events::event_feed_sites as native;
+use engine_native::Memory;
 use std::{
     cell::UnsafeCell,
     mem::{ManuallyDrop, MaybeUninit, size_of},
@@ -148,7 +149,7 @@ unsafe fn before(frame: &mut Frame) -> Result<bool, &'static str> {
             return Err(store.reject("Event feed world observation unavailable"));
         }
         let generation = generation.unwrap();
-        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let ticket = match frame.site {
             0 => store.war_before(
                 &memory,
@@ -191,8 +192,8 @@ unsafe fn before(frame: &mut Frame) -> Result<bool, &'static str> {
 /// the world is not observed, an operand does not read or storage is full.
 pub fn record(
     observe: impl FnOnce(
-        &native::provenance::World<'_, engine::memory::LiveMemory>,
-        &engine::memory::LiveMemory,
+        &native::provenance::World<'_, engine_native::memory::LiveMemory>,
+        &engine_native::memory::LiveMemory,
         usize,
     ) -> Result<Option<Fact>, &'static str>,
 ) {
@@ -203,7 +204,7 @@ pub fn record(
         let Some(generation) = observed(owner, store) else {
             return;
         };
-        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let fact = native::provenance::World::new(&memory, owner.base).and_then(|world| {
             let hour = world.hour()?;
             Ok(observe(&world, &memory, owner.base)?.map(|fact| (hour, fact)))
@@ -272,7 +273,7 @@ unsafe fn returned(frame: &mut Frame) -> Result<(), &'static str> {
         if !crate::world_lifetime::current(Some(frame.generation)) {
             return store.world_returned(ticket);
         }
-        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
         unsafe { store.normal_returned(ticket, frame.generation, &memory, owner.base) }
     })?;
     match result {
@@ -345,7 +346,7 @@ impl Hooks {
         memory: &impl Memory,
         base: usize,
         last_sequence: Option<u64>,
-        counts: replay::event_feed_rows::EventFeedCounts,
+        counts: replay_data::event_feed_rows::EventFeedCounts,
         slots: usize,
     ) -> Result<Self, &'static str> {
         let mut store = Store::new(last_sequence)?;
@@ -505,8 +506,8 @@ pub fn forwarder(forwarder: Forwarder, enabled: bool) {
 
 /// An observed interval's coverage: complete only when the capture is and
 /// every forwarder is enabled.
-fn coverage(partial: bool) -> replay::event_feed_rows::EventFeedCoverage {
-    use replay::event_feed_rows::EventFeedCoverage;
+fn coverage(partial: bool) -> replay_data::event_feed_rows::EventFeedCoverage {
+    use replay_data::event_feed_rows::EventFeedCoverage;
     if partial
         || !FORWARDERS
             .iter()
@@ -594,7 +595,7 @@ pub fn discarded(publication: u64) {
 
 /// Spool-only growth and retirement; native callbacks never allocate or free.
 pub fn presize(slots: usize) {
-    engine::allocation::advisory(|| presize_storage(slots));
+    engine_allocation::advisory(|| presize_storage(slots));
 }
 
 fn presize_storage(slots: usize) {
@@ -682,7 +683,7 @@ mod tests {
     /// unobserved.
     #[test]
     fn a_disabled_forwarder_leaves_the_interval_partial() {
-        use replay::event_feed_rows::EventFeedCoverage;
+        use replay_data::event_feed_rows::EventFeedCoverage;
         let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
         forwarder(Forwarder::Politics, true);
         forwarder(Forwarder::Territory, true);

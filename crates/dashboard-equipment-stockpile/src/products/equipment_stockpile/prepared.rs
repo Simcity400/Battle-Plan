@@ -3,7 +3,7 @@ use super::*;
 use dashboard_base::prepared::frame_changes::{FrameChanges, field_mask};
 use dashboard_base::prepared::series::{self, Accumulator, Reader};
 use dashboard_base::products::equipment::VariantVersion;
-use replay::frame::TableView;
+use replay_frame::frame::TableView;
 use std::{collections::HashMap, sync::LazyLock};
 
 /// The Countries fields a holder is read from; its id is the key.
@@ -100,9 +100,12 @@ struct RowIndex {
     /// Slots whose stock or line rows, and whose logistics rows, changed
     /// since their holders last read them.
     stale: [BTreeSet<u32>; 2],
-    views: [replay::frame::SharedView; 3],
+    views: [replay_frame::frame::SharedView; 3],
     token_owners: BTreeMap<u32, BTreeSet<u32>>,
-    spellings: Option<(replay::frame::ViewIdentity, BTreeMap<u32, Option<Vec<u8>>>)>,
+    spellings: Option<(
+        replay_frame::frame::ViewIdentity,
+        BTreeMap<u32, Option<Vec<u8>>>,
+    )>,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -181,32 +184,32 @@ impl Prepared {
     #[cfg(test)]
     pub fn observe(
         &mut self,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         frame: &DecodedFrame,
     ) -> io::Result<()> {
         self.observe_changed(
             format,
             frame,
             &FrameChanges {
-                rows_changed: [true; replay::frame::TABLE_COUNT],
-                table_read: [true; replay::frame::TABLE_COUNT],
-                slot_read: [true; replay::frame::TABLE_COUNT],
+                rows_changed: [true; replay_data::rows::TABLE_COUNT],
+                table_read: [true; replay_data::rows::TABLE_COUNT],
+                slot_read: [true; replay_data::rows::TABLE_COUNT],
                 updates: None,
             },
         )
     }
     pub fn observe_changed(
         &mut self,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         frame: &DecodedFrame,
         changes: &FrameChanges,
     ) -> io::Result<()> {
-        let cpu = ::replay::cpu::scope_phase("stockpile:series_observe");
+        let cpu = ::replay_frame::cpu::scope_phase("stockpile:series_observe");
         self.naming.advance(frame.hour)?;
         self.numbers.advance(frame.hour)?;
         self.choices.advance(frame.hour)?;
         drop(cpu);
-        let cpu = ::replay::cpu::scope_phase("stockpile:observe_apply");
+        let cpu = ::replay_frame::cpu::scope_phase("stockpile:observe_apply");
         let previous = self.frontier;
         let continuous = previous.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
         self.frontier = Some(frame.hour);
@@ -261,7 +264,7 @@ impl Prepared {
             || (!self.naming_ready && changes.slot_read[TableId::VariantDefinitions.index()]);
         // Variants whose group changed this hour: their current holders regroup.
         drop(cpu);
-        let cpu = ::replay::cpu::scope_phase("stockpile:presentation");
+        let cpu = ::replay_frame::cpu::scope_phase("stockpile:presentation");
         let reclassified = if naming_changed {
             // Input changes can precede their supplying read, including after
             // restore. Retain that invalidation until the catalogue can read it;
@@ -295,7 +298,7 @@ impl Prepared {
                 .all(|table| {
                     matches!(
                         &*frame.tables[table.index()],
-                        replay::frame::TableView::Complete(_)
+                        replay_frame::frame::TableView::Complete(_)
                     )
                 });
             self.choices.classify(&self.names, &dirty, frame.hour)?;
@@ -414,12 +417,12 @@ impl Prepared {
     /// later hours keep current from their changed rows.
     fn observe_tables(
         &mut self,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         frame: &DecodedFrame,
         changes: &FrameChanges,
         previous: Option<i32>,
     ) -> io::Result<()> {
-        let cpu = ::replay::cpu::scope_phase("stockpile:observe_apply");
+        let cpu = ::replay_frame::cpu::scope_phase("stockpile:observe_apply");
         let reads = [
             changes.slot_read[TableId::Stockpiles.index()],
             changes.slot_read[TableId::LogisticsEquipment.index()],
@@ -439,15 +442,15 @@ impl Prepared {
             .chain(self.active.iter().cloned())
             .collect();
         drop(cpu);
-        let cpu = ::replay::cpu::scope_phase("stockpile:projection_series");
-        let holders_cpu = ::replay::cpu::scope_phase("stockpile:whole_holders");
+        let cpu = ::replay_frame::cpu::scope_phase("stockpile:projection_series");
+        let holders_cpu = ::replay_frame::cpu::scope_phase("stockpile:whole_holders");
         for tag in &touched {
             let identity = input.identities.get(tag).copied();
             self.observe_holder(format, &input, tag, identity, reads, previous)?;
         }
         drop(holders_cpu);
         drop(cpu);
-        let _cpu = ::replay::cpu::scope_phase("stockpile:pruning");
+        let _cpu = ::replay_frame::cpu::scope_phase("stockpile:pruning");
         self.repeated
             .retain(|tag, _| input.identities.contains_key(tag));
         self.active = input.identities.keys().cloned().collect();
@@ -468,13 +471,13 @@ impl Prepared {
     /// when the whole tables are needed.
     fn observe_rows(
         &mut self,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         frame: &DecodedFrame,
         changes: &FrameChanges,
         previous: Option<i32>,
         reclassified: &BTreeSet<u64>,
     ) -> io::Result<bool> {
-        let cpu = ::replay::cpu::scope_phase("stockpile:observe_apply");
+        let cpu = ::replay_frame::cpu::scope_phase("stockpile:observe_apply");
         let reads = [
             changes.slot_read[TableId::Stockpiles.index()],
             changes.slot_read[TableId::LogisticsEquipment.index()],
@@ -528,9 +531,9 @@ impl Prepared {
             self.work.row_visits += ROW_VISITS.with(std::cell::Cell::get) - rows_before;
         }
         drop(cpu);
-        let cpu = ::replay::cpu::scope_phase("stockpile:projection_series");
+        let cpu = ::replay_frame::cpu::scope_phase("stockpile:projection_series");
         if read {
-            let _cpu = ::replay::cpu::scope_phase("stockpile:repeat_reads");
+            let _cpu = ::replay_frame::cpu::scope_phase("stockpile:repeat_reads");
             for (tag, repeat) in &self.repeated {
                 if full.contains_key(tag) || !repeat.repeats_any(reads) {
                     continue;
@@ -547,13 +550,13 @@ impl Prepared {
                 )?;
             }
         }
-        let holders_cpu = ::replay::cpu::scope_phase("stockpile:changed_holders");
+        let holders_cpu = ::replay_frame::cpu::scope_phase("stockpile:changed_holders");
         for (tag, &identity) in &full {
             self.observe_holder(format, &input, tag, Some(identity), reads, previous)?;
         }
         drop(holders_cpu);
         drop(cpu);
-        let _cpu = ::replay::cpu::scope_phase("stockpile:pruning");
+        let _cpu = ::replay_frame::cpu::scope_phase("stockpile:pruning");
         let index = self.rows.as_mut().expect("stockpile row index");
         for (stale, _) in index.stale.iter_mut().zip(reads).filter(|(_, due)| *due) {
             stale.clear();
@@ -565,7 +568,7 @@ impl Prepared {
     /// tables and the changed rows.
     fn observe_holder(
         &mut self,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         input: &FrameRows<'_>,
         tag: &str,
         identity: Option<(u32, u32)>,
@@ -573,7 +576,7 @@ impl Prepared {
         previous: Option<i32>,
     ) -> io::Result<()> {
         let hour = input.frame.hour;
-        let _cpu = ::replay::cpu::scope_phase("stockpile:holder_scan");
+        let _cpu = ::replay_frame::cpu::scope_phase("stockpile:holder_scan");
         let state = self.scan.get_mut(tag).expect("observed stockpile country");
         state.catch_up(previous);
         #[cfg(test)]
@@ -705,7 +708,7 @@ impl Prepared {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        let cpu = ::replay::cpu::scope_phase("stockpile:settle");
+        let cpu = ::replay_frame::cpu::scope_phase("stockpile:settle");
         for tag in &self.active {
             let state = self.scan.get_mut(tag).expect("active stockpile country");
             // Publication and its checkpoint hold every holder through the
@@ -714,7 +717,7 @@ impl Prepared {
             state.seal();
         }
         drop(cpu);
-        let _cpu = ::replay::cpu::scope_phase("stockpile:series_flush");
+        let _cpu = ::replay_frame::cpu::scope_phase("stockpile:series_flush");
         self.numbers.flush(writer, branch, cancelled)?;
         self.choices.flush(writer, branch, cancelled)?;
         self.naming
@@ -931,7 +934,7 @@ impl RowIndex {
     /// Spelling changes affect only the next logistics read of their owners.
     /// Keep those owners stale across hours without a supplying read.
     fn mark_dictionary(&mut self, frame: &DecodedFrame, changes: &FrameChanges) {
-        let _cpu = ::replay::cpu::scope_phase("stockpile:spelling_inputs");
+        let _cpu = ::replay_frame::cpu::scope_phase("stockpile:spelling_inputs");
         let view = &frame.tables[TableId::LexicalTokens.index()];
         if self
             .spellings
@@ -990,16 +993,16 @@ impl RowIndex {
     /// table became or stopped being complete, changed other than by its
     /// recorded rows, or a changed line is missing from it.
     fn mark(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> Option<()> {
-        let _cpu = ::replay::cpu::scope_phase("stockpile:numeric_inputs");
+        let _cpu = ::replay_frame::cpu::scope_phase("stockpile:numeric_inputs");
         if complete(frame) != self.complete {
             return None;
         }
         // Kept pre-pass frames and snapshots have no delta. Compare each
         // changed source table once; unaffected holders retain their reads.
-        fn compared<T: replay::rows::TableSchema>(
-            view: &replay::frame::SharedView,
+        fn compared<T: replay_data::rows::TableSchema>(
+            view: &replay_frame::frame::SharedView,
             frame: &DecodedFrame,
-        ) -> Option<(Vec<replay::rows::DeltaRow>, Vec<u128>)> {
+        ) -> Option<(Vec<replay_data::rows::DeltaRow>, Vec<u128>)> {
             let before = match &**view {
                 TableView::Complete(rows) => rows.rows::<T>()?,
                 _ => return None,
@@ -1008,12 +1011,12 @@ impl RowIndex {
             let keys = dashboard_base::prepared::frame_changes::differing_keys(before, now);
             let (mut changed, mut deleted) = (Vec::new(), Vec::new());
             for key in keys {
-                use replay::rows::RowCodec;
+                use replay_data::rows::RowCodec;
                 if now.binary_search_by_key(&key, |row| row.key()).is_ok() {
-                    changed.push(replay::rows::DeltaRow {
+                    changed.push(replay_data::rows::DeltaRow {
                         key,
                         mask: u64::MAX,
-                        format: replay::format::FormatVersion::CURRENT.version(),
+                        format: replay_data::format::FormatVersion::CURRENT.version(),
                         recorded_fields: 0,
                         values: Vec::new(),
                     });
@@ -2040,7 +2043,7 @@ fn observe_at(
         for block in blocks {
             dashboard_text::metadata::check_cancel(cancelled)?;
             let frames = replay.read_block_selected(block, &selected)?;
-            let mut decoder = replay::frame::FrameDecoder::for_tables(&selected);
+            let mut decoder = replay_frame::frame::FrameDecoder::for_tables(&selected);
             for frame in &frames {
                 dashboard_text::metadata::check_cancel(cancelled)?;
                 let decoded = decoder.advance(frame)?;

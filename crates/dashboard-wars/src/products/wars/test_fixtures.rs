@@ -5,13 +5,12 @@ use super::*;
 /// One recorded hour with three countries, their links and names, and a war
 /// between the first two.
 pub fn recorded(hour: i32) -> DecodedFrame {
-    use replay::{
-        frame::TableView,
-        rows::{
-            CountryAppearanceRow, CountryLinkRow, CountryRow, LocalPlayerRow, PoliticsRow,
-            TableRows, WarNameRuleRow, WarOverviewCountryRow, WarOwnedRelationRow, WarRelationRow,
-        },
+    use replay_data::{
+        rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow, rows::LocalPlayerRow,
+        rows::PoliticsRow, rows::TableRows, rows::WarNameRuleRow, rows::WarOverviewCountryRow,
+        rows::WarOwnedRelationRow, rows::WarRelationRow,
     };
+    use replay_frame::frame::TableView;
     let mut frame = dashboard_base::test_fixtures::source(1, hour, Some(1));
     for table in [
         TableId::Factions,
@@ -155,7 +154,7 @@ pub fn recorded(hour: i32) -> DecodedFrame {
 
 /// The recorded hour with `count` countries, the first at war with every other.
 pub fn scaled_recorded(hour: i32, count: u32) -> DecodedFrame {
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
     let mut frame = recorded(hour);
     frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
         (1..=count)

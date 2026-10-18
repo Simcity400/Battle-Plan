@@ -10,7 +10,7 @@
 //! its declaration, and check mode fails on any declaration that misses a
 //! read (`dependence_tests.rs`).
 
-use replay::rows::TableId;
+use replay_data::rows::TableId;
 
 use super::{EventObject, PRONOUNS, TextQuery, named, recorded_names};
 use crate::triggers::inputs::TableRead;
@@ -34,7 +34,7 @@ fn owned(table: TableId, fields: &[&str], slot: u32, shift: u32) -> TableRead {
     TableRead::fields(table, fields).owned_by(slot, shift)
 }
 
-/// Every country's naming operands (`installed_content::country_names`), the
+/// Every country's naming operands (`installed_content_country_names::country_names`), the
 /// tables of `country_names::TABLES`: a name reads its country's
 /// operands and, through its text, its overlord's, of any country.
 pub(crate) fn names() -> Vec<TableRead> {

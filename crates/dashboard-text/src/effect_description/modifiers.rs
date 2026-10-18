@@ -4,8 +4,9 @@ use crate::{
     identity,
     triggers::{Scope, Scopes},
 };
-use installed_content::{localisation::crt_case_text, modifiers::Modifiers, scope::Scope as Parsed};
-use replay::rows::{CachedModifier, ModifierDefinitionRow, tables};
+use installed_content_core::{modifiers::Modifiers, scope::Scope as Parsed};
+use installed_content_localisation::localisation::crt_case_text;
+use replay_data::{rows::CachedModifier, rows::ModifierDefinitionRow, rows::tables};
 
 mod advisors;
 mod power_balance;
@@ -14,7 +15,7 @@ fn text_field<'a>(fields: &'a [Item], name: &str) -> Result<&'a str, String> {
     let bytes = field(fields, name)
         .and_then(|item| item.value.scalar())
         .unwrap_or_default();
-    std::str::from_utf8(installed_content::parser::c_string(bytes))
+    std::str::from_utf8(installed_content_core::parser::c_string(bytes))
         .map_err(|_| format!("modifier {name} is not UTF-8"))
 }
 
@@ -30,7 +31,7 @@ fn idea_tokens(item: &Item) -> Result<Vec<&str>, String> {
     tokens
         .into_iter()
         .map(|bytes| {
-            std::str::from_utf8(installed_content::parser::c_string(bytes))
+            std::str::from_utf8(installed_content_core::parser::c_string(bytes))
                 .map_err(|_| "idea token is not UTF-8".to_owned())
         })
         .collect()
@@ -66,7 +67,7 @@ fn timed_component_integer(value: i64) -> i32 {
 }
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
-    fn idea(&self, token: &str) -> Result<Option<&'c installed_content::ideas::Idea>, String> {
+    fn idea(&self, token: &str) -> Result<Option<&'c installed_content_core::ideas::Idea>, String> {
         self.context
             .content
             .ideas
@@ -79,7 +80,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         &self,
         operand: &str,
         scopes: Scopes,
-    ) -> Result<Option<&'c installed_content::ideas::Idea>, String> {
+    ) -> Result<Option<&'c installed_content_core::ideas::Idea>, String> {
         // treats token: as a literal; ':' or '.' chooses a variable.
         if let Some(token) = operand.strip_prefix("token:") {
             return self.idea(token);
@@ -99,13 +100,17 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .iter()
             .find(|row| row.token == token)
             .ok_or_else(|| format!("idea variable references unrecorded lexer token {token}"))?;
-        let literal = std::str::from_utf8(installed_content::parser::c_string(&literal.literal))
+        let literal = std::str::from_utf8(installed_content_core::parser::c_string(&literal.literal))
             .map_err(|_| "idea variable token is not UTF-8")?;
         self.idea(literal)
     }
 
     // shared by all idea effects.
-    fn idea_name(&self, idea: &installed_content::ideas::Idea, scopes: Scopes) -> Result<String, String> {
+    fn idea_name(
+        &self,
+        idea: &installed_content_core::ideas::Idea,
+        scopes: Scopes,
+    ) -> Result<String, String> {
         // The caller supplies its country carrier, including zero for a
         // non-country scope; name expansion uses a fresh country-only scope.
         let country = match scopes.this {
@@ -124,7 +129,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let world = self.context.world()?;
         let civil = identity::civil_war(world.frame(), country);
         let original_or_own_tag =
-            installed_content::country_names::original_or_own_tag(world.frame(), country);
+            installed_content_country_names::country_names::original_or_own_tag(world.frame(), country);
         let look = if country == 0 {
             let rows = world
                 .frame()
@@ -184,7 +189,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     // Preserve fragment order.
     fn idea_details(
         &self,
-        idea: &installed_content::ideas::Idea,
+        idea: &installed_content_core::ideas::Idea,
         scopes: Scopes,
     ) -> Result<String, String> {
         let mut text = String::new();
@@ -269,7 +274,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     // authored category key + "_research".
     fn research_bonus_line(
         &self,
-        bonus: &installed_content::modifiers::Modifier,
+        bonus: &installed_content_core::modifiers::Modifier,
         scopes: Scopes,
     ) -> Result<String, String> {
         let category = self.localised(
@@ -292,7 +297,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     // uses the short wrapper only when the complete detail text is empty.
     fn idea_tooltip(
         &self,
-        idea: &installed_content::ideas::Idea,
+        idea: &installed_content_core::ideas::Idea,
         scopes: Scopes,
     ) -> Result<String, String> {
         let name = self.idea_name(idea, scopes)?;
@@ -464,7 +469,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     // Keep membership separate: an entry itself may store -1.
     fn timed_idea_days(
         &self,
-        idea: &installed_content::ideas::Idea,
+        idea: &installed_content_core::ideas::Idea,
         scopes: Scopes,
     ) -> Result<Option<i32>, String> {
         let country = self.current_country(scopes)?;
@@ -569,8 +574,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     // the duration wrapper. Its fragments stay plain; only the header expands.
     fn swap_idea_description(
         &mut self,
-        add: &installed_content::ideas::Idea,
-        remove: &installed_content::ideas::Idea,
+        add: &installed_content_core::ideas::Idea,
+        remove: &installed_content_core::ideas::Idea,
         old: i32,
         days: i32,
         scopes: Scopes,
@@ -661,8 +666,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     // index order. Each operand evaluates in a fresh default-empty scope.
     fn idea_targeted_difference(
         &self,
-        add: &installed_content::ideas::Idea,
-        remove: &installed_content::ideas::Idea,
+        add: &installed_content_core::ideas::Idea,
+        remove: &installed_content_core::ideas::Idea,
         scopes: Scopes,
     ) -> Result<String, String> {
         if add.targeted.is_empty() && remove.targeted.is_empty() {
@@ -716,8 +721,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     // old entries in their order. Matched values subtract with signed64 wrap.
     fn idea_research_difference(
         &self,
-        add: &installed_content::ideas::Idea,
-        remove: &installed_content::ideas::Idea,
+        add: &installed_content_core::ideas::Idea,
+        remove: &installed_content_core::ideas::Idea,
         scopes: Scopes,
     ) -> Result<String, String> {
         let mut remaining: Vec<_> = remove.research_bonuses.iter().map(Some).collect();
@@ -755,13 +760,13 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     // a changed rule restored to its native default contributes an empty line.
     fn idea_rule_difference(
         &self,
-        add: &installed_content::ideas::Idea,
-        remove: &installed_content::ideas::Idea,
+        add: &installed_content_core::ideas::Idea,
+        remove: &installed_content_core::ideas::Idea,
         scopes: Scopes,
     ) -> Result<String, String> {
         let mut text = String::new();
         for (index, &(_, key, default, fulfilled)) in
-            installed_content::power_balance::rules().iter().enumerate()
+            installed_content_core::power_balance::rules().iter().enumerate()
         {
             let value = add
                 .rules
@@ -822,25 +827,26 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     // and add/subtract each stored stat; omits zero stats.
     fn idea_equipment_difference(
         &self,
-        add: &installed_content::ideas::Idea,
-        remove: &installed_content::ideas::Idea,
+        add: &installed_content_core::ideas::Idea,
+        remove: &installed_content_core::ideas::Idea,
         scopes: Scopes,
     ) -> Result<String, String> {
-        let mut groups: Vec<installed_content::modifiers::EquipmentBonus> = Vec::new();
+        let mut groups: Vec<installed_content_core::modifiers::EquipmentBonus> = Vec::new();
         for (idea, subtract) in [(add, false), (remove, true)] {
             for bonus in &idea.equipment_bonuses {
                 let index = groups
                     .iter()
                     .position(|group| group.equipment.eq_ignore_ascii_case(&bonus.equipment))
                     .unwrap_or_else(|| {
-                        groups.push(installed_content::modifiers::EquipmentBonus {
+                        groups.push(installed_content_core::modifiers::EquipmentBonus {
                             values: Vec::new(),
                             ..bonus.clone()
                         });
                         groups.len() - 1
                     });
                 for value in &bonus.values {
-                    let Some(stat) = installed_content::equipment::stat_index(value.name.as_bytes()) else {
+                    let Some(stat) = installed_content_core::equipment::stat_index(value.name.as_bytes())
+                    else {
                         continue;
                     };
                     let contribution = if subtract {
@@ -849,7 +855,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                         value.value
                     };
                     if let Some(stored) = groups[index].values.iter_mut().find(|stored| {
-                        installed_content::equipment::stat_index(stored.name.as_bytes()) == Some(stat)
+                        installed_content_core::equipment::stat_index(stored.name.as_bytes()) == Some(stat)
                     }) {
                         stored.value = stored.value.wrapping_add(contribution);
                     } else {
@@ -880,7 +886,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 if values.len() > 1 {
                     text.push_str("    ");
                 }
-                let index = installed_content::equipment::stat_index(value.name.as_bytes())
+                let index = installed_content_core::equipment::stat_index(value.name.as_bytes())
                     .expect("filtered equipment stat");
                 text.push_str(&self.char_equipment_stat_difference(index, value.value, scopes)?);
                 text.push('\n');
@@ -1048,7 +1054,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         for (key, operand) in &modifier.scoped_modifiers {
             let value = self.scoped_value(operand, selected_scopes)?;
             let mut modifiers = Modifiers::default();
-            modifiers.values.push(installed_content::modifiers::Modifier {
+            modifiers.values.push(installed_content_core::modifiers::Modifier {
                 key: key.clone(),
                 name: key.to_ascii_lowercase(),
                 text: String::from_utf8_lossy(operand).into_owned(),
@@ -1104,7 +1110,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .collect();
         let mut list = String::new();
         for (index, token) in tokens.iter().enumerate() {
-            let token = std::str::from_utf8(installed_content::parser::c_string(token))
+            let token = std::str::from_utf8(installed_content_core::parser::c_string(token))
                 .map_err(|_| "province modifier is not UTF-8")?;
             let (name, modifiers) = self.static_modifier(token)?;
             let name = match name {
@@ -1158,7 +1164,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let fields = field(children(item), "modifier")
             .map(children)
             .unwrap_or_default();
-        let modifiers = installed_content::modifiers::values(fields);
+        let modifiers = installed_content_core::modifiers::values(fields);
         let mut text = String::new();
         let frame = self.context.world()?.frame();
         let definitions = frame
@@ -1201,11 +1207,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .localisation
                 .localise_with(&definition.name_key, &[("ARG", Argument::Text(&argument))])
                 .map_err(|why| why.to_string())?;
-            let effective = if definition.flags & engine::modifier_definition::CLAMP_MAXIMUM != 0 {
-                modifier.value.clamp(0, 100_000)
-            } else {
-                modifier.value
-            };
+            let effective =
+                if definition.flags & engine_native::modifier_definition::CLAMP_MAXIMUM != 0 {
+                    modifier.value.clamp(0, 100_000)
+                } else {
+                    modifier.value
+                };
             let value = crate::modifier_text::value_text(
                 definition,
                 effective,
@@ -1331,7 +1338,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     /// independent of authored traits and the cache's refresh history.
     pub(in crate::effect_description) fn advisor_cache_description(
         &self,
-        row: &replay::rows::AdvisorRoleRow,
+        row: &replay_data::rows::AdvisorRoleRow,
     ) -> Result<String, String> {
         let cache = row
             .modifier_cache
@@ -1346,7 +1353,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let tooltips = keys
             .iter()
             .map(|key| {
-                std::str::from_utf8(installed_content::parser::c_string(key))
+                std::str::from_utf8(installed_content_core::parser::c_string(key))
                     .map(str::to_owned)
                     .map_err(|_| "AdvisorRoles tooltip key is not UTF-8".to_owned())
             })
@@ -1425,11 +1432,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             }
             // Clamp before wrapping multiplication and
             // signed /100000; tests the scaled zero.
-            let effective = if definition.flags & engine::modifier_definition::CLAMP_MAXIMUM != 0 {
-                raw_value.clamp(0, 100_000)
-            } else {
-                raw_value
-            };
+            let effective =
+                if definition.flags & engine_native::modifier_definition::CLAMP_MAXIMUM != 0 {
+                    raw_value.clamp(0, 100_000)
+                } else {
+                    raw_value
+                };
             let value = effective.wrapping_mul(options.scale) / 100_000;
             if value == 0 && definition.flags & 0x100 == 0 {
                 continue;

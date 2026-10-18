@@ -14,7 +14,7 @@
 //!   refuses row updates, an allocation failure): the complete table.
 //!
 //! The encoder writes the same bytes for each form
-//! ([`replay::frame::FrameEncoder::prepare_bytes`]): a row equal to its
+//! ([`replay_frame::frame::FrameEncoder::prepare_bytes`]): a row equal to its
 //! baseline writes nothing on the full path, and a replacement writes exactly
 //! the change the full path's merge writes for that row. Its baseline then
 //! holds the current rows, as on the full path; only a differing row whose
@@ -32,11 +32,10 @@
 
 use crate::spool_phases::{HELPER, Phase, SPOOL, thread_cycles};
 use crate::status::{sequence, status};
-use replay::{
-    BranchId, Hour,
-    frame::{FrameEncoder, FrameInput, TableInput, TableView},
-    rows::{RowCodec, TableId, TableRows, TableSchema, tables},
+use replay_data::{
+    BranchId, Hour, rows::RowCodec, rows::TableId, rows::TableRows, rows::TableSchema, rows::tables,
 };
+use replay_frame::{frame::FrameEncoder, frame::FrameInput, frame::TableInput, frame::TableView};
 use std::sync::{
     Mutex, PoisonError,
     atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering},
@@ -516,7 +515,7 @@ fn compare<T: TableSchema>(
             dense_at.store(i64::from(target.hour), Ordering::Relaxed);
             return Outcome::Dense;
         }
-        if engine::allocation::reserve(indices, 1).is_err() {
+        if engine_allocation::reserve(indices, 1).is_err() {
             return Outcome::Kept;
         }
         indices.push(index);
@@ -530,8 +529,8 @@ fn compare<T: TableSchema>(
         return Outcome::Kept;
     }
     let (Ok(mut owned), Ok(mut changed)) = (
-        engine::allocation::vec::<usize>(indices.len()),
-        engine::allocation::vec::<T::Row>(indices.len()),
+        engine_allocation::vec::<usize>(indices.len()),
+        engine_allocation::vec::<T::Row>(indices.len()),
     ) else {
         return Outcome::Kept;
     };
@@ -561,11 +560,9 @@ fn compare<T: TableSchema>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        cadence::Cadence,
-        frame::{FrameDecoder, Metrics, TABLE_COUNT},
-        rows::StateRow,
-    };
+    use replay_data::rows::TABLE_COUNT;
+    use replay_data::{cadence::Cadence, rows::StateRow};
+    use replay_frame::{frame::FrameDecoder, frame::Metrics};
 
     #[test]
     fn every_hourly_table_but_the_clock_and_map_events_is_compared_once() {
@@ -578,11 +575,11 @@ mod tests {
         // Clock and MapEvents rows name the frame's own hour (MapEvents'
         // interval ends at it), so neither can equal the preceding hour's
         // baseline; comparing MapEvents would only ever find it dense.
-        let current = replay::format::FormatVersion::CURRENT.version();
+        let current = replay_data::format::FormatVersion::CURRENT.version();
         let misplaced: Vec<(TableId, bool)> = TableId::ALL
             .into_iter()
             .filter_map(|table| {
-                let hourly = replay::cadence::cadence(table) == Cadence::Hourly;
+                let hourly = replay_data::cadence::cadence(table) == Cadence::Hourly;
                 let names_its_hour = matches!(table, TableId::Clock | TableId::MapEvents);
                 let expected = hourly && !names_its_hour && table.last_change().present(current);
                 (seen[table.index()] != expected).then_some((table, expected))
@@ -617,7 +614,7 @@ mod tests {
             TableView::Complete(TableRows::ResourceOrigins(
                 states
                     .iter()
-                    .map(|state| replay::rows::ResourceOriginRow {
+                    .map(|state| replay_data::rows::ResourceOriginRow {
                         state: state.id,
                         country: state.owner,
                         efficiency: i64::from(state.controller),
@@ -631,7 +628,7 @@ mod tests {
         frame.tables[TableId::TradeRoutes.index()] = TableView::Complete(TableRows::TradeRoutes(
             states
                 .iter()
-                .map(|state| replay::rows::TradeRouteRow {
+                .map(|state| replay_data::rows::TradeRouteRow {
                     country: state.id,
                     class: 1,
                     other: 1,

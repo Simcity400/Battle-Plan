@@ -106,7 +106,7 @@ fn job(index: usize) -> Job {
     Job::Provinces(ProvincesRequest {
         base: index,
         game_state: 0,
-        payload: engine::cprovince::Capture::try_with_capacity(2, 0, 0).unwrap(),
+        payload: engine_native::cprovince::Capture::try_with_capacity(2, 0, 0).unwrap(),
     })
 }
 
@@ -228,7 +228,9 @@ fn an_unwinding_callback_settles_a_contained_stitch_panic_beside_its_siblings() 
     let stitch = || {
         use crate::extended::plans::{Capacities, Captured};
         Job::OrdersStitch(OrdersRequest {
-            countries: Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap()),
+            countries: Arc::new(
+                engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+            ),
             base: 0,
             game_state: 0,
             orders: crate::map_capture::Orders::for_test(&Default::default()),

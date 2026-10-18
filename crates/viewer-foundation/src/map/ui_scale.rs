@@ -2,7 +2,7 @@
 //! city labels, combat bubbles, the combat window and the map's tooltips.
 //!
 //! The game lays out its interface in logical pixels: frame pixels divided by effective
-//! `gui_scale`. [`installed_content::settings::Display`] defines settings-file precedence. Windows then
+//! `gui_scale`. [`installed_content_settings::settings::Display`] defines settings-file precedence. Windows then
 //! stretches the rasterized frame by display scale. [`Setting::MatchGame`] preserves both stages;
 //! dumps use the game's frame size and interface scale 1.0.
 //!
@@ -18,7 +18,7 @@ use std::sync::{
 };
 
 use dashboard_core::protocol::MAP_UI_SCALE_RANGE;
-use installed_content::settings::{Desktop, Display};
+use installed_content_settings::{settings::Desktop, settings::Display};
 
 /// Where the interface scale comes from.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -95,7 +95,7 @@ impl Setting {
     /// The scale to draw at, and a note when the game's could not be matched.
     ///
     /// `display` is the user folder's display settings and `monitors` every
-    /// monitor in SDL's display order ([`installed_content::settings::desktops`]).
+    /// monitor in SDL's display order ([`installed_content_settings::settings::desktops`]).
     pub fn resolve(
         self,
         display: Result<&Display, &str>,
@@ -172,7 +172,8 @@ pub fn refresh_monitors(wake: impl Fn() + Send + 'static) {
             let state = monitor_state();
             loop {
                 while state.again.swap(false, Ordering::AcqRel) {
-                    let read = installed_content::settings::desktops().map_err(|error| error.to_string());
+                    let read =
+                        installed_content_settings::settings::desktops().map_err(|error| error.to_string());
                     *state
                         .monitors
                         .lock()

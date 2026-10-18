@@ -1,11 +1,9 @@
 use super::*;
 use dashboard_base::test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag};
 use dashboard_core::transport;
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{AirWingRow, TableId, TableRows, WingEquipmentRow},
-};
+use replay::container::Replay;
+use replay_data::{rows::AirWingRow, rows::TableId, rows::TableRows, rows::WingEquipmentRow};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 fn frame(
     hour: i32,
@@ -155,7 +153,7 @@ fn air_force_complete_zero_unread_unknown_gaps_and_absent_owner() {
     if let TableView::Complete(TableRows::CountryLinks(links)) =
         &mut *absent.tables[TableId::CountryLinks.index()]
     {
-        links.push(replay::rows::CountryLinkRow {
+        links.push(replay_data::rows::CountryLinkRow {
             id: 100_002,
             canonical_slot: 2,
         });
@@ -208,7 +206,7 @@ fn air_force_missing_or_fractional_bank_keeps_total_and_unknown_variant_parts() 
 
 #[test]
 fn air_force_unchanged_tables_obey_variant_read_dates_and_gaps() {
-    use replay::rows::{LexicalTokenRow, VariantDefinitionRow};
+    use replay_data::{rows::LexicalTokenRow, rows::VariantDefinitionRow};
     let mut before = frame(19, &[(1, 100_000, 0, 8)], &[(1, 71, 800_000)], 2);
     *before.tables[TableId::LexicalTokens.index()] =
         TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
@@ -223,7 +221,7 @@ fn air_force_unchanged_tables_obey_variant_read_dates_and_gaps() {
             ..Default::default()
         }]));
     assert!(!dashboard_text::metadata::slot_read(
-        replay::format::FormatVersion::CURRENT,
+        replay_data::format::FormatVersion::CURRENT,
         &before.metrics,
         TableId::VariantDefinitions,
         19
@@ -236,7 +234,7 @@ fn air_force_unchanged_tables_obey_variant_read_dates_and_gaps() {
     let mut after_gap = before.clone();
     after_gap.hour = 23;
     assert!(!dashboard_text::metadata::slot_read(
-        replay::format::FormatVersion::CURRENT,
+        replay_data::format::FormatVersion::CURRENT,
         &after_gap.metrics,
         TableId::VariantDefinitions,
         23
@@ -630,9 +628,9 @@ fn air_force_run_visitor_reuses_scan_and_keeps_zero_unknown_gap_and_replacement(
 
 #[test]
 fn air_force_recorded_variants_use_mod_archetypes_and_keep_unresolved_designs() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{LexicalTokenRow, VariantDefinitionRow};
+    use replay_data::{rows::LexicalTokenRow, rows::VariantDefinitionRow};
     let root = std::env::temp_dir().join(format!("hoi4_air_force_mod_{}", uuid::Uuid::new_v4()));
     let base = root.join("base");
     let addon = root.join("mod");
@@ -646,12 +644,12 @@ fn air_force_recorded_variants_use_mod_archetypes_and_keep_unresolved_designs() 
     .unwrap();
     std::fs::write(addon.join("common/units/equipment/00_fixture.txt"),
         "equipments={mod_air={is_archetype=yes type=fighter} mod_frame={archetype=mod_air parent=mod_air} mod_bomber={is_archetype=yes type=tactical_bomber}}" ).unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[
         (&base, &[]),
         (&addon, &["common/units/equipment"]),
     ])
     .unwrap();
-    let units = installed_content::equipment::Database::load_complete(&layers).unwrap();
+    let units = installed_content_core::equipment::Database::load_complete(&layers).unwrap();
     assert!(units.named("removed_air").is_none());
     let mut known = frame(
         22,
@@ -1135,7 +1133,7 @@ fn air_force_full_snapshot_marks_owners_that_lost_their_last_wing() {
     let mut encoded = records(1, vec![before]);
     // A continuous full acquisition has no deleted-row keys to dirty this owner.
     encoded.push(replay::spool::Record::Frame(
-        replay::frame::FrameEncoder::new()
+        replay_frame::frame::FrameEncoder::new()
             .encode(frame(23, &[], &[], 2), true)
             .unwrap(),
     ));
@@ -1284,7 +1282,7 @@ fn phase_b_air_database_and_spelling_refusals_resolve_once_per_binding() {
 
 #[test]
 fn restored_air_forgets_variant_names_that_stop_being_known_after_a_commit() {
-    use replay::rows::{LexicalTokenRow, VariantDefinitionRow};
+    use replay_data::{rows::LexicalTokenRow, rows::VariantDefinitionRow};
     // Hour 22 is the variant table's daily read; its names hold through the
     // commit after hour 25. From hour 27 the variant table is unavailable, so
     // the names stop being known before any further read.

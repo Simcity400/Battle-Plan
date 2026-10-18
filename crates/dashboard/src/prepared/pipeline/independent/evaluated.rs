@@ -46,7 +46,9 @@ use crate::{
     },
     products::{occupied_states, research, special_projects},
 };
-use replay::{container::Replay, format::FormatVersion, frame::DecodedFrame, rows::TableId};
+use replay::container::Replay;
+use replay_data::{format::FormatVersion, rows::TableId};
+use replay_frame::frame::DecodedFrame;
 use std::{
     any::Any,
     io,
@@ -141,7 +143,7 @@ fn observe_alone(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let format = block.replay.format;
     let mut tracker = FrameChangeTracker::new();
     let mut reached = None;
@@ -153,7 +155,7 @@ fn observe_alone(
     let read = block.read_alone(
         tables,
         |raw, frame| {
-            let _cpu = ::replay::cpu::scope("fold driver", None);
+            let _cpu = ::replay_frame::cpu::scope("fold driver", None);
             let changes = tracker.observe_updates(frame, raw, format);
             if stopped {
                 return Ok(());
@@ -162,7 +164,7 @@ fn observe_alone(
             prepass::note(counted);
             let at = started.map(|_| Instant::now());
             let result = {
-                let _cpu = ::replay::cpu::scope("fold observe", None);
+                let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                 observe(frame, &changes)
             };
             if let Some(at) = at {
@@ -421,7 +423,7 @@ impl ProjectsBranch {
     /// Bind the content, as the walk does at every block, and note a block
     /// whose content reads the trigger kit.
     fn bind(&mut self, block: &Block<'_>) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope("fold binds", None);
+        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
         self.prepared.configure(block.source, block.context)?;
         #[cfg(test)]
         if self.prepared.reads_trigger_world() {
@@ -489,7 +491,7 @@ impl Branch for ProjectsBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         self.bind(block)?;
         let world = self.prepared.reads_trigger_world();
         let running = AtomicBool::new(false);
@@ -660,7 +662,7 @@ impl OccupationBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         self.prepared.configure(block.source, block.context);
         self.block = Some((block.index.first_hour, block.index.last_hour));
         let tables = occupation_tables(self.prepared.reads_trigger_world());
@@ -700,7 +702,7 @@ impl Branch for OccupationBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<(Folded, Option<i32>)> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         read_facts(facts)?;
         Ok((Folded::Fast, self.observe_hours(block, observed, check)?))
     }
@@ -711,7 +713,7 @@ impl Branch for OccupationBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         self.observe_hours(block, observed, check)
     }
 

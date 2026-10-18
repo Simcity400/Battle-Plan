@@ -2,7 +2,8 @@ use super::*;
 use crate::catalogue::tests::{Folder, folder_catalogue};
 use crate::effect_description::tests::Fixture;
 use crate::scripted_text::{EventObject, EventScope, Link};
-use replay::{frame::TableView, rows::*};
+use replay_data::rows::*;
+use replay_frame::frame::TableView;
 
 fn fixture(category: i32) -> (Fixture, Folder) {
     let mut fixture = Fixture::new();
@@ -127,7 +128,7 @@ fn rendered(fixture: &Fixture, body: &str, expected: &str, character: bool) {
 // Role templates share the selected character reader; keep every category's wrapper.
 #[test]
 fn add_military_commander_roles() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     for (body, expected, character) in [
@@ -154,7 +155,7 @@ fn add_military_commander_roles() {
 // Authored military names remain literal; skills and traits are execution-only.
 #[test]
 fn create_military_leaders() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     for (body, expected) in [
@@ -177,7 +178,7 @@ fn create_military_leaders() {
 
 #[test]
 fn legacy_empty_name_uses_recorded_name_token_then_exact_stored_token() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     rendered(
@@ -197,7 +198,7 @@ fn legacy_empty_name_uses_recorded_name_token_then_exact_stored_token() {
 // Operative creation with a recruitment bypass.
 #[test]
 fn create_operative_leader() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     rendered(
@@ -217,7 +218,7 @@ fn create_operative_leader() {
 // A held scalar token uses plain outer localisation.
 #[test]
 fn show_unit_leaders_tooltip() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(1);
     rendered(
@@ -258,7 +259,7 @@ fn show_unit_leaders_tooltip() {
 // Promotion and demotion require their matching leader categories.
 #[test]
 fn promote_and_demote_leader_category_gates() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(1);
     for (category, body, expected) in [
@@ -286,7 +287,7 @@ fn promote_and_demote_leader_category_gates() {
 // Select a runtime character ID or the current character.
 #[test]
 fn remove_unit_leader() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     rendered(
@@ -306,7 +307,7 @@ fn remove_unit_leader() {
 
 #[test]
 fn remove_operative_refuses_codename_by_class_and_field() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(3);
     let out = fixture.render(
@@ -323,7 +324,7 @@ fn remove_operative_refuses_codename_by_class_and_field() {
 // Use both stored operative names without scope expansion or LF.
 #[test]
 fn remove_operative_uses_format98_codename() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(3);
     if let TableView::Complete(TableRows::UnitLeaders(rows)) =
@@ -351,7 +352,7 @@ fn remove_operative_uses_format98_codename() {
 // Use the referenced leader name and append LF.
 #[test]
 fn show_unit_leaders_uses_format98_referenced_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(3);
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
@@ -391,7 +392,7 @@ fn show_unit_leaders_uses_format98_referenced_name() {
 // Exact yes selects the character-scope role.
 #[test]
 fn remove_unit_leader_role() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     rendered(
@@ -411,7 +412,7 @@ fn remove_unit_leader_role() {
 // Read a character selector only outside character scopes.
 #[test]
 fn remove_military_role_respects_its_scope_dependent_reader() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(0);
     rendered(
@@ -430,7 +431,7 @@ fn remove_military_role_respects_its_scope_dependent_reader() {
 
 #[test]
 fn remove_operative_role_uses_skill_specific_title_then_fallback() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(3);
     rendered(
@@ -455,7 +456,7 @@ fn remove_operative_role_uses_skill_specific_title_then_fallback() {
 // The describer gates only on Army existence.
 #[test]
 fn add_divisional_commander_xp() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(1);
     let reference = 44 | 2 << 32;
@@ -484,7 +485,7 @@ fn add_divisional_commander_xp() {
 
 #[test]
 fn add_unit_medal_is_empty_without_army() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     let out = fixture.render(
@@ -500,7 +501,7 @@ fn add_unit_medal_is_empty_without_army() {
 // from failed captures.
 #[test]
 fn army_name_consumers_share_names_and_field_level_compatibility() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(1);
     let unit = 44 | 2 << 32;
@@ -590,7 +591,7 @@ fn army_name_consumers_share_names_and_field_level_compatibility() {
 
 #[test]
 fn raid_history_without_assigned_army_or_wing_keeps_empty_name_line() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(1);
     let reference = 9 | 3 << 32;
@@ -611,10 +612,12 @@ fn raid_history_without_assigned_army_or_wing_keeps_empty_name_line() {
 
 #[test]
 fn raid_history_wing_falls_back_from_stale_army_and_preserves_language_refusal() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use engine::raid_tooltip_operands::{
-        ARMY_RESOLVED, NAME, REFERENCES, WING_NAME, WING_RESOLVED,
+    use engine_native::{
+        raid_tooltip_operands::ARMY_RESOLVED, raid_tooltip_operands::NAME,
+        raid_tooltip_operands::REFERENCES, raid_tooltip_operands::WING_NAME,
+        raid_tooltip_operands::WING_RESOLVED,
     };
     let (mut fixture, _folder) = fixture(1);
     let reference = 9 | 3 << 32;
@@ -726,7 +729,7 @@ fn raid_history_wing_falls_back_from_stale_army_and_preserves_language_refusal()
 // Resolve the selected character without drawing a trait.
 #[test]
 fn add_random_valid_trait_from_unit() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Character(7))]);
@@ -747,7 +750,7 @@ fn add_random_valid_trait_from_unit() {
 
 #[test]
 fn absent_characters_and_missing_roles_keep_empty_descriptions() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(1);
     *fixture.frame.tables[TableId::UnitLeaders.index()] =

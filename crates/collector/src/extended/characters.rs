@@ -1,7 +1,7 @@
 //! Persistent character state. Native walks use pooled rows and literal-byte
 //! arenas; sorting, duplicate checks and owned replay strings run off-thread.
 
-use engine::allocation::{copy_vec, owned_vec, reserve, reserve_exact};
+use engine_allocation::{copy_vec, owned_vec, reserve, reserve_exact};
 pub(crate) mod advisors;
 mod carry;
 #[cfg(test)]
@@ -23,20 +23,19 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
-use engine::{
-    Memory, active_ability_record, cadvisor, carmy_leader, ccharacter, ccharacter_manager,
-    ccharacter_template, ccountry, ccountry_leader, cgame_state, character_advisor_node,
-    character_leader_node, cnavy_leader, coperative_leader, cpdx_array::Array, cunit_leader,
-    cunit_leader_skill, cunit_leader_trait, msvc_string, msvc_tree_node, read, walk::Outcome,
+use engine_land_inputs::active_ability_record;
+use engine_native::{
+    Memory, cadvisor, carmy_leader, ccharacter, ccharacter_manager, ccharacter_template, ccountry,
+    ccountry_leader, cgame_state, character_advisor_node, character_leader_node, cnavy_leader,
+    coperative_leader, cpdx_array::Array, cunit_leader, cunit_leader_skill, cunit_leader_trait,
+    msvc_string, msvc_tree_node, read, walk::Outcome,
 };
-use replay::{
-    BranchId,
-    frame::{TableInput, TableView},
-    rows::{
-        ActiveAbilityRow, AdvisorRoleRow, CharacterRow, CountryLeaderRoleRow, TableId, TableRows,
-        TableSchema, UnitLeaderRow, UnitLeaderTraitRow, tables,
-    },
+use replay_data::{
+    BranchId, rows::ActiveAbilityRow, rows::AdvisorRoleRow, rows::CharacterRow,
+    rows::CountryLeaderRoleRow, rows::TableId, rows::TableRows, rows::TableSchema,
+    rows::UnitLeaderRow, rows::UnitLeaderTraitRow, rows::tables,
 };
+use replay_frame::{frame::TableInput, frame::TableView};
 
 use std::mem::size_of;
 use std::sync::{Arc, Weak};
@@ -139,7 +138,7 @@ struct LeaderRow {
     text_a_len: usize,
     text_b_start: usize,
     text_b_len: usize,
-    codename: Option<engine::cname_group_member::Inputs>,
+    codename: Option<engine_native::cname_group_member::Inputs>,
     codename_reason: Option<&'static str>,
     formation_reference: Option<u64>,
     formation_reason: Option<&'static str>,
@@ -234,7 +233,7 @@ fn record_leader_ideologies(rows: &[ccountry_leader::Row]) {
         let index = match failures.binary_search_by_key(&reason, |entry| entry.0) {
             Ok(index) => index,
             Err(index) => {
-                if engine::allocation::reserve(&mut failures, 1).is_err() {
+                if engine_allocation::reserve(&mut failures, 1).is_err() {
                     return;
                 }
                 failures.insert(index, (reason, 0));
@@ -312,7 +311,10 @@ impl Captured {
 
     pub(crate) fn set_character_activity(&mut self, active: [bool; N]) {
         self.active = active;
-        self.fail_character_tables(active.map(|value| !value), replay::cadence::SKIPPED_REASON);
+        self.fail_character_tables(
+            active.map(|value| !value),
+            replay_data::cadence::SKIPPED_REASON,
+        );
     }
     pub(crate) fn trait_capture_capacities(&self) -> (usize, usize) {
         (self.traits.rows.rows.len(), self.traits.bytes.first.len())
@@ -381,7 +383,7 @@ impl Captured {
 
     fn begin_capture(&mut self, hour: i32, force_full: bool) -> [bool; N] {
         self.reset();
-        let active = TABLES.map(|table| replay::cadence::should_walk(table, hour, force_full));
+        let active = TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
         let family_active = if self.raw_active.iter().any(|&active| active) {
             self.active
         } else {
@@ -392,7 +394,7 @@ impl Captured {
             ($($field:ident = $index:literal),+ $(,)?) => {$(
                 if !family_active[$index] {
                     self.$field.rows.outcome = Outcome::Unavailable {
-                        reason: replay::cadence::SKIPPED_REASON,
+                        reason: replay_data::cadence::SKIPPED_REASON,
                     };
                 }
             )+};
@@ -584,7 +586,7 @@ impl Captured {
                 character: row.character,
                 country: row.country,
                 ideology: row.ideology,
-                current_ideology: replay::rows::Recorded::Value(row.current_ideology),
+                current_ideology: replay_data::rows::Recorded::Value(row.current_ideology),
             },
         )
     }
@@ -598,19 +600,22 @@ impl Captured {
                 key: owned(bytes, row.key_start, row.key_len),
                 idea: owned(bytes, row.idea_start, row.idea_len),
                 slot: owned(bytes, row.slot_start, row.slot_len),
-                modifier_cache: replay::rows::Recorded::Value(row.modifier_recorded.then(|| {
-                    let entries = bytes[row.modifier_start..row.modifier_start + row.modifier_len]
-                        .chunks_exact(engine::modifier_entry::STRIDE);
-                    let mut values = owned_vec(engine::allocation::vec(entries.len()));
-                    for entry in entries {
-                        values.push(replay::rows::CachedModifier {
-                            definition: u32::from_le_bytes(entry[..4].try_into().unwrap()),
-                            value: i64::from_le_bytes(entry[8..16].try_into().unwrap()),
-                        });
-                    }
-                    replay::rows::AdvisorModifierCache { entries: values }
-                })),
-                tooltip_keys: replay::rows::Recorded::Value(row.tooltip_recorded.then(|| {
+                modifier_cache: replay_data::rows::Recorded::Value(row.modifier_recorded.then(
+                    || {
+                        let entries = bytes
+                            [row.modifier_start..row.modifier_start + row.modifier_len]
+                            .chunks_exact(engine_native::modifier_entry::STRIDE);
+                        let mut values = owned_vec(engine_allocation::vec(entries.len()));
+                        for entry in entries {
+                            values.push(replay_data::rows::CachedModifier {
+                                definition: u32::from_le_bytes(entry[..4].try_into().unwrap()),
+                                value: i64::from_le_bytes(entry[8..16].try_into().unwrap()),
+                            });
+                        }
+                        replay_data::rows::AdvisorModifierCache { entries: values }
+                    },
+                )),
+                tooltip_keys: replay_data::rows::Recorded::Value(row.tooltip_recorded.then(|| {
                     let mut source = &bytes[row.tooltip_start..row.tooltip_start + row.tooltip_len];
                     let mut remaining = source;
                     let mut count = 0;
@@ -619,11 +624,11 @@ impl Captured {
                         remaining = &remaining[8 + len..];
                         count += 1;
                     }
-                    let mut keys = owned_vec(engine::allocation::vec(count));
+                    let mut keys = owned_vec(engine_allocation::vec(count));
                     while !source.is_empty() {
                         let len = u64::from_le_bytes(source[..8].try_into().unwrap()) as usize;
                         source = &source[8..];
-                        keys.push(owned_vec(engine::allocation::copy_vec(&source[..len])));
+                        keys.push(owned_vec(engine_allocation::copy_vec(&source[..len])));
                         source = &source[len..];
                     }
                     keys
@@ -858,8 +863,8 @@ impl From<active_ability_record::TokenWalk> for ReadResult {
 /// Aggregates exact native counts across owners. After the first capacity miss
 /// later owners contribute counts only; no later row fills a hole in the prefix.
 struct Batch<'a, R> {
-    rows: engine::walk::Buffer<'a, R>,
-    bytes: engine::walk::Buffer<'a, u8>,
+    rows: engine_native::walk::Buffer<'a, R>,
+    bytes: engine_native::walk::Buffer<'a, u8>,
     len: usize,
     bytes_len: usize,
     required_bytes: usize,
@@ -870,11 +875,14 @@ struct Batch<'a, R> {
 impl<'a, R> Batch<'a, R> {
     fn new(rows: &'a mut [R], bytes: &'a mut [u8]) -> Self {
         Self::storage(
-            engine::walk::Buffer::Fixed(rows),
-            engine::walk::Buffer::Fixed(bytes),
+            engine_native::walk::Buffer::Fixed(rows),
+            engine_native::walk::Buffer::Fixed(bytes),
         )
     }
-    fn storage(rows: engine::walk::Buffer<'a, R>, bytes: engine::walk::Buffer<'a, u8>) -> Self {
+    fn storage(
+        rows: engine_native::walk::Buffer<'a, R>,
+        bytes: engine_native::walk::Buffer<'a, u8>,
+    ) -> Self {
         Self {
             rows,
             bytes,
@@ -906,7 +914,10 @@ impl<'a, R> Batch<'a, R> {
 
     fn append_buffer(
         &mut self,
-        walk: impl FnOnce(engine::walk::Buffer<'_, R>, engine::walk::Buffer<'_, u8>) -> ReadResult,
+        walk: impl FnOnce(
+            engine_native::walk::Buffer<'_, R>,
+            engine_native::walk::Buffer<'_, u8>,
+        ) -> ReadResult,
         relocate: impl Fn(&mut R, usize) -> bool,
     ) {
         if !self.active() {
@@ -929,8 +940,8 @@ impl<'a, R> Batch<'a, R> {
             )
         } else {
             walk(
-                engine::walk::Buffer::Fixed(&mut self.rows[self.len..rows_end]),
-                engine::walk::Buffer::Fixed(&mut self.bytes[self.bytes_len..bytes_end]),
+                engine_native::walk::Buffer::Fixed(&mut self.rows[self.len..rows_end]),
+                engine_native::walk::Buffer::Fixed(&mut self.bytes[self.bytes_len..bytes_end]),
             )
         };
         let rows_end = if self.unread == 0 {
@@ -1044,7 +1055,7 @@ impl Family<'_> {
         macro_rules! select {
             ($($field:ident = $index:literal),+ $(,)?) => {$(
                 if !active[$index] {
-                    self.$field.fail(replay::cadence::SKIPPED_REASON);
+                    self.$field.fail(replay_data::cadence::SKIPPED_REASON);
                 }
             )+};
         }
@@ -1460,15 +1471,15 @@ fn read_unit(
             required_bytes: text.required_bytes,
         };
     }
-    let mut names = engine::cname_group_member::Names {
+    let mut names = engine_native::cname_group_member::Names {
         bytes,
         len: text.bytes_len,
         required: text.required_bytes,
     };
     let (codename, codename_reason) = if cunit_leader::has_codename(native.kind) {
         match cunit_leader::read_codename(memory, base, pointer, &mut names) {
-            Ok(engine::cname_group_member::Naming::Row(row)) => (Some(row), None),
-            Ok(engine::cname_group_member::Naming::DoesNotFit) => {
+            Ok(engine_native::cname_group_member::Naming::Row(row)) => (Some(row), None),
+            Ok(engine_native::cname_group_member::Naming::DoesNotFit) => {
                 names.len = text.bytes_len;
                 (None, Some("unit leader codename byte capacity exceeded"))
             }
@@ -1583,8 +1594,8 @@ pub(super) fn walk_abilities_growing(
     rows: &mut Vec<active_ability_record::Row>,
     bytes: &mut Vec<u8>,
 ) -> ReadResult {
-    let mut rows = engine::walk::Buffer::Growing(rows);
-    let mut bytes = engine::walk::Buffer::Growing(bytes);
+    let mut rows = engine_native::walk::Buffer::Growing(rows);
+    let mut bytes = engine_native::walk::Buffer::Growing(bytes);
     let mut len = 0_usize;
     let mut bytes_len = 0_usize;
     let result = (|| {
@@ -1672,7 +1683,7 @@ fn advisor_ranges_valid(row: &cadvisor::Row, bytes: &[u8]) -> bool {
             .is_some_and(tooltip_ranges_valid)
         && row
             .modifier_len
-            .is_multiple_of(engine::modifier_entry::STRIDE)
+            .is_multiple_of(engine_native::modifier_entry::STRIDE)
 }
 
 fn tooltip_ranges_valid(mut bytes: &[u8]) -> bool {
@@ -1708,7 +1719,7 @@ fn leader_row(row: &LeaderRow, bytes: &[u8]) -> UnitLeaderRow {
         character_type: native.character_type,
         character_id: native.character_id,
         category: native.category,
-        experience: replay::rows::RetiredI64::default(),
+        experience: replay_data::rows::RetiredI64::default(),
         kind: native.kind,
         skill_status: native.skill_status,
         skill_valid: native.skill_valid,
@@ -1722,12 +1733,12 @@ fn leader_row(row: &LeaderRow, bytes: &[u8]) -> UnitLeaderRow {
         captured: native.captured,
         visibility_choice: native.visibility_choice,
         template_visibility: native.template_visibility,
-        exile_country: replay::rows::Recorded::Value(native.exile_country),
-        codename: replay::rows::Recorded::Value(
+        exile_country: replay_data::rows::Recorded::Value(native.exile_country),
+        codename: replay_data::rows::Recorded::Value(
             row.codename
                 .map(|name| super::character_inputs::operands(name, bytes)),
         ),
-        formation_reference: replay::rows::Recorded::Value(row.formation_reference),
+        formation_reference: replay_data::rows::Recorded::Value(row.formation_reference),
     }
 }
 
@@ -2084,7 +2095,7 @@ impl Captured {
         macro_rules! fail {
             ($($field:ident = $index:literal),+ $(,)?) => {$(
                 self.$field.rows.outcome = Outcome::Unavailable {
-                    reason: if active[$index] { reason } else { replay::cadence::SKIPPED_REASON },
+                    reason: if active[$index] { reason } else { replay_data::cadence::SKIPPED_REASON },
                 };
                 self.$field.bytes.len = 0;
                 if !active[$index] {
@@ -2235,7 +2246,7 @@ impl Captured {
         });
         self.fail_character_tables(
             self.active.map(|value| !value),
-            replay::cadence::SKIPPED_REASON,
+            replay_data::cadence::SKIPPED_REASON,
         );
         self.quiet_rows = None;
         if !job.active.iter().any(|&active| active) {
@@ -2331,8 +2342,10 @@ impl Captured {
                 let (carried_rows, carried_bytes) = job.trait_carry.carried_demand();
                 let (row_count, byte_count) =
                     (row_count + carried_rows, byte_count + carried_bytes);
-                engine::walk::Buffer::Growing(&mut self.traits.rows.rows).ensure(row_count)?;
-                engine::walk::Buffer::Growing(&mut self.traits.bytes.first).ensure(byte_count)?;
+                engine_native::walk::Buffer::Growing(&mut self.traits.rows.rows)
+                    .ensure(row_count)?;
+                engine_native::walk::Buffer::Growing(&mut self.traits.bytes.first)
+                    .ensure(byte_count)?;
                 Ok::<_, &'static str>(())
             })()
             .err()
@@ -2348,8 +2361,8 @@ impl Captured {
             if demand.overflowed {
                 return Err("character capture demand overflow");
             }
-            engine::walk::Buffer::Growing(&mut buffer.rows.rows).ensure(demand.rows)?;
-            engine::walk::Buffer::Growing(&mut buffer.bytes.first).ensure(demand.bytes)?;
+            engine_native::walk::Buffer::Growing(&mut buffer.rows.rows).ensure(demand.rows)?;
+            engine_native::walk::Buffer::Growing(&mut buffer.bytes.first).ensure(demand.bytes)?;
             Ok(())
         }
         // A quiet hour whose rows the job already published takes a copy of
@@ -2367,7 +2380,7 @@ impl Captured {
             [None; 2]
         };
         let leader_failure = if job.active[1] && job.capture_growing {
-            engine::walk::Buffer::Growing(&mut self.leaders.rows.rows)
+            engine_native::walk::Buffer::Growing(&mut self.leaders.rows.rows)
                 .ensure(job.leader_rows)
                 .err()
         } else {

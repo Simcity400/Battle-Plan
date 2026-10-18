@@ -87,7 +87,7 @@ mod tests {
     use super::*;
     #[test]
     fn ordered_null_repeated_references_join_to_mod_goal_objects() {
-        let doc=installed_content::parser::parse(br#"first_wargoals={wargoal={id=3 type=4713} wargoal={id=0 type=0} wargoal={id=3 type=4713}}
+        let doc=installed_content_core::parser::parse(br#"first_wargoals={wargoal={id=3 type=4713} wargoal={id=0 type=0} wargoal={id=3 type=4713}}
             diplomacy={wargoals={mod_claim={id={id=3 type=4713} wargoaldata_actor="ONE" wargoaldata_recipient="TWO" type=star_contest states={9 7 9} liberate={THREE ONE}}}}"#).unwrap();
         let handles = references(&doc.items, b"first_wargoals").unwrap();
         assert_eq!(handles, vec![(3_u64 << 32) | 4713, 0, (3_u64 << 32) | 4713]);
@@ -99,7 +99,7 @@ mod tests {
         assert_eq!(goal.countries, vec![b"THREE".to_vec(), b"ONE".to_vec()]);
         assert!(objects(&doc.items, &mut objects_by_id).is_err());
         let bad =
-            installed_content::parser::parse(b"first_wargoals={not_a_goal={id=3 type=4713}}").unwrap();
+            installed_content_core::parser::parse(b"first_wargoals={not_a_goal={id=3 type=4713}}").unwrap();
         assert!(references(&bad.items, b"first_wargoals").is_err());
     }
 }

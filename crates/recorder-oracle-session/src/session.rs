@@ -7,10 +7,8 @@
 use std::{collections::BTreeMap, io};
 
 use installed_content_save::Save;
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryRow, tables},
-};
+use replay_data::{rows::CountryRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::{Report, complete, country_tag, invalid, tag_text};
 
@@ -192,13 +190,11 @@ fn compare_aggregates(frame: &DecodedFrame, report: &mut Report) -> io::Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{
-            ClockRow, TableId, TableRows, ThreatCountryAggregateRow, ThreatSourceRow,
-            WorldTensionRow,
-        },
+    use replay_data::{
+        rows::ClockRow, rows::TableId, rows::TableRows, rows::ThreatCountryAggregateRow,
+        rows::ThreatSourceRow, rows::WorldTensionRow,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     fn roster() -> Vec<CountryRow> {
         vec![CountryRow {

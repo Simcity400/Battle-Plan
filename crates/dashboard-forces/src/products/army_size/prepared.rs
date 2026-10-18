@@ -4,7 +4,7 @@ use dashboard_base::prepared::{
     frame_changes::FrameChanges,
     series::{self, Accumulator, Reader, Run},
 };
-use replay::frame::DecodedFrame;
+use replay_frame::frame::DecodedFrame;
 
 pub mod block;
 pub use block::FAMILY;
@@ -89,7 +89,7 @@ fn point_scan(frame: &DecodedFrame) -> (Scan, ScanState) {
         &mut scan,
         frame,
         &raw,
-        replay::format::FormatVersion::CURRENT,
+        replay_data::format::FormatVersion::CURRENT,
         false,
         &mut state,
         None,
@@ -125,7 +125,7 @@ struct HeldInventory {
     hour: i32,
     inventory: inventory::Inventory,
     /// The inventory tables' decoded views at `hour`.
-    views: [replay::frame::ViewIdentity; 3],
+    views: [replay_frame::frame::ViewIdentity; 3],
 }
 
 impl PointScans {
@@ -153,7 +153,7 @@ impl PointScans {
                     Some(TableUpdate::Delta {
                         changed, deleted, ..
                     }),
-                    replay::frame::TableView::Complete(_),
+                    replay_frame::frame::TableView::Complete(_),
                 ) => Some((changed.as_slice(), deleted.as_slice())),
                 _ => None,
             })
@@ -172,7 +172,7 @@ impl PointScans {
             &mut scan,
             frame,
             updates,
-            replay::format::FormatVersion::CURRENT,
+            replay_data::format::FormatVersion::CURRENT,
             false,
             &mut state,
             None,
@@ -570,7 +570,7 @@ pub fn query(
             cancelled,
             |_| std::mem::size_of::<[bool; 4]>(),
             || {
-                let _phase = replay::cpu::scope_phase("army:sampled_availability");
+                let _phase = replay_frame::cpu::scope_phase("army:sampled_availability");
                 let mut available = [false; 4];
                 if let replay::container::SeekResult::Frame(frame) = source
                     .replay_ref()
@@ -824,7 +824,7 @@ fn sampled_window(
                         + bytes.total() as usize
                 },
                 || {
-                    let _phase = replay::cpu::scope_phase("army:sampled_window");
+                    let _phase = replay_frame::cpu::scope_phase("army:sampled_window");
                     let metadata = std::cell::RefCell::new(Scan::default());
                     let points = std::cell::RefCell::new(PointScans::default());
                     let sampler =
@@ -1509,7 +1509,7 @@ mod window_profile {
             let started = Instant::now();
             let frames = replay.read_block_selected(block, TABLES).unwrap();
             read += started.elapsed();
-            let mut decoder = replay::frame::FrameDecoder::for_tables(TABLES);
+            let mut decoder = replay_frame::frame::FrameDecoder::for_tables(TABLES);
             for frame in &frames {
                 let started = Instant::now();
                 let decoded = decoder.advance(frame).unwrap();
@@ -1606,8 +1606,8 @@ mod carried_tests {
     use super::*;
     use crate::products::parts_race_prepared::test_fixtures::frame;
     use dashboard_base::test_fixtures::{CAMPAIGN, continuation_records, records};
-    use replay::frame::TableView;
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
 
     /// The army fixture's hour, with the last slot's holder replaced from hour 10, a
     /// changed template from hour 15, a division deleted from hour 20 and one
@@ -1657,7 +1657,7 @@ mod carried_tests {
                 .append(&[continuation_records(&replay, 1, block(first))])
                 .unwrap();
         }
-        replay.gaps.push(replay::branches::Gap {
+        replay.gaps.push(replay_frame::branches::Gap {
             branch: 1,
             first_hour: 16,
             last_hour: 16,

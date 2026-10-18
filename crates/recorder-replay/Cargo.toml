@@ -10,8 +10,10 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-engine.workspace = true
 replay.workspace = true
+engine-allocation.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
 serde_json.workspace = true
 recorder-platform.workspace = true
 recorder-metrics.workspace = true

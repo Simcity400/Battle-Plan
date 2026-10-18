@@ -154,7 +154,7 @@ impl Lanes {
 type VisualCatalogue = (
     PathBuf,
     PathBuf,
-    Vec<installed_content::content::visual::InstalledMod>,
+    Vec<installed_content_core::content::visual::InstalledMod>,
 );
 
 struct Inner {
@@ -304,7 +304,7 @@ impl Service {
                 return Ok(());
             }
         };
-        if let Err(error) = engine::executable_tables::initialize(&options.game_dir) {
+        if let Err(error) = engine_executable::executable_tables::initialize(&options.game_dir) {
             self.replace_content(None);
             return Err(io::Error::new(
                 error.kind(),

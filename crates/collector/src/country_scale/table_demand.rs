@@ -3,7 +3,7 @@
 use super::DemandFailures;
 use crate::{extended, map_capture::MapCapacities};
 pub(crate) use collector_extended_support::demand::rows;
-use engine::Memory;
+use engine_native::Memory;
 
 const NAMES: &[&str] = &[
     "world",
@@ -91,10 +91,10 @@ pub(crate) fn presize(
     // census follows each country entry.
     accept(
         1,
-        rows(engine::cair_wing::walk(memory, base, state, &mut []))
+        rows(engine_native::cair_wing::walk(memory, base, state, &mut []))
             .map(|count| map.raise_air_wings(count)),
     );
-    let naval = engine::cfleet::walk(memory, base, state, &mut [], &mut [], &mut []);
+    let naval = engine_native::cfleet::walk(memory, base, state, &mut [], &mut [], &mut []);
     for (index, outcome) in [naval.fleets, naval.task_forces, naval.ships]
         .into_iter()
         .enumerate()
@@ -104,7 +104,7 @@ pub(crate) fn presize(
     // The supply census uses every non-sentinel supply slot.
     accept(
         3,
-        rows(engine::sprovince_supply_data::walk(
+        rows(engine_railways::sprovince_supply_data::walk(
             memory,
             base,
             state,
@@ -197,7 +197,7 @@ pub(crate) fn presize(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{cgame_state as gs, cprovince, csupply_system, walk::Outcome};
+    use engine_native::{cgame_state as gs, cprovince, csupply_system, walk::Outcome};
 
     struct LargeMap {
         slots: u32,

@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use installed_content::{adjacency_rules::AdjacencyRule, defines::Defines};
+use installed_content_core::{adjacency_rules::AdjacencyRule, defines::Defines};
 use viewer_foundation::map::{
     camera::Camera,
     gui_resources::{count_refused, viewport as gui_viewport},

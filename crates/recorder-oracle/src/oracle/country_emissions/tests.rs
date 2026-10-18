@@ -1,9 +1,9 @@
 use super::super::country_items;
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{CountryLinkRow, CountryRow, ReservedCountryNamingRow, TableRows},
+use replay_data::{
+    rows::CountryLinkRow, rows::CountryRow, rows::ReservedCountryNamingRow, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 
 fn frame(array: Recorded<Option<Vec<u32>>>) -> DecodedFrame {
     let (mut frame, _, _, _) = super::super::fixtures::fixture();
@@ -85,7 +85,7 @@ fn historical_or_refused_census_never_admits_repeated_tags() {
 #[test]
 fn land_division_comparison_uses_authenticated_alias_representatives_and_keeps_differences() {
     use super::super::{land, report::Report};
-    use replay::rows::DivisionLandInputsRow;
+    use replay_data::rows::DivisionLandInputsRow;
 
     let body = "units={division={id={id=7 type=51} max_supply=2.00000 \
         army_current_supply_ratio=0.00000 army_manpower={army_manpower_value={}}}}";
@@ -136,7 +136,7 @@ fn physical_order_and_canonical_roster_mismatches_are_failures() {
 
 #[test]
 fn projected_full_oracle_scopes_canonical_censuses_and_refuses_uncaptured_reserved_fields() {
-    use replay::rows::{CountryAppearanceRow, DivisionCensusRow};
+    use replay_data::{rows::CountryAppearanceRow, rows::DivisionCensusRow};
     let mut baseline_extended = None;
     for aliases in [0, 1, 2] {
         let (mut captured, _, _, equipment) = super::super::fixtures::fixture();
@@ -199,7 +199,7 @@ fn projected_full_oracle_scopes_canonical_censuses_and_refuses_uncaptured_reserv
         let compare = |saved: &Save| {
             let mut report = super::super::compare_core(
                 &captured,
-                replay::identity::SampleBoundary::EndOfHour,
+                replay_data::identity::SampleBoundary::EndOfHour,
                 saved,
                 Ok(&membership),
                 Ok(&equipment),

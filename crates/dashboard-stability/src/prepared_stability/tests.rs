@@ -4,11 +4,9 @@ use dashboard_base::{
     prepared_measure::query::query,
     test_fixtures::{CAMPAIGN, records, stability_frame, stability_inputs},
 };
-use replay::{
-    container::Replay,
-    frame::TableView,
-    rows::{TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::frame::TableView;
 use serde_json::{Value, json};
 
 fn publish(accumulator: &mut StabilityAccumulator, fixture: &Fixture) {
@@ -37,8 +35,8 @@ fn experience_native_work_is_flat_and_gain_runs_visit_only_supplying_reads() {
         frame_changes::FrameChangeTracker,
         observer_tests::{self, Work},
     };
-    use replay::rows::{CountryExperienceGainRow, CountryExperienceRow};
-    let format = replay::format::FormatVersion::CURRENT;
+    use replay_data::{rows::CountryExperienceGainRow, rows::CountryExperienceRow};
+    let format = replay_data::format::FormatVersion::CURRENT;
     for complete in [0, 1] {
         let work = observer_tests::scaled_work(2, |history| {
             let spans = observer_tests::scaled_work(10, |hours| {
@@ -182,14 +180,14 @@ fn stability_native_work_is_flat_over_hours_and_history_and_one_changed_row() {
             *frame.tables[TableId::SliceReads.index()] =
                 TableView::Complete(TableRows::SliceReads(
                     (0..5_000)
-                        .map(|index| replay::rows::SliceReadRow {
+                        .map(|index| replay_data::rows::SliceReadRow {
                             owner: 100_000 + index,
                             table: TableId::CountryStabilityInputs as u32,
                             sample_hour: 100,
                         })
                         .collect(),
                 ));
-            let format = replay::format::FormatVersion::CURRENT;
+            let format = replay_data::format::FormatVersion::CURRENT;
             let mut tracker = FrameChangeTracker::new();
             let mut data = StabilityAccumulator::default();
             for _ in 0..=history {
@@ -255,7 +253,7 @@ fn stability_native_work_is_flat_over_hours_and_history_and_one_changed_row() {
                 i128::from(
                     country_stability::formula::stability(
                         &frame
-                            .complete::<replay::rows::tables::CountryStabilityInputs>()
+                            .complete::<replay_data::rows::tables::CountryStabilityInputs>()
                             .unwrap()[0]
                     )
                     .value
@@ -475,7 +473,7 @@ fn five_thousand_countries_keep_runs_and_files_proportional_to_changes_and_batch
     let mut accumulator = StabilityAccumulator::default();
     let mut frame = stability_frame(0, stability_inputs(), 0, vec![]);
     let countries: Vec<_> = (1..=5000)
-        .map(|id| replay::rows::CountryRow {
+        .map(|id| replay_data::rows::CountryRow {
             id,
             canonical_slot: id,
             tag: format!("country / {id}").into_bytes(),
@@ -484,7 +482,7 @@ fn five_thousand_countries_keep_runs_and_files_proportional_to_changes_and_batch
         .collect();
     let links = countries
         .iter()
-        .map(|row| replay::rows::CountryLinkRow {
+        .map(|row| replay_data::rows::CountryLinkRow {
             id: row.id,
             canonical_slot: row.canonical_slot,
         })
@@ -499,7 +497,7 @@ fn five_thousand_countries_keep_runs_and_files_proportional_to_changes_and_batch
         .collect();
     let reads = countries
         .iter()
-        .map(|row| replay::rows::SliceReadRow {
+        .map(|row| replay_data::rows::SliceReadRow {
             owner: row.id,
             table: TableId::CountryStabilityInputs as u32,
             sample_hour: 0,
@@ -625,11 +623,9 @@ mod experience {
         test_fixtures::{experience_frame, renamed_frame, slot_base},
     };
     use dashboard_base::test_fixtures::{CAMPAIGN, records};
-    use replay::{
-        container::Replay,
-        frame::TableView,
-        rows::{CountryLinkRow, CountryRow, TableId, TableRows},
-    };
+    use replay::container::Replay;
+    use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::TableRows};
+    use replay_frame::frame::TableView;
     use std::sync::atomic::AtomicBool;
 
     #[test]
@@ -676,7 +672,7 @@ mod experience {
                     .find(|frame| frame.hour == hour)
                     .and_then(|frame| {
                         frame
-                            .complete::<replay::rows::tables::Countries>()
+                            .complete::<replay_data::rows::tables::Countries>()
                             .unwrap()
                             .iter()
                             .find(|country| country.tag == tag.as_bytes())
@@ -768,7 +764,7 @@ mod experience {
     {
         use crate::prepared_stability::ExperienceAccumulator;
         use dashboard_base::{prepared::series::tests::Fixture, prepared_measure::query::query};
-        use replay::rows::{CountryExperienceGainRow, CountryExperienceRow};
+        use replay_data::{rows::CountryExperienceGainRow, rows::CountryExperienceRow};
         use serde_json::json;
         let flag = AtomicBool::new(false);
         let mut frame = experience_frame(0, false, 1);
@@ -820,7 +816,7 @@ mod experience {
                         .collect(),
                 ));
             accumulator
-                .observe(&frame, replay::format::FormatVersion::CURRENT)
+                .observe(&frame, replay_data::format::FormatVersion::CURRENT)
                 .unwrap();
             if [32, 65, 99].contains(&hour) {
                 let mut writer = if hour == 99 {
@@ -892,16 +888,16 @@ mod experience {
 #[test]
 fn experience_quiet_spans_advance_as_observing_each_hour_does() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use replay::rows::{CountryExperienceGainRow, CountryExperienceRow};
-    let format = replay::format::FormatVersion::CURRENT;
-    let replay::cadence::Cadence::Daily(slot) =
-        replay::cadence::cadence(TableId::CountryExperience)
+    use replay_data::{rows::CountryExperienceGainRow, rows::CountryExperienceRow};
+    let format = replay_data::format::FormatVersion::CURRENT;
+    let replay_data::cadence::Cadence::Daily(slot) =
+        replay_data::cadence::cadence(TableId::CountryExperience)
     else {
         panic!("CountryExperience is read in a daily slot");
     };
-    let read = |day: i32| day * replay::cadence::STAGGER_PERIOD + slot as i32;
+    let read = |day: i32| day * replay_data::cadence::STAGGER_PERIOD + slot as i32;
     let (first, last) = (read(1000) + 1, read(1002) + 5);
-    let gains = |army_raw: i64| -> replay::frame::SharedView {
+    let gains = |army_raw: i64| -> replay_frame::frame::SharedView {
         TableView::Complete(TableRows::CountryExperienceGains(vec![
             CountryExperienceGainRow {
                 country: 11,
@@ -918,7 +914,7 @@ fn experience_quiet_spans_advance_as_observing_each_hour_does() {
         ]))
         .into()
     };
-    let banked = |army_raw: i64| -> replay::frame::SharedView {
+    let banked = |army_raw: i64| -> replay_frame::frame::SharedView {
         TableView::Complete(TableRows::CountryExperience(vec![CountryExperienceRow {
             country: 11,
             army_raw,
@@ -933,7 +929,7 @@ fn experience_quiet_spans_advance_as_observing_each_hour_does() {
     let mut frames = Vec::new();
     for hour in first..=last {
         frame.hour = hour;
-        if hour % replay::cadence::STAGGER_PERIOD == slot as i32 {
+        if hour % replay_data::cadence::STAGGER_PERIOD == slot as i32 {
             frame.tables[TableId::CountryExperience.index()] = banked(100 + i64::from(hour));
         }
         if hour == read(1001) + 9 {
@@ -979,7 +975,10 @@ fn experience_quiet_spans_advance_as_observing_each_hour_does() {
     }
     // Banked experience is read daily, so a quiet span is at most the rest of
     // a day: the day of gains a read sums rolls through it.
-    assert!(longest >= replay::cadence::STAGGER_PERIOD - 2, "{longest}");
+    assert!(
+        longest >= replay_data::cadence::STAGGER_PERIOD - 2,
+        "{longest}"
+    );
     assert!(
         observed < frames.len(),
         "{observed} of {} hours",
@@ -1030,10 +1029,12 @@ fn experience_quiet_spans_advance_as_observing_each_hour_does() {
 #[test]
 fn stability_and_parts_observe_an_hours_changed_rows_as_its_whole_tables() {
     use dashboard_base::{prepared::frame_changes::FrameChangeTracker, test_fixtures};
-    use replay::rows::{CountryCommandPowerRow, CountryStabilityLineRow, SliceReadRow};
+    use replay_data::{
+        rows::CountryCommandPowerRow, rows::CountryStabilityLineRow, rows::SliceReadRow,
+    };
     use std::sync::Arc;
     const COUNT: u32 = 48;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let base = 1000 * 24;
     // The hour a country's slice was last read by `hour`.
     let read_of = |index: u32, hour: i32| hour - (hour - (index % 24) as i32).rem_euclid(24);
@@ -1108,7 +1109,7 @@ fn stability_and_parts_observe_an_hours_changed_rows_as_its_whole_tables() {
             ));
         frame
     };
-    let frames = |hours: std::ops::Range<i32>| -> Vec<replay::frame::DecodedFrame> {
+    let frames = |hours: std::ops::Range<i32>| -> Vec<replay_frame::frame::DecodedFrame> {
         hours.map(|offset| frame(base + offset)).collect()
     };
     let first = Replay::from_records(CAMPAIGN.into(), &[records(1, frames(0..36))]).unwrap();
@@ -1169,10 +1170,10 @@ fn stability_and_parts_observe_an_hours_changed_rows_as_its_whole_tables() {
 #[test]
 fn experience_observes_an_hours_changed_gains_as_its_whole_tables() {
     use dashboard_base::{prepared::frame_changes::FrameChangeTracker, test_fixtures};
-    use replay::rows::{CountryExperienceGainRow, CountryExperienceRow};
+    use replay_data::{rows::CountryExperienceGainRow, rows::CountryExperienceRow};
     use std::sync::Arc;
     const COUNT: u32 = 48;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let base = 1000 * 24;
     let frame = |hour: i32| {
         let mut frame = test_fixtures::scale_frame(1, hour, COUNT);
@@ -1228,7 +1229,7 @@ fn experience_observes_an_hours_changed_gains_as_its_whole_tables() {
             TableView::Complete(TableRows::CountryExperienceGains(gains));
         frame
     };
-    let frames = |hours: std::ops::Range<i32>| -> Vec<replay::frame::DecodedFrame> {
+    let frames = |hours: std::ops::Range<i32>| -> Vec<replay_frame::frame::DecodedFrame> {
         hours.map(|offset| frame(base + offset)).collect()
     };
     let first = Replay::from_records(CAMPAIGN.into(), &[records(1, frames(0..36))]).unwrap();

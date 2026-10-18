@@ -1,12 +1,10 @@
 use super::*;
 use installed_content_save::Decimal;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{
-        ArmyGroupMemberRow, DivisionRow, LandTheatreRow, OrdersGroupMemberRow, OrdersGroupRow,
-        ReservedCountryNamingRow, TableId, TableRows,
-    },
+use replay_data::{
+    rows::ArmyGroupMemberRow, rows::DivisionRow, rows::LandTheatreRow, rows::OrdersGroupMemberRow,
+    rows::OrdersGroupRow, rows::ReservedCountryNamingRow, rows::TableId, rows::TableRows,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 
 const POSITIVE: &[u8] = br#"countries={PST={theatres={theatre={
     id={id=2 type=67}
@@ -163,7 +161,7 @@ fn divisions() -> BTreeMap<u64, Division> {
 }
 
 fn run(frame: &DecodedFrame, bytes: &[u8]) -> Report {
-    let saved = saved::parse(&installed_content::parser::parse(bytes).unwrap().items).unwrap();
+    let saved = saved::parse(&installed_content_core::parser::parse(bytes).unwrap().items).unwrap();
     let positive = CountryRow {
         tag: b"PST".to_vec(),
         ..Default::default()
@@ -482,7 +480,7 @@ fn mixed_serialized_and_omitted_ordinals_keep_all_positive_payload_checks() {
 #[test]
 fn pure_regular_member_qualification_excludes_all_serialized_payloads_and_checks_parents() {
     let mut frame = frame(false);
-    let mut saved = saved::parse(&installed_content::parser::parse(POSITIVE).unwrap().items).unwrap();
+    let mut saved = saved::parse(&installed_content_core::parser::parse(POSITIVE).unwrap().items).unwrap();
     assert_eq!(
         omitted_regular_group_units(&frame, &saved, None).unwrap(),
         BTreeSet::from([handle(112, 51)])
@@ -528,7 +526,7 @@ fn pure_regular_member_qualification_excludes_all_serialized_payloads_and_checks
 
 #[test]
 fn pure_qualification_refuses_missing_reverse_membership_and_duplicate_identities() {
-    let saved = saved::parse(&installed_content::parser::parse(POSITIVE).unwrap().items).unwrap();
+    let saved = saved::parse(&installed_content_core::parser::parse(POSITIVE).unwrap().items).unwrap();
     let mut missing = frame(false);
     let TableView::Complete(TableRows::Divisions(rows)) =
         &mut *missing.tables[TableId::Divisions.index()]
@@ -576,7 +574,7 @@ fn pure_qualification_refuses_missing_reverse_membership_and_duplicate_identitie
 
 #[test]
 fn pure_qualification_reuses_the_full_affected_theatre_roster_validation() {
-    let saved = saved::parse(&installed_content::parser::parse(POSITIVE).unwrap().items).unwrap();
+    let saved = saved::parse(&installed_content_core::parser::parse(POSITIVE).unwrap().items).unwrap();
     let mut frame = frame(false);
     let TableView::Complete(TableRows::OrdersGroups(rows)) =
         &mut *frame.tables[TableId::OrdersGroups.index()]
@@ -641,7 +639,7 @@ fn unresolved_positive_group_countries_remain_refused() {
 
 #[test]
 fn repeated_reserved_country_save_tags_require_admitted_full_save_occurrences() {
-    let items = installed_content::parser::parse(br#"countries={R00={} R00={}}"#)
+    let items = installed_content_core::parser::parse(br#"countries={R00={} R00={}}"#)
         .unwrap()
         .items;
     assert!(
@@ -668,7 +666,7 @@ fn repeated_reserved_country_save_tags_require_admitted_full_save_occurrences() 
 #[test]
 fn projected_repeated_reserved_aliases_compare_theatres_and_order_of_battle() {
     use installed_content_save::SaveDocument;
-    use replay::rows::CountryLinkRow;
+    use replay_data::rows::CountryLinkRow;
     let mut frame = frame(true);
     *frame.tables[TableId::Countries.index()] =
         TableView::Complete(TableRows::Countries(vec![CountryRow {

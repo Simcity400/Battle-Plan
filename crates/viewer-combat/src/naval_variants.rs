@@ -1,9 +1,7 @@
 //! Equipment variant display names shared by active and retained-result hovers.
-use installed_content::localisation::Localisation;
-use replay::{
-    frame::DecodedFrame,
-    rows::{VariantDefinitionRow, tables},
-};
+use installed_content_localisation::localisation::Localisation;
+use replay_data::{rows::VariantDefinitionRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
 use viewer_foundation::tooltip_text::TextIcons;
 use viewer_foundation::tooltip_text::country_localised;
@@ -16,8 +14,8 @@ use {
 pub(super) struct Names<'a> {
     static_content: &'a StaticContent,
     tokens: Result<TokenNames<'a>, String>,
-    countries: Result<BTreeMap<u32, &'a replay::rows::CountryRow>, String>,
-    appearances: Result<BTreeMap<u32, &'a replay::rows::CountryAppearanceRow>, String>,
+    countries: Result<BTreeMap<u32, &'a replay_data::rows::CountryRow>, String>,
+    appearances: Result<BTreeMap<u32, &'a replay_data::rows::CountryAppearanceRow>, String>,
 }
 impl<'a> Names<'a> {
     pub(super) fn new(static_content: &'a StaticContent, frame: &'a DecodedFrame) -> Self {

@@ -13,8 +13,10 @@ doctest = false
 test-support = ["collector-memory/test-support"]
 
 [dependencies]
-engine.workspace = true
-replay.workspace = true
+engine-allocation.workspace = true
+engine-land-inputs.workspace = true
+engine-native.workspace = true
+replay-data.workspace = true
 serde = { workspace = true, features = ["derive"] }
 collector-memory.workspace = true
 collector-primitives.workspace = true

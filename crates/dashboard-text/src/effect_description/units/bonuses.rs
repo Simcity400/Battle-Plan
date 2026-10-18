@@ -2,10 +2,8 @@
 //! technology and special-project rewards.
 
 use super::*;
-use installed_content::{
-    equipment::{STAT_COUNT, stat_metadata},
-    tokens::Token,
-    unit_leader::Adjuster,
+use installed_content_core::{
+    equipment::STAT_COUNT, equipment::stat_metadata, tokens::Token, unit_leader::Adjuster,
 };
 
 fn newline(text: &mut String) {
@@ -19,8 +17,8 @@ fn stats(items: &[Item]) -> [i64; STAT_COUNT] {
     for item in items {
         if let Some(index) = item
             .keyword()
-            .and_then(|key| installed_content::equipment::stat_index(&key.folded()))
-            && let Some(value) = installed_content::modifiers::read_fixed5(item)
+            .and_then(|key| installed_content_core::equipment::stat_index(&key.folded()))
+            && let Some(value) = installed_content_core::modifiers::read_fixed5(item)
         {
             values[index] = value; // A failed scan keeps the destination.
         }
@@ -44,7 +42,7 @@ fn adjuster(key: &str, items: &[Item]) -> Adjuster {
             } else {
                 continue;
             };
-            if let Some(value) = installed_content::modifiers::read_fixed5(item) {
+            if let Some(value) = installed_content_core::modifiers::read_fixed5(item) {
                 *target = value;
             }
         }
@@ -152,7 +150,7 @@ impl Renderer<'_, '_, '_> {
         name: &str,
         items: &[Item],
         category: bool,
-        units: &installed_content::unit_leader::SubUnits,
+        units: &installed_content_core::unit_leader::SubUnits,
         scopes: Scopes,
     ) -> Result<String, String> {
         let icon = if category {
@@ -252,7 +250,7 @@ impl Renderer<'_, '_, '_> {
     fn units_bonus_multipliers(
         &self,
         items: &[Item],
-        units: &installed_content::unit_leader::SubUnits,
+        units: &installed_content_core::unit_leader::SubUnits,
         scopes: Scopes,
     ) -> Result<String, String> {
         let mut text = String::new();
@@ -283,8 +281,8 @@ impl Renderer<'_, '_, '_> {
                     }
                 } else if let Some(index) = item
                     .keyword()
-                    .and_then(|key| installed_content::equipment::stat_index(&key.folded()))
-                    && let Some(value) = installed_content::modifiers::read_fixed5(item)
+                    .and_then(|key| installed_content_core::equipment::stat_index(&key.folded()))
+                    && let Some(value) = installed_content_core::modifiers::read_fixed5(item)
                     && value != 0
                 {
                     values.push((index, value)); // Append each successful nonzero stat.

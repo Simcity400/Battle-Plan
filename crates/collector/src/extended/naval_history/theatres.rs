@@ -1,5 +1,5 @@
 use super::*;
-use engine::allocation::{reserve, reserve_exact, resize_default};
+use engine_allocation::{reserve, reserve_exact, resize_default};
 
 #[cfg(test)]
 mod oob_entry_tests;
@@ -44,7 +44,7 @@ pub(crate) struct NavalJob {
     pub(super) oob_theatres_required: usize,
     /// The callback's authenticated country roster as the theatre copy used
     /// it, for this pass's decode only; see [`copy_naval_theatres`].
-    pub(super) roster: engine::ccountry::RosterSnapshot,
+    pub(super) roster: engine_native::ccountry::RosterSnapshot,
     /// This pass's original worker registry census, including its verdict.
     /// A complete prefix supplies OOB copy and decode; an attempted failure
     /// remains terminal. Only standalone fixtures without any attempted census
@@ -174,7 +174,7 @@ impl NavalJob {
             wing_sources: Vec::with_capacity(4096),
             oob_theatres: Vec::with_capacity(2048),
             oob_theatre_positions: Vec::with_capacity(2048),
-            roster: engine::ccountry::RosterSnapshot::try_with_capacity(1024)
+            roster: engine_native::ccountry::RosterSnapshot::try_with_capacity(1024)
                 .map_err(crate::allocation::io)
                 .unwrap_or_default(),
             roots: Vec::with_capacity(2048),
@@ -375,7 +375,7 @@ fn npool_u32(log: &RawLog<NAVAL_PACK_N>, start: usize) -> u32 {
 
 fn nspan(
     log: &mut RawLog<NAVAL_PACK_N>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     addr: Option<usize>,
     len: usize,
     mask: u32,
@@ -385,7 +385,7 @@ fn nspan(
 
 fn theatre_link(
     log: &mut RawLog<NAVAL_PACK_N>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     links: &Array,
     countries: u32,
     raw: u32,
@@ -405,7 +405,7 @@ fn theatre_link(
 
 fn copy_naval_air_theatres(
     log: &mut RawLog<NAVAL_PACK_N>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     theatres: Array,
     links: &Array,
 ) {
@@ -519,13 +519,13 @@ fn copy_naval_air_theatres(
 
 pub(crate) fn copy_naval_theatres(
     log: &mut RawLog<NAVAL_PACK_N>,
-    roster_snapshot: &mut engine::ccountry::RosterSnapshot,
-    memory: &impl engine::Memory,
+    roster_snapshot: &mut engine_native::ccountry::RosterSnapshot,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
     details_active: bool,
 ) {
-    let root = engine::ccountry::read_reserved_observation(memory, base, game_state);
+    let root = engine_native::ccountry::read_reserved_observation(memory, base, game_state);
     copy_naval_theatres_with_root(
         log,
         roster_snapshot,
@@ -542,14 +542,14 @@ pub(crate) fn copy_naval_theatres(
 
 fn copy_naval_theatres_with_root(
     log: &mut RawLog<NAVAL_PACK_N>,
-    roster_snapshot: &mut engine::ccountry::RosterSnapshot,
-    memory: &impl engine::Memory,
+    roster_snapshot: &mut engine_native::ccountry::RosterSnapshot,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
     details_active: bool,
-    reserved: engine::ccountry::ReservedCountryObservation,
+    reserved: engine_native::ccountry::ReservedCountryObservation,
 ) {
-    use engine::{carmy_group, ccountry};
+    use engine_native::{carmy_group, ccountry};
     let mask = if details_active {
         THEATRE_MASK
     } else {
@@ -605,7 +605,7 @@ fn copy_naval_theatres_with_root(
     let countries = match nspan(
         log,
         memory,
-        game_state.checked_add(engine::cgame_state::COUNTRIES),
+        game_state.checked_add(engine_native::cgame_state::COUNTRIES),
         16,
         mask,
     ) {
@@ -615,7 +615,7 @@ fn copy_naval_theatres_with_root(
     let links = match nspan(
         log,
         memory,
-        game_state.checked_add(engine::cgame_state::COUNTRY_LINKS),
+        game_state.checked_add(engine_native::cgame_state::COUNTRY_LINKS),
         16,
         mask,
     ) {
@@ -725,14 +725,14 @@ fn copy_naval_theatres_with_root(
 #[allow(clippy::too_many_arguments)]
 fn copy_country_theatres(
     log: &mut RawLog<NAVAL_PACK_N>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     pointer: usize,
     links_array: &Array,
-    roster: Option<&[Option<engine::ccountry::Country>]>,
+    roster: Option<&[Option<engine_native::ccountry::Country>]>,
     details_active: bool,
     mask: u32,
 ) -> bool {
-    use engine::{ccountry, ctheater_group};
+    use engine_native::{ccountry, ctheater_group};
     // Land theatre headers refresh hourly; the five nested/detail tables
     // refresh only on their shared daily slot.
     for theatres_off in [ccountry::THEATRES, ccountry::AIR_THEATRES] {
@@ -930,11 +930,11 @@ fn copy_country_theatres(
 
 fn copy_theatre_name(
     log: &mut RawLog<NAVAL_PACK_N>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     name_address: Option<usize>,
     mask: u32,
 ) {
-    use engine::msvc_string;
+    use engine_native::msvc_string;
     let header_addr = match name_address {
         Some(addr) => addr,
         None => return,
@@ -996,7 +996,7 @@ const OOB_ROOT_SPANS: [(usize, usize); 8] = [
 /// one is taken on its own, as before. Returns each field's log start.
 fn copy_oob_root_spans(
     log: &mut RawLog<NAVAL_PACK_N>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     pointer: usize,
 ) -> [Option<usize>; OOB_ROOT_SPANS.len()] {
     let mut starts = [None; OOB_ROOT_SPANS.len()];
@@ -1041,7 +1041,7 @@ fn copy_oob_root_spans(
 /// as before.
 fn copy_oob_root(
     job: &mut NavalJob,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     pointer: usize,
 ) -> bool {
@@ -1114,13 +1114,15 @@ fn copy_oob_root(
             if offset == corders_group::HQ_PROVIDER {
                 // Provider is a member pointer: host identity span
                 // plus group backlink, like member_unit.
-                if let Some(unit) = target.checked_sub(engine::corders_group_member::HOST_OFFSET) {
+                if let Some(unit) =
+                    target.checked_sub(engine_native::corders_group_member::HOST_OFFSET)
+                {
                     let _ = nspan(log, memory, Some(unit), 32, OOB_MASK);
                 }
                 let _ = nspan(
                     log,
                     memory,
-                    target.checked_add(engine::corders_group_member::GROUP),
+                    target.checked_add(engine_native::corders_group_member::GROUP),
                     8,
                     OOB_MASK,
                 );
@@ -1147,8 +1149,9 @@ fn copy_oob_root(
         |log, member, batched| {
             // Host identity span (vtable/class/secondary/handle 32 bytes)
             // at the embedded base, plus group backlink at the member.
-            if let Some(unit) = member.checked_sub(engine::corders_group_member::HOST_OFFSET) {
-                let backlink = member.checked_add(engine::corders_group_member::GROUP);
+            if let Some(unit) = member.checked_sub(engine_native::corders_group_member::HOST_OFFSET)
+            {
+                let backlink = member.checked_add(engine_native::corders_group_member::GROUP);
                 if batched {
                     take_oob_member(log, memory, unit, backlink);
                 } else {
@@ -1169,7 +1172,7 @@ fn copy_oob_root(
         let children_header = match nspan(
             log,
             memory,
-            pointer.checked_add(engine::carmy_group::MEMBER_DATA),
+            pointer.checked_add(engine_native::carmy_group::MEMBER_DATA),
             16,
             OOB_MASK,
         ) {
@@ -1232,7 +1235,7 @@ const OOB_MEMBER_WORST: (usize, usize) = (2, 40);
 /// Then neither this run nor the per-entry loop can overflow within it.
 /// Otherwise the run's entries are taken and visited one by one, with
 /// `false`, as the per-entry loop takes them, its visits too.
-fn take_oob_entries<M: engine::Memory>(
+fn take_oob_entries<M: engine_native::Memory>(
     log: &mut RawLog<NAVAL_PACK_N>,
     memory: &M,
     array: &Array,
@@ -1276,7 +1279,9 @@ fn take_oob_entries<M: engine::Memory>(
         }
         let stopped = completed < run;
         if stopped {
-            engine::batch_fallback::record(engine::batch_fallback::Batch::OrderOfBattle);
+            engine_native::batch_fallback::record(
+                engine_native::batch_fallback::Batch::OrderOfBattle,
+            );
         }
         for &pointer in &pointers[..completed] {
             if pointer != 0 && !visit(log, pointer, true) {
@@ -1295,7 +1300,7 @@ fn take_oob_entries<M: engine::Memory>(
 /// identity the backlink is taken on its own (counted in `batch_fallbacks`
 /// as `order_of_battle`). Only a batched run calls it, whose admission
 /// already holds its worst case ([`OOB_MEMBER_WORST`]).
-fn take_oob_member<M: engine::Memory>(
+fn take_oob_member<M: engine_native::Memory>(
     log: &mut RawLog<NAVAL_PACK_N>,
     memory: &M,
     unit: usize,
@@ -1306,7 +1311,9 @@ fn take_oob_member<M: engine::Memory>(
             // Both read, or the backlink's failure logged.
             Some((_, 1..)) => return,
             Some(_) => {
-                engine::batch_fallback::record(engine::batch_fallback::Batch::OrderOfBattle);
+                engine_native::batch_fallback::record(
+                    engine_native::batch_fallback::Batch::OrderOfBattle,
+                );
                 let _ = nspan(log, memory, Some(backlink), 8, OOB_MASK);
                 return;
             }
@@ -1321,8 +1328,8 @@ fn take_oob_member<M: engine::Memory>(
 /// The order-of-battle roots from the orders-group registry itself: its
 /// header, buckets and each root's identity and country, then the root's own
 /// spans. Returns whether the copy goes on to stage the rosters.
-fn copy_oob_registry(job: &mut NavalJob, memory: &impl engine::Memory, base: usize) -> bool {
-    use engine::{creference_registry as registry, reference_bucket as bucket};
+fn copy_oob_registry(job: &mut NavalJob, memory: &impl engine_native::Memory, base: usize) -> bool {
+    use engine_native::{creference_registry as registry, reference_bucket as bucket};
     let log = &mut job.log;
     let table = match nspan(
         log,
@@ -1377,7 +1384,7 @@ fn copy_oob_registry(job: &mut NavalJob, memory: &impl engine::Memory, base: usi
         Some(v) => v as u64,
         None => return false,
     };
-    let army_group_vtable = match base.checked_add(engine::carmy_group::VTABLE_RVA) {
+    let army_group_vtable = match base.checked_add(engine_native::carmy_group::VTABLE_RVA) {
         Some(v) => v as u64,
         None => return false,
     };
@@ -1453,7 +1460,7 @@ fn copy_oob_registry(job: &mut NavalJob, memory: &impl engine::Memory, base: usi
     true
 }
 
-pub(crate) fn copy_naval_oob(job: &mut NavalJob, memory: &impl engine::Memory, base: usize) {
+pub(crate) fn copy_naval_oob(job: &mut NavalJob, memory: &impl engine_native::Memory, base: usize) {
     job.oob_theatres.clear();
     job.oob_theatre_positions.clear();
     job.oob_theatres_required = 0;
@@ -1592,7 +1599,7 @@ fn copy_reserved_land_headers(job: &mut NavalJob, memory: &impl Memory, base: us
         let header = nspan(
             &mut job.log,
             memory,
-            root.pointer.checked_add(engine::ccountry::THEATRES),
+            root.pointer.checked_add(engine_native::ccountry::THEATRES),
             16,
             0,
         )
@@ -1716,7 +1723,7 @@ fn copy_reserved_land_headers(job: &mut NavalJob, memory: &impl Memory, base: us
 
 fn copy_naval_pass(
     job: &mut NavalJob,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
     ticks: &mut [u64; NAVAL_PACK_N],
@@ -1766,7 +1773,7 @@ pub(crate) fn copy_naval_refresh(
     job: &mut NavalJob,
 ) -> NavalCopyReport {
     job.theatres_active =
-        replay::cadence::should_walk(TableId::LandTheatreGroups, ctx.hour, ctx.force_full);
+        replay_data::cadence::should_walk(TableId::LandTheatreGroups, ctx.hour, ctx.force_full);
     // A copy whose wing census follows it is refused when that census is
     // installed (`NavalJob::install_wings_after`).
     if job.theatres_active && job.wing_outcome.is_none() && !job.wings_follow {
@@ -1837,8 +1844,16 @@ impl Captured {
 /// resolved countries through; every read still goes to the log.
 struct RosterReplay<'a, M> {
     inner: &'a M,
-    roster: Option<(usize, usize, engine::ccountry::AuthenticatedRoster<'a>)>,
-    reserved: Option<(usize, usize, engine::ccountry::ReservedCountryObservation)>,
+    roster: Option<(
+        usize,
+        usize,
+        engine_native::ccountry::AuthenticatedRoster<'a>,
+    )>,
+    reserved: Option<(
+        usize,
+        usize,
+        engine_native::ccountry::ReservedCountryObservation,
+    )>,
 }
 
 impl<M: Memory> Memory for RosterReplay<'_, M> {
@@ -1846,16 +1861,16 @@ impl<M: Memory> Memory for RosterReplay<'_, M> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<Result<engine::ccountry::Country, &'static str>> {
+    ) -> Option<Result<engine_native::ccountry::Country, &'static str>> {
         self.authenticated_reserved_country_observation(base, game_state)
-            .map(engine::ccountry::ReservedCountryObservation::result)
+            .map(engine_native::ccountry::ReservedCountryObservation::result)
     }
 
     fn authenticated_reserved_country_observation(
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<engine::ccountry::ReservedCountryObservation> {
+    ) -> Option<engine_native::ccountry::ReservedCountryObservation> {
         self.reserved
             .filter(|(module, state, _)| (*module, *state) == (base, game_state))
             .map(|(_, _, root)| root)
@@ -1870,7 +1885,7 @@ impl<M: Memory> Memory for RosterReplay<'_, M> {
         &self,
         address: usize,
         len: usize,
-    ) -> Option<engine::memory::SliceMemory<'_>> {
+    ) -> Option<engine_native::memory::SliceMemory<'_>> {
         self.inner.immutable_view(address, len)
     }
 
@@ -1878,7 +1893,7 @@ impl<M: Memory> Memory for RosterReplay<'_, M> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<engine::ccountry::AuthenticatedRoster<'_>> {
+    ) -> Option<engine_native::ccountry::AuthenticatedRoster<'_>> {
         self.roster
             .filter(|(module, state, _)| (*module, *state) == (base, game_state))
             .map(|(_, _, roster)| roster)

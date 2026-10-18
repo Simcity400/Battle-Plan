@@ -7,8 +7,9 @@
 //! text argument `NAME`. A port strike localises
 //! `NAVAL_PORT_STRIKE_TITLE` with the region name alone.
 use dashboard_text::naval_battle_name::Picker;
-use installed_content::localisation::{Argument, Localisation};
-use replay::{frame::DecodedFrame, rows::tables};
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 use viewer_foundation::tooltip_text::state_name;
 use viewer_foundation::tooltip_text::{TextIcons, builtin, token};
@@ -281,7 +282,7 @@ pub(super) fn title(
 fn vp_tag(
     frame: &DecodedFrame,
     state: u32,
-    states: &[replay::rows::StateRow],
+    states: &[replay_data::rows::StateRow],
     states_complete: bool,
 ) -> io::Result<Result<String, String>> {
     let (subject, slot) = if state == 0 {
@@ -322,9 +323,11 @@ fn vp_tag(
         };
         (format!("state {state}'s owner (slot {slot})"), slot)
     };
-    Ok(installed_content::country_names::original_or_own_tag(frame, slot)
-        .map(str::to_owned)
-        .map_err(|reason| format!("{subject}: {reason}")))
+    Ok(
+        installed_content_country_names::country_names::original_or_own_tag(frame, slot)
+            .map(str::to_owned)
+            .map_err(|reason| format!("{subject}: {reason}")),
+    )
 }
 
 #[cfg(test)]

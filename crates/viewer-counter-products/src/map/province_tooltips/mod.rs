@@ -14,15 +14,11 @@ mod selection;
 pub(super) mod units;
 mod weather;
 
-use installed_content::{
-    country_names::CountryNames,
-    localisation::{Argument as Arg, Localisation},
-    states::StateDefinition,
-};
-use replay::{
-    frame::DecodedFrame,
-    rows::{ProvinceRow, tables},
-};
+use installed_content_country_names::country_names::CountryNames;
+use installed_content_localisation::{localisation::Argument as Arg, localisation::Localisation};
+use installed_content_states::states::StateDefinition;
+use replay_data::{rows::ProvinceRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -37,15 +33,15 @@ pub struct Content {
     members: BTreeMap<u32, Vec<u32>>,
     impassable: BTreeSet<u32>,
     neighbors: Result<BTreeMap<u32, Vec<u32>>, String>,
-    temperature: Result<installed_content::weather::TemperatureRanges, String>,
-    /// What the hourly temperature pass reads ([`replay::temperature`]), and the last frame's
+    temperature: Result<installed_content_weather::weather::TemperatureRanges, String>,
+    /// What the hourly temperature pass reads ([`replay_data::temperature`]), and the last frame's
     /// derivation, which the next hour of the same anchor steps once from.
-    pass: Result<replay::temperature::Content, String>,
-    derived: Mutex<replay::temperature::Memo>,
+    pass: Result<replay_data::temperature::Content, String>,
+    derived: Mutex<replay_data::temperature::Memo>,
     pub(super) units: Result<units::Content, String>,
     border: Result<border::Defines, String>,
     /// `NGame.AIR_LOG_TIMEOUT_HOURS`, the daily prune's window
-    /// ([`replay::air_region_derive`]).
+    /// ([`replay_derive::air_region_derive`]).
     air_log_timeout: Result<i32, String>,
     /// The `NCountry` resistance and compliance defines the occupation hover reads.
     occupation: Result<mode_lines::OccupationDefines, String>,
@@ -58,17 +54,17 @@ pub struct Content {
 
 impl Content {
     pub fn load(
-        layers: &installed_content::ResolvedLayers,
-        defines: &installed_content::defines::Defines,
+        layers: &installed_content_core::ResolvedLayers,
+        defines: &installed_content_core::defines::Defines,
         states: &BTreeMap<u32, StateDefinition>,
-        temperature: &Result<installed_content::weather::TemperatureRanges, String>,
-        subunits: Result<&installed_content::unit_leader::SubUnits, &str>,
+        temperature: &Result<installed_content_weather::weather::TemperatureRanges, String>,
+        subunits: Result<&installed_content_core::unit_leader::SubUnits, &str>,
     ) -> Self {
         let members = states
             .iter()
             .map(|(&id, state)| (id, state.provinces.clone()))
             .collect();
-        let graph = installed_content::province_graph::ProvinceGraph::read(layers);
+        let graph = installed_content_core::province_graph::ProvinceGraph::read(layers);
         Self {
             impassable: states
                 .iter()
@@ -82,7 +78,7 @@ impl Content {
                 .as_ref()
                 .map_err(|e| e.to_string())
                 .and_then(|(graph, geometry)| {
-                    installed_content::weather::temperature::read_with(layers, graph, geometry)
+                    installed_content_weather::weather::temperature::read_with(layers, graph, geometry)
                         .map_err(|e| e.to_string())
                 }),
             derived: Default::default(),
@@ -147,7 +143,7 @@ impl Content {
     fn temperature_at(
         &self,
         frame: &DecodedFrame,
-        rows: &[replay::rows::WeatherProvinceRow],
+        rows: &[replay_data::rows::WeatherProvinceRow],
         province: u32,
     ) -> Result<i64, String> {
         let mut derived = self
@@ -340,10 +336,10 @@ struct Asked<'a> {
 impl air_region::Rosters for Asked<'_> {
     fn visiting_pass(
         &self,
-        branch: replay::BranchId,
-        hour: replay::Hour,
+        branch: replay_data::BranchId,
+        hour: replay_data::Hour,
         slot: u32,
-    ) -> Option<Result<Option<replay::Hour>, String>> {
+    ) -> Option<Result<Option<replay_data::Hour>, String>> {
         let answer = air_region::Rosters::visiting_pass(self.rosters, branch, hour, slot);
         if answer.is_none() {
             self.pending.set(true);
@@ -515,7 +511,7 @@ impl Context<'_> {
             ));
         }
         // Resolve the tag through the small flag atlas.
-        let name = installed_content::localisation::crt_case_text(
+        let name = installed_content_localisation::localisation::crt_case_text(
             &self.countries.name_with(slot, "_DEF")?,
             true,
             true,

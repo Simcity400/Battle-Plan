@@ -4,12 +4,11 @@ use std::{
 };
 
 use installed_content_save::Save;
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        CountryRow, DivisionRow, DivisionStatusRow, DivisionSupplyFooter, Recorded, TableId, tables,
-    },
+use replay_data::{
+    rows::CountryRow, rows::DivisionRow, rows::DivisionStatusRow, rows::DivisionSupplyFooter,
+    rows::Recorded, rows::TableId, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 use super::{
     CountryContext, Report, TokenNames, complete, country_tag, invalid, required_country_tag,
@@ -75,8 +74,16 @@ pub fn compare_land_combats(
         // handle: the save loader appends any saved unit reference. A handle
         // no saved roster holds states no class; the handles compare above.
         for (side, classes, members) in [
-            ("attacker_classes", &actual.attacker_classes, &expected.attackers),
-            ("defender_classes", &actual.defender_classes, &expected.defenders),
+            (
+                "attacker_classes",
+                &actual.attacker_classes,
+                &expected.attackers,
+            ),
+            (
+                "defender_classes",
+                &actual.defender_classes,
+                &expected.defenders,
+            ),
         ] {
             let expected: Vec<_> = members.iter().map(|&unit| unit_class(save, unit)).collect();
             let matches = classes.len() == expected.len()
@@ -539,7 +546,7 @@ pub fn compare_division_status(
                     // The supply consumer save writer emits token 0x4CF2
                     // only for disruption > 0; omission never proves zero.
                     // The footer is stored at its display step
-                    // (replay::display), which keeps the sign; the save's
+                    // (replay_data::display), which keeps the sign; the save's
                     // exact value is rounded the same way.
                     if let Some(saved) = saved.presentation.disrupted_supply.as_ref() {
                         report.scalar_displayed(
@@ -635,7 +642,7 @@ pub fn compare_division_status(
 /// ([`compare_acclimatization`]).
 pub fn compare_camouflage(
     label: &str,
-    row: &replay::rows::DivisionStatusRow,
+    row: &replay_data::rows::DivisionStatusRow,
     saved: Option<&installed_content_save::Acclimatization>,
     tokens: &TokenNames<'_>,
     show_at: &Result<i64, String>,
@@ -679,7 +686,7 @@ pub fn compare_camouflage(
         },
     };
     let expected = saved.and_then(|saved| {
-        engine::acclimatization_data::camouflage(
+        engine_native::acclimatization_data::camouflage(
             saved
                 .entries
                 .iter()
@@ -706,7 +713,7 @@ pub fn compare_camouflage(
 /// is 100.
 pub fn compare_acclimatization(
     label: &str,
-    row: &replay::rows::DivisionStatusRow,
+    row: &replay_data::rows::DivisionStatusRow,
     saved: Option<&installed_content_save::Acclimatization>,
     tokens: &TokenNames<'_>,
     report: &mut Report,
@@ -778,7 +785,7 @@ fn compare_template_text(
     saved: &[u8],
     saved_present: bool,
 ) {
-    let prefix = installed_content::parser::c_string(stored);
+    let prefix = installed_content_core::parser::c_string(stored);
     if prefix.len() < stored.len() {
         report.limitation(
             "native text serialization ends at the first NUL; captured trailing bytes are not save-comparable",
@@ -801,7 +808,10 @@ pub fn compare_division_templates(
 ) -> io::Result<()> {
     let rows = complete::<tables::DivisionTemplates>(frame)?;
     if !report.refresh_is_current(TableId::DivisionTemplates, frame.hour) {
-        report.limitation(replay::cadence::STAGGER_LIMITATION, "DivisionTemplates");
+        report.limitation(
+            replay_data::cadence::STAGGER_LIMITATION,
+            "DivisionTemplates",
+        );
         return Ok(());
     }
     let mut seen = BTreeSet::new();
@@ -1123,7 +1133,7 @@ pub fn compare_naval_units(
             ),
             Recorded::Value(None) => return Err(invalid("fleet stored name capture refused")),
             Recorded::Value(Some(bytes)) => {
-                let comparable = installed_content::parser::c_string(bytes);
+                let comparable = installed_content_core::parser::c_string(bytes);
                 if comparable.len() != bytes.len() {
                     report.limitation("native name serialization ends at the first NUL; trailing owned bytes need a live comparison", format!("{label}.name"));
                 }
@@ -1293,7 +1303,7 @@ pub fn compare_naval_units(
             Some(actual.experience),
             Some(&expected.experience),
             "Ships.experience",
-            replay::rows::ShipRow::EXPERIENCE_STEP,
+            replay_data::rows::ShipRow::EXPERIENCE_STEP,
         );
     }
     for id in ships.keys() {
@@ -1316,7 +1326,7 @@ pub fn compare_naval_combat_sources(
     save: &Save,
     report: &mut Report,
 ) -> io::Result<()> {
-    use replay::rows::NavalProvinceCombatRow as Entry;
+    use replay_data::rows::NavalProvinceCombatRow as Entry;
     let naval: BTreeSet<u64> = frame
         .complete::<tables::NavalCombats>()?
         .iter()
@@ -1570,16 +1580,16 @@ pub fn compare_air_wings(
             );
         }
         match &actual.name {
-            replay::rows::Recorded::NotRecorded => report.limitation(
+            replay_data::rows::Recorded::NotRecorded => report.limitation(
                 "stored air wing name not recorded by this format",
                 format!("{label}.name"),
             ),
-            replay::rows::Recorded::Value(None) => report.difference(
+            replay_data::rows::Recorded::Value(None) => report.difference(
                 format!("{label}.name: guarded read or name arena refusal"),
                 "unavailable",
                 &expected.name,
             ),
-            replay::rows::Recorded::Value(Some(name)) => {
+            replay_data::rows::Recorded::Value(Some(name)) => {
                 report.compared("AirWings.name", 1);
                 // The game writes the key unconditionally outside
                 // checksum mode. A missing saved key never proves an empty name.
@@ -1851,7 +1861,7 @@ pub fn compare_divisions(
         } else if expected.template.is_none() {
             report.limitation("division has a null standard template and the save omits its template reference; no fake-intel template was substituted", label.clone());
         }
-        // Both are stored at their display steps (replay::display); the
+        // Both are stored at their display steps (replay_data::display); the
         // save's exact values are rounded the same way.
         report.scalar_displayed(
             &label,

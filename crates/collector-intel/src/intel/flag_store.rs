@@ -8,7 +8,7 @@
 //! manager since that read registered it (same watch epoch and sequence; a
 //! load, gap, recovery, table change, poison or running writer revokes it).
 //! Every writer of a manager's header and rows is a hooked site
-//! ([`engine::script_flag_mutations`]), so the fresh read would return the
+//! ([`engine_mutations::script_flag_mutations`]), so the fresh read would return the
 //! held rows: each manager's rows are sorted by token, so the carried copy
 //! is byte-identical. Each hour also reads the carryable managers of its
 //! sampled slice ([`crate::sampled_verify`], keyed by [`key`]; every one
@@ -49,7 +49,9 @@ use crate::{
     flag_changes::{Changes, Counts},
     sampled_verify::{BURNED_IN_ROTATION, Check},
 };
-use engine::{Memory, allocation, cflag_manager, cscript_flag, walk::Outcome};
+use engine_allocation as allocation;
+use engine_native::{Memory, walk::Outcome};
+use engine_scripts::{cflag_manager, cscript_flag};
 use std::ops::Range;
 
 /// What a quiet hour must find unchanged since the latest complete walk.
@@ -457,7 +459,7 @@ impl FlagStore {
         memory: &impl Memory,
         base: usize,
         check: Check,
-        output: &mut engine::walk::Buffer<'_, ScopedFlag>,
+        output: &mut engine_native::walk::Buffer<'_, ScopedFlag>,
     ) -> Option<Sample> {
         let mut sample = Sample::default();
         let Self {
@@ -473,7 +475,7 @@ impl FlagStore {
         }
         let mut len = 0usize;
         // The held rows of scopes `from..to`, copied whole after `len`.
-        let copy = |output: &mut engine::walk::Buffer<'_, ScopedFlag>,
+        let copy = |output: &mut engine_native::walk::Buffer<'_, ScopedFlag>,
                     len: &mut usize,
                     from: usize,
                     to: usize|
@@ -506,7 +508,7 @@ impl FlagStore {
                 memory,
                 base,
                 head,
-                engine::walk::Buffer::Growing(scratch),
+                engine_native::walk::Buffer::Growing(scratch),
             );
             let Outcome::Rows { len: count } = read else {
                 return None;
@@ -647,7 +649,7 @@ impl<'a> FlagReuse<'a> {
         memory: &impl Memory,
         base: usize,
         state: usize,
-        output: &mut engine::walk::Buffer<'_, ScopedFlag>,
+        output: &mut engine_native::walk::Buffer<'_, ScopedFlag>,
         countries: impl FnOnce(&[(usize, u32)]) -> bool,
     ) -> Option<Outcome> {
         let structure = self.changes.structure();

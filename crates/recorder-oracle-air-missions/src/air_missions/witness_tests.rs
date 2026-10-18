@@ -1,6 +1,6 @@
 use super::*;
-use replay::frame::TableView;
-use replay::rows::{AirReferenceWitnessRow, AirRegionalMissionRow, TableRows};
+use replay_data::{rows::AirReferenceWitnessRow, rows::AirRegionalMissionRow, rows::TableRows};
+use replay_frame::frame::TableView;
 
 fn set(frame: &mut DecodedFrame, rows: TableRows) {
     let index = rows.table().index();

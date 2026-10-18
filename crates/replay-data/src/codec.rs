@@ -52,14 +52,14 @@ pub fn try_format(args: std::fmt::Arguments<'_>) -> io::Result<String> {
     struct Writer(String);
     impl std::fmt::Write for Writer {
         fn write_str(&mut self, text: &str) -> std::fmt::Result {
-            engine::allocation::reserve_string(&mut self.0, text.len())
+            engine_allocation::reserve_string(&mut self.0, text.len())
                 .map_err(|_| std::fmt::Error)?;
             self.0.push_str(text);
             Ok(())
         }
     }
     let mut writer = Writer(String::new());
-    std::fmt::write(&mut writer, args).map_err(|_| engine::allocation::oom())?;
+    std::fmt::write(&mut writer, args).map_err(|_| engine_allocation::oom())?;
     Ok(writer.0)
 }
 
@@ -70,14 +70,14 @@ pub fn invalid(message: impl Into<String>) -> io::Error {
 /// Capture callbacks keep static diagnostics allocation-free; output-worker
 /// scopes retain their text.
 pub fn invalid_static(message: &'static str) -> io::Error {
-    invalid_for_capture(message, engine::allocation::capture_active())
+    invalid_for_capture(message, engine_allocation::capture_active())
 }
 
 fn invalid_for_capture(message: &'static str, capture_active: bool) -> io::Error {
     if capture_active && !ERROR_DETAILS.get() {
         io::Error::from(io::ErrorKind::InvalidData)
     } else if ERROR_DETAILS.get() {
-        match engine::allocation::string(message) {
+        match engine_allocation::string(message) {
             Ok(message) => invalid(message),
             Err(error) => error,
         }
@@ -89,13 +89,13 @@ fn invalid_for_capture(message: &'static str, capture_active: bool) -> io::Error
 #[cfg(test)]
 #[test]
 fn spool_validation_worker_details_do_not_enable_callback_diagnostics() {
-    let growths = engine::allocation::growths();
+    let growths = engine_allocation::growths();
     assert!(
         invalid_for_capture("callback refusal", true)
             .get_ref()
             .is_none()
     );
-    assert_eq!(engine::allocation::growths(), growths);
+    assert_eq!(engine_allocation::growths(), growths);
     let error = {
         let _details = error_details_scope();
         with_error_details(|| with_error_details(|| invalid_for_capture("worker refusal", true)))
@@ -114,8 +114,8 @@ pub fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> io::Result<()> {
     let additional = bytes
         .len()
         .checked_add(4)
-        .ok_or_else(engine::allocation::oom)?;
-    engine::allocation::reserve(out, additional)?;
+        .ok_or_else(engine_allocation::oom)?;
+    engine_allocation::reserve(out, additional)?;
     out.extend_from_slice(&length.to_le_bytes());
     out.extend_from_slice(bytes);
     Ok(())
@@ -225,7 +225,7 @@ impl<'a> Decoder<'a> {
     }
     pub fn bytes(&mut self) -> io::Result<Vec<u8>> {
         let n = self.u32()? as usize;
-        engine::allocation::copy_vec(self.take(n)?)
+        engine_allocation::copy_vec(self.take(n)?)
     }
     pub fn string(&mut self) -> io::Result<String> {
         String::from_utf8(self.bytes()?).map_err(|_| invalid_static("invalid UTF-8 string"))

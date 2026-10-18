@@ -1,7 +1,7 @@
 use super::*;
-use engine::{
-    ccountry, cgame_state, csub_unit_definition as subunit,
-    memory::{CountedMemory, SliceMemory},
+use engine_native::{
+    ccountry, cgame_state, csub_unit_definition as subunit, memory::CountedMemory,
+    memory::SliceMemory,
 };
 
 /// Base zero; the subunit database pointer reads as 0x8800.
@@ -86,7 +86,7 @@ fn every_hour_reads_both_tables_and_bad_memory_cannot_claim_empty() {
         bytes: &[],
     });
     for (hour, force) in (-24..24).map(|hour| (hour, false)).chain([(0, true)]) {
-        assert!(replay::cadence::should_walk(TABLES[0], hour, force));
+        assert!(replay_data::cadence::should_walk(TABLES[0], hour, force));
         let reads = crate::read_accounting::Capture::new();
         capture.capture(&present, 0, 0x1000, hour, force);
         let read = reads.finish();
@@ -102,7 +102,7 @@ fn every_hour_reads_both_tables_and_bad_memory_cannot_claim_empty() {
         else {
             panic!("unreadable templates must fail at hour {hour}");
         };
-        assert_ne!(reason, replay::cadence::SKIPPED_REASON);
+        assert_ne!(reason, replay_data::cadence::SKIPPED_REASON);
         assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
         assert!(matches!(capture.tables()[1], TableView::Unavailable { .. }));
     }
@@ -113,7 +113,7 @@ fn every_hour_reads_both_tables_and_bad_memory_cannot_claim_empty() {
 #[test]
 fn hourly_template_job_publishes_direct_walk_rows() {
     use crate::acquisition_jobs::TemplatesRequest;
-    use engine::country_memory::Cache;
+    use engine_native::country_memory::Cache;
     use std::sync::Arc;
 
     let mut source = fixture();
@@ -140,8 +140,8 @@ fn hourly_template_job_publishes_direct_walk_rows() {
         );
         assert_eq!(capture.outcomes(), [Outcome::Rows { len: 1 }; N]);
         let [
-            TableView::Complete(replay::rows::TableRows::DivisionTemplates(dictionary)),
-            TableView::Complete(replay::rows::TableRows::DivisionTemplateIcons(icons)),
+            TableView::Complete(replay_data::rows::TableRows::DivisionTemplates(dictionary)),
+            TableView::Complete(replay_data::rows::TableRows::DivisionTemplateIcons(icons)),
         ] = capture.tables()
         else {
             panic!("complete template job tables at {hour}");
@@ -202,8 +202,8 @@ fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
     }
     capture.capture(&source, 0, 0x1000, 3, true);
     let [
-        TableView::Complete(replay::rows::TableRows::DivisionTemplates(rows)),
-        TableView::Complete(replay::rows::TableRows::DivisionTemplateIcons(icons)),
+        TableView::Complete(replay_data::rows::TableRows::DivisionTemplates(rows)),
+        TableView::Complete(replay_data::rows::TableRows::DivisionTemplateIcons(icons)),
     ] = capture.tables()
     else {
         panic!("complete templates");
@@ -242,7 +242,7 @@ fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
     assert_eq!(icons[0].priority_unit_name, b"infantry");
     assert_eq!(
         icons[0].formation_division_count,
-        replay::rows::Recorded::Value(Some(-17))
+        replay_data::rows::Recorded::Value(Some(-17))
     );
     // A row whose model inputs failed publishes the flag, keeps its
     // counter fields and is counted by reason.
@@ -250,7 +250,7 @@ fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
     capture.icon_rows.rows[0].model_failure = Some("template grouped subunits unreadable");
     let [
         _,
-        TableView::Complete(replay::rows::TableRows::DivisionTemplateIcons(flagged)),
+        TableView::Complete(replay_data::rows::TableRows::DivisionTemplateIcons(flagged)),
     ] = capture.tables()
     else {
         panic!("complete icons");
@@ -259,7 +259,7 @@ fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
     assert_eq!(flagged[0].priority_unit_name, b"infantry");
     assert_eq!(
         flagged[0].formation_division_count,
-        replay::rows::Recorded::Value(Some(-17))
+        replay_data::rows::Recorded::Value(Some(-17))
     );
     capture.icon_rows.rows[0] = good;
     let mut failures = ModelFailures::default();
@@ -307,7 +307,7 @@ fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
 #[test]
 #[ignore = "synthetic template fallback capture and encoded delta costs"]
 fn border_effect_template_key_scale_bench() {
-    use replay::rows::RowCodec;
+    use replay_data::rows::RowCodec;
     use std::time::Instant;
 
     for templates in [193, 1_500, 5_000] {
@@ -338,7 +338,7 @@ fn border_effect_template_key_scale_bench() {
         capacities.counts = templates;
         let mut captured = Captured::with_capacities(&capacities);
         let rows = |captured: &Captured| {
-            let TableView::Complete(replay::rows::TableRows::DivisionTemplates(rows)) =
+            let TableView::Complete(replay_data::rows::TableRows::DivisionTemplates(rows)) =
                 captured.tables().into_iter().next().unwrap()
             else {
                 panic!("complete template dictionary");
@@ -391,9 +391,9 @@ fn border_effect_template_key_scale_bench() {
 fn displayed(inputs: [TableInput; N]) -> DivisionTemplateIconRow {
     let [
         _,
-        TableInput::Sampled(TableView::Complete(replay::rows::TableRows::DivisionTemplateIcons(
-            mut rows,
-        ))),
+        TableInput::Sampled(TableView::Complete(
+            replay_data::rows::TableRows::DivisionTemplateIcons(mut rows),
+        )),
     ] = inputs
     else {
         panic!("complete hourly icon fixture")
@@ -429,7 +429,7 @@ fn hourly_equality_and_same_day_rename_use_exact_same_frame_bytes() {
     assert!(matches!(
         displayed(capture.table_inputs()).display_name,
         Recorded::Value(Some(TemplateDisplayName {
-            sample_hour: replay::rows::PacketHour::Host,
+            sample_hour: replay_data::rows::PacketHour::Host,
             value: TemplateNameValue::SameAsDivisionTemplates
         }))
     ));
@@ -438,7 +438,7 @@ fn hourly_equality_and_same_day_rename_use_exact_same_frame_bytes() {
     set_name(&mut source, b"Renamed", b"unused");
     capture.capture(&source, 0, 0x1000, 11, false);
     let [
-        TableView::Complete(replay::rows::TableRows::DivisionTemplates(dictionary)),
+        TableView::Complete(replay_data::rows::TableRows::DivisionTemplates(dictionary)),
         _,
     ] = capture.tables()
     else {

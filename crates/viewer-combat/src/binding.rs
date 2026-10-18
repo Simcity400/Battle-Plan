@@ -1,7 +1,8 @@
 //! One binding per recorded hour. Missing values stay optional; authored examples do not fill gaps.
 use super::{Assets, Selection, Values, Widget};
-use installed_content::localisation::Argument;
-use replay::{frame::DecodedFrame, rows::tables};
+use installed_content_localisation::localisation::Argument;
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 use viewer_foundation::engagement_history::CombatFlags;
 use viewer_foundation::engagement_progress::FIXED;
@@ -570,12 +571,12 @@ impl Bindings {
             text(
                 &mut self.values,
                 &format!("{prefix}/{wnd}_wnd/stat_positioning"),
-                installed_content::fixed5::fixed5_percent(positioning, 0, true),
+                installed_content_core::fixed5::fixed5_percent(positioning, 0, true),
             );
             text(
                 &mut self.values,
                 &format!("{prefix}/{wnd}_wnd/stat_anti_air"),
-                installed_content::fixed5::fixed5_to_string(anti_air, 1),
+                installed_content_core::fixed5::fixed5_to_string(anti_air, 1),
             );
             // the game selects the combat box from the exact state and ship
             // category. the game advances by sprite height + entry spacing,

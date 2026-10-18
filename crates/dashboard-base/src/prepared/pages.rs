@@ -109,8 +109,7 @@ impl Committed<'_> {
         let file = match self.saved {
             None => return Ok(None),
             Some(previous) if previous != self.key => {
-                self.store
-                    .read_prefix(previous, self.key, section, range)?
+                self.store.read_prefix(previous, self.key, section, range)?
             }
             Some(_) => self.store.read(self.key, section, range)?,
         };
@@ -164,7 +163,9 @@ impl HeldPages {
         let held = std::mem::take(self);
         for write in held.writes {
             match write {
-                Write::At(section, range, data) => writer.write_at(&section, range, data.as_slice())?,
+                Write::At(section, range, data) => {
+                    writer.write_at(&section, range, data.as_slice())?
+                }
                 Write::Append(section, range, data) => {
                     let written = writer.write(&section, data.as_slice())?;
                     if written != range {
@@ -226,7 +227,8 @@ impl Pages for HeldView<'_, '_> {
         let range = self.count(section)?;
         let held = &mut *self.held;
         held.bytes += data.len();
-        held.at.insert((section.to_owned(), range), held.writes.len());
+        held.at
+            .insert((section.to_owned(), range), held.writes.len());
         held.writes
             .push(Write::Append(section.to_owned(), range, data.to_vec()));
         held.counts.insert(section.to_owned(), range + 1);

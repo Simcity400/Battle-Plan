@@ -2,7 +2,7 @@
 //! One live-M arena owns values and exact attempted failures. Native controls
 //! exist only on the callback stack; projection and growth run off-thread.
 use crate::{clock::qpc, table_capture::Arena};
-use engine::{Memory, ccountry, crelation_status};
+use engine_native::{Memory, ccountry, crelation_status};
 
 #[derive(Default, Clone, Copy)]
 struct Cell {
@@ -89,7 +89,8 @@ impl Captured {
         // The early scalar attempt remains observable even when required
         // naming later refused. This accessor never reads live memory.
         self.scalar_reason = observation.as_ref().and_then(|value| value.faction().err());
-        let _reads = crate::read_accounting::table(replay::rows::TableId::ReservedCountryNaming);
+        let _reads =
+            crate::read_accounting::table(replay_data::rows::TableId::ReservedCountryNaming);
         let begin = qpc();
         let source = observation
             .as_ref()
@@ -103,7 +104,7 @@ impl Captured {
                 self.cells.required = source.required_slots();
                 // Full country visibility uses the original matrix extent.
                 if growing
-                    && let Err(reason) = engine::walk::Buffer::Growing(&mut self.cells.first)
+                    && let Err(reason) = engine_native::walk::Buffer::Growing(&mut self.cells.first)
                         .ensure(self.cells.required)
                 {
                     self.source_reason = Some(reason);
@@ -142,7 +143,8 @@ impl Captured {
         else {
             return;
         };
-        let _reads = crate::read_accounting::table(replay::rows::TableId::ReservedCountryNaming);
+        let _reads =
+            crate::read_accounting::table(replay_data::rows::TableId::ReservedCountryNaming);
         let begin = qpc();
         let captured = source.cell(memory, base, countries, slot, forward);
         self.ticks = self
@@ -182,7 +184,7 @@ impl Captured {
 
     pub fn projection(
         &self,
-    ) -> std::io::Result<Option<replay::rows::ReservedReverseVisibilityInputs>> {
+    ) -> std::io::Result<Option<replay_data::rows::ReservedReverseVisibilityInputs>> {
         if !self.attempted || self.refusal().is_some() {
             return Ok(None);
         }
@@ -192,19 +194,19 @@ impl Captured {
             .get(..self.cells.len)
             .filter(|cells| cells.len() == self.cells.required)
             .ok_or_else(|| std::io::Error::other("reserved reverse visibility arena invalid"))?;
-        Ok(Some(replay::rows::ReservedReverseVisibilityInputs {
-            sample_hour: replay::rows::PacketHour::Host,
-            cells: engine::allocation::collect_vec(cells.iter().map(|cell| {
+        Ok(Some(replay_data::rows::ReservedReverseVisibilityInputs {
+            sample_hour: replay_data::rows::PacketHour::Host,
+            cells: engine_allocation::collect_vec(cells.iter().map(|cell| {
                 cell.value
-                    .map(|value| replay::rows::ReverseZeroVisibilityInputs {
+                    .map(|value| replay_data::rows::ReverseZeroVisibilityInputs {
                         target: value.target,
                         war: value.war,
-                        subject: value
-                            .subject
-                            .map(|subject| replay::rows::ZeroSubjectInputs {
+                        subject: value.subject.map(|subject| {
+                            replay_data::rows::ZeroSubjectInputs {
                                 relation_type: subject.relation_type,
                                 parties: subject.parties,
-                            }),
+                            }
+                        }),
                         military_access: value.military_access,
                     })
             }))?,
@@ -246,7 +248,7 @@ impl Work {
         let index = match self.refusals.binary_search_by_key(&reason, |entry| entry.0) {
             Ok(index) => index,
             Err(index) => {
-                engine::allocation::reserve(&mut self.refusals, 1)?;
+                engine_allocation::reserve(&mut self.refusals, 1)?;
                 self.refusals.insert(index, (reason, 0));
                 index
             }

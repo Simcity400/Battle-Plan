@@ -1,6 +1,6 @@
 //! Offline production staging -> hourly census -> ledger -> frame codec.
 use super::*;
-use replay::frame::{FrameDecoder, FrameEncoder, FrameInput};
+use replay_frame::{frame::FrameDecoder, frame::FrameEncoder, frame::FrameInput};
 use std::sync::Barrier;
 
 fn hour_events(country: u32, hour: i32) -> Vec<Event> {
@@ -90,7 +90,7 @@ fn politics_tfix2_multilane_hours_encode_alias_census_and_midnight_without_loss(
     let mut countries: Vec<_> = ids
         .iter()
         .enumerate()
-        .map(|(slot, &id)| engine::ccountry::Row {
+        .map(|(slot, &id)| engine_native::ccountry::Row {
             id,
             canonical_slot: 361 + slot as u32,
             politics_witness: Some((1, Some(1))),
@@ -128,7 +128,7 @@ fn politics_tfix2_multilane_hours_encode_alias_census_and_midnight_without_loss(
         len: countries.len(),
     };
     captured.handoff = Some(staging.handoff(&mut captured.cursors));
-    let mut tables = (0..replay::frame::TABLE_COUNT)
+    let mut tables = (0..replay_data::rows::TABLE_COUNT)
         .map(|_| TableInput::Sampled(unavailable("fixture")))
         .collect::<Vec<_>>();
     tables[TableId::OperativeMemberships.index()] = TableInput::Sampled(operative_view);
@@ -143,7 +143,7 @@ fn politics_tfix2_multilane_hours_encode_alias_census_and_midnight_without_loss(
         for &country in &ids {
             let (staging, hour_gate, event_gate) = (&staging, &hour_gate, &event_gate);
             scope.spawn(move || {
-                let memory = engine::memory::SliceMemory {
+                let memory = engine_native::memory::SliceMemory {
                     base: 0,
                     bytes: &[],
                 };
@@ -355,7 +355,7 @@ fn politics_tfix2_inactive_alias_census_encodes_every_country_at_scale() {
         pending: 0,
         keys_required: 0,
     }));
-    let mut tables = (0..replay::frame::TABLE_COUNT)
+    let mut tables = (0..replay_data::rows::TABLE_COUNT)
         .map(|_| TableInput::Sampled(unavailable("fixture")))
         .collect::<Vec<_>>();
     let mut ledger = Ledger::default();
@@ -419,7 +419,7 @@ fn politics_tfix2_extreme_clamp_chunks_cannot_collide_with_next_observation() {
         pending: 0,
         keys_required: 0,
     }));
-    let mut tables = (0..replay::frame::TABLE_COUNT)
+    let mut tables = (0..replay_data::rows::TABLE_COUNT)
         .map(|_| TableInput::Sampled(unavailable("fixture")))
         .collect::<Vec<_>>();
     let mut ledger = Ledger::default();

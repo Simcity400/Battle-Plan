@@ -1,6 +1,7 @@
 use super::*;
 use crate::effect_description::tests::{Fixture, fresh};
-use replay::{frame::TableView, rows::*};
+use replay_data::rows::*;
+use replay_frame::frame::TableView;
 use std::sync::Arc;
 
 fn fixture() -> Fixture {
@@ -91,7 +92,7 @@ fn text(fixture: &Fixture, body: &str) -> String {
 
 #[test]
 fn fixed5_template_and_numeric_integer_forms() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     assert_eq!(
@@ -123,7 +124,7 @@ fn fixed5_template_and_numeric_integer_forms() {
 
 #[test]
 fn int_effect_literal_scoped_clamp_sign_and_no_line_feed() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     assert_eq!(text(&fixture, "gain_xp=010"), "XP 8 [This.GetTag]");
@@ -137,7 +138,7 @@ fn int_effect_literal_scoped_clamp_sign_and_no_line_feed() {
 
 #[test]
 fn garrison_colour_percent_and_zero_plus_follow_the_helper() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     assert_eq!(
@@ -151,7 +152,7 @@ fn garrison_colour_percent_and_zero_plus_follow_the_helper() {
 
 #[test]
 fn collaboration_gate_and_sign_do_not_add_a_line_feed() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     assert_eq!(
@@ -174,7 +175,7 @@ fn collaboration_gate_and_sign_do_not_add_a_line_feed() {
 
 #[test]
 fn decryption_ratio_assignment_wins_and_marked_country_is_capitalized() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     assert_eq!(
@@ -188,7 +189,7 @@ fn decryption_ratio_assignment_wins_and_marked_country_is_capitalized() {
 
 #[test]
 fn intel_uses_owned_state_existence_and_domain_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     assert_eq!(
@@ -227,7 +228,7 @@ fn intel_uses_owned_state_existence_and_domain_order() {
 
 #[test]
 fn intel_nonowning_target_requires_its_original_tag_bucket() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
@@ -266,10 +267,10 @@ fn intel_nonowning_target_requires_its_original_tag_bucket() {
 
 #[test]
 fn truce_rounds_days_from_current_midnight_and_uses_date_text() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
-    fixture.frame.hour = engine::cdate::HOUR_EPOCH + 1936 * 8760 + 23;
+    fixture.frame.hour = engine_native::cdate::HOUR_EPOCH + 1936 * 8760 + 23;
     fixture.catalogue.localisation = std::sync::Arc::new(
         fixture
             .catalogue
@@ -287,14 +288,14 @@ fn truce_rounds_days_from_current_midnight_and_uses_date_text() {
 
 #[test]
 fn imports_and_licenses_use_content_and_ignore_execution_only_fields() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
-    let resources = [installed_content::resources::Resource {
+    let resources = [installed_content_core::resources::Resource {
         token: "syn_resource".into(),
         icon_frame: Some(7),
     }];
-    let names = installed_content::key_names::KeyNames::default();
+    let names = installed_content_core::key_names::KeyNames::default();
     for (body, expected) in [
         (
             "create_import={resource=syn_resource amount=4 exporter=BBB factories=100}",
@@ -329,7 +330,7 @@ fn imports_and_licenses_use_content_and_ignore_execution_only_fields() {
 
 #[test]
 fn imports_and_licenses_resolve_reserved_country_names() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     *fixture.frame.tables[TableId::ReservedCountryNaming.index()] =
@@ -340,11 +341,11 @@ fn imports_and_licenses_resolve_reserved_country_names() {
                 ..Default::default()
             },
         ]));
-    let resources = [installed_content::resources::Resource {
+    let resources = [installed_content_core::resources::Resource {
         token: "syn_resource".into(),
         icon_frame: Some(7),
     }];
-    let names = installed_content::key_names::KeyNames::default();
+    let names = installed_content_core::key_names::KeyNames::default();
     for (body, expected) in [
         (
             "create_import={resource=syn_resource amount=4 exporter=0}",
@@ -371,7 +372,7 @@ fn imports_and_licenses_resolve_reserved_country_names() {
 
 #[test]
 fn mines_missing_instance_names_are_counted_and_launch_nuke_returns_empty() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let out = fixture.render(

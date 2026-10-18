@@ -54,11 +54,11 @@ impl<K: Key, V: Copy> FixedIndex<K, V> {
         } else {
             capacity
                 .checked_next_power_of_two()
-                .ok_or_else(engine::allocation::oom)?
+                .ok_or_else(engine_allocation::oom)?
         };
         let mut index = Self::new();
-        engine::allocation::reserve_exact(&mut index.buckets, bucket_count)?;
-        engine::allocation::reserve_exact(&mut index.nodes, capacity)?;
+        engine_allocation::reserve_exact(&mut index.buckets, bucket_count)?;
+        engine_allocation::reserve_exact(&mut index.nodes, capacity)?;
         index.buckets.resize(
             bucket_count,
             Bucket {

@@ -1,8 +1,8 @@
 //! Selected route queries and counter projections over shared movement timing.
 //!
 //! Each moving division's first-edge progress follows route integration over its
-//! recorded `DivisionMovement` route ([`replay::eta_derive::division_progress`]). Its
-//! arrival times are estimates ([`replay::eta_derive::estimate`]): the native walk
+//! recorded `DivisionMovement` route ([`replay_derive::eta_derive::division_progress`]). Its
+//! arrival times are estimates ([`replay_derive::eta_derive::estimate`]): the native walk
 //! over the recorded route from `Divisions.province`, each edge at the native
 //! land speed of the recorded stat-block base speed (`DivisionMovement.base_speed`)
 //! with the recorded speed terms ([`viewer_foundation::movement_timing::HourTerms`]):
@@ -39,7 +39,7 @@ mod naval;
 mod railway;
 #[path = "division_eta/classes/task_force.rs"]
 mod task_force;
-use replay::frame::DecodedFrame;
+use replay_frame::frame::DecodedFrame;
 use std::{cell::OnceCell, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,7 +116,7 @@ impl<'a> CounterQueries<'a> {
         &self,
         through: u32,
         raw_owner: u32,
-    ) -> Result<installed_content::unit_path::StraitFleet, String> {
+    ) -> Result<installed_content_unit_path::unit_path::StraitFleet, String> {
         let world = self.world.get_or_init(|| {
             dashboard_text::triggers::World::read(self.frame, self.reads.trigger_content.facts())
         });
@@ -166,7 +166,7 @@ impl<'a> CounterQueries<'a> {
         &self,
         selected: &[Unit],
         target: u32,
-    ) -> Result<installed_content::unit_path::selected_transport::Outputs, String> {
+    ) -> Result<installed_content_unit_path::unit_path::selected_transport::Outputs, String> {
         let world = self.world.get_or_init(|| {
             dashboard_text::triggers::World::read(self.frame, self.reads.trigger_content.facts())
         });
@@ -199,7 +199,7 @@ impl<'a> CounterQueries<'a> {
 
     pub(super) fn railway_remaining(
         &self,
-        gun: &replay::rows::RailwayGunCounterInputRow,
+        gun: &replay_data::rows::RailwayGunCounterInputRow,
         ours: bool,
         local_option: bool,
     ) -> Result<i64, String> {
@@ -210,7 +210,7 @@ impl<'a> CounterQueries<'a> {
     /// (`TaskForceMapMotion.path`), searching no route.
     pub(crate) fn task_force_remaining(
         &self,
-        motion: &replay::rows::TaskForceMapMotionRow,
+        motion: &replay_data::rows::TaskForceMapMotionRow,
         ours: bool,
     ) -> Result<i64, String> {
         let content = self

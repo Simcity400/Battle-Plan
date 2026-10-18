@@ -1,9 +1,11 @@
 //! Callbacks against synthetic native objects in this process's memory.
 use crate::{hooks, interval, lanes};
-use engine::{cgame_state, cprovince, cunit, map_event_sites as site};
-use replay::rows::{
-    MapEventBuildingDamage, MapEventBuildingReason, MapEventFamily as Family,
-    MapEventFault as Fault, MapEventIntelEntry, MapEventPayload, MapEventUnitIntel,
+use engine_events::map_event_sites as site;
+use engine_native::{cgame_state, cprovince, cunit};
+use replay_data::{
+    rows::MapEventBuildingDamage, rows::MapEventBuildingReason, rows::MapEventFamily as Family,
+    rows::MapEventFault as Fault, rows::MapEventIntelEntry, rows::MapEventPayload,
+    rows::MapEventUnitIntel,
 };
 use std::sync::{
     Mutex,
@@ -120,7 +122,7 @@ fn reset() {
     lanes::grow(2, lanes::MINIMUM_LANE_BYTES).unwrap();
 }
 
-fn drain(hour: i32) -> replay::rows::MapEventsRow {
+fn drain(hour: i32) -> replay_data::rows::MapEventsRow {
     let sealed = interval::seal(hour, Some(crate::world_lifetime::generation()));
     let mut assembled = lanes::Assembled::default();
     lanes::assemble(sealed.seal, &mut assembled).unwrap();
@@ -467,7 +469,7 @@ fn every_payload_layout_decodes_and_trailing_or_short_bytes_refuse() {
     assert_eq!(
         interval::payload(Family::ParadropLanding as u8, &paradrop),
         Ok(MapEventPayload::ParadropLanding(
-            replay::rows::MapEventParadrop {
+            replay_data::rows::MapEventParadrop {
                 province: 9,
                 country: 0,
                 lost: true,

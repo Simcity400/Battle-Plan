@@ -186,7 +186,7 @@ impl Scan {
         frame_changes: &FrameChanges,
         places: bool,
     ) -> io::Result<()> {
-        let cpu = ::replay::cpu::scope_phase("naval:series_observe");
+        let cpu = ::replay_frame::cpu::scope_phase("naval:series_observe");
         let details = &mut self.details;
         details.fleet_reads.through(frame.hour);
         details.ship_reads.through(frame.hour);
@@ -203,13 +203,13 @@ impl Scan {
             details.census_reads.event(0, frame.hour, &frame.hour)?;
         }
         drop(cpu);
-        let cpu = ::replay::cpu::scope_phase("naval:sinkings_apply");
+        let cpu = ::replay_frame::cpu::scope_phase("naval:sinkings_apply");
         let reads = details.ships.scan.ship_reads.len();
         let changes = details
             .ships
             .prepare(source.replay_ref().format, frame, frame_changes);
         drop(cpu);
-        let cpu = ::replay::cpu::scope_phase("naval:losses_projection_series");
+        let cpu = ::replay_frame::cpu::scope_phase("naval:losses_projection_series");
         let changed = !changes.is_empty();
         let unavailable;
         let retention = if let Some(retention) = &mut details.retention {
@@ -233,7 +233,7 @@ impl Scan {
             cancelled,
         )?;
         drop(cpu);
-        let cpu = ::replay::cpu::scope_phase("naval:presentation_projection_series");
+        let cpu = ::replay_frame::cpu::scope_phase("naval:presentation_projection_series");
         details.sinking_titles.observe_read(
             source,
             context,
@@ -318,11 +318,11 @@ impl Scan {
             details.ship_reads.event(0, frame.hour, &frame.hour)?;
         }
         drop(cpu);
-        let cpu = ::replay::cpu::scope_phase("naval:pruning");
+        let cpu = ::replay_frame::cpu::scope_phase("naval:pruning");
         details.ships.scan.ship_reads.clear();
         details.ships.scan.convoy_reads.clear();
         drop(cpu);
-        let _cpu = ::replay::cpu::scope_phase("naval:fleet_projection_series");
+        let _cpu = ::replay_frame::cpu::scope_phase("naval:fleet_projection_series");
         // Equal acquisitions still supply census/read proof above, but cannot
         // change this fixed-content name projection. Rebuild only changed rows.
         if !details.fleet_inputs_changed(frame, frame_changes) {
@@ -469,7 +469,7 @@ impl Scan {
         ordinal: usize,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        let cpu = ::replay::cpu::scope_phase("naval:series_flush");
+        let cpu = ::replay_frame::cpu::scope_phase("naval:series_flush");
         self.extend_results();
         let windows = windows(replay, branch);
         let window = &windows[ordinal];
@@ -487,7 +487,7 @@ impl Scan {
             cancelled,
         )?;
         drop(cpu);
-        let cpu = ::replay::cpu::scope_phase("naval:window_projection_series");
+        let cpu = ::replay_frame::cpu::scope_phase("naval:window_projection_series");
         let mut changed = BTreeSet::from([ordinal]);
         for &index in &self.dirty {
             check_cancel(cancelled)?;
@@ -537,7 +537,7 @@ impl Scan {
             )?;
         }
         drop(cpu);
-        let _cpu = ::replay::cpu::scope_phase("naval:series_flush");
+        let _cpu = ::replay_frame::cpu::scope_phase("naval:series_flush");
         let details = &mut self.details;
         details.ships.finish_prepared(window.last_hour);
         details
@@ -562,7 +562,7 @@ impl Scan {
             0,
             cancelled,
         )?;
-        let cpu = ::replay::cpu::scope_phase("naval:sinking_log_projection_series");
+        let cpu = ::replay_frame::cpu::scope_phase("naval:sinking_log_projection_series");
         details.sinking_log.publish(
             replay,
             writer,
@@ -943,10 +943,11 @@ fn missing_fleets(reason: &str) -> [NavalBattleFleetNames; 2] {
 #[cfg(test)]
 mod input_tests {
     use super::*;
-    use replay::{
-        frame::TableView,
-        rows::{FleetRow, NavalCombatDetailsRow, NavalCombatRow, TableRows, TaskForceRow},
+    use replay_data::{
+        rows::FleetRow, rows::NavalCombatDetailsRow, rows::NavalCombatRow, rows::TableRows,
+        rows::TaskForceRow,
     };
+    use replay_frame::frame::TableView;
 
     #[test]
     fn fleet_projection_ignores_movement_and_combat_quantity_deltas() {
@@ -975,8 +976,8 @@ mod input_tests {
                 id: 1,
                 ..Default::default()
             }]));
-        let mut encoder = replay::frame::FrameEncoder::new();
-        let mut decoder = replay::frame::FrameDecoder::new();
+        let mut encoder = replay_frame::frame::FrameEncoder::new();
+        let mut decoder = replay_frame::frame::FrameDecoder::new();
         let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
         let mut details = DetailPreparation::default();
         for hour in 8..=10 {
@@ -1011,7 +1012,7 @@ mod input_tests {
             let wire = Arc::new(encoder.encode(frame.clone(), hour == 8).unwrap());
             let decoded = decoder.advance(&wire).unwrap();
             let changes =
-                tracker.observe_updates(decoded, wire, replay::format::FormatVersion::CURRENT);
+                tracker.observe_updates(decoded, wire, replay_data::format::FormatVersion::CURRENT);
             assert_eq!(details.fleet_inputs_changed(decoded, &changes), hour != 9);
         }
     }

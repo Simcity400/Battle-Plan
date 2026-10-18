@@ -1,6 +1,6 @@
 use super::*;
 use crate::effect_description::tests::{Fixture, fresh};
-use installed_content::{country_scorers::Database, key_names::KeyNames};
+use installed_content_core::{country_scorers::Database, key_names::KeyNames};
 
 #[allow(clippy::field_reassign_with_default)]
 fn make_database(body: &[u8]) -> (KeyNames, Database) {
@@ -14,13 +14,13 @@ fn make_database(body: &[u8]) -> (KeyNames, Database) {
 
 #[test]
 fn scorer_highest_keeps_first_tie_sorted_replaces_later_score_and_uses_ties() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let (names, database) = make_database(b"sample={targets={targets={BBB AAA CCC} score={base=10}} targets={targets={BBB} score={base=3}}} ties={targets={targets={CCC BBB AAA} score={base=5}}}");
     fixture.with_renderer(&mut fresh(), Content { key_names: Some(&names), country_scorers: Some(&database), ..Default::default() }, |renderer| {
         let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
-        let effects = installed_content::effect_keys::read_body(b"get_highest_scored_country_temp={var=chosen scorer=sample} get_sorted_scored_countries_temp={array=ordered scores=points scorer=sample} get_sorted_scored_countries_temp={array=tied scores=tied_points scorer=ties}", &names).unwrap();
+        let effects = installed_content_core::effect_keys::read_body(b"get_highest_scored_country_temp={var=chosen scorer=sample} get_sorted_scored_countries_temp={array=ordered scores=points scorer=sample} get_sorted_scored_countries_temp={array=tied scores=tied_points scorer=ties}", &names).unwrap();
         assert!(renderer.group(&effects, scopes, 0).is_empty());
         assert!(renderer.out.refusals.is_empty(), "{:?}", renderer.out.refusals);
         let evaluator = renderer.evaluator().unwrap();
@@ -37,7 +37,7 @@ fn scorer_highest_keeps_first_tie_sorted_replaces_later_score_and_uses_ties() {
 
 #[test]
 fn scorer_filters_reverse_from_for_score_and_reads_shared_temporary_array() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let (names, database) = make_database(b"sample={targets={target_array=candidates targets={AAA BBB} target_root_trigger={tag=AAA} target_trigger={FROM={tag=BBB}} score={base=1 modifier={FROM={tag=AAA} add=2}}}} changing={targets={target_array=candidates target_trigger={set_temp_variable={var=candidates^1 value=CCC.id}} score={base=1 modifier={tag=CCC add=2}}}}");
@@ -46,7 +46,7 @@ fn scorer_filters_reverse_from_for_score_and_reads_shared_temporary_array() {
         let default = renderer.evaluator().unwrap().fresh_country_scope(None, None).unwrap();
         assert_eq!(default.this, Scope::Country(0));
         assert_eq!(default.root, Scope::Country(0));
-        let effects = installed_content::effect_keys::read_body(b"set_temp_variable={var=candidates^num value=1} set_temp_variable={var=candidates^0 value=BBB.id} get_highest_scored_country_temp={scorer=sample} get_sorted_scored_countries_temp={scorer=sample}", &names).unwrap();
+        let effects = installed_content_core::effect_keys::read_body(b"set_temp_variable={var=candidates^num value=1} set_temp_variable={var=candidates^0 value=BBB.id} get_highest_scored_country_temp={scorer=sample} get_sorted_scored_countries_temp={scorer=sample}", &names).unwrap();
         assert!(renderer.group(&effects, scopes, 0).is_empty());
         assert!(renderer.out.refusals.is_empty(), "{:?}", renderer.out.refusals);
         let evaluator = renderer.evaluator().unwrap();
@@ -55,7 +55,7 @@ fn scorer_filters_reverse_from_for_score_and_reads_shared_temporary_array() {
         assert_eq!(evaluator.scoped_value(b"sorted_country_list^num", scopes).unwrap(), 100_000);
         // filters entry zero before reading entry one; its setter
         // changes that next element in the same description session.
-        let effects = installed_content::effect_keys::read_body(b"set_temp_variable={var=candidates^num value=2} set_temp_variable={var=candidates^0 value=AAA.id} set_temp_variable={var=candidates^1 value=BBB.id} get_highest_scored_country_temp={var=changed scorer=changing}", &names).unwrap();
+        let effects = installed_content_core::effect_keys::read_body(b"set_temp_variable={var=candidates^num value=2} set_temp_variable={var=candidates^0 value=AAA.id} set_temp_variable={var=candidates^1 value=BBB.id} get_highest_scored_country_temp={var=changed scorer=changing}", &names).unwrap();
         assert!(renderer.group(&effects, scopes, 0).is_empty());
         assert!(renderer.out.refusals.is_empty(), "{:?}", renderer.out.refusals);
         assert_eq!(renderer.evaluator().unwrap().scoped_country(b"changed", scopes).unwrap(), Some(3));
@@ -64,7 +64,7 @@ fn scorer_filters_reverse_from_for_score_and_reads_shared_temporary_array() {
 
 #[test]
 fn invalid_scorer_is_noop_and_unknown_target_form_is_named_once() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let (names, database) = make_database(b"sample={targets={state_target=yes}}");

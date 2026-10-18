@@ -1,5 +1,5 @@
 use super::*;
-use replay::rows::tables;
+use replay_data::rows::tables;
 use std::collections::BTreeSet;
 
 #[cfg(test)]
@@ -119,9 +119,9 @@ impl Renderer<'_, '_, '_> {
         if !output.equipment_bonus.is_empty() {
             let mut bonus = item.clone();
             bonus.key = Some(b"bonus".to_vec());
-            bonus.value = installed_content::parser::Value::Block(output.equipment_bonus.clone());
+            bonus.value = installed_content_core::parser::Value::Block(output.equipment_bonus.clone());
             let mut adapter = item.clone();
-            adapter.value = installed_content::parser::Value::Block(vec![bonus]);
+            adapter.value = installed_content_core::parser::Value::Block(vec![bonus]);
             match self.units_equipment_bonus(&adapter, scopes) {
                 Ok(bonus) => text.push_str(&bonus),
                 Err(why) => self.project_output_refusal(why),
@@ -378,7 +378,7 @@ impl Renderer<'_, '_, '_> {
                         .collect()
                 });
             for entry in entries {
-                let token = installed_content::parser::c_string(entry);
+                let token = installed_content_core::parser::c_string(entry);
                 let name: &[u8] = match kind {
                     1 => {
                         let equipment = self

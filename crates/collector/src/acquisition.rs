@@ -601,7 +601,7 @@ impl<J, R> Shared<J, R> {
         self.body_begin[index].store(runner_begin_qpc.max(0) as u64, Ordering::Release);
         #[cfg(feature = "callback_profile")]
         let runner_cycles_begin = crate::callback_profile::thread_cycles();
-        let growths_before = engine::allocation::growths();
+        let growths_before = engine_allocation::growths();
         let report = if crate::allocation::failed() {
             Err(Failure::Stopped)
         } else {
@@ -621,7 +621,7 @@ impl<J, R> Shared<J, R> {
                 }
             }
         };
-        let growths = engine::allocation::growths().saturating_sub(growths_before);
+        let growths = engine_allocation::growths().saturating_sub(growths_before);
         if caller {
             crate::sampling::record_caller_growths(growths);
         }
@@ -2703,14 +2703,14 @@ mod tests {
         for workers in [0, 1] {
             let pool = Pool::start(workers, 1, |job: &mut (bool, Vec<u8>)| {
                 if job.0 {
-                    engine::allocation::reserve(&mut job.1, 1).unwrap();
+                    engine_allocation::reserve(&mut job.1, 1).unwrap();
                     job.1.push(7);
                 }
             })
             .unwrap();
             for grows in [true, false] {
                 // Unrelated caller allocations must not enter the job's stamp.
-                let _unrelated = engine::allocation::vec::<u64>(8).unwrap();
+                let _unrelated = engine_allocation::vec::<u64>(8).unwrap();
                 let mut job = Some((grows, Vec::new()));
                 let ticket = unsafe { pool.submit(&mut job) }.unwrap();
                 let completion = pool.finish(ticket).unwrap();
@@ -2973,11 +2973,10 @@ mod tests {
 
     #[test]
     fn panic_returns_partial_request_cancels_queued_jobs_and_does_not_retry() {
-        use engine::{
-            Memory,
-            memory::{CountedMemory, ReadCounts, SliceMemory},
+        use engine_native::{
+            Memory, memory::CountedMemory, memory::ReadCounts, memory::SliceMemory,
         };
-        use replay::rows::TableId;
+        use replay_data::rows::TableId;
 
         let calls = Arc::new(AtomicU64::new(0));
         let count = Arc::clone(&calls);

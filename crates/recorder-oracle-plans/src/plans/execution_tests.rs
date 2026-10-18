@@ -1,11 +1,10 @@
 use super::*;
-use replay::{
-    frame::{Metrics, TABLE_COUNT},
-    rows::{
-        ArmyOrderPlanRow, InvasionPreparationRow, OrderExecutionInputs, ParadropPreparationInputs,
-        Recorded,
-    },
+use replay_data::rows::TABLE_COUNT;
+use replay_data::{
+    rows::ArmyOrderPlanRow, rows::InvasionPreparationRow, rows::OrderExecutionInputs,
+    rows::ParadropPreparationInputs, rows::Recorded,
 };
+use replay_frame::frame::Metrics;
 
 const GROUP: u64 = (u32::MAX as u64) << 32 | 53;
 const INSTANCE: u32 = u32::MAX;
@@ -18,7 +17,7 @@ fn fixture(order_type: i32) -> (DecodedFrame, Save, ArmyOrderPlanRow) {
         save::plans::Order {
             order_type,
             has_child: Some(false),
-            invasion_transports: (order_type == engine::corder_instance::TYPE_INVASION)
+            invasion_transports: (order_type == engine_native::corder_instance::TYPE_INVASION)
                 .then_some(0),
             ..Default::default()
         },
@@ -36,7 +35,7 @@ fn fixture(order_type: i32) -> (DecodedFrame, Save, ArmyOrderPlanRow) {
         owner_group: GROUP,
         instance: INSTANCE,
         invasion_transports: Recorded::Value(
-            (order_type == engine::corder_instance::TYPE_INVASION).then_some(0),
+            (order_type == engine_native::corder_instance::TYPE_INVASION).then_some(0),
         ),
         execution: Recorded::Value(Some(OrderExecutionInputs {
             route_is_ok: Some(0),
@@ -60,8 +59,8 @@ fn run(frame: &mut DecodedFrame, saved: &Save, rows: Vec<ArmyOrderPlanRow>) -> R
 #[test]
 fn route_truth_is_independent_of_raw_nonboolean_witness_and_type3_progress() {
     for kind in [
-        engine::corder_instance::TYPE_INVASION,
-        engine::corder_instance::TYPE_PARADROP,
+        engine_native::corder_instance::TYPE_INVASION,
+        engine_native::corder_instance::TYPE_PARADROP,
     ] {
         let (mut frame, mut saved, row) = fixture(kind);
         // A saved nonzero time is still outside the type4 capture demand when route_is_ok is zero.
@@ -77,12 +76,11 @@ fn route_truth_is_independent_of_raw_nonboolean_witness_and_type3_progress() {
             let mut actual = row.clone();
             actual.execution = Recorded::Value(Some(OrderExecutionInputs {
                 route_is_ok: Some(raw),
-                paradrop: (kind == engine::corder_instance::TYPE_PARADROP && raw != 0).then_some(
-                    ParadropPreparationInputs {
+                paradrop: (kind == engine_native::corder_instance::TYPE_PARADROP && raw != 0)
+                    .then_some(ParadropPreparationInputs {
                         progress: 750_000,
                         terms: None,
-                    },
-                ),
+                    }),
             }));
             let report = run(&mut frame, &saved, vec![actual.clone()]);
             assert!(report.differences.is_empty(), "{:?}", report.differences);
@@ -109,7 +107,7 @@ fn route_truth_is_independent_of_raw_nonboolean_witness_and_type3_progress() {
 
 #[test]
 fn historical_and_current_route_absences_keep_unchanged_comparisons() {
-    let (mut frame, saved, row) = fixture(engine::corder_instance::TYPE_PARADROP);
+    let (mut frame, saved, row) = fixture(engine_native::corder_instance::TYPE_PARADROP);
     for (execution, execution_differences, historical) in [
         (Recorded::NotRecorded, 0, true),
         (Recorded::Value(None), 1, false),
@@ -145,7 +143,7 @@ fn historical_and_current_route_absences_keep_unchanged_comparisons() {
 
 #[test]
 fn demanded_paradrop_progress_compares_exactly_with_omitted_zero_and_signed_extremes() {
-    let (mut frame, mut saved, row) = fixture(engine::corder_instance::TYPE_PARADROP);
+    let (mut frame, mut saved, row) = fixture(engine_native::corder_instance::TYPE_PARADROP);
     for (text, expected) in [
         (None, 0_i64),
         (Some("0"), 0),
@@ -199,7 +197,7 @@ fn demanded_paradrop_progress_compares_exactly_with_omitted_zero_and_signed_extr
 
 #[test]
 fn unsaved_preparation_terms_are_a_limitation_even_when_present() {
-    let (mut frame, mut saved, mut row) = fixture(engine::corder_instance::TYPE_PARADROP);
+    let (mut frame, mut saved, mut row) = fixture(engine_native::corder_instance::TYPE_PARADROP);
     saved
         .plans
         .orders
@@ -208,7 +206,7 @@ fn unsaved_preparation_terms_are_a_limitation_even_when_present() {
         .route_is_ok = true;
     for terms in [
         None,
-        Some(replay::rows::ParadropPreparationTerms {
+        Some(replay_data::rows::ParadropPreparationTerms {
             target: u32::MAX,
             country_term: i64::MIN,
             relation_term: Some(i64::MAX),
@@ -233,9 +231,9 @@ fn unsaved_preparation_terms_are_a_limitation_even_when_present() {
 #[test]
 fn capture_scope_rejects_preparation_for_unknown_zero_route_or_type3() {
     for (kind, route, differences) in [
-        (engine::corder_instance::TYPE_INVASION, Some(1), 1),
-        (engine::corder_instance::TYPE_PARADROP, Some(0), 1),
-        (engine::corder_instance::TYPE_PARADROP, None, 2),
+        (engine_native::corder_instance::TYPE_INVASION, Some(1), 1),
+        (engine_native::corder_instance::TYPE_PARADROP, Some(0), 1),
+        (engine_native::corder_instance::TYPE_PARADROP, None, 2),
     ] {
         let (mut frame, mut saved, mut row) = fixture(kind);
         saved
@@ -265,7 +263,7 @@ fn capture_scope_rejects_preparation_for_unknown_zero_route_or_type3() {
                 .any(|difference| difference.contains("execution.paradrop"))
         );
     }
-    let (mut frame, saved, row) = fixture(engine::corder_instance::TYPE_MOVE);
+    let (mut frame, saved, row) = fixture(engine_native::corder_instance::TYPE_MOVE);
     let report = run(&mut frame, &saved, vec![row.clone()]);
     assert_eq!(report.differences.len(), 1);
     let report = run(
@@ -281,7 +279,7 @@ fn capture_scope_rejects_preparation_for_unknown_zero_route_or_type3() {
 
 #[test]
 fn full_owner_and_instance_identity_prevents_cross_group_or_low_word_join() {
-    let (mut frame, mut saved, mut row) = fixture(engine::corder_instance::TYPE_PARADROP);
+    let (mut frame, mut saved, mut row) = fixture(engine_native::corder_instance::TYPE_PARADROP);
     let second = (7_u64 << 32) | 53;
     saved
         .plans
@@ -292,7 +290,7 @@ fn full_owner_and_instance_identity_prevents_cross_group_or_low_word_join() {
     saved.plans.orders.insert(
         (second, INSTANCE),
         save::plans::Order {
-            order_type: engine::corder_instance::TYPE_PARADROP,
+            order_type: engine_native::corder_instance::TYPE_PARADROP,
             has_child: Some(false),
             ..Default::default()
         },
@@ -339,7 +337,7 @@ fn full_owner_and_instance_identity_prevents_cross_group_or_low_word_join() {
 
 #[test]
 fn duplicate_or_malformed_recorded_identity_fails_instead_of_overwriting() {
-    let (mut frame, saved, row) = fixture(engine::corder_instance::TYPE_PARADROP);
+    let (mut frame, saved, row) = fixture(engine_native::corder_instance::TYPE_PARADROP);
     for rows in [
         vec![row.clone(), row.clone()],
         vec![ArmyOrderPlanRow {
@@ -355,11 +353,11 @@ fn duplicate_or_malformed_recorded_identity_fails_instead_of_overwriting() {
 
 #[test]
 fn invasion_preparations_remain_type3_only_and_reject_duplicate_identities() {
-    let (mut frame, mut saved, _) = fixture(engine::corder_instance::TYPE_INVASION);
+    let (mut frame, mut saved, _) = fixture(engine_native::corder_instance::TYPE_INVASION);
     saved.plans.orders.insert(
         (GROUP, 1),
         save::plans::Order {
-            order_type: engine::corder_instance::TYPE_PARADROP,
+            order_type: engine_native::corder_instance::TYPE_PARADROP,
             ..Default::default()
         },
     );

@@ -9,23 +9,21 @@ use crate::{
     table_capture::{Arena, CaptureRows},
     table_conversion::{table, unavailable},
 };
-use engine::{
-    Memory,
-    allocation::{copy_vec, owned_vec},
-    army_upgrade_request_row, carmy_manpower_values, carmy_upgrades_requests,
-    carmy_upgrades_status, ccountry, cdeployment_status, cequipment_production_license,
-    cequipment_production_line, cequipment_upgrades_instance, cequipment_variant,
-    cequipment_variant_pool, cgame_state, cmilitary_deployment, cmilitary_deployment_conveyor,
-    cmilitary_deployment_line, cname_group_member,
-    cpdx_array::Array,
-    cproduction_line, cproduction_status, cupgrade_delivery, equipment_entry,
-    equipment_module_container, manpower_value_entry, msvc_string,
-    walk::Outcome,
+use engine_allocation::{copy_vec, owned_vec};
+use engine_deployment::{
+    army_upgrade_request_row, carmy_upgrades_requests, carmy_upgrades_status, cdeployment_status,
+    cmilitary_deployment, cmilitary_deployment_conveyor, cmilitary_deployment_line,
+    cupgrade_delivery, manpower_value_entry,
 };
-use replay::{
-    frame::{TableInput, TableView},
-    rows::{self, TableId, tables},
+use engine_equipment::{cequipment_upgrades_instance, equipment_module_container};
+use engine_native::{
+    Memory, carmy_manpower_values, ccountry, cequipment_production_license,
+    cequipment_production_line, cequipment_variant, cequipment_variant_pool, cgame_state,
+    cname_group_member, cpdx_array::Array, cproduction_line, cproduction_status, equipment_entry,
+    msvc_string, walk::Outcome,
 };
+use replay_data::{rows, rows::TableId, rows::tables};
+use replay_frame::{frame::TableInput, frame::TableView};
 
 pub const N: usize = 17;
 pub const TABLES: [TableId; N] = [
@@ -127,7 +125,7 @@ impl Capacities {
                 .checked_add(ccountry::DIVISIONS)
                 .and_then(|at| Array::read(memory, at, 8))
                 .ok_or("division detail sizing roster unreadable or invalid")?;
-            engine::cpdx_array::pointers(
+            engine_native::cpdx_array::pointers(
                 memory,
                 roster,
                 "division detail sizing pointer unreadable",
@@ -140,20 +138,23 @@ impl Capacities {
                             .checked_add(offset)
                             .ok_or("division detail sizing address overflow")
                     };
-                    if engine::read::<u64>(memory, pointer)
+                    if engine_native::read::<u64>(memory, pointer)
                         != base
-                            .checked_add(engine::carmy::VTABLE_RVA)
+                            .checked_add(engine_native::carmy::VTABLE_RVA)
                             .map(|value| value as u64)
-                        || engine::read::<u64>(memory, at(engine::carmy::SECONDARY_BASE)?)
-                            != base
-                                .checked_add(engine::carmy::SECONDARY_VTABLE_RVA)
-                                .map(|value| value as u64)
+                        || engine_native::read::<u64>(
+                            memory,
+                            at(engine_native::carmy::SECONDARY_BASE)?,
+                        ) != base
+                            .checked_add(engine_native::carmy::SECONDARY_VTABLE_RVA)
+                            .map(|value| value as u64)
                     {
                         return Err("division detail sizing army identity invalid");
                     }
-                    let division = engine::read::<u64>(memory, at(engine::cunit::HANDLE)?)
-                        .filter(|value| *value != 0)
-                        .ok_or("division detail sizing handle unreadable or null")?;
+                    let division =
+                        engine_native::read::<u64>(memory, at(engine_native::cunit::HANDLE)?)
+                            .filter(|value| *value != 0)
+                            .ok_or("division detail sizing handle unreadable or null")?;
                     let source = [cequipment_variant_pool::DivisionSource {
                         pointer,
                         division,
@@ -268,10 +269,10 @@ impl Variants {
             (&mut self.upgrades.outcome, TABLES[6]),
         ] {
             *outcome = Outcome::Unavailable {
-                reason: if replay::cadence::should_walk(table, hour, force_full) {
+                reason: if replay_data::cadence::should_walk(table, hour, force_full) {
                     reason
                 } else {
-                    replay::cadence::SKIPPED_REASON
+                    replay_data::cadence::SKIPPED_REASON
                 },
             };
         }
@@ -299,9 +300,9 @@ impl Variants {
             },
         );
         ticks[3] = elapsed(begin);
-        if !replay::cadence::should_walk(TableId::VariantModules, hour, force_full) {
+        if !replay_data::cadence::should_walk(TableId::VariantModules, hour, force_full) {
             let skipped = Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON,
+                reason: replay_data::cadence::SKIPPED_REASON,
             };
             self.modules.outcome = skipped;
             self.stats.outcome = skipped;
@@ -372,10 +373,10 @@ impl Captured {
     }
 
     pub fn fail_final_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
-        if replay::cadence::should_walk(TableId::ProductionLines, hour, force_full) {
+        if replay_data::cadence::should_walk(TableId::ProductionLines, hour, force_full) {
             self.fail_production_rest_capture(reason);
         }
-        if replay::cadence::should_walk(TableId::DivisionEquipment, hour, force_full) {
+        if replay_data::cadence::should_walk(TableId::DivisionEquipment, hour, force_full) {
             let outcome = Outcome::Unavailable { reason };
             self.division_equipment.fail(outcome);
             self.groups.fail(outcome);
@@ -527,19 +528,20 @@ impl Captured {
         growing: bool,
     ) -> [u64; N] {
         let mut ticks = [0; N];
-        let rest_active = replay::cadence::should_walk(TableId::ProductionLines, hour, force_full);
+        let rest_active =
+            replay_data::cadence::should_walk(TableId::ProductionLines, hour, force_full);
         let divisions_active =
-            replay::cadence::should_walk(TableId::DivisionEquipment, hour, force_full);
+            replay_data::cadence::should_walk(TableId::DivisionEquipment, hour, force_full);
         self.division_details_active = divisions_active;
         if !rest_active {
-            self.fail_production_rest_capture(replay::cadence::SKIPPED_REASON);
+            self.fail_production_rest_capture(replay_data::cadence::SKIPPED_REASON);
             self.conveyor_name_bytes.reset();
             self.line_custom_name_bytes.reset();
             self.license_handles.reset();
         }
         if !divisions_active {
             let skipped = Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON,
+                reason: replay_data::cadence::SKIPPED_REASON,
             };
             self.division_equipment.outcome = skipped;
             self.groups.outcome = skipped;
@@ -556,7 +558,7 @@ impl Captured {
                     memory,
                     base,
                     game_state,
-                    engine::walk::Buffer::for_worker(rows, growing),
+                    engine_native::walk::Buffer::for_worker(rows, growing),
                 )
             });
             ticks[0] = elapsed(begin);
@@ -567,7 +569,7 @@ impl Captured {
                     memory,
                     base,
                     game_state,
-                    engine::walk::Buffer::for_worker(rows, growing),
+                    engine_native::walk::Buffer::for_worker(rows, growing),
                 )
             });
             ticks[1] = elapsed(begin);
@@ -629,15 +631,15 @@ impl Captured {
                     memory,
                     base,
                     game_state,
-                    engine::walk::Buffer::for_worker(rows, growing),
+                    engine_native::walk::Buffer::for_worker(rows, growing),
                 )
             });
             let records = cproduction_status::walk_license_records_buffer(
                 memory,
                 base,
                 game_state,
-                engine::walk::Buffer::for_worker(&mut self.license_records.rows, growing),
-                engine::walk::Buffer::for_worker(&mut self.license_handles.first, growing),
+                engine_native::walk::Buffer::for_worker(&mut self.license_records.rows, growing),
+                engine_native::walk::Buffer::for_worker(&mut self.license_handles.first, growing),
             );
             self.license_records.outcome = records.outcome;
             self.license_handles.len = records.handles_len;
@@ -671,12 +673,15 @@ impl Captured {
             memory,
             base,
             game_state,
-            engine::walk::Buffer::for_worker(&mut self.conveyors.rows, growing),
-            engine::walk::Buffer::for_worker(&mut self.deployment_lines.rows, growing),
-            engine::walk::Buffer::for_worker(&mut self.deployment_manpower.rows, growing),
-            engine::walk::Buffer::for_worker(&mut self.deployment_equipment.rows, growing),
-            engine::walk::Buffer::for_worker(&mut self.conveyor_name_bytes.first, growing),
-            engine::walk::Buffer::for_worker(&mut self.line_custom_name_bytes.first, growing),
+            engine_native::walk::Buffer::for_worker(&mut self.conveyors.rows, growing),
+            engine_native::walk::Buffer::for_worker(&mut self.deployment_lines.rows, growing),
+            engine_native::walk::Buffer::for_worker(&mut self.deployment_manpower.rows, growing),
+            engine_native::walk::Buffer::for_worker(&mut self.deployment_equipment.rows, growing),
+            engine_native::walk::Buffer::for_worker(&mut self.conveyor_name_bytes.first, growing),
+            engine_native::walk::Buffer::for_worker(
+                &mut self.line_custom_name_bytes.first,
+                growing,
+            ),
         )
     }
 
@@ -698,7 +703,10 @@ impl Captured {
             &recorded,
             base,
             game_state,
-            engine::walk::Buffer::for_worker(&mut self.lines.rows, job.log.worker_growth_enabled()),
+            engine_native::walk::Buffer::for_worker(
+                &mut self.lines.rows,
+                job.log.worker_growth_enabled(),
+            ),
         );
         decode_ticks[0] += elapsed(started);
         let started = qpc();
@@ -706,7 +714,7 @@ impl Captured {
             &recorded,
             base,
             game_state,
-            engine::walk::Buffer::for_worker(
+            engine_native::walk::Buffer::for_worker(
                 &mut self.stockpiles.rows,
                 job.log.worker_growth_enabled(),
             ),
@@ -717,7 +725,7 @@ impl Captured {
             &recorded,
             base,
             game_state,
-            engine::walk::Buffer::for_worker(
+            engine_native::walk::Buffer::for_worker(
                 &mut self.licenses.rows,
                 job.log.worker_growth_enabled(),
             ),
@@ -726,11 +734,11 @@ impl Captured {
             &recorded,
             base,
             game_state,
-            engine::walk::Buffer::for_worker(
+            engine_native::walk::Buffer::for_worker(
                 &mut self.license_records.rows,
                 job.log.worker_growth_enabled(),
             ),
-            engine::walk::Buffer::for_worker(
+            engine_native::walk::Buffer::for_worker(
                 &mut self.license_handles.first,
                 job.log.worker_growth_enabled(),
             ),
@@ -744,27 +752,27 @@ impl Captured {
             &recorded,
             base,
             game_state,
-            engine::walk::Buffer::for_worker(
+            engine_native::walk::Buffer::for_worker(
                 &mut self.conveyors.rows,
                 job.log.worker_growth_enabled(),
             ),
-            engine::walk::Buffer::for_worker(
+            engine_native::walk::Buffer::for_worker(
                 &mut self.deployment_lines.rows,
                 job.log.worker_growth_enabled(),
             ),
-            engine::walk::Buffer::for_worker(
+            engine_native::walk::Buffer::for_worker(
                 &mut self.deployment_manpower.rows,
                 job.log.worker_growth_enabled(),
             ),
-            engine::walk::Buffer::for_worker(
+            engine_native::walk::Buffer::for_worker(
                 &mut self.deployment_equipment.rows,
                 job.log.worker_growth_enabled(),
             ),
-            engine::walk::Buffer::for_worker(
+            engine_native::walk::Buffer::for_worker(
                 &mut self.conveyor_name_bytes.first,
                 job.log.worker_growth_enabled(),
             ),
-            engine::walk::Buffer::for_worker(
+            engine_native::walk::Buffer::for_worker(
                 &mut self.line_custom_name_bytes.first,
                 job.log.worker_growth_enabled(),
             ),
@@ -838,7 +846,7 @@ impl Captured {
                     requested_factories: r.requested_factories,
                     cost_raw: r.cost_raw,
                     speed_raw: r.speed_raw,
-                    produced_raw: replay::rows::RetiredI64::default(),
+                    produced_raw: replay_data::rows::RetiredI64::default(),
                     priority: r.priority,
                     amount: r.amount,
                     max_factories: r.max_factories,

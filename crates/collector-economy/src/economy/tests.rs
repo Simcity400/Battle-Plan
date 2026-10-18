@@ -1,5 +1,5 @@
 use super::*;
-use replay::frame::TableView;
+use replay_frame::frame::TableView;
 
 #[test]
 fn final_worker_failure_keeps_owned_economy_and_publishes_terminal_fuel_demand_reason() {
@@ -47,8 +47,8 @@ fn final_worker_failure_keeps_owned_economy_and_publishes_terminal_fuel_demand_r
 
 mod resource_fixture {
     use super::*;
-    use engine::ccountry_resources::*;
-    use engine::{
+    use engine_resources::ccountry_resources::*;
+    use engine_resources::{
         cresource_exchange as trade, cstrategic_resource_database as database,
         cstrategic_resource_pool,
     };
@@ -168,7 +168,7 @@ mod resource_fixture {
 #[test]
 fn fuel_suffix_assembly_materializes_before_an_equal_scalar_projection() {
     use crate::projection::{Projection, ProjectionScratch};
-    use replay::frame::{FrameEncoder, FrameInput, Metrics};
+    use replay_frame::{frame::FrameEncoder, frame::FrameInput, frame::Metrics};
     let source = |hour, row| {
         let mut input = FrameInput {
             branch: 1,
@@ -233,7 +233,7 @@ fn resource_job() -> EconomyRestJob {
 
 #[test]
 fn owned_resource_group_matches_direct_rows_and_all_independent_capacity_limits() {
-    let memory = engine::memory::CountedMemory::new(resource_fixture::Fixture::new());
+    let memory = engine_native::memory::CountedMemory::new(resource_fixture::Fixture::new());
     for definition_capacity in [0, 1, 2] {
         for resource_capacity in [0, 1, 3] {
             for exchange_capacity in [0, 1, 2] {
@@ -308,7 +308,7 @@ impl Memory for ResourceTrace<'_> {
 fn owned_resource_preflight_refuses_before_reads_and_grows_only_when_recycled() {
     let source = resource_fixture::Fixture::new();
     for slot in 0..4 {
-        let memory = engine::memory::CountedMemory::new(ResourceTrace {
+        let memory = engine_native::memory::CountedMemory::new(ResourceTrace {
             source: &source,
             reads: Default::default(),
             fault: None,
@@ -338,7 +338,7 @@ fn owned_resource_preflight_refuses_before_reads_and_grows_only_when_recycled() 
 #[test]
 fn cold_resource_worker_consumes_original_headers_when_the_frame_has_nonzero_live_grants() {
     let source = resource_fixture::Fixture::new();
-    let memory = engine::memory::CountedMemory::new(ResourceTrace {
+    let memory = engine_native::memory::CountedMemory::new(ResourceTrace {
         source: &source,
         reads: Default::default(),
         fault: None,
@@ -369,7 +369,7 @@ fn cold_resource_worker_consumes_original_headers_when_the_frame_has_nonzero_liv
 #[test]
 fn every_hour_publishes_the_census_with_its_hourly_consumers() {
     let source = resource_fixture::Fixture::new();
-    let memory = engine::memory::CountedMemory::new(ResourceTrace {
+    let memory = engine_native::memory::CountedMemory::new(ResourceTrace {
         source: &source,
         reads: Default::default(),
         fault: None,
@@ -487,7 +487,7 @@ fn owned_resource_raw_shortage_never_starts_group_and_shared_fault_is_terminal()
     let source = resource_fixture::Fixture::new();
     let mut captured = Captured::with_capacities(&e_capacities());
     let ctx = captured.resource_copy_context(0, 0x1000, 0, true);
-    let memory = engine::memory::CountedMemory::new(ResourceTrace {
+    let memory = engine_native::memory::CountedMemory::new(ResourceTrace {
         source: &source,
         reads: Default::default(),
         fault: Some(0x1000 + cgame_state::COUNTRIES),
@@ -496,11 +496,11 @@ fn owned_resource_raw_shortage_never_starts_group_and_shared_fault_is_terminal()
     let native = read_accounting::Capture::new();
     assert!(copy_economy_rest_refresh(&memory, ctx, &mut job).raw_ok);
     let mut expected_counts = read_accounting::ZERO;
-    expected_counts[TABLES[2].index()] = engine::memory::ReadCounts {
+    expected_counts[TABLES[2].index()] = engine_native::memory::ReadCounts {
         copy_calls: 2,
         spans: 2,
         bytes: 24,
-        ..engine::memory::ReadCounts::ZERO
+        ..engine_native::memory::ReadCounts::ZERO
     };
     assert_eq!(read_accounting::snapshot(), expected_counts);
     assert_eq!(
@@ -538,7 +538,7 @@ fn owned_resource_raw_shortage_never_starts_group_and_shared_fault_is_terminal()
         !memory
             .reads
             .borrow()
-            .contains(&engine::cstrategic_resource_database::SINGLETON_RVA)
+            .contains(&engine_resources::cstrategic_resource_database::SINGLETON_RVA)
     );
     assert_eq!(job.resources.outcomes, [None; 3]);
     decoded.decode_economy_rest_payload(0, &job, &mut [0; N]);
@@ -552,7 +552,7 @@ fn owned_resource_raw_shortage_never_starts_group_and_shared_fault_is_terminal()
 
 #[test]
 fn worker_supply_growth_stages_and_decodes_mod_sized_rows_in_the_same_hour() {
-    use engine::csupply_system;
+    use engine_native::csupply_system;
     const GAME: usize = 0x1000;
     const ROOT: usize = 0x2000;
     const SUPPLY: usize = 0x3000;
@@ -604,7 +604,7 @@ fn worker_supply_growth_stages_and_decodes_mod_sized_rows_in_the_same_hour() {
 
 #[test]
 fn failed_daily_country_header_keeps_hourly_supply_and_first_fault() {
-    use engine::csupply_system;
+    use engine_native::csupply_system;
 
     const GAME: usize = 0x1000;
     const ROOT: usize = 0x20000;
@@ -627,7 +627,7 @@ fn failed_daily_country_header_keeps_hourly_supply_and_first_fault() {
     );
 
     for (hour, force_full) in [(17, false), (0, true)] {
-        let memory = engine::memory::CountedMemory::new(ResourceTrace {
+        let memory = engine_native::memory::CountedMemory::new(ResourceTrace {
             source: &source,
             reads: Default::default(),
             // A second native attempt would succeed, hiding the first fault.
@@ -643,12 +643,12 @@ fn failed_daily_country_header_keeps_hourly_supply_and_first_fault() {
         assert!(job.log.fault[0]);
         assert!(!job.log.fault[2]);
         let mut expected_counts = read_accounting::ZERO;
-        expected_counts[TableId::ProvinceSupply.index()] = engine::memory::ReadCounts {
+        expected_counts[TableId::ProvinceSupply.index()] = engine_native::memory::ReadCounts {
             copy_calls: 8,
             spans: 8,
             // Seven supply requests plus the failed 16-byte country header.
             bytes: 104 + 3 * sprovince_supply_data::STRIDE as u64,
-            ..engine::memory::ReadCounts::ZERO
+            ..engine_native::memory::ReadCounts::ZERO
         };
         assert_eq!(read_accounting::snapshot(), expected_counts);
         captured.decode_economy_rest_payload(0, &job, &mut [0; N]);
@@ -665,14 +665,14 @@ fn failed_daily_country_header_keeps_hourly_supply_and_first_fault() {
         }
         assert!(matches!(
             captured.purchases.outcome,
-            Outcome::Unavailable { reason } if reason != replay::cadence::SKIPPED_REASON
+            Outcome::Unavailable { reason } if reason != replay_data::cadence::SKIPPED_REASON
         ));
         // The census and both its consumers are walked every hour, so the
         // shared fault reaches them.
         for outcome in &captured.outcomes()[6..9] {
             assert!(matches!(
                 outcome,
-                Outcome::Unavailable { reason } if *reason != replay::cadence::SKIPPED_REASON
+                Outcome::Unavailable { reason } if *reason != replay_data::cadence::SKIPPED_REASON
             ));
         }
         let reads = memory.0.reads.borrow();
@@ -687,7 +687,7 @@ fn failed_daily_country_header_keeps_hourly_supply_and_first_fault() {
     }
 }
 
-use replay::rows::TableSchema;
+use replay_data::rows::TableSchema;
 
 fn small() -> (Capacities, Captured) {
     let capacities = Capacities {
@@ -709,7 +709,7 @@ fn complete<S: TableSchema>(view: &TableView) -> &[S::Row] {
 #[test]
 fn projection_matches_full_conversion_after_reordering_changes_and_faults() {
     use crate::projection::ProjectionScratch;
-    use replay::frame::{FrameEncoder, FrameInput, Metrics};
+    use replay_frame::{frame::FrameEncoder, frame::FrameInput, frame::Metrics};
 
     fn with_award_refusal(mut inputs: [TableInput; N]) -> [TableInput; N] {
         let fuel = match &mut inputs[0] {
@@ -1015,14 +1015,14 @@ fn conversion_preserves_raw_quantities_full_hub_identity_and_literal_source_byte
     let fuel = &complete::<tables::CountryFuel>(&views[0])[0];
     assert_eq!(
         fuel.country_instance,
-        replay::rows::Recorded::Value(Some(u32::MAX - 1))
+        replay_data::rows::Recorded::Value(Some(u32::MAX - 1))
     );
     assert_eq!(
         (fuel.current_raw, fuel.maximum_raw, fuel.lend_lease_gain_raw),
         (i64::MIN, i64::MAX, 4_294_967_317)
     );
     // The oracle-only operands publish their tombstones.
-    let retired = replay::rows::RetiredI64::default();
+    let retired = replay_data::rows::RetiredI64::default();
     assert_eq!(
         [
             fuel.gain_raw,
@@ -1039,8 +1039,8 @@ fn conversion_preserves_raw_quantities_full_hub_identity_and_literal_source_byte
     assert_eq!(
         (fuel.history_index, fuel.remaining_hours),
         (
-            replay::rows::RetiredI32::default(),
-            replay::rows::RetiredI32::default()
+            replay_data::rows::RetiredI32::default(),
+            replay_data::rows::RetiredI32::default()
         )
     );
     let consumer = &complete::<tables::CountryFuelConsumers>(&views[10])[0];
@@ -1169,7 +1169,7 @@ fn e_array(bytes: &mut [u8], header: usize, data: usize, count: u32) {
 }
 
 fn e_census(bytes: &mut [u8]) {
-    use engine::{ccountry, cgame_state};
+    use engine_native::{ccountry, cgame_state};
     e_array(&mut *bytes, E_GAME + cgame_state::COUNTRIES, E_COUNTRIES, 3);
     e_array(&mut *bytes, E_GAME + cgame_state::COUNTRY_LINKS, E_LINKS, 8);
     e_put(&mut *bytes, E_COUNTRIES + 8, &(E_C1 as u64).to_le_bytes());
@@ -1186,7 +1186,7 @@ fn e_census(bytes: &mut [u8]) {
         e_put(
             &mut *bytes,
             country,
-            &(engine::ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            &(engine_native::ccountry::VTABLE_RVA as u64).to_le_bytes(),
         );
         e_put(&mut *bytes, country + ccountry::ID, &id.to_le_bytes());
         let _ = cgame_state::COUNTRIES;
@@ -1209,14 +1209,14 @@ fn e_job() -> EconomyRestJob {
     }
 }
 
-fn e_direct(memory: &engine::memory::SliceMemory<'_>, cap: &Capacities) -> Captured {
+fn e_direct(memory: &engine_native::memory::SliceMemory<'_>, cap: &Capacities) -> Captured {
     let mut captured = Captured::with_capacities(cap);
     captured.capture(memory, E_BASE, E_GAME, 0, true);
     captured
 }
 
 fn e_split(
-    memory: &engine::memory::SliceMemory<'_>,
+    memory: &engine_native::memory::SliceMemory<'_>,
     cap: &Capacities,
 ) -> (Captured, EconomyRestCopyReport) {
     let mut captured = Captured::with_capacities(cap);
@@ -1243,7 +1243,8 @@ fn e_assert_table<const R: usize>(split: &Captured, direct: &Captured, index: us
 
 #[test]
 fn economy_fuel_copy_matches_direct_walk() {
-    use engine::{ccountry, ccountry_fuel_status, memory::SliceMemory};
+    use engine_fuel::ccountry_fuel_status;
+    use engine_native::{ccountry, memory::SliceMemory};
     let mut bytes = vec![0; 0x8000];
     e_census(&mut bytes);
     e_fuel_arrays(&mut bytes);
@@ -1302,7 +1303,8 @@ fn economy_fuel_copy_matches_direct_walk() {
 
 /// Fuel statuses with three consumers and a full history ring each.
 fn e_fuel_arrays(bytes: &mut [u8]) {
-    use engine::{ccountry, ccountry_fuel_status as fuel};
+    use engine_fuel::ccountry_fuel_status as fuel;
+    use engine_native::ccountry;
     for (index, (country, status)) in [(E_C1, 0x6000_usize), (E_C2, 0x6200)]
         .into_iter()
         .enumerate()
@@ -1360,7 +1362,7 @@ fn e_fuel_arrays(bytes: &mut [u8]) {
 
 #[test]
 fn economy_fuel_arrays_copy_matches_direct_walk_with_independent_failures() {
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     let mut bytes = vec![0; 0x9000];
     e_census(&mut bytes);
     e_fuel_arrays(&mut bytes);
@@ -1450,7 +1452,8 @@ fn economy_fuel_arrays_copy_matches_direct_walk_with_independent_failures() {
 
 #[test]
 fn economy_experience_copy_matches_direct_walk() {
-    use engine::{ccountry, ccountry_experience_status, memory::SliceMemory};
+    use engine_events::ccountry_experience_status;
+    use engine_native::{ccountry, memory::SliceMemory};
     let mut bytes = vec![0; 0x8000];
     e_census(&mut bytes);
     for (country, status) in [(E_C1, 0x6000_usize), (E_C2, 0x6200)] {
@@ -1488,7 +1491,8 @@ fn economy_experience_copy_matches_direct_walk() {
 
 #[test]
 fn economy_supply_is_hourly_with_daily_gates_and_identical_truncation() {
-    use engine::{cgame_state, csupply_system, memory::SliceMemory, sprovince_supply_data};
+    use engine_native::{cgame_state, csupply_system, memory::SliceMemory};
+    use engine_railways::sprovince_supply_data;
     let mut bytes = vec![0; 0x20000];
     e_census(&mut bytes);
     const ROOT: usize = 0x8000;
@@ -1516,13 +1520,13 @@ fn economy_supply_is_hourly_with_daily_gates_and_identical_truncation() {
         SUPPLY + sprovince_supply_data::STRIDE,
         &5_i64.to_le_bytes(),
     );
-    let memory = engine::memory::CountedMemory::new(SliceMemory {
+    let memory = engine_native::memory::CountedMemory::new(SliceMemory {
         base: E_GAME,
         bytes: &bytes,
     });
     let mut job = e_job();
     let skipped = Outcome::Unavailable {
-        reason: replay::cadence::SKIPPED_REASON,
+        reason: replay_data::cadence::SKIPPED_REASON,
     };
     for supply_capacity in [0, 1, 8] {
         let mut cap = e_capacities();
@@ -1574,11 +1578,11 @@ fn economy_supply_is_hourly_with_daily_gates_and_identical_truncation() {
                         assert_eq!(report.raw_bytes[index], 0);
                         assert_eq!(
                             typed_counts[TABLES[index].index()],
-                            engine::memory::ReadCounts::ZERO
+                            engine_native::memory::ReadCounts::ZERO
                         );
                         assert_eq!(
                             raw_counts[TABLES[index].index()],
-                            engine::memory::ReadCounts::ZERO
+                            engine_native::memory::ReadCounts::ZERO
                         );
                     }
                 }
@@ -1614,7 +1618,7 @@ fn economy_hub_motorization_copy_matches_direct_walk() {
     // Hubs share the supply root; an empty hub map emits Rows{0} in both
     // paths. Nonempty hub fixtures are covered by the supply test above
     // for the shared root; this pins the empty-map byte-identity.
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     let mut bytes = vec![0; 0x8000];
     e_census(&mut bytes);
     let memory = SliceMemory {
@@ -1630,7 +1634,7 @@ fn economy_hub_motorization_copy_matches_direct_walk() {
 
 #[test]
 fn economy_disrupted_supply_copy_matches_direct_walk() {
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     let mut bytes = vec![0; 0x8000];
     e_census(&mut bytes);
     let memory = SliceMemory {
@@ -1646,7 +1650,7 @@ fn economy_disrupted_supply_copy_matches_direct_walk() {
 
 #[test]
 fn economy_foreign_homebases_copy_matches_direct_walk() {
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     let mut bytes = vec![0; 0x8000];
     e_census(&mut bytes);
     let memory = SliceMemory {
@@ -1664,7 +1668,7 @@ fn economy_foreign_homebases_copy_matches_direct_walk() {
 fn economy_resource_definitions_copy_matches_direct_walk() {
     // The resource database singleton lies outside this fixture.
     // Both paths preserve its initial source failure.
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     let mut bytes = vec![0; 0x8000];
     e_census(&mut bytes);
     let memory = SliceMemory {
@@ -1680,7 +1684,7 @@ fn economy_resource_definitions_copy_matches_direct_walk() {
 #[test]
 fn economy_country_resources_copy_matches_direct_walk() {
     // Resource consumers preserve the shared descriptor source failure.
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     let mut bytes = vec![0; 0x8000];
     e_census(&mut bytes);
     let memory = SliceMemory {
@@ -1696,7 +1700,7 @@ fn economy_country_resources_copy_matches_direct_walk() {
 #[test]
 fn economy_resource_exchanges_copy_matches_direct_walk() {
     // Exchange consumers preserve the shared descriptor source failure.
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     let mut bytes = vec![0; 0x8000];
     e_census(&mut bytes);
     let memory = SliceMemory {
@@ -1711,7 +1715,7 @@ fn economy_resource_exchanges_copy_matches_direct_walk() {
 
 #[test]
 fn economy_purchase_contracts_copy_matches_direct_walk() {
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     let mut bytes = vec![0; 0x8000];
     e_census(&mut bytes);
     let memory = SliceMemory {
@@ -1730,7 +1734,8 @@ fn economy_truncation_matrix_matches_direct_with_same_caps() {
     // B3: zero/exact-fit/overflow run typed AND copy→decode against the
     // SAME memory with the SAME pooled caps, asserting identical fuel
     // outcomes (the table under test with valid data and no faults).
-    use engine::{ccountry, ccountry_fuel_status, memory::SliceMemory};
+    use engine_fuel::ccountry_fuel_status;
+    use engine_native::{ccountry, memory::SliceMemory};
     let mut bytes = vec![0; 0x8000];
     e_census(&mut bytes);
     e_fuel_arrays(&mut bytes);
@@ -1769,7 +1774,7 @@ fn economy_truncation_matrix_matches_direct_with_same_caps() {
 
 #[test]
 fn economy_staging_overflow_falls_back_to_typed_walk() {
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     let mut bytes = vec![0; 0x8000];
     e_census(&mut bytes);
     let memory = SliceMemory {
@@ -1791,7 +1796,7 @@ fn economy_staging_overflow_falls_back_to_typed_walk() {
 
 #[test]
 fn economy_gate_skips_typed_walks_when_raw_mode_set() {
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     use std::cell::RefCell;
     struct Traced<'a> {
         source: SliceMemory<'a>,
@@ -1830,7 +1835,8 @@ fn economy_gate_skips_typed_walks_when_raw_mode_set() {
 fn economy_worker_decode_installs_rows_before_ready_handoff() {
     // Worker decode path: copy→decode installs the same fuel rows the
     // typed walk produces, with decode ticks recorded.
-    use engine::{ccountry, ccountry_fuel_status, memory::SliceMemory};
+    use engine_fuel::ccountry_fuel_status;
+    use engine_native::{ccountry, memory::SliceMemory};
     let mut bytes = vec![0; 0x8000];
     e_census(&mut bytes);
     e_fuel_arrays(&mut bytes);
@@ -1889,7 +1895,7 @@ fn economy_worker_decode_installs_rows_before_ready_handoff() {
 
 #[test]
 fn cold_owned_resource_arenas_keep_five_thousand_countries_and_later_mod_resource_growth() {
-    use engine::{
+    use engine_resources::{
         ccountry_resources as resource, cresource_exchange as trade,
         cstrategic_resource_database as database, cstrategic_resource_pool,
     };
@@ -2022,7 +2028,7 @@ fn cold_owned_resource_arenas_keep_five_thousand_countries_and_later_mod_resourc
             EXPORT_ROUTES,
             COUNTRIES as u32 - 1,
         );
-        let memory = engine::memory::CountedMemory::new(source);
+        let memory = engine_native::memory::CountedMemory::new(source);
         let context = captured.resource_copy_context(0, 0x1000, 10, false);
         let native = read_accounting::Capture::new();
         assert!(copy_economy_rest_refresh_growing(&memory, context, &mut job).raw_ok);

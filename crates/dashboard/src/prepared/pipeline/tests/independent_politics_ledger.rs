@@ -9,10 +9,11 @@ use super::family_lanes::{assert_payloads_equal, payloads};
 use super::*;
 use crate::prepared::prepass;
 use independent::ledger;
-use replay::rows::{
-    CountryCommandPowerRow, CountryPowerChangeRow, CountryPowerDailyCostRow, CountryPowerDailyRow,
-    PoliticsCaptureCoverageRow, PowerCause, PowerCurrency, PowerIdentity, PowerObjectKind,
-    PowerOperation, PowerSite,
+use replay_data::{
+    rows::CountryCommandPowerRow, rows::CountryPowerChangeRow, rows::CountryPowerDailyCostRow,
+    rows::CountryPowerDailyRow, rows::PoliticsCaptureCoverageRow, rows::PowerCause,
+    rows::PowerCurrency, rows::PowerIdentity, rows::PowerObjectKind, rows::PowerOperation,
+    rows::PowerSite,
 };
 
 type Payloads = BTreeMap<(String, u64), Vec<u8>>;

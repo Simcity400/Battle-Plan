@@ -4,7 +4,7 @@ use super::*;
 /// component set it, using 2.0 divided by each viewport axis, then the (-1, +1) offset.
 #[test]
 fn a_written_font_viewport_is_the_compiled_projection() {
-    let program = installed_content::pdxshader::program::read_with(b"t.lua", &|_| None).unwrap();
+    let program = installed_content_core::pdxshader::program::read_with(b"t.lua", &|_| None).unwrap();
     let quad = |font_viewport| Quad {
         path: String::new(),
         effect: Effect {

@@ -6,12 +6,11 @@ use std::{
 };
 
 use installed_content_save::construction as saved;
-use replay::{
-    Hour,
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder},
-    rows::{ConstructionLineOutputRow, CountryRow, TableId, tables},
+use replay::container::Replay;
+use replay_data::{
+    Hour, rows::ConstructionLineOutputRow, rows::CountryRow, rows::TableId, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
 
 use super::{Report, complete, country_tag, daily_read, invalid, required_country_tag};
 
@@ -73,7 +72,7 @@ macro_rules! production_fields {
 /// holder's raw country is not serialized. The save writes the country
 /// list through raw tag text, in order including repeats.
 pub fn naval_bases(
-    rows: &[replay::rows::NavalBaseRow],
+    rows: &[replay_data::rows::NavalBaseRow],
     saved: &BTreeMap<saved::BuildingKey, saved::Building>,
     port_types: &BTreeSet<Vec<u8>>,
     country_bases: &[installed_content_save::naval_launch::CountryNavalLaunchOccurrence],
@@ -117,17 +116,24 @@ pub fn naval_bases(
             );
         } else {
             let countries = match &row.country_tags {
-                replay::rows::Recorded::Value(Some(tags)) if tags.len() == row.countries.len() => {
+                replay_data::rows::Recorded::Value(Some(tags))
+                    if tags.len() == row.countries.len() =>
+                {
                     Some(
                         tags.iter()
                             .map(|tag| super::serialized_text(report, &label, tag))
                             .collect::<Vec<_>>(),
                     )
                 }
-                replay::rows::Recorded::NotRecorded => row
+                replay_data::rows::Recorded::NotRecorded => row
                     .countries
                     .iter()
-                    .map(|raw| raw_tags.get(raw).copied().map(installed_content::parser::c_string))
+                    .map(|raw| {
+                        raw_tags
+                            .get(raw)
+                            .copied()
+                            .map(installed_content_core::parser::c_string)
+                    })
                     .collect::<Option<Vec<_>>>(),
                 _ => None,
             };
@@ -190,7 +196,7 @@ pub fn naval_bases(
 }
 
 pub fn buildings(
-    rows: &[replay::rows::BuildingRow],
+    rows: &[replay_data::rows::BuildingRow],
     saved: &BTreeMap<saved::BuildingKey, saved::Building>,
     province_scope: bool,
     names: &BTreeMap<u32, &[u8]>,
@@ -289,7 +295,7 @@ pub fn buildings(
 }
 
 pub fn base_resources(
-    rows: &[replay::rows::StateBaseResourceRow],
+    rows: &[replay_data::rows::StateBaseResourceRow],
     content: &saved::BaseResources,
     names: &BTreeMap<u32, &[u8]>,
     report: &mut Report,
@@ -362,7 +368,7 @@ pub fn base_resources(
 }
 
 pub fn partial_base_resources(
-    rows: &[replay::rows::StateBaseResourceRow],
+    rows: &[replay_data::rows::StateBaseResourceRow],
     content: &saved::PartialBaseResources,
     membership: &installed_content_save::PartialMapMembership,
     names: &BTreeMap<u32, &[u8]>,
@@ -397,7 +403,7 @@ pub fn partial_base_resources(
 }
 
 pub fn building_construction(
-    rows: &[replay::rows::BuildingConstructionRow],
+    rows: &[replay_data::rows::BuildingConstructionRow],
     saved: &saved::Pack,
     links: &BTreeMap<u32, &CountryRow>,
     names: &BTreeMap<u32, &[u8]>,
@@ -474,7 +480,7 @@ pub fn building_construction(
 }
 
 pub fn railway_construction(
-    rows: &[replay::rows::RailwayConstructionRow],
+    rows: &[replay_data::rows::RailwayConstructionRow],
     saved: &saved::Pack,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,

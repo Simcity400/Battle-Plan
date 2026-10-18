@@ -4,14 +4,14 @@ use dashboard_base::prepared_map::{
     Builder, Position, Progress, decode_checkpoint, header, load_resume, load_resume_prefix,
     section,
 };
-use replay::rows::tables;
-use replay::{
-    BranchId, Hour,
-    container::SeekResult,
-    frame::{DecodedFrame, FrameDecoder, SharedView, TableUpdate, TableView},
-    rows::TableId,
-    rows::{DivisionStatusRow, Recorded, TableRows},
-    spool::Record,
+use replay::{container::SeekResult, spool::Record};
+use replay_data::rows::tables;
+use replay_data::{
+    BranchId, Hour, rows::DivisionStatusRow, rows::Recorded, rows::TableId, rows::TableRows,
+};
+use replay_frame::{
+    frame::DecodedFrame, frame::FrameDecoder, frame::SharedView, frame::TableUpdate,
+    frame::TableView,
 };
 use std::{num::NonZeroU32, path::PathBuf};
 use store::{SourceKey, Store};
@@ -319,7 +319,7 @@ fn step_reuses_unretained_row_storage_and_preserves_retained_hours() {
         .into();
     let mut records = crate::playback::tests::records(1, &[100]);
     records.retain(|record| !matches!(record, Record::Frame(_)));
-    let mut encoder = replay::frame::FrameEncoder::new();
+    let mut encoder = replay_frame::frame::FrameEncoder::new();
     for hour in 100..=102 {
         source.hour = hour;
         let TableView::Complete(TableRows::Clock(clock)) =
@@ -981,8 +981,8 @@ mod measurement;
 
 #[test]
 fn prepared_and_ordinary_hours_build_equal_operative_operation_and_progress_icons() {
-    use replay::frame::FrameEncoder;
-    use replay::rows::*;
+    use replay_data::rows::*;
+    use replay_frame::frame::FrameEncoder;
     use viewer_raids::map::{
         intel_icons::{EntryKind, IntelAssets, IntelDefines, OperationPriorities, Write, icons},
         raids::test_support::{self, put},
@@ -1136,7 +1136,7 @@ fn prepared_and_ordinary_hours_build_equal_operative_operation_and_progress_icon
         0,
     );
     let raids = test_support::assets();
-    let loc = installed_content::localisation::Localisation::default();
+    let loc = installed_content_localisation::localisation::Localisation::default();
     let build = |frame: &DecodedFrame| icons(&assets, &raids, frame, 2, &loc, "english");
     for hour in [102, 100, 101] {
         let SeekResult::Frame(ordinary) = replay.seek(1, hour).unwrap() else {
@@ -1181,7 +1181,7 @@ fn prepared_and_ordinary_hours_build_equal_operative_operation_and_progress_icon
 
 #[test]
 fn prepared_hours_preserve_native_ordinals_and_market_route_state_endpoints() {
-    use replay::rows::tables;
+    use replay_data::rows::tables;
     let replay = Arc::new(status_replay(&[100, 101, 102, 103]));
     let fixture = Fixture::new(&replay);
     let selected = dashboard_base::prepared_map::selected_tables();

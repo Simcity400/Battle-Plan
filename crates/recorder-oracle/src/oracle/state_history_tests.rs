@@ -76,13 +76,13 @@ fn base_resources_skip_excluded_states_and_compare_clean_declarations() {
     .unwrap();
     let content = content.unwrap();
     let rows = [
-        replay::rows::StateBaseResourceRow {
+        replay_data::rows::StateBaseResourceRow {
             state: 1,
             resource: 91,
             ordinal: 0,
             amount: 999,
         },
-        replay::rows::StateBaseResourceRow {
+        replay_data::rows::StateBaseResourceRow {
             state: 2,
             resource: 91,
             ordinal: 0,

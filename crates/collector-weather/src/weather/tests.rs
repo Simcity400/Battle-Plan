@@ -1,5 +1,5 @@
 use super::*;
-use engine::{cgame_state, memory::SliceMemory};
+use engine_native::{cgame_state, memory::SliceMemory};
 use std::cell::Cell;
 
 fn put(bytes: &mut [u8], address: usize, value: &[u8]) {
@@ -110,8 +110,8 @@ fn fixture() -> Vec<u8> {
 }
 
 /// The fixture province's temperature words.
-fn fixture_words() -> replay::temperature::State {
-    replay::temperature::State {
+fn fixture_words() -> replay_data::temperature::State {
+    replay_data::temperature::State {
         temperature: -9_007_199_254_740_993,
         drift: 123_456,
         staged: 5,
@@ -195,8 +195,8 @@ fn acquisition_keeps_native_snow_display_bytes_and_raw_flags() {
             display_mud: 255,
             // A first hour anchors the pass at its own words.
             temperature: rows::ProvinceTemperature::anchored(fixture_words()),
-            raw_mud: replay::rows::Recorded::Value(7),
-            clock: rows::DayNightClock::held(replay::day_night::Clock {
+            raw_mud: replay_data::rows::Recorded::Value(7),
+            clock: rows::DayNightClock::held(replay_data::day_night::Clock {
                 local_hour: -7,
                 night_factor: -9_007_199_254_740_993,
             }),
@@ -206,7 +206,7 @@ fn acquisition_keeps_native_snow_display_bytes_and_raw_flags() {
                 cursor: 0,
                 anchor_seed: None,
                 hours: Vec::new(),
-                checksum: replay::temperature::checksum([fixture_words().temperature]),
+                checksum: replay_data::temperature::checksum([fixture_words().temperature]),
             })),
             // The typed fixture path reads no modifier: a refusal, never zero.
             modifiers: rows::Recorded::Value(None),
@@ -258,7 +258,7 @@ fn clear_gates_record_updated_clocks_from_slot_one_and_hold_the_rest() {
         ..Default::default()
     };
     let held = |local_hour, night_factor| {
-        rows::DayNightClock::held(replay::day_night::Clock {
+        rows::DayNightClock::held(replay_data::day_night::Clock {
             local_hour,
             night_factor,
         })
@@ -497,7 +497,11 @@ fn a_failed_snow_ceiling_keeps_the_province_modifier_entries() {
     put(&mut bytes, header, &(entry as u64).to_le_bytes());
     put(&mut bytes, header + 8, &1_u32.to_le_bytes());
     put(&mut bytes, header + 12, &1_u32.to_le_bytes());
-    put(&mut bytes, entry, &engine::modifier_keys::ARMY_SPEED_FACTOR.to_le_bytes());
+    put(
+        &mut bytes,
+        entry,
+        &engine_executable::modifier_keys::ARMY_SPEED_FACTOR.to_le_bytes(),
+    );
     put(&mut bytes, entry + 8, &(-20_000_i64).to_le_bytes());
     let capacities = Capacities {
         rows: [2; N],
@@ -508,7 +512,9 @@ fn a_failed_snow_ceiling_keeps_the_province_modifier_entries() {
         let TableView::Complete(provinces) = &tables[1] else {
             panic!("WeatherProvinces is complete without the snow ceiling")
         };
-        provinces.rows::<tables::WeatherProvinces>().unwrap()[0].modifiers.clone()
+        provinces.rows::<tables::WeatherProvinces>().unwrap()[0]
+            .modifiers
+            .clone()
     };
     // The split path with storage for the province's modifier entries.
     fn split(memory: &impl Memory, capacities: &Capacities) -> Captured {
@@ -529,7 +535,7 @@ fn a_failed_snow_ceiling_keeps_the_province_modifier_entries() {
     let healthy = split(&memory(&bytes), &capacities);
     let recorded = modifiers(&healthy);
     assert!(
-        matches!(&recorded, rows::Recorded::Value(Some(entries)) if entries.get(engine::modifier_keys::ARMY_SPEED_FACTOR) == Some(-20_000)),
+        matches!(&recorded, rows::Recorded::Value(Some(entries)) if entries.get(engine_executable::modifier_keys::ARMY_SPEED_FACTOR) == Some(-20_000)),
         "{recorded:?}"
     );
     let faulted = split(
@@ -715,7 +721,7 @@ struct AttackWeatherMemory {
 }
 impl AttackWeatherMemory {
     fn new(fault: Option<usize>) -> Self {
-        use engine::{modifier_definition as definition, modifier_entry as entry};
+        use engine_native::{modifier_definition as definition, modifier_entry as entry};
         let mut bytes = fixture();
         let root = 0x3000 + sweather_per_region::MODIFIERS;
         const VALUES: usize = 0x4a00;
@@ -905,7 +911,10 @@ fn weather_regions_record_raw_combat_entries_and_no_witness() {
         (1, 0, 255, 1, 2, 3)
     );
     assert_eq!(source.attempts(0x3000 + sweather_per_region::MODIFIERS), 0);
-    assert_eq!(source.attempts(engine::modifier_definition::TABLE_RVA), 0);
+    assert_eq!(
+        source.attempts(engine_native::modifier_definition::TABLE_RVA),
+        0
+    );
     // A worker reads each region's raw entries once, during the copy; the
     // definitions stay unread, as playback applies them.
     let source = AttackWeatherMemory::new(None);
@@ -925,7 +934,10 @@ fn weather_regions_record_raw_combat_entries_and_no_witness() {
     captured.decode_weather_payload(0, &job, 0, &mut Default::default(), &mut [0; N]);
     assert_eq!(source.reads.borrow().len(), reads);
     assert_eq!(source.attempts(0x3000 + sweather_per_region::MODIFIERS), 1);
-    assert_eq!(source.attempts(engine::modifier_definition::TABLE_RVA), 0);
+    assert_eq!(
+        source.attempts(engine_native::modifier_definition::TABLE_RVA),
+        0
+    );
     assert_eq!(
         projected_weather_regions(&captured)[0].combat,
         rows::Recorded::Value(Some(rows::RegionCombatWeather {
@@ -946,11 +958,11 @@ fn weather_regions_record_raw_combat_entries_and_no_witness() {
         rows::Recorded::Value(Some(rows::ProvinceWeatherModifiers {
             entries: vec![
                 rows::ProvinceModifierEntry {
-                    key: engine::modifier_keys::ARMY_SPEED_FACTOR,
+                    key: engine_executable::modifier_keys::ARMY_SPEED_FACTOR,
                     value: -40_000,
                 },
                 rows::ProvinceModifierEntry {
-                    key: engine::modifier_keys::HEAT_ATTRITION,
+                    key: engine_executable::modifier_keys::HEAT_ATTRITION,
                     value: 25_000,
                 },
             ],
@@ -965,16 +977,16 @@ fn weather_display_memory(fault: Option<usize>) -> AttackWeatherMemory {
             .to_le_bytes()
             .into_iter()
             .enumerate()
-            .map(|(index, byte)| (engine::cmap::SINGLETON_RVA + index, byte)),
+            .map(|(index, byte)| (engine_native::cmap::SINGLETON_RVA + index, byte)),
     );
     put(
         &mut source.bytes,
-        0x2800 + engine::cmap::WIDTH,
+        0x2800 + engine_native::cmap::WIDTH,
         &12_i32.to_le_bytes(),
     );
     put(
         &mut source.bytes,
-        0x2800 + engine::cmap::HEIGHT,
+        0x2800 + engine_native::cmap::HEIGHT,
         &12_i32.to_le_bytes(),
     );
     put(
@@ -1016,12 +1028,14 @@ fn weather_display_hint_failure_is_named_counted_and_keeps_capacity_after_health
     let retained = before.max(10);
     assert_eq!(display::bytes_hint(), retained);
     source.reads.borrow_mut().clear();
-    source.fault_once.set(Some(0x2800 + engine::cmap::WIDTH));
+    source
+        .fault_once
+        .set(Some(0x2800 + engine_native::cmap::WIDTH));
     assert_eq!(
         display::observe_capacity(&source, 0, &failures),
         Err("weather display dimensions unreadable")
     );
-    assert_eq!(source.attempts(0x2800 + engine::cmap::WIDTH), 1);
+    assert_eq!(source.attempts(0x2800 + engine_native::cmap::WIDTH), 1);
     assert_eq!(display::bytes_hint(), retained);
     let (captured, _) = weather_display_split(&source, 10);
     assert!(matches!(captured.outcomes()[1], Outcome::Rows { len: 1 }));
@@ -1127,7 +1141,7 @@ fn weather_display_refusals_and_growth_preserve_independent_province_fields() {
         );
         assert_eq!(
             row.clock.state(row.id),
-            Ok(rows::ClockState::Held(replay::day_night::Clock {
+            Ok(rows::ClockState::Held(replay_data::day_night::Clock {
                 local_hour: -7,
                 night_factor: -9_007_199_254_740_993
             }))
@@ -1389,7 +1403,7 @@ fn weather_display_completion_guard_refuses_pending_or_faulted_work_after_edges(
             assert_eq!(row.display, rows::Recorded::Value(None));
             assert_eq!(
                 row.clock.state(row.id),
-                Ok(rows::ClockState::Held(replay::day_night::Clock {
+                Ok(rows::ClockState::Held(replay_data::day_night::Clock {
                     local_hour: -7,
                     night_factor: -9_007_199_254_740_993
                 }))
@@ -1655,7 +1669,7 @@ fn the_temperature_pass_records_proven_hours_against_the_anchored_words() {
             cursor: 0,
             anchor_seed: None,
             hours: Vec::new(),
-            checksum: replay::temperature::checksum([fixture_words().temperature]),
+            checksum: replay_data::temperature::checksum([fixture_words().temperature]),
         }
     );
     // The next hour's pass visits the one slot and moves its words; the rows keep the
@@ -1673,7 +1687,7 @@ fn the_temperature_pass_records_proven_hours_against_the_anchored_words() {
         (recorded.anchor, recorded.hours.clone()),
         (500, vec![Some(78)])
     );
-    assert_eq!(recorded.checksum, replay::temperature::checksum([42]));
+    assert_eq!(recorded.checksum, replay_data::temperature::checksum([42]));
     // An unread seed records no pass, keeps every province field, and the next hour anchors.
     let unread = FaultReads {
         memory: memory(&bytes),

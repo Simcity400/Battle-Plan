@@ -20,7 +20,7 @@
 //! for the overlord, negative for the subject. `base_export` (the reserve before
 //! modifiers) is not shown.
 //!
-//! The pools and the deals are both read every hour (`replay::cadence`), so a
+//! The pools and the deals are both read every hour (`replay_data::cadence`), so a
 //! value shown at an hour is as of that hour. Values run over the consecutive
 //! hours of the same country identity and end at a gap, an incomplete table or a
 //! change of identity. The resource names come from `ResourceDefinitions`, read
@@ -49,7 +49,7 @@ use dashboard_base::{
 };
 use dashboard_core::config::LoadContext;
 use dashboard_text::metadata::IdentityTrack;
-use replay::rows::{DeltaRow, TableId, tables};
+use replay_data::{rows::DeltaRow, rows::TableId, rows::tables};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -61,7 +61,9 @@ use ts_rs::TS;
 #[cfg(test)]
 use dashboard_text::metadata::validate_campaign;
 #[cfg(test)]
-use replay::{container::Replay, frame::FrameDecoder};
+use replay::container::Replay;
+#[cfg(test)]
+use replay_frame::frame::FrameDecoder;
 #[cfg(test)]
 use std::{collections::VecDeque, sync::atomic::Ordering};
 
@@ -190,8 +192,8 @@ struct PoolOperand {
     resource: u32,
     values: [i64; 8],
 }
-impl From<&replay::rows::CountryResourceRow> for PoolOperand {
-    fn from(row: &replay::rows::CountryResourceRow) -> Self {
+impl From<&replay_data::rows::CountryResourceRow> for PoolOperand {
+    fn from(row: &replay_data::rows::CountryResourceRow) -> Self {
         Self {
             country: row.country,
             resource: row.resource,
@@ -236,8 +238,8 @@ struct DealOperand {
     convoys_assigned: i32,
     convoys_required: i32,
 }
-impl From<&replay::rows::ResourceExchangeRow> for DealOperand {
-    fn from(row: &replay::rows::ResourceExchangeRow) -> Self {
+impl From<&replay_data::rows::ResourceExchangeRow> for DealOperand {
+    fn from(row: &replay_data::rows::ResourceExchangeRow) -> Self {
         Self {
             id: row.id,
             exporter: row.exporter,
@@ -384,7 +386,7 @@ fn slot_operands<'a, T>(
 }
 
 /// The resources recorded definitions and tokens name this hour.
-fn read_names(frame: &replay::frame::DecodedFrame) -> Option<Learned> {
+fn read_names(frame: &replay_frame::frame::DecodedFrame) -> Option<Learned> {
     frame
         .complete::<tables::ResourceDefinitions>()
         .ok()
@@ -579,7 +581,7 @@ impl CountryScan {
     #[allow(clippy::too_many_arguments)]
     fn observe(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
+        decoded: &replay_frame::frame::DecodedFrame,
         identity: Option<(u32, u32)>,
         pools: Option<&Vec<&PoolOperand>>,
         deals: Option<&Vec<&DealOperand>>,
@@ -640,7 +642,7 @@ impl CountryScan {
     #[allow(clippy::too_many_arguments)]
     fn observe_tables(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
+        decoded: &replay_frame::frame::DecodedFrame,
         identity: Option<(u32, u32)>,
         pools: Option<&Vec<&PoolOperand>>,
         deals: Option<&Vec<&DealOperand>>,
@@ -875,7 +877,7 @@ impl Scan {
         }
     }
     #[cfg(test)]
-    fn observe(&mut self, frame: &replay::frame::DecodedFrame) -> io::Result<()> {
+    fn observe(&mut self, frame: &replay_frame::frame::DecodedFrame) -> io::Result<()> {
         self.country_reads = frame
             .complete::<tables::Countries>()
             .ok()
@@ -884,7 +886,7 @@ impl Scan {
         self.observe_resolved(frame, true, [true; 2], true)
             .map(|_| ())
     }
-    fn refresh_inputs(&mut self, frame: &replay::frame::DecodedFrame, changed: [bool; 3]) {
+    fn refresh_inputs(&mut self, frame: &replay_frame::frame::DecodedFrame, changed: [bool; 3]) {
         self.availability_changed = [false; 2];
         if changed[0] || !self.inputs_ready {
             let available = self.pool_operands.is_some();
@@ -937,7 +939,7 @@ impl Scan {
     /// Whether this frame names its resources as the current names do, and
     /// every country with a holder has learned them all: observing the
     /// countries again with this frame's names would change nothing.
-    fn same_names(&self, frame: &replay::frame::DecodedFrame) -> bool {
+    fn same_names(&self, frame: &replay_frame::frame::DecodedFrame) -> bool {
         self.names_kept
             && match (read_names(frame), &self.current_names) {
                 (Some(names), Some(current)) => names.list() == current.list(),
@@ -956,7 +958,7 @@ impl Scan {
     }
     fn observe_resolved(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         names_changed: bool,
         changed: [bool; 2],
         holders_changed: bool,
@@ -1104,7 +1106,7 @@ impl Scan {
     /// at hand: the caller then observes the whole tables.
     fn observe_rows(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         pools: (&[DeltaRow], &[u128]),
         deals: (&[DeltaRow], &[u128]),
         repeats: bool,

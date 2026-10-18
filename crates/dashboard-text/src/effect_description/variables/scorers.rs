@@ -87,7 +87,7 @@ impl Renderer<'_, '_, '_> {
         // Equal scores keep native hash bucket order.
         let values = scores.sorted();
         let count = (values.len() as i64).wrapping_mul(100_000);
-        let num = installed_content::scoped_variable::ScopedVariable {
+        let num = installed_content_core::scoped_variable::ScopedVariable {
             parsed: true,
             num: true,
             ..Default::default()
@@ -106,7 +106,7 @@ impl Renderer<'_, '_, '_> {
             evaluator.store_description_temp(key, count);
         }
         for (index, (country, score)) in values.into_iter().enumerate() {
-            let index = installed_content::scoped_variable::ScopedVariable::literal(
+            let index = installed_content_core::scoped_variable::ScopedVariable::literal(
                 (index as i64).wrapping_mul(100_000),
             );
             let key = evaluator.description_temp_destination_fields(

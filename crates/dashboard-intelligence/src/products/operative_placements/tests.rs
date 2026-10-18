@@ -1,10 +1,10 @@
 use super::*;
 use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-use replay::{
-    container::Replay,
-    frame::TableView,
-    rows::{OperativeMembershipRow, Recorded, SimulationFeatureRow, TableRows},
+use replay::container::Replay;
+use replay_data::{
+    rows::OperativeMembershipRow, rows::Recorded, rows::SimulationFeatureRow, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 use std::sync::Arc;
 
 pub(super) fn operative(id: u64) -> OperativeMembershipRow {
@@ -93,7 +93,7 @@ fn resolved(rows: Vec<OperativeMembershipRow>) -> BTreeMap<PairKey, Vec<PlacedOp
 
 fn resolve_frame(
     frame: &DecodedFrame,
-    localisation: Option<&installed_content::localisation::Localisation>,
+    localisation: Option<&installed_content_localisation::localisation::Localisation>,
     warnings: &mut std::collections::BTreeSet<String>,
 ) -> Result<BTreeMap<PairKey, Vec<PlacedOperative>>, String> {
     let links = frame.complete::<tables::CountryLinks>().unwrap();
@@ -196,7 +196,7 @@ fn placements_gap_ends_a_hold_until_the_next_complete_read() {
 #[test]
 fn placements_untimed_scheduled_failures_end_holds_until_a_complete_walk() {
     let failed_hour = (11..35)
-        .find(|hour| replay::cadence::is_refresh(TableId::OperativeMemberships, *hour))
+        .find(|hour| replay_data::cadence::is_refresh(TableId::OperativeMemberships, *hour))
         .unwrap();
     for view in [
         TableView::Unavailable {
@@ -250,7 +250,7 @@ fn placements_held_keyframe_neither_redates_nor_ends_the_read() {
         .collect();
     let mut wire = records(1, frames.clone());
     let mut inputs = frames.into_iter();
-    let mut encoder = replay::frame::FrameEncoder::new();
+    let mut encoder = replay_frame::frame::FrameEncoder::new();
     for record in &mut wire {
         if let replay::spool::Record::Frame(recorded) = record {
             let input = inputs.next().unwrap();
@@ -369,13 +369,14 @@ fn placements_all_missions_operations_reservations_and_exclusions_count_each_ide
         },
     ]);
     let mut frame = frame(10, true, rows);
-    *frame.tables[TableId::Operations.index()] =
-        TableView::Complete(TableRows::Operations(vec![replay::rows::OperationRow {
+    *frame.tables[TableId::Operations.index()] = TableView::Complete(TableRows::Operations(vec![
+        replay_data::rows::OperationRow {
             id: 811,
             owner: 7,
             target: 7,
             ..Default::default()
-        }]));
+        },
+    ]));
     let frame = decoded(frame);
     let captured = recorded_operatives(&frame).unwrap();
     let reservation = captured.iter().find(|row| row.id == 2).unwrap();

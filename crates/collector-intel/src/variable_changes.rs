@@ -1,5 +1,5 @@
 //! Allocation-free notifications from the native writers of every script
-//! variable store ([`engine::script_variable_mutations`]). A detour only
+//! variable store ([`engine_mutations::script_variable_mutations`]). A detour only
 //! notifies the shared watch registry ([`WatchRegistry`]) for the store its
 //! arguments name, counts its site and calls the original; it never changes
 //! game behaviour. Receivers are the `CVariables` addresses a ScriptVariables
@@ -28,10 +28,11 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{
-    Memory,
-    script_variable_mutations::{MUTATIONS, Patch, Receiver, store},
+use engine_mutations::{
+    script_variable_mutations::MUTATIONS, script_variable_mutations::Patch,
+    script_variable_mutations::Receiver, script_variable_mutations::store,
 };
+use engine_native::Memory;
 use std::{
     ffi::c_void,
     ops::Range,
@@ -545,16 +546,16 @@ fn locate_temporary() -> Option<usize> {
     // SAFETY: the query succeeded, so it wrote the structure.
     let teb = unsafe { information.assume_init() }.teb;
     // SAFETY: guarded reads of the calling thread's own TEB and TLS array.
-    let memory = unsafe { engine::memory::LiveMemory::new() };
-    let array = engine::read::<u64>(&memory, teb.checked_add(0x58)?)?;
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let array = engine_native::read::<u64>(&memory, teb.checked_add(0x58)?)?;
     let slot = usize::try_from(array)
         .ok()?
         .checked_add(index.checked_mul(8)?)?;
-    let block = usize::try_from(engine::read::<u64>(&memory, slot)?).ok()?;
+    let block = usize::try_from(engine_native::read::<u64>(&memory, slot)?).ok()?;
     if block == 0 {
         return None;
     }
-    block.checked_add(engine::script_variable_mutations::TEMPORARY_STORE)
+    block.checked_add(engine_mutations::script_variable_mutations::TEMPORARY_STORE)
 }
 
 pub struct Hooks {
@@ -570,12 +571,15 @@ impl Hooks {
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
-        use engine::script_variable_mutations::{CLEAR_RVA, END_CONTEXT_RVA, TLS_INDEX_RVA};
+        use engine_mutations::{
+            script_variable_mutations::CLEAR_RVA, script_variable_mutations::END_CONTEXT_RVA,
+            script_variable_mutations::TLS_INDEX_RVA,
+        };
         let mut hooks = Vec::new();
         if cfg!(feature = "variable_changes")
-            && let Some(index) = engine::read::<u32>(memory, base + TLS_INDEX_RVA)
+            && let Some(index) = engine_native::read::<u32>(memory, base + TLS_INDEX_RVA)
             && MUTATIONS.iter().all(|(site, _, _)| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             TLS_INDEX.store(index as usize, Ordering::Release);
@@ -653,7 +657,7 @@ impl Drop for Hooks {
 
 // Each entry site takes at most four integer or pointer arguments (RCX..R9)
 // and returns RAX unchanged from its original; the first two name the store
-// as its [`engine::script_variable_mutations::Receiver`] says. The
+// as its [`engine_mutations::script_variable_mutations::Receiver`] says. The
 // notification covers the original in flight. A `$filter` site also serves
 // every thread's temporary store, which no scope records: a call on the
 // calling thread's own temporary store runs the original without one.
@@ -737,13 +741,14 @@ macro_rules! context_site {
             let end: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
                 unsafe { std::mem::transmute(END_CONTEXT.load(Ordering::Acquire)) };
             // SAFETY: a guarded read of the context the native call passes.
-            let memory = unsafe { engine::memory::LiveMemory::new() };
-            let _notification =
-                match engine::script_variable_mutations::context_store(&memory, context) {
-                    Ok(Some(written)) => Some(WATCHES.notify(written, $site)),
-                    Ok(None) => None,
-                    Err(_) => Some(WATCHES.unread_context($site)),
-                };
+            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let _notification = match engine_mutations::script_variable_mutations::context_store(
+                &memory, context,
+            ) {
+                Ok(Some(written)) => Some(WATCHES.notify(written, $site)),
+                Ok(None) => None,
+                Err(_) => Some(WATCHES.unread_context($site)),
+            };
             timing.original(|| unsafe { end(context, second, third, fourth) })
         }
     };

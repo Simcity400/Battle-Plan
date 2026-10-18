@@ -36,11 +36,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use std::sync::OnceLock;
 
-use installed_content::{
-    buildings::BuildingType,
-    raids::{BuildingSelector, RaidType, TargetType},
-};
-use replay::rows::{RaidScope, RaidTargetStatusRow, tables};
+use installed_content_core::buildings::BuildingType;
+use installed_content_raids::{raids::BuildingSelector, raids::RaidType, raids::TargetType};
+use replay_data::{rows::RaidScope, rows::RaidTargetStatusRow, rows::tables};
 
 use super::{
     RaidAssets,
@@ -240,7 +238,7 @@ impl<'s, 'f> Sweep<'s, 'f> {
         out
     }
 
-    pub fn hour(&self) -> replay::Hour {
+    pub fn hour(&self) -> replay_data::Hour {
         self.world.frame().hour
     }
 
@@ -545,7 +543,7 @@ pub fn allowed_types(
 
 /// The raid types a viewing country may be offered: each usable type's
 /// catalogue index, `True` or undecided, and the catalogue's uncertain types
-/// ([`installed_content::raids::Catalog::uncertain`]) that may be offered too.
+/// ([`installed_content_raids::raids::Catalog::uncertain`]) that may be offered too.
 #[derive(Clone, Debug, Default)]
 pub struct Allowed {
     pub types: BTreeMap<usize, Eval>,

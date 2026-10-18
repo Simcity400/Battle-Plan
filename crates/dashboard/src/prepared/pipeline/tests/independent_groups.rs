@@ -5,9 +5,9 @@ use super::family_lanes::{assert_payloads_equal, payloads};
 use super::*;
 use crate::prepared::prepass;
 use crate::products::country_groups::prepared::observed_hours;
-use replay::rows::{
-    CapitulationRow, FactionMemberRow, FactionRow, HumanControllerRow, LexicalTokenRow,
-    WarRelationRow,
+use replay_data::{
+    rows::CapitulationRow, rows::FactionMemberRow, rows::FactionRow, rows::HumanControllerRow,
+    rows::LexicalTokenRow, rows::WarRelationRow,
 };
 
 pub(super) type Payloads = BTreeMap<(String, u64), Vec<u8>>;
@@ -717,11 +717,11 @@ fn country_groups_read_by_their_changes_keep_a_built_dictionary_until_it_rebuild
     assert_eq!(snapshot.hour, 101);
     assert!(matches!(
         snapshot.tables[TableId::LexicalTokens.index()],
-        replay::frame::TableUpdate::Unchanged { .. }
+        replay_frame::frame::TableUpdate::Unchanged { .. }
     ));
     assert_eq!(snapshot.metrics.table_ns[TableId::LexicalTokens.index()], 0);
     snapshot.tables[TableId::LexicalTokens.index()] =
-        replay::frame::TableUpdate::Snapshot(TableRows::LexicalTokens(dictionary()));
+        replay_frame::frame::TableUpdate::Snapshot(TableRows::LexicalTokens(dictionary()));
     let replay = Replay::from_records(CAMPAIGN.into(), &[recorded]).unwrap();
     let mut fixture = Fixture::new(&replay);
     let hourly = independent::with_test_hourly(|| {

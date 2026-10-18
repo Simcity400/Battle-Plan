@@ -1,10 +1,13 @@
-//! The content the hourly temperature pass reads ([`replay::temperature::Content`]), through the
+//! The content the hourly temperature pass reads ([`replay_data::temperature::Content`]), through the
 //! recorded content stack: the loaded `common/weather.txt`, each province record's weather setup
 //! and strategic-region link, and each region template's weather periods.
 
 use std::{collections::BTreeMap, io};
 
-use replay::temperature::{Content, Province, Settings, TerrainModifier};
+use replay_data::{
+    temperature::Content, temperature::Province, temperature::Settings,
+    temperature::TerrainModifier,
+};
 
 use crate::{
     ResolvedLayers,

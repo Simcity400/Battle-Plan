@@ -4,12 +4,10 @@ use crate::{
     spooling::table,
     table_capture::{CaptureRows, grow_capacity, grow_vec},
 };
-use engine::allocation::{copy_vec, default_vec, owned_vec};
-use engine::{Memory, cstate, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{StateFlagRow, TableId, tables},
-};
+use engine_allocation::{copy_vec, default_vec, owned_vec};
+use engine_native::{Memory, cstate, walk::Outcome};
+use replay_data::{rows::StateFlagRow, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 use std::mem::size_of;
 
 pub const N: usize = 1;
@@ -111,7 +109,7 @@ impl Captured {
                 .checked_add(1)
                 .ok_or("state visitor demand overflow")
                 .and_then(|required| {
-                    engine::walk::Buffer::Growing(&mut self.first).ensure(required)
+                    engine_native::walk::Buffer::Growing(&mut self.first).ensure(required)
                 }) {
                 Ok(_) => {}
                 Err(reason) => self.source_failure = Some(reason),
@@ -185,7 +183,7 @@ impl Captured {
     ) {
         if growing
             && let Err(reason) =
-                engine::walk::Buffer::Growing(&mut self.rows.rows).ensure(self.source.len())
+                engine_native::walk::Buffer::Growing(&mut self.rows.rows).ensure(self.source.len())
         {
             self.fail_sources(reason);
             return;
@@ -230,8 +228,10 @@ impl Captured {
             |r| StateFlagRow {
                 state: r.state,
                 demilitarized: r.demilitarized,
-                border_conflict_active: replay::rows::Recorded::Value(r.border_conflict_active),
-                border_conflict_countries: replay::rows::Recorded::Value(owned_vec(copy_vec(
+                border_conflict_active: replay_data::rows::Recorded::Value(
+                    r.border_conflict_active,
+                ),
+                border_conflict_countries: replay_data::rows::Recorded::Value(owned_vec(copy_vec(
                     &r.border_conflict_countries,
                 ))),
             },
@@ -243,7 +243,7 @@ impl Captured {
 mod tests {
     use super::*;
     use crate::acquisition_states::tests::Movement;
-    use engine::{cgame_state, memory::SliceMemory};
+    use engine_native::{cgame_state, memory::SliceMemory};
     use std::{
         cell::Cell,
         sync::{
@@ -278,7 +278,7 @@ mod tests {
     /// live CState holds them.
     fn empty_names(bytes: &mut [u8], state: usize) {
         for field in [cstate::PRIMARY_DISPLAY_NAME, cstate::SECONDARY_DISPLAY_NAME] {
-            let capacity = state + field + engine::msvc_string::CAPACITY;
+            let capacity = state + field + engine_native::msvc_string::CAPACITY;
             bytes[capacity..capacity + 8].copy_from_slice(&15_u64.to_le_bytes());
         }
     }

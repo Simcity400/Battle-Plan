@@ -8,14 +8,13 @@ use super::{Capacities, Captured, RoleStore};
 use crate::character_changes::{Changes, Counting as Lookups, Counts, Watches};
 use crate::extended::characters::census::RoleCensus;
 use crate::sampled_verify::Check;
-use engine::{
+use engine_characters::cscientist;
+use engine_native::{
     Memory, ccharacter, ccharacter_manager, ccountry_leader, cgame_state, cpdx_array::Array,
-    cscientist, cunit_leader, walk::Outcome,
+    cunit_leader, walk::Outcome,
 };
-use replay::{
-    frame::TableView,
-    rows::{CharacterRoleTraitRow, TableRows},
-};
+use replay_data::{rows::CharacterRoleTraitRow, rows::TableRows};
+use replay_frame::frame::TableView;
 use std::{cell::Cell, ops::Range};
 
 const COUNTRIES: usize = 40;
@@ -784,7 +783,7 @@ fn operative_links_are_carried_while_their_leaders_certificates_hold() {
 #[test]
 fn an_operative_link_whose_name_was_refused_is_read_again() {
     use crate::unit_leader_changes::Watches as LeaderWatches;
-    use engine::cunit_leader_trait;
+    use engine_native::cunit_leader_trait;
     const OPERATIVES: usize = 4;
     let (mut memory, leaders) = resolved_operatives(OPERATIVES);
     // Every operative holds one assigned trait of ordinal 7.

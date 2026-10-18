@@ -6,13 +6,14 @@ use crate::{
     table_capture::{Arena, CaptureRows, grow_capacity},
     table_conversion::{table, unavailable},
 };
-use engine::allocation::{copy_vec, owned_vec};
-use engine::{Memory, raid_target_statuses as native, walk::Outcome};
-use replay::{
-    cadence::{SKIPPED_REASON, should_walk},
-    frame::TableView,
-    rows::{RaidScope, RaidTargetStatusRow, TableId, tables},
+use engine_allocation::{copy_vec, owned_vec};
+use engine_native::{Memory, walk::Outcome};
+use engine_raid_inputs::raid_target_statuses as native;
+use replay_data::{
+    cadence::SKIPPED_REASON, cadence::should_walk, rows::RaidScope, rows::RaidTargetStatusRow,
+    rows::TableId, rows::tables,
 };
+use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::RaidTargetStatuses];
@@ -154,7 +155,7 @@ impl Captured {
 }
 
 /// The replay form of a native target scope.
-pub fn scope(row: &engine::craid_target::Row) -> RaidScope {
+pub fn scope(row: &engine_native::craid_target::Row) -> RaidScope {
     RaidScope {
         province: row.province,
         state: row.state,
@@ -171,7 +172,7 @@ pub fn scope(row: &engine::craid_target::Row) -> RaidScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
 
     #[test]
     fn detection_capacity_sizes_every_row_for_every_country_slot() {

@@ -7,12 +7,13 @@ use super::family_lanes::{assert_payloads_equal, payloads};
 use super::*;
 use crate::prepared::prepass;
 use crate::products::{air_aces, military_air_ledger, raids};
-use engine::craid_instance as native;
+use engine_native::craid_instance as native;
 use independent::{Own, air};
-use replay::rows::{
-    AirAceRow, AirLossEventRow, AirWingRow, BuildingBombingDamageCause, BuildingBombingDamageRow,
-    LexicalTokenRow, ProvinceRow, RaidCountryRow, RaidRow, RaidScope, RaidTargetRow, Recorded,
-    ReservedCountryNamingRow, WingEquipmentRow,
+use replay_data::{
+    rows::AirAceRow, rows::AirLossEventRow, rows::AirWingRow, rows::BuildingBombingDamageCause,
+    rows::BuildingBombingDamageRow, rows::LexicalTokenRow, rows::ProvinceRow, rows::RaidCountryRow,
+    rows::RaidRow, rows::RaidScope, rows::RaidTargetRow, rows::Recorded,
+    rows::ReservedCountryNamingRow, rows::WingEquipmentRow,
 };
 
 type Payloads = BTreeMap<(String, u64), Vec<u8>>;
@@ -815,7 +816,7 @@ fn aces_frame(branch: u64, hour: i32) -> DecodedFrame {
     );
     *observed.tables[TableId::VariantDefinitions.index()] =
         TableView::Complete(TableRows::VariantDefinitions(vec![
-            replay::rows::VariantDefinitionRow {
+            replay_data::rows::VariantDefinitionRow {
                 id: 900,
                 display_name: b"Synthetic aircraft".to_vec(),
                 equipment_token: 50,

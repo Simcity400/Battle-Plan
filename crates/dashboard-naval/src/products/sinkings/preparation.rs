@@ -49,7 +49,7 @@ impl ShipHistory {
     /// only the operands still waiting for a country bridge.
     pub fn prepare(
         &mut self,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         frame: &DecodedFrame,
         changes: &FrameChanges,
     ) -> Vec<Change> {

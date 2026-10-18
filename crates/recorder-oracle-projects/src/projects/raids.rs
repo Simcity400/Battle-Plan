@@ -71,11 +71,11 @@ pub(super) fn compare_raid_countries(
 
 /// A per-raid reader's census rule over a raid's phase, outcome and end hour
 /// at the frame's hour, as the reader applies it to the live raid.
-type RaidRule = fn(&engine::raid_speed_inputs::Raid, i32) -> bool;
+type RaidRule = fn(&engine_native::raid_speed_inputs::Raid, i32) -> bool;
 
-/// RaidSpeedInputs' census: [`engine::raid_speed_inputs::live`].
-fn raid_flying(raid: &engine::raid_speed_inputs::Raid, hour: i32) -> bool {
-    engine::raid_speed_inputs::live(raid.phase, raid.outcome, raid.end_hour, hour)
+/// RaidSpeedInputs' census: [`engine_native::raid_speed_inputs::live`].
+fn raid_flying(raid: &engine_native::raid_speed_inputs::Raid, hour: i32) -> bool {
+    engine_native::raid_speed_inputs::live(raid.phase, raid.outcome, raid.end_hour, hour)
 }
 
 /// A saved raid's end hour: the engine hour of its `end_date`, written from
@@ -111,7 +111,7 @@ fn raid_census(
     let mut expected = BTreeMap::new();
     for (&id, &raid) in &raids {
         let end_hour = saved_end_hour(raid)?;
-        let live = engine::raid_speed_inputs::Raid {
+        let live = engine_native::raid_speed_inputs::Raid {
             pointer: 0,
             reference_type: id as u32,
             id: (id >> 32) as u32,
@@ -165,7 +165,7 @@ fn census_member<'a>(
 /// empty and `nukes` when zero.
 ///
 /// Membership is checked both ways: every saved raid the reader's rule
-/// ([`engine::raid_equipment::recorded`]: phases 1 to 3, or flying) admits at
+/// ([`engine_native::raid_equipment::recorded`]: phases 1 to 3, or flying) admits at
 /// the frame's hour needs a row, and every row needs such a saved raid.
 ///
 /// The pool writer does not write the pool's per-archetype totals. Every pool
@@ -192,7 +192,7 @@ pub(super) fn compare_raid_equipment(
     pack: &saved::Pack,
     report: &mut Report,
 ) -> io::Result<()> {
-    let (raids, expected) = raid_census(pack, frame.hour, engine::raid_equipment::recorded)?;
+    let (raids, expected) = raid_census(pack, frame.hour, engine_native::raid_equipment::recorded)?;
     // Without the definitions no total is derived; the entries still compare.
     let archetype_of: Option<BTreeMap<u64, u32>> = complete::<tables::VariantDefinitions>(frame)
         .ok()
@@ -299,7 +299,7 @@ pub(super) fn compare_raid_equipment(
 /// amounts by archetype ([`compare_raid_equipment`]). Returns the totals
 /// compared.
 fn compare_raid_archetype_totals(
-    row: &replay::rows::RaidEquipmentRow,
+    row: &replay_data::rows::RaidEquipmentRow,
     saved: &[installed_content_save::production::Equipment],
     archetype_of: &BTreeMap<u64, u32>,
     label: &str,
@@ -376,9 +376,9 @@ pub fn compare_raid_tooltip_operands(
     air: &installed_content_save::air::Pack,
     report: &mut Report,
 ) -> io::Result<()> {
-    use engine::raid_tooltip_operands::*;
+    use engine_native::raid_tooltip_operands::*;
     let (_, expected) = raid_census(pack, frame.hour, |raid, _| {
-        raid.phase != engine::craid_instance::PHASE_ENDED
+        raid.phase != engine_native::craid_instance::PHASE_ENDED
     })?;
     let rows = complete::<tables::RaidTooltipOperands>(frame)?;
     let mut ordinal = BTreeMap::<u64, u32>::new();
@@ -500,12 +500,12 @@ pub fn compare_raid_tooltip_operands(
 /// mode. The game escapes quotes and backslashes: compare
 /// decoded bytes, including the final chunk's zero padding.
 fn compare_raid_wing_names(
-    rows: &[replay::rows::RaidTooltipOperandRow],
+    rows: &[replay_data::rows::RaidTooltipOperandRow],
     expected: &RaidCensus<'_>,
     air: &installed_content_save::air::Pack,
     report: &mut Report,
 ) -> io::Result<()> {
-    use engine::raid_tooltip_operands::*;
+    use engine_native::raid_tooltip_operands::*;
     let mut names = BTreeMap::<u64, BTreeMap<u32, i64>>::new();
     let mut resolution = BTreeMap::<u64, BTreeMap<u32, i64>>::new();
     let mut ambiguous_resolution = BTreeSet::new();
@@ -650,7 +650,7 @@ fn compare_raid_wing_names(
 }
 
 /// RaidSpeedInputs' census against the saved raids, both ways: every saved
-/// raid the reader's rule ([`engine::raid_speed_inputs::live`]: phase 4, or
+/// raid the reader's rule ([`engine_native::raid_speed_inputs::live`]: phase 4, or
 /// ended, not cancelled, at most an hour before the frame's hour) admits needs
 /// a row, and every row needs such a saved raid; each row's phase, outcome and
 /// end hour are the saved raid's. The speed operands themselves are live
@@ -952,7 +952,7 @@ pub(super) fn compare_scope(
         // The game writes a province location when bit 0 is
         // set, else location -1 and the country when the override is
         // positive, else a state location. Only those branches fix bit 0.
-        let province = scope.building_flags & engine::cbuilding_status::PROVINCE_FLAG != 0;
+        let province = scope.building_flags & engine_native::cbuilding_status::PROVINCE_FLAG != 0;
         let wrong = match saved.building_location {
             Some(-1) => province,
             Some(_) => !province && scope.building_country > 0,
@@ -1152,8 +1152,8 @@ pub(super) fn compare_raid_target_statuses(
 
 /// The content graph and geometry the raid path search runs on.
 pub type RaidGraph = (
-    installed_content::province_graph::ProvinceGraph,
-    installed_content::province_geometry::ProvinceGeometry,
+    installed_content_core::province_graph::ProvinceGraph,
+    installed_content_core::province_geometry::ProvinceGeometry,
 );
 
 /// `RaidPathDistances` has no save counterpart: the memo is session state.
@@ -1164,7 +1164,7 @@ pub fn compare_raid_paths(
     (graph, geometry): &RaidGraph,
     report: &mut Report,
 ) -> io::Result<()> {
-    use installed_content::province_graph::{RaidPath, raid_distance};
+    use installed_content_core::{province_graph::RaidPath, province_graph::raid_distance};
     let rows = complete::<tables::RaidPathDistances>(frame)?;
     let mut compared = 0;
     for row in rows {
@@ -1210,7 +1210,7 @@ pub(super) enum PathVerdict {
 pub(super) fn path_verdict(
     recorded: Option<i64>,
     searches: &[(
-        installed_content::province_graph::RaidPath,
+        installed_content_core::province_graph::RaidPath,
         Result<Option<i64>, String>,
     )],
 ) -> PathVerdict {

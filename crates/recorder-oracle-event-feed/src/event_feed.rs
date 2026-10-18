@@ -1,11 +1,11 @@
 //! Native events are transient; saves cannot certify their action or actor roles.
 use super::Report;
-use replay::{
-    container::Replay,
-    event_feed_rows::{EventFeedCounts, EventFeedCoverage, EventFeedHistoryRow},
-    frame::{DecodedFrame, FrameDecoder},
-    rows::{TableId, tables},
+use replay::container::Replay;
+use replay_data::{
+    event_feed_rows::EventFeedCounts, event_feed_rows::EventFeedCoverage,
+    event_feed_rows::EventFeedHistoryRow, rows::TableId, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
 use std::io;
 
 pub fn compare(replay: &Replay, frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
@@ -126,7 +126,10 @@ impl Check {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::event_feed_rows::{EventFeedCountry, EventFeedEvent, EventFeedSource};
+    use replay_data::{
+        event_feed_rows::EventFeedCountry, event_feed_rows::EventFeedEvent,
+        event_feed_rows::EventFeedSource,
+    };
 
     #[test]
     fn event_feed_partial_history_is_coverage_and_save_hour_remains_incomplete() {

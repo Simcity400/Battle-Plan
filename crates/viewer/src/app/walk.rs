@@ -11,7 +11,7 @@ use viewer_world::map::scene::PlayerModel;
 use viewer_world::map::unit_models::Figure;
 
 /// The figure is chosen again when the branch, the hour or the viewing country changes.
-pub(super) type FigureKey = (replay::BranchId, i32, Choice);
+pub(super) type FigureKey = (replay_data::BranchId, i32, Choice);
 
 /// The pass label whose entity data a land figure takes.
 const LAND_FIGURES: &str = "unit models";

@@ -6,9 +6,11 @@
 //! no prospective one. Arrival does not enter the task-force speed getter.
 
 use super::fresh_search::{Inputs, available};
-use engine::cunit::eta_ratio;
-use installed_content::unit_path::Fact;
-use replay::rows::{FreshTaskForceCounterEta, TaskForceMapMotionRow, TaskForceRow};
+use engine_native::cunit::eta_ratio;
+use installed_content_unit_path::unit_path::Fact;
+use replay_data::{
+    rows::FreshTaskForceCounterEta, rows::TaskForceMapMotionRow, rows::TaskForceRow,
+};
 use viewer_foundation::table_access::TokenError;
 
 const P: i64 = 100_000;
@@ -61,14 +63,14 @@ fn speed(
     fresh: &FreshTaskForceCounterEta,
     region: u32,
 ) -> Fact<i64> {
-    replay::fixed_layout::validate_recording(
+    replay_derive::fixed_layout::validate_recording(
         inputs.frame(),
-        replay::fixed_layout::Family {
+        replay_derive::fixed_layout::Family {
             keys: &[
-                engine::modifier_keys::NAVAL_SPEED_FACTOR,
-                engine::modifier_keys::NAVY_WEATHER_PENALTY,
+                engine_executable::modifier_keys::NAVAL_SPEED_FACTOR,
+                engine_executable::modifier_keys::NAVY_WEATHER_PENALTY,
             ],
-            ..replay::fixed_layout::TASK_FORCE_COUNTER_ETA
+            ..replay_derive::fixed_layout::TASK_FORCE_COUNTER_ETA
         },
     )?;
     let base = fresh
@@ -188,11 +190,15 @@ fn remaining(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content::movement::{MovementDefines, MovementMap, Neighbour, ProvinceTerrain};
-    use replay::{
-        frame::{DecodedFrame, TableView},
-        rows::{LexicalTokenRow, Recorded, ShipRow, TableId, TableRows, tables},
+    use installed_content_core::{
+        movement::MovementDefines, movement::MovementMap, movement::Neighbour,
+        movement::ProvinceTerrain,
     };
+    use replay_data::{
+        rows::LexicalTokenRow, rows::Recorded, rows::ShipRow, rows::TableId, rows::TableRows,
+        rows::tables,
+    };
+    use replay_frame::{frame::DecodedFrame, frame::TableView};
     use viewer_foundation::map::test_support::movement_timing::terrain;
     use viewer_foundation::movement_timing::MovementContent;
 
@@ -211,20 +217,20 @@ mod tests {
         metadata(
             &mut frame,
             &[
-                engine::modifier_keys::NAVAL_SPEED_FACTOR,
-                engine::modifier_keys::NAVY_WEATHER_PENALTY,
+                engine_executable::modifier_keys::NAVAL_SPEED_FACTOR,
+                engine_executable::modifier_keys::NAVY_WEATHER_PENALTY,
             ],
         );
         frame
     }
 
     fn metadata(frame: &mut DecodedFrame, keys: &[u32]) {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
         let mut definitions = Vec::new();
         let mut tokens = Vec::new();
-        for key in engine::modifier_keys::all().filter(|key| keys.contains(&key.index)) {
-            definitions.push(replay::rows::ModifierDefinitionRow {
+        for key in engine_executable::modifier_keys::all().filter(|key| keys.contains(&key.index)) {
+            definitions.push(replay_data::rows::ModifierDefinitionRow {
                 index: key.index,
                 token: key.index + 10_000,
                 ..Default::default()
@@ -324,7 +330,7 @@ mod tests {
 
     fn fresh(selector: i32) -> FreshTaskForceCounterEta {
         FreshTaskForceCounterEta {
-            sample_hour: replay::rows::PacketHour::Stamped(20),
+            sample_hour: replay_data::rows::PacketHour::Stamped(20),
             base_speed: Some(200_000),
             speed_modifier: Some(0),
             terrain_class: Some(selector),
@@ -360,7 +366,7 @@ mod tests {
             &mut stale,
             TableRows::TaskForceMapMotion(vec![TaskForceMapMotionRow {
                 fresh: Recorded::Value(Some(FreshTaskForceCounterEta {
-                    sample_hour: replay::rows::PacketHour::Stamped(19),
+                    sample_hour: replay_data::rows::PacketHour::Stamped(19),
                     ..fresh(700)
                 })),
                 ..motion()

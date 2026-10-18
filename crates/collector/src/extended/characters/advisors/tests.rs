@@ -65,11 +65,11 @@ fn advisor_modifier_sizing_survives_an_unreadable_political_census() {
     struct World<'a>(&'a [u8]);
     impl Memory for World<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == IMAGE + engine::cgame_state::SINGLETON_RVA && output.len() == 8 {
+            if address == IMAGE + engine_native::cgame_state::SINGLETON_RVA && output.len() == 8 {
                 output.copy_from_slice(&(ADDRESS as u64).to_le_bytes());
                 return true;
             }
-            if address == ADDRESS + engine::cgame_state::COUNTRIES && output.len() == 16 {
+            if address == ADDRESS + engine_native::cgame_state::COUNTRIES && output.len() == 16 {
                 output[..8].copy_from_slice(&((ADDRESS + 0x3000) as u64).to_le_bytes());
                 output[8..12].copy_from_slice(&2_u32.to_le_bytes());
                 output[12..].copy_from_slice(&2_u32.to_le_bytes());
@@ -252,11 +252,11 @@ fn fresh_modifier_cache_changes_without_an_advisor_mutation_hook() {
     assert_eq!(
         cache.entries,
         [
-            replay::rows::CachedModifier {
+            replay_data::rows::CachedModifier {
                 definition: 7,
                 value: -1,
             },
-            replay::rows::CachedModifier {
+            replay_data::rows::CachedModifier {
                 definition: 7,
                 value: i64::MAX,
             },
@@ -459,7 +459,10 @@ fn optional_cache_capacity_shortfall_keeps_roles_and_definition_certificates() {
     };
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].idea, b"idea");
-    assert_eq!(rows[0].modifier_cache, replay::rows::Recorded::Value(None));
+    assert_eq!(
+        rows[0].modifier_cache,
+        replay_data::rows::Recorded::Value(None)
+    );
     assert_eq!(
         captured.advisors.rows.rows[0].modifier_failure,
         Some(cadvisor::MODIFIER_CAPACITY_REASON)
@@ -627,7 +630,7 @@ fn planned_country_prefix_survives_later_control_change_and_fault() {
         );
         // A changed, readable color byte stops the equality control without
         // invalidating the map. The alternate case partially copies and fails.
-        bytes[sentinel - ADDRESS + engine::msvc_tree_node::COLOR] ^= 1;
+        bytes[sentinel - ADDRESS + engine_native::msvc_tree_node::COLOR] ^= 1;
         let source = WaveMemory::new(&bytes, fault.then_some(sentinel));
         cache.capture(&source, context(), &observer, None);
         assert_eq!(cache.sections[0].counts.planned, 0);
@@ -1024,7 +1027,7 @@ fn tooltip_keys_stay_fresh_under_definition_reuse_and_shortfalls_keep_roles() {
     };
     assert_eq!(
         rows[0].tooltip_keys,
-        replay::rows::Recorded::Value(Some(vec![b"later".to_vec()]))
+        replay_data::rows::Recorded::Value(Some(vec![b"later".to_vec()]))
     );
     cache.modifiers.bytes.clear();
     cache.capture(&kit::memory(&bytes), context(), &observer, None);
@@ -1033,7 +1036,10 @@ fn tooltip_keys_stay_fresh_under_definition_reuse_and_shortfalls_keep_roles() {
         panic!("tooltip capacity shortfall keeps roles");
     };
     assert_eq!(rows[0].idea, b"idea");
-    assert_eq!(rows[0].tooltip_keys, replay::rows::Recorded::Value(None));
+    assert_eq!(
+        rows[0].tooltip_keys,
+        replay_data::rows::Recorded::Value(None)
+    );
     assert_eq!(
         captured.advisors.rows.rows[0].tooltip_failure,
         Some(cadvisor::TOOLTIP_CAPACITY_REASON)
@@ -1086,7 +1092,7 @@ struct ManyAdvisors {
 
 fn many_advisors(count: usize) -> ManyAdvisors {
     use super::super::tests::MANAGER;
-    use engine::{ccharacter_manager, character_advisor_node, msvc_tree_node as node};
+    use engine_native::{ccharacter_manager, character_advisor_node, msvc_tree_node as node};
     fn alloc(bytes: &mut Vec<u8>, len: usize) -> usize {
         let at = bytes.len();
         bytes.resize(at + len, 0);
@@ -1283,7 +1289,7 @@ impl Memory for Counting<'_> {
 }
 
 /// The published modifier cache of the fixture's first advisor role.
-fn first_role_entries(cache: &Cache) -> Vec<replay::rows::CachedModifier> {
+fn first_role_entries(cache: &Cache) -> Vec<replay_data::rows::CachedModifier> {
     let mut captured = Captured::with_capacities(&fixture_capacities());
     cache.decode(&mut captured);
     let TableView::Complete(TableRows::AdvisorRoles(rows)) = captured.advisors_table() else {
@@ -1317,8 +1323,8 @@ fn two_entry_cache() -> (Vec<u8>, std::ops::Range<usize>) {
     (bytes, data..data + 32)
 }
 
-fn entry(definition: u32, value: i64) -> replay::rows::CachedModifier {
-    replay::rows::CachedModifier { definition, value }
+fn entry(definition: u32, value: i64) -> replay_data::rows::CachedModifier {
+    replay_data::rows::CachedModifier { definition, value }
 }
 
 #[test]
@@ -1374,7 +1380,7 @@ fn certified_advisor_modifiers_are_carried_until_a_hooked_rebuild() {
     // advisor modifier rebuild on the role's character: that role alone is read afresh.
     drop(WATCHES.notify(
         Some(ADDRESS + CHARACTERS[0]),
-        engine::character_role_mutations::ADVISOR_MODIFIERS,
+        engine_mutations::character_role_mutations::ADVISOR_MODIFIERS,
     ));
     let rebuilt = Counting::new(&bytes, watched());
     cache.capture_growing(&rebuilt, context(), &observer, None);
@@ -1514,7 +1520,7 @@ fn quiet_hours_carry_5000_advisor_modifier_caches_and_read_only_a_rebuilt_role()
     captured.reset();
     drop(WATCHES.notify(
         Some(ADDRESS + first_character),
-        engine::character_role_mutations::ADVISOR_MODIFIERS,
+        engine_mutations::character_role_mutations::ADVISOR_MODIFIERS,
     ));
     let rebuilt = Counting::new(&bytes, watched());
     cache.capture_growing(&rebuilt, context(), &observer, None);

@@ -6,11 +6,9 @@
 //! and idea history).
 
 use crate::prepared::frame_changes::{FrameChangeTracker, FrameChanges};
-use replay::{
-    container::{BlockIndex, QuietHours, Replay},
-    frame::{DecodedFrame, SharedView, TableView, ViewIdentity},
-    rows::{CountryRow, TableId, TableRows, tables},
-};
+use replay::{container::BlockIndex, container::QuietHours, container::Replay};
+use replay_data::{rows::CountryRow, rows::TableId, rows::TableRows, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView, frame::ViewIdentity};
 use std::{io, ops::Range, sync::Arc};
 
 /// One hour of a block's facts, in hour order.
@@ -234,7 +232,7 @@ pub fn observe_hours(
     check: &mut dyn FnMut() -> io::Result<()>,
     mut observe: impl FnMut(&DecodedFrame, &FrameChanges) -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let mut tracker = FrameChangeTracker::new();
     let mut reached = None;
     let mut stopped = false;
@@ -243,14 +241,14 @@ pub fn observe_hours(
         index,
         tables,
         |raw, frame| {
-            let _cpu = ::replay::cpu::scope("fold driver", None);
+            let _cpu = ::replay_frame::cpu::scope("fold driver", None);
             let facts = tracker.observe_updates(frame, Arc::new(raw), replay.format);
             if stopped || from.is_some_and(|from| frame.hour < from) {
                 return Ok(());
             }
             reached = Some(frame.hour);
             let result = {
-                let _cpu = ::replay::cpu::scope("fold observe", None);
+                let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                 observe(frame, &facts)
             };
             match observed(frame.hour, result) {

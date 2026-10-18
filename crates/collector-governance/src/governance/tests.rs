@@ -47,27 +47,27 @@ fn recorded_effect_inputs_project_exact_bytes_and_keep_decision_cadence() {
     assert_eq!(random[0].token, [b'x', 0, 255]);
     assert_eq!((random[0].count, random[0].target), (i32::MAX, u32::MAX));
     for hour in 0..24 {
-        assert!(replay::cadence::should_walk(
+        assert!(replay_data::cadence::should_walk(
             TableId::TimedIdeas,
             hour,
             false
         ));
         assert_eq!(
-            replay::cadence::should_walk(TableId::DecisionRandomItems, hour, false),
-            replay::cadence::should_walk(TableId::Decisions, hour, false)
+            replay_data::cadence::should_walk(TableId::DecisionRandomItems, hour, false),
+            replay_data::cadence::should_walk(TableId::Decisions, hour, false)
         );
     }
 }
 
 #[test]
 fn breakdown_capture_keeps_the_original_push_capacity_trace() {
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     const STATE: usize = 0x100;
     const MANAGER: usize = 0x800;
     const RECORDS: usize = 0x1000;
     let mut bytes = vec![0_u8; RECORDS + 17 * power_balance_record::STRIDE];
-    bytes[STATE + engine::cgame_state::POWER_BALANCE_MANAGER
-        ..STATE + engine::cgame_state::POWER_BALANCE_MANAGER + 8]
+    bytes[STATE + engine_native::cgame_state::POWER_BALANCE_MANAGER
+        ..STATE + engine_native::cgame_state::POWER_BALANCE_MANAGER + 8]
         .copy_from_slice(&(MANAGER as u64).to_le_bytes());
     bytes[MANAGER + power_balance_manager::RECORDS..MANAGER + power_balance_manager::RECORDS + 8]
         .copy_from_slice(&(RECORDS as u64).to_le_bytes());
@@ -119,11 +119,11 @@ fn breakdown_capture_keeps_the_original_push_capacity_trace() {
 }
 
 /// Production reads each record's source roster and no cached tree: playback derives the trees
-/// ([`replay::power_balance_derive`]). A record whose description tree cannot be read still
+/// ([`replay_derive::power_balance_derive`]). A record whose description tree cannot be read still
 /// publishes its sources, which the hourly tree walk this replaced refused.
 #[test]
 fn breakdown_capture_reads_sources_without_the_cached_trees() {
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     const STATE: usize = 0x100;
     const MANAGER: usize = 0x800;
     const RECORDS: usize = 0x1000;
@@ -141,7 +141,7 @@ fn breakdown_capture_reads_sources_without_the_cached_trees() {
     let mut bytes = vec![0_u8; STATICS + 0x400];
     put(
         &mut bytes,
-        STATE + engine::cgame_state::POWER_BALANCE_MANAGER,
+        STATE + engine_native::cgame_state::POWER_BALANCE_MANAGER,
         &(MANAGER as u64).to_le_bytes(),
     );
     put(
@@ -180,7 +180,7 @@ fn breakdown_capture_reads_sources_without_the_cached_trees() {
         base: 0,
         bytes: &bytes,
     };
-    assert!(engine::modifier_breakdown::balance(&memory, 0, RECORDS).is_err());
+    assert!(engine_native::modifier_breakdown::balance(&memory, 0, RECORDS).is_err());
     let mut captured = Captured::vacant();
     captured.balances.outcome = Outcome::Rows { len: 1 };
     // An hour whose slice the record is not in: no witness even in a
@@ -227,7 +227,9 @@ fn incomplete_breakdown_tree_cannot_publish_a_default_row() {
 
 #[test]
 fn party_leader_role_identity_survives_capture_at_country_scale() {
-    use engine::{ccharacter, ccountry, ccountry_leader, cideology_group, memory::SliceMemory};
+    use engine_native::{
+        ccharacter, ccountry, ccountry_leader, cideology_group, memory::SliceMemory,
+    };
     let mut bytes = vec![0_u8; 0x3000];
     let mut word = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
     word(0x100, ccountry::VTABLE_RVA as u64);
@@ -296,17 +298,17 @@ fn party_leader_role_identity_survives_capture_at_country_scale() {
 #[test]
 fn hourly_research_conversion_preserves_native_inputs_and_bonus_failures() {
     let mut captured = Captured::vacant();
-    let mut input = engine::research_inputs::Row::default();
+    let mut input = engine_research::research_inputs::Row::default();
     input.slot.country = 11;
     input.slot.index = 2;
     input.slot.technology_present = 1;
     input.slot.technology_handle = 77;
     input.template_index = 3;
     input.slot.database_index = 3;
-    let mut token = engine::msvc_string::Text::default();
+    let mut token = engine_native::msvc_string::Text::default();
     token.bytes[..3].copy_from_slice(b"abc");
     token.len = 3;
-    input.token = engine::research_inputs::Text::Inline(token);
+    input.token = engine_research::research_inputs::Text::Inline(token);
     input.progress_raw = i64::MAX;
     input.speed_bonus_raw = i64::MIN;
     captured.research_inputs.rows.push(input);
@@ -319,7 +321,10 @@ fn hourly_research_conversion_preserves_native_inputs_and_bonus_failures() {
         panic!("inputs missing")
     };
     assert_eq!(rows[0].index, 2);
-    assert_eq!(rows[0].database_index, replay::rows::Recorded::Value(3));
+    assert_eq!(
+        rows[0].database_index,
+        replay_data::rows::Recorded::Value(3)
+    );
     assert_eq!(rows[0].token, b"abc");
     assert_eq!(rows[0].progress_raw, i64::MAX);
     assert_eq!(rows[0].speed_bonus_raw, i64::MIN);
@@ -330,7 +335,7 @@ fn hourly_research_conversion_preserves_native_inputs_and_bonus_failures() {
         TableId::ResearchModifiers,
     ] {
         for hour in 0..8 {
-            assert!(replay::cadence::should_walk(table, hour, false));
+            assert!(replay_data::cadence::should_walk(table, hour, false));
         }
     }
 }
@@ -338,21 +343,21 @@ fn hourly_research_conversion_preserves_native_inputs_and_bonus_failures() {
 #[test]
 fn hourly_modifier_conversion_preserves_identity_signed_operands_and_source_text() {
     let mut captured = Captured::vacant();
-    let mut row = engine::research_modifiers::Row {
+    let mut row = engine_research::research_modifiers::Row {
         country: 11,
         index: u32::MAX,
         ordinal: 7,
-        kind: engine::research_modifiers::Kind::CountrySource,
+        kind: engine_research::research_modifiers::Kind::CountrySource,
         raw: i64::MIN,
         auxiliary: i64::MAX,
         count: u32::MAX,
         source_id: 91,
         ..Default::default()
     };
-    let mut name = engine::msvc_string::Text::default();
+    let mut name = engine_native::msvc_string::Text::default();
     name.bytes[..4].copy_from_slice(b"idea");
     name.len = 4;
-    row.name = engine::research_inputs::Text::Inline(name);
+    row.name = engine_research::research_inputs::Text::Inline(name);
     captured.research_modifiers.rows.push(row);
     captured.research_modifiers.outcome = Outcome::Rows { len: 1 };
     let tables = captured.tables();
@@ -407,12 +412,13 @@ fn owned_governance_failure_preserves_cadence() {
         assert_eq!(captured.modifier_values.required, 0);
         assert_eq!(captured.dictionary_required, 0);
         for (index, outcome) in captured.outcomes().into_iter().enumerate() {
-            let skipped = !replay::cadence::should_walk(TABLES[index], context.hour, force_full);
+            let skipped =
+                !replay_data::cadence::should_walk(TABLES[index], context.hour, force_full);
             assert_eq!(
                 outcome,
                 Outcome::Unavailable {
                     reason: if skipped {
-                        replay::cadence::SKIPPED_REASON
+                        replay_data::cadence::SKIPPED_REASON
                     } else {
                         "worker stopped"
                     },
@@ -537,11 +543,11 @@ fn native_decision_source_keys_and_non_utf8_literals_survive_conversion() {
 /// two-entry completed rosters.
 pub mod focus_test_kit {
     use super::{Capacities, Captured};
-    use engine::memory::SliceMemory;
-    use engine::{
-        ccontinuous_national_focus, ccountry, cgame_state, cnational_focus,
-        cnational_focus_progress, cnational_focus_tree,
+    use engine_focus::{
+        ccontinuous_national_focus, cnational_focus, cnational_focus_progress, cnational_focus_tree,
     };
+    use engine_native::memory::SliceMemory;
+    use engine_native::{ccountry, cgame_state};
 
     pub const BASE: usize = 0x1400_0000;
     const MEM: usize = 0x1_0000;
@@ -699,7 +705,7 @@ pub mod focus_test_kit {
 fn daily_governance_sources_keep_politics_and_research_siblings_independent() {
     use focus_test_kit::{BASE, Fixture};
     struct Sources<'a> {
-        memory: engine::memory::SliceMemory<'a>,
+        memory: engine_native::memory::SliceMemory<'a>,
         ideas: std::cell::Cell<usize>,
         fail_ideas: bool,
     }
@@ -729,7 +735,7 @@ fn daily_governance_sources_keep_politics_and_research_siblings_independent() {
     }
     for fail_ideas in [false, true] {
         for hour in 0..24 {
-            let memory = engine::memory::CountedMemory::new(Sources {
+            let memory = engine_native::memory::CountedMemory::new(Sources {
                 memory: fixture.memory(),
                 ideas: Default::default(),
                 fail_ideas,
@@ -740,7 +746,7 @@ fn daily_governance_sources_keep_politics_and_research_siblings_independent() {
             let counts = accounting.finish();
             assert_eq!(captured.politics.outcome, Outcome::Rows { len: 2 });
             assert_eq!(captured.parties.outcome, Outcome::Rows { len: 0 });
-            // Ideas are hourly (replay::cadence).
+            // Ideas are hourly (replay_data::cadence).
             assert!(memory.0.ideas.get() > 0, "hour={hour}");
             // ResearchSlots reads on its daily slot.
             let (index, slot) = (3, 11);
@@ -756,11 +762,11 @@ fn daily_governance_sources_keep_politics_and_research_siblings_independent() {
                 assert!(counts[TABLES[index].index()].spans > 0, "hour={hour}");
             }
             for (index, outcome) in captured.outcomes().into_iter().enumerate() {
-                if !replay::cadence::should_walk(TABLES[index], hour, false) {
+                if !replay_data::cadence::should_walk(TABLES[index], hour, false) {
                     assert_eq!(
                         outcome,
                         Outcome::Unavailable {
-                            reason: replay::cadence::SKIPPED_REASON
+                            reason: replay_data::cadence::SKIPPED_REASON
                         }
                     );
                     assert_eq!(counts[TABLES[index].index()].spans, 0);
@@ -808,7 +814,7 @@ fn failed_native_technology_name_does_not_request_deferred_arena_growth() {
     fixture.w64(TEMPLATE + ctechnology_template::ID + 24, LENGTH as u64);
     fixture.w32(TEMPLATE + ctechnology_template::DATABASE_INDEX, 1);
     fixture.w32(TEMPLATE + ctechnology_template::TECHNOLOGY_HANDLE, 3);
-    struct Fault<'a>(engine::memory::SliceMemory<'a>);
+    struct Fault<'a>(engine_native::memory::SliceMemory<'a>);
     impl Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             if address == HEAP + LENGTH && output.len() == 1 {
@@ -916,7 +922,7 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
     use focus_test_kit::BASE;
     let fixture = technology_fixture();
     struct Reads<'a> {
-        memory: engine::memory::SliceMemory<'a>,
+        memory: engine_native::memory::SliceMemory<'a>,
         spans: std::cell::RefCell<Vec<(usize, usize)>>,
     }
     impl Memory for Reads<'_> {
@@ -1234,7 +1240,7 @@ fn the_focus_boundary_reads_only_countries_owning_a_state() {
 #[test]
 fn focus_is_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write() {
     use crate::country_input_changes::{Domain, Table};
-    use engine::cnational_focus_progress as progress;
+    use engine_focus::cnational_focus_progress as progress;
     use focus_test_kit::{FC2, R1, R2};
     let mut fixture = focus_test_kit::Fixture::world();
     let changes = Domain::enabled(64);
@@ -1299,7 +1305,7 @@ fn an_unmarked_technology_slice_reads_only_progress() {
     enabled[4] = true;
     let mut store = SliceFingerprints::new();
     struct Reads<'a> {
-        memory: engine::memory::SliceMemory<'a>,
+        memory: engine_native::memory::SliceMemory<'a>,
         addresses: std::cell::RefCell<Vec<usize>>,
     }
     impl Memory for Reads<'_> {
@@ -1362,7 +1368,7 @@ fn an_unmarked_technology_slice_reads_only_progress() {
 /// Memory that fails reads of `address` while `remaining` lasts, recording
 /// the progress reads in order.
 struct Faulty<'a> {
-    memory: engine::memory::SliceMemory<'a>,
+    memory: engine_native::memory::SliceMemory<'a>,
     address: usize,
     remaining: std::cell::Cell<u32>,
     progress: std::cell::RefCell<Vec<usize>>,
@@ -1524,7 +1530,7 @@ fn a_carried_roster_fails_as_the_full_walk_at_each_fault() {
 /// Memory that fails the `nth` read (from one) of `address`, and every later
 /// read when `persistent` is set, counting every read of it.
 struct NthFault<'a> {
-    memory: engine::memory::SliceMemory<'a>,
+    memory: engine_native::memory::SliceMemory<'a>,
     address: usize,
     nth: u32,
     persistent: bool,

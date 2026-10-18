@@ -1,6 +1,7 @@
 use super::*;
 use crate::effect_description::tests::{Fixture, fresh};
-use replay::{frame::TableView, rows::*};
+use replay_data::rows::*;
+use replay_frame::frame::TableView;
 
 pub(super) fn fixture() -> Fixture {
     let mut fixture = Fixture::new();
@@ -158,8 +159,11 @@ fn definitions(fixture: &mut Fixture) -> &mut [ModifierDefinitionRow] {
 }
 
 fn describe(fixture: &Fixture, body: &str, options: ModifierListOptions<'_>) -> String {
-    let modifiers =
-        installed_content::modifiers::values(&installed_content::parser::parse(body.as_bytes()).unwrap().items);
+    let modifiers = installed_content_core::modifiers::values(
+        &installed_content_core::parser::parse(body.as_bytes())
+            .unwrap()
+            .items,
+    );
     fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
         let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
         renderer
@@ -170,7 +174,7 @@ fn describe(fixture: &Fixture, body: &str, options: ModifierListOptions<'_>) -> 
 
 #[test]
 fn category_mask_selects_any_matching_definition_bit() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     definitions(&mut fixture)[1].category_mask |= 1;
@@ -200,7 +204,7 @@ fn category_mask_selects_any_matching_definition_bit() {
 
 #[test]
 fn separator_joins_numeric_lines_without_changing_custom_tooltip_lf() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let separator = String::from(" / \0ignored");
     assert_eq!(
@@ -218,7 +222,7 @@ fn separator_joins_numeric_lines_without_changing_custom_tooltip_lf() {
 
 #[test]
 fn default_options_format_modifier_order_and_tooltip() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(
         describe(
@@ -232,7 +236,7 @@ fn default_options_format_modifier_order_and_tooltip() {
 
 #[test]
 fn precision_is_signed_and_capped_by_the_definition() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     for (precision, number) in [(1, "+1.2"), (4, "+1.23"), (-1, "+1.23456")] {
@@ -252,7 +256,7 @@ fn precision_is_signed_and_capped_by_the_definition() {
 
 #[test]
 fn outer_colour_wraps_even_empty_lists_and_precedes_the_first_separator() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let options = ModifierListOptions {
@@ -269,7 +273,7 @@ fn outer_colour_wraps_even_empty_lists_and_precedes_the_first_separator() {
 
 #[test]
 fn excluded_categories_intersect_independently_of_the_include_mask() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     definitions(&mut fixture)[1].category_mask = 3;
@@ -291,7 +295,7 @@ fn excluded_categories_intersect_independently_of_the_include_mask() {
 
 #[test]
 fn scale_wraps_and_truncates_after_the_getter_clamp_before_zero_filtering() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     assert_eq!(
@@ -317,7 +321,7 @@ fn scale_wraps_and_truncates_after_the_getter_clamp_before_zero_filtering() {
         ),
         "> Attack: \u{11}R-0.00002\u{11}!"
     );
-    definitions(&mut fixture)[0].flags |= engine::modifier_definition::CLAMP_MAXIMUM;
+    definitions(&mut fixture)[0].flags |= engine_native::modifier_definition::CLAMP_MAXIMUM;
     assert_eq!(
         describe(
             &fixture,
@@ -349,7 +353,7 @@ fn scale_wraps_and_truncates_after_the_getter_clamp_before_zero_filtering() {
 
 #[test]
 fn force_plus_overrides_no_plus_only_for_positive_numbers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     definitions(&mut fixture)[0].flags |= crate::modifier_text::NO_PLUS;
@@ -369,7 +373,7 @@ fn force_plus_overrides_no_plus_only_for_positive_numbers() {
 
 #[test]
 fn invert_changes_good_bad_polarity_and_preserves_neutral() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     definitions(&mut fixture)[1].flags = 0;
@@ -390,7 +394,7 @@ fn invert_changes_good_bad_polarity_and_preserves_neutral() {
 
 #[test]
 fn custom_tooltips_have_no_numeric_prefix_and_no_duplicate_lf() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     definitions(&mut fixture)[0].postfix_key = b"tail\n".to_vec();
@@ -406,11 +410,12 @@ fn custom_tooltips_have_no_numeric_prefix_and_no_duplicate_lf() {
 
 #[test]
 fn raw_description_leaves_scoped_expansion_to_the_caller() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
-    let modifiers =
-        installed_content::modifiers::values(&installed_content::parser::parse(b"attack=1").unwrap().items);
+    let modifiers = installed_content_core::modifiers::values(
+        &installed_content_core::parser::parse(b"attack=1").unwrap().items,
+    );
     fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
         let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
         let options = ModifierListOptions::default();
@@ -429,20 +434,20 @@ fn raw_description_leaves_scoped_expansion_to_the_caller() {
     });
 }
 
-fn ideas() -> installed_content::ideas::IdeaContent {
-    let file = installed_content::ideas::parse_ideas(
+fn ideas() -> installed_content_core::ideas::IdeaContent {
+    let file = installed_content_core::ideas::parse_ideas(
         b"ideas={country={SYN_IDEA={research_bonus={industry=0.1} modifier={attack=1}} SECOND_IDEA={}}}",
         &[], &Default::default());
-    installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas)
+    installed_content_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas)
 }
 
 #[test]
 fn ideas_single_details_and_multi_names_use_the_wrappers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let ideas = ideas();
-    let names = installed_content::names::NameLists::default();
+    let names = installed_content_core::names::NameLists::default();
     let content = Content {
         ideas: Some(&ideas),
         name_lists: Some(&names),
@@ -476,7 +481,7 @@ fn ideas_single_details_and_multi_names_use_the_wrappers() {
 
 #[test]
 fn idea_targeted_operands_keep_case_and_resolve_in_the_empty_scope() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     *fixture.frame.tables[TableId::GlobalSavedEventTargets.index()] =
@@ -487,7 +492,7 @@ fn idea_targeted_operands_keep_case_and_resolve_in_the_empty_scope() {
                 ..Default::default()
             },
         ]));
-    let file = installed_content::ideas::parse_ideas(
+    let file = installed_content_core::ideas::parse_ideas(
         b"ideas={country={
         TARGET_IDEA={targeted_modifier={tag=event_target:MixedCase attack=1}}
         NO_TARGET_IDEA={targeted_modifier={attack=1}}
@@ -496,8 +501,8 @@ fn idea_targeted_operands_keep_case_and_resolve_in_the_empty_scope() {
         &[],
         &Default::default(),
     );
-    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = installed_content::names::NameLists::default();
+    let ideas = installed_content_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = installed_content_core::names::NameLists::default();
     let content = Content {
         ideas: Some(&ideas),
         name_lists: Some(&names),
@@ -529,7 +534,7 @@ fn idea_targeted_operands_keep_case_and_resolve_in_the_empty_scope() {
 
 #[test]
 fn bound_idea_names_use_fresh_country_carrier_and_details_keep_caller_scope() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::scripted_text::{EventObject, EventScope, EventScopes, Link};
     let mut fixture = fixture();
@@ -559,10 +564,10 @@ fn bound_idea_names_use_fresh_country_carrier_and_details_keep_caller_scope() {
                 ..Default::default()
             },
         ]));
-    let file = installed_content::ideas::parse_ideas(
+    let file = installed_content_core::ideas::parse_ideas(
         b"ideas={country={OWN_IDEA={name=NAME modifier={custom_modifier_tooltip=DETAIL}} SYN_IDEA={modifier={custom_modifier_tooltip=DETAIL}}}}",&[],&Default::default());
-    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = installed_content::names::NameLists::default();
+    let ideas = installed_content_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = installed_content_core::names::NameLists::default();
     let content = Content {
         ideas: Some(&ideas),
         name_lists: Some(&names),
@@ -600,14 +605,14 @@ fn bound_idea_names_use_fresh_country_carrier_and_details_keep_caller_scope() {
 
 #[test]
 fn timed_idea_reuses_research_details_and_missing_duration_is_named() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     *fixture.frame.tables[TableId::TimedIdeas.index()] = TableView::Unavailable {
         reason: "timed ideas not recorded".into(),
     };
     let ideas = ideas();
-    let names = installed_content::names::NameLists::default();
+    let names = installed_content_core::names::NameLists::default();
     let content = Content {
         ideas: Some(&ideas),
         name_lists: Some(&names),
@@ -647,10 +652,10 @@ fn timed_idea_reuses_research_details_and_missing_duration_is_named() {
 
 #[test]
 fn format99_timed_idea_uses_first_stored_days_and_component_floors() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
-    fixture.frame.hour = engine::cdate::HOUR_EPOCH + 1936 * 8760;
+    fixture.frame.hour = engine_native::cdate::HOUR_EPOCH + 1936 * 8760;
     fixture.catalogue.localisation = std::sync::Arc::new(
         fixture
             .catalogue
@@ -679,7 +684,7 @@ fn format99_timed_idea_uses_first_stored_days_and_component_floors() {
             },
         ]));
     let ideas = ideas();
-    let names = installed_content::names::NameLists::default();
+    let names = installed_content_core::names::NameLists::default();
     let content = Content {
         ideas: Some(&ideas),
         name_lists: Some(&names),
@@ -742,10 +747,10 @@ fn timed_components_keep_floor_intermediate_wrap() {
 
 #[test]
 fn modify_timed_idea_keeps_spaced_colon_comma_that_add_timed_cleans() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
-    fixture.frame.hour = engine::cdate::HOUR_EPOCH + 1936 * 8760;
+    fixture.frame.hour = engine_native::cdate::HOUR_EPOCH + 1936 * 8760;
     fixture.catalogue.localisation = std::sync::Arc::new(
         fixture
             .catalogue
@@ -768,13 +773,13 @@ fn modify_timed_idea_keeps_spaced_colon_comma_that_add_timed_cleans() {
             days: 5,
             ..Default::default()
         }]));
-    let file = installed_content::ideas::parse_ideas(
+    let file = installed_content_core::ideas::parse_ideas(
         b"ideas={country={SYN_IDEA={modifier={custom_modifier_tooltip=COLON_TIP}}}}",
         &[],
         &Default::default(),
     );
-    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = installed_content::names::NameLists::default();
+    let ideas = installed_content_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = installed_content_core::names::NameLists::default();
     let content = Content {
         ideas: Some(&ideas),
         name_lists: Some(&names),
@@ -798,10 +803,10 @@ fn modify_timed_idea_keeps_spaced_colon_comma_that_add_timed_cleans() {
 
 #[test]
 fn swap_ideas_uses_display_name_and_duration_branches() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
-    let names = installed_content::names::NameLists::default();
+    let names = installed_content_core::names::NameLists::default();
     for (same, old, extra, expected) in [
         (false, -1, "", "Replace OLD/NEW"),
         (false, -1, "days=2", "Replace set OLD/NEW/2"),
@@ -816,8 +821,8 @@ fn swap_ideas_uses_display_name_and_duration_branches() {
             "ideas={{country={{A={{name=OLD}} B={{name={}}}}}}}",
             if same { "OLD" } else { "NEW" }
         );
-        let file = installed_content::ideas::parse_ideas(source.as_bytes(), &[], &Default::default());
-        let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+        let file = installed_content_core::ideas::parse_ideas(source.as_bytes(), &[], &Default::default());
+        let ideas = installed_content_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
         *fixture.frame.tables[TableId::TimedIdeas.index()] =
             TableView::Complete(TableRows::TimedIdeas(vec![TimedIdeaRow {
                 country: 100,
@@ -841,14 +846,14 @@ fn swap_ideas_uses_display_name_and_duration_branches() {
 
 #[test]
 fn swap_ideas_differentials_keep_numeric_research_rules_and_equipment_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let source = b"ideas={country={A={name=OLD modifier={attack=1} research_bonus={industry=0.1} equipment_bonus={synthetic_equipment={soft_attack=0.05}}} B={name=NEW modifier={attack=2 defense=0.5} research_bonus={industry=0.3} rule={can_send_volunteers=yes override={7=RULE_DESC}} equipment_bonus={synthetic_equipment={soft_attack=0.1 hard_attack=0.2}}}}}";
-    let file = installed_content::ideas::parse_ideas(source, &[], &Default::default());
+    let file = installed_content_core::ideas::parse_ideas(source, &[], &Default::default());
     assert!(file.refused.is_none(), "{:?}", file.refused);
-    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = installed_content::names::NameLists::default();
+    let ideas = installed_content_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = installed_content_core::names::NameLists::default();
     let result = fixture.render(
         "swap_ideas={remove_idea=A add_idea=B}",
         &mut fresh(),
@@ -872,13 +877,13 @@ fn swap_ideas_differentials_keep_numeric_research_rules_and_equipment_order() {
 
 #[test]
 fn swap_ideas_targeted_blocks_use_first_match() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let source = b"ideas={country={A={name=OLD targeted_modifier={tag=BBB attack=0.2}} B={name=NEW modifier={defense=1} targeted_modifier={tag=BBB attack=0.7} targeted_modifier={tag=BBB attack=99}}}}";
-    let file = installed_content::ideas::parse_ideas(source, &[], &Default::default());
-    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = installed_content::names::NameLists::default();
+    let file = installed_content_core::ideas::parse_ideas(source, &[], &Default::default());
+    let ideas = installed_content_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = installed_content_core::names::NameLists::default();
     let content = Content {
         ideas: Some(&ideas),
         name_lists: Some(&names),
@@ -898,7 +903,7 @@ fn swap_ideas_targeted_blocks_use_first_match() {
 
 #[test]
 fn swap_ideas_targeted_first_match_skips_unreached_variable_operands() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     let TableView::Complete(TableRows::Countries(rows)) =
@@ -917,10 +922,10 @@ fn swap_ideas_targeted_first_match_skips_unreached_variable_operands() {
         reason: "unreached target variable".into(),
     };
     let source = b"ideas={country={A={name=OLD targeted_modifier={} targeted_modifier={tag=AAA} targeted_modifier={tag=BBB attack=0.2} targeted_modifier={tag=var:missing}} B={name=NEW targeted_modifier={} targeted_modifier={tag=AAA defense=0.1} targeted_modifier={tag=BBB attack=0.7} targeted_modifier={tag=var:missing}}}}";
-    let file = installed_content::ideas::parse_ideas(source, &[], &Default::default());
+    let file = installed_content_core::ideas::parse_ideas(source, &[], &Default::default());
     assert!(file.refused.is_none(), "{:?}", file.refused);
-    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = installed_content::names::NameLists::default();
+    let ideas = installed_content_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = installed_content_core::names::NameLists::default();
     let result = fixture.render(
         "swap_ideas={remove_idea=A add_idea=B}",
         &mut fresh(),
@@ -939,13 +944,13 @@ fn swap_ideas_targeted_first_match_skips_unreached_variable_operands() {
 
 #[test]
 fn swap_ideas_keeps_available_fragments_when_numeric_definitions_are_unavailable() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     let source = b"ideas={country={A={name=OLD} B={name=NEW modifier={defense=1} rule={can_send_volunteers=yes}}}}";
-    let file = installed_content::ideas::parse_ideas(source, &[], &Default::default());
-    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = installed_content::names::NameLists::default();
+    let file = installed_content_core::ideas::parse_ideas(source, &[], &Default::default());
+    let ideas = installed_content_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = installed_content_core::names::NameLists::default();
     *fixture.frame.tables[TableId::ModifierDefinitions.index()] = TableView::Unavailable {
         reason: "numeric definitions unavailable".into(),
     };
@@ -972,13 +977,13 @@ fn swap_ideas_keeps_available_fragments_when_numeric_definitions_are_unavailable
 
 #[test]
 fn swap_ideas_numeric_accumulator_drops_source_hidden_flags_children_and_tooltips() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let source = b"ideas={country={A={name=OLD modifier={attack=0.5}} B={name=NEW modifier={hidden_modifier={attack=1} added_modifier={defense=99} custom_modifier_tooltip=TIP}}}}";
-    let file = installed_content::ideas::parse_ideas(source, &[], &Default::default());
-    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = installed_content::names::NameLists::default();
+    let file = installed_content_core::ideas::parse_ideas(source, &[], &Default::default());
+    let ideas = installed_content_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = installed_content_core::names::NameLists::default();
     let result = fixture.render(
         "swap_ideas={remove_idea=A add_idea=B}",
         &mut fresh(),
@@ -997,13 +1002,13 @@ fn swap_ideas_numeric_accumulator_drops_source_hidden_flags_children_and_tooltip
 
 #[test]
 fn swap_ideas_rule_reset_keeps_blank_lines() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let source = b"ideas={country={A={name=OLD rule={can_send_volunteers=yes}} B={name=NEW}}}";
-    let file = installed_content::ideas::parse_ideas(source, &[], &Default::default());
-    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = installed_content::names::NameLists::default();
+    let file = installed_content_core::ideas::parse_ideas(source, &[], &Default::default());
+    let ideas = installed_content_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = installed_content_core::names::NameLists::default();
     let result = fixture.render(
         "swap_ideas={remove_idea=A add_idea=B}",
         &mut fresh(),
@@ -1019,11 +1024,11 @@ fn swap_ideas_rule_reset_keeps_blank_lines() {
 
 #[test]
 fn opinion_trade_reverse_and_removal_keep_sign_colours() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
-    let mut opinions = installed_content::opinion_modifiers::Database::default();
-    opinions.definitions = installed_content::opinion_modifiers::parse(
+    let mut opinions = installed_content_core::opinion_modifiers::Database::default();
+    opinions.definitions = installed_content_core::opinion_modifiers::parse(
         b"opinion_modifiers={SYN_OPINION={value=12} TRADE={value=-3 trade=yes}}",
         [-100, 100],
     )
@@ -1062,13 +1067,13 @@ fn opinion_trade_reverse_and_removal_keep_sign_colours() {
 
 #[test]
 fn dynamic_scope_values_and_rounded_duration_share_the_evaluator() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
-    let mut dynamic = installed_content::dynamic_modifiers::Database::default();
+    let mut dynamic = installed_content_core::dynamic_modifiers::Database::default();
     dynamic.definitions.insert(
         "SYN_DYNAMIC".into(),
-        installed_content::dynamic_modifiers::Dynamic {
+        installed_content_core::dynamic_modifiers::Dynamic {
             name: "SYN_DYNAMIC".into(),
             scoped_modifiers: vec![
                 ("attack".into(), b"1".to_vec()),
@@ -1103,12 +1108,13 @@ fn dynamic_scope_values_and_rounded_duration_share_the_evaluator() {
 
 #[test]
 fn static_relation_and_province_descriptions_preserve_indentation() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
-    let modifiers =
-        installed_content::modifiers::values(&installed_content::parser::parse(b"attack=1").unwrap().items);
-    let static_modifiers = installed_content::static_modifiers::Descriptions::from_blocks([
+    let modifiers = installed_content_core::modifiers::values(
+        &installed_content_core::parser::parse(b"attack=1").unwrap().items,
+    );
+    let static_modifiers = installed_content_core::static_modifiers::Descriptions::from_blocks([
         ("SYN_RELATION".to_owned(), modifiers.clone()),
         ("SECOND_IDEA".to_owned(), Modifiers::default()),
     ]);
@@ -1142,15 +1148,15 @@ fn static_relation_and_province_descriptions_preserve_indentation() {
 
 #[test]
 fn scaled_static_modifiers_scale_each_value_and_prefix_each_line() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
-    let modifiers = installed_content::modifiers::values(
-        &installed_content::parser::parse(b"attack=1 defense=2")
+    let modifiers = installed_content_core::modifiers::values(
+        &installed_content_core::parser::parse(b"attack=1 defense=2")
             .unwrap()
             .items,
     );
-    let static_modifiers = installed_content::static_modifiers::Descriptions::from_blocks([(
+    let static_modifiers = installed_content_core::static_modifiers::Descriptions::from_blocks([(
         "SYN_NETWORK".to_owned(),
         modifiers,
     )]);
@@ -1177,7 +1183,7 @@ fn scaled_static_modifiers_scale_each_value_and_prefix_each_line() {
 
 #[test]
 fn state_modifier_uses_breakdown_colour_and_keeps_zero() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let description = fixture.render(

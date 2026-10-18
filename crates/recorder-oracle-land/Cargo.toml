@@ -10,12 +10,14 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-engine.workspace = true
-installed-content.workspace = true
+replay.workspace = true
+engine-land-inputs.workspace = true
+installed-content-core.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
 installed-content-save.workspace = true
 recorder-oracle-military.workspace = true
 recorder-oracle-support.workspace = true
-replay.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

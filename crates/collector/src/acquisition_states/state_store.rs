@@ -10,7 +10,7 @@
 //! take of the hour's marked states returned the epoch of the held complete
 //! capture, the state was not marked, and the header, every slot pointer and
 //! the shared operands are those of the held capture. Every writer of those
-//! fields is a hooked site ([`engine::territory_mutations`]) or a building
+//! fields is a hooked site ([`engine_mutations::territory_mutations`]) or a building
 //! writer the building family forwards, so a carried row equals a fresh
 //! read's. Each hour also reads the carryable states of its sampled slice
 //! ([`crate::sampled_verify`], keyed by state id; every one under
@@ -26,10 +26,9 @@ use crate::{
     sampled_verify::Check,
     territory_changes::{self, Changes, Counts, Table},
 };
-use engine::{
-    Memory, allocation, cpdx_array::Array, crailway_manager::fresh_inputs::StateFractionRow,
-    cstate, walk::Outcome,
-};
+use engine_allocation as allocation;
+use engine_native::{Memory, cpdx_array::Array, cstate, walk::Outcome};
+use engine_railways::crailway_manager::fresh_inputs::StateFractionRow;
 
 type Fraction = Result<i64, &'static str>;
 
@@ -257,7 +256,7 @@ impl StateStore {
                 self.sampled[index] = true;
             }
         }
-        if !engine::walk::Buffer::for_worker(rows, growing)
+        if !engine_native::walk::Buffer::for_worker(rows, growing)
             .ensure(len)
             .ok()?
         {
@@ -317,7 +316,7 @@ impl StateStore {
             game_state,
             census,
             rows,
-            engine::walk::Buffer::for_worker(names, growing),
+            engine_native::walk::Buffer::for_worker(names, growing),
             |index| (!reread[index]).then(|| held.names(index)),
         );
         if walk.outcome != census {

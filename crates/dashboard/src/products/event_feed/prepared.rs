@@ -2,13 +2,11 @@
 use super::*;
 use crate::prepared::series::Accumulator;
 use dashboard_base::prepared::kept::Reduced;
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        CountryCounterInputRow, CountryExperienceGainRow, RelationTupleRow, SliceReadRow, TableId,
-        TableRows, tables,
-    },
+use replay_data::{
+    rows::CountryCounterInputRow, rows::CountryExperienceGainRow, rows::RelationTupleRow,
+    rows::SliceReadRow, rows::TableId, rows::TableRows, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 pub(crate) const FACT_KEYS: [u64; 22] = [
     1,
@@ -57,7 +55,7 @@ pub(crate) mod tests;
 /// as read: the links are told apart by allocation, the packs and strikes
 /// are this hour's. Kept hours whose reduced rows are equal share one view.
 pub(crate) struct KeptFrames {
-    countries: Reduced<replay::rows::CountryRow>,
+    countries: Reduced<replay_data::rows::CountryRow>,
     counters: Reduced<CountryCounterInputRow>,
     gains: Reduced<CountryExperienceGainRow>,
     relations: Reduced<RelationTupleRow>,

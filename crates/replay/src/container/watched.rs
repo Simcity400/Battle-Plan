@@ -187,7 +187,7 @@ impl Replay {
             let keyframe = Keyframe::Grouped(dependent_keyframe);
             if let Some(keep) = keep {
                 // Every hour's frame first, for the reader keeping them.
-                let frames = engine::allocation::collect_vec(
+                let frames = engine_allocation::collect_vec(
                     hours.into_iter().zip(metrics).enumerate().map(
                         |(position, (hour, metrics))| {
                             reading
@@ -294,7 +294,7 @@ impl Replay {
                 ..
             } = selected;
             let mut frames = Vec::new();
-            engine::allocation::reserve(&mut frames, hours.len())?;
+            engine_allocation::reserve(&mut frames, hours.len())?;
             for (position, (hour, metrics)) in hours.into_iter().zip(metrics).enumerate() {
                 check()?;
                 frames.push(
@@ -319,7 +319,7 @@ impl Replay {
         let mut frames = Vec::new();
         self.visit_block(index, Some(&selected), |frame| {
             check()?;
-            engine::allocation::reserve(&mut frames, 1)?;
+            engine_allocation::reserve(&mut frames, 1)?;
             frames.push(Arc::new(frame.into()));
             Ok(true)
         })?;
@@ -363,7 +363,7 @@ impl<'r> BlockTables<'r> {
         format: crate::format::FormatVersion,
         chosen: &[bool; TABLE_COUNT],
     ) -> io::Result<Self> {
-        let tables = engine::allocation::collect_vec(
+        let tables = engine_allocation::collect_vec(
             TableId::ALL
                 .into_iter()
                 .filter(|table| chosen[table.index()]),
@@ -375,10 +375,10 @@ impl<'r> BlockTables<'r> {
         Ok(Self {
             campaign_id,
             format,
-            views: engine::allocation::collect_vec(tables.iter().map(|_| None))?,
-            rebuilt: engine::allocation::collect_vec(tables.iter().map(|_| false))?,
-            count: engine::allocation::collect_vec(tables.iter().map(|_| None))?,
-            before: engine::allocation::collect_vec(tables.iter().map(|_| None))?,
+            views: engine_allocation::collect_vec(tables.iter().map(|_| None))?,
+            rebuilt: engine_allocation::collect_vec(tables.iter().map(|_| false))?,
+            count: engine_allocation::collect_vec(tables.iter().map(|_| None))?,
+            before: engine_allocation::collect_vec(tables.iter().map(|_| None))?,
             tables,
             slots: Arc::new(slots),
             last_hour: None,
@@ -616,7 +616,7 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
             chosen[table.index()] = true;
         }
         let tables = BlockTables::new(campaign_id, format, &chosen)?;
-        let reconstructed = engine::allocation::collect_vec(
+        let reconstructed = engine_allocation::collect_vec(
             tables
                 .tables
                 .iter()
@@ -636,22 +636,22 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
             }
         }
         let mut consumers = Vec::new();
-        engine::allocation::reserve(&mut consumers, watches.len())?;
+        engine_allocation::reserve(&mut consumers, watches.len())?;
         for watch in watches.iter() {
             let own_tables: Vec<TableId> = match watch.watching {
                 Watching::Changes(fields) => {
-                    engine::allocation::collect_vec(TableId::ALL.into_iter().filter(|&table| {
+                    engine_allocation::collect_vec(TableId::ALL.into_iter().filter(|&table| {
                         table == TableId::Campaign
                             || fields.iter().any(|entry| entry.table == table)
                     }))?
                 }
-                Watching::Every(selected) => engine::allocation::collect_vec(
+                Watching::Every(selected) => engine_allocation::collect_vec(
                     TableId::ALL
                         .into_iter()
                         .filter(|&table| table == TableId::Campaign || selected.contains(&table)),
                 )?,
             };
-            let own: Vec<usize> = engine::allocation::collect_vec(
+            let own: Vec<usize> = engine_allocation::collect_vec(
                 own_tables
                     .iter()
                     .map(|table| tables.slots[table.index()].expect("a chosen table")),
@@ -660,7 +660,7 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
                 Watching::Changes(fields) => Some(Changes {
                     // Duplicate entries of a table watch the union of their
                     // fields.
-                    fields: engine::allocation::collect_vec(own_tables.iter().map(|&table| {
+                    fields: engine_allocation::collect_vec(own_tables.iter().map(|&table| {
                         let named = fields
                             .iter()
                             .filter(|entry| entry.table == table)
@@ -677,7 +677,7 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
                 }),
                 Watching::Every(_) => None,
             };
-            let replaced = engine::allocation::vec(if watch.releasing { own.len() } else { 0 })?;
+            let replaced = engine_allocation::vec(if watch.releasing { own.len() } else { 0 })?;
             consumers.push(Consumer {
                 own,
                 changes,
@@ -816,11 +816,11 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
                     .tables
                     .differs(position, fields, &frame.tables[table.index()]);
                 if fields.is_some() && (frame.keyframe || differs || (visit_read && read)) {
-                    engine::allocation::reserve(&mut changes.changed, 1)?;
+                    engine_allocation::reserve(&mut changes.changed, 1)?;
                     changes.changed.push(table);
                 }
                 if frame.keyframe || self.tables.rebuilt[position] {
-                    engine::allocation::reserve(&mut changes.rebuilt, 1)?;
+                    engine_allocation::reserve(&mut changes.rebuilt, 1)?;
                     changes.rebuilt.push(table);
                 }
             }

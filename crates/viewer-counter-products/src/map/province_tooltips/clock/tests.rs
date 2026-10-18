@@ -1,5 +1,5 @@
 use super::*;
-use replay::rows::DayNightClock;
+use replay_data::rows::DayNightClock;
 
 fn row(id: u32, clock: DayNightClock) -> WeatherProvinceRow {
     WeatherProvinceRow {
@@ -129,7 +129,7 @@ fn held_night_uses_native_signed_rounding_without_clamping() {
 
 #[test]
 fn content_defines_keep_native_conversions() {
-    let raw = installed_content::defines::Defines::new().unwrap();
+    let raw = installed_content_core::defines::Defines::new().unwrap();
     raw.load(
         "clock.lua",
         br#"
@@ -140,14 +140,14 @@ fn content_defines_keep_native_conversions() {
     "#,
     )
     .unwrap();
-    let loaded = replay::day_night::Defines::read(
+    let loaded = replay_data::day_night::Defines::read(
         |group, name| raw.int32(group, name),
         |group, name| raw.fixed5(group, name),
     )
     .unwrap();
     assert_eq!(
         loaded,
-        replay::day_night::Defines {
+        replay_data::day_night::Defines {
             gmt_offset: 8,
             south_pole_offset: 0,
             north_pole_offset: 100_000,

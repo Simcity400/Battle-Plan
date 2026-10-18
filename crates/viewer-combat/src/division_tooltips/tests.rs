@@ -9,7 +9,7 @@ use super::*;
 /// and reason.
 #[test]
 fn the_reserve_chance_arm_sums_the_recorded_operands_and_rejections_keep_their_text() {
-    use replay::rows::LandDivisionModifier;
+    use replay_data::rows::LandDivisionModifier;
     let loc: Localisation = [
         ("BATTLE_REINFORCE_CHANCE2", "Chance $VALUE|3$ "),
         ("COMREIC_TOO_MUCH_WIDTH", "Too wide"),
@@ -219,7 +219,7 @@ Total 0.00
             )
         );
 }
-use replay::rows::{DivisionMovementRow, DivisionRow, ProvinceRow};
+use replay_data::{rows::DivisionMovementRow, rows::DivisionRow, rows::ProvinceRow};
 
 /// Invasion section with fixture text: the
 /// description, the progress (complete from 100000 up, the zero-extended
@@ -303,7 +303,7 @@ fn the_division_summary_names_its_missing_or_unrenderable_key() {
         .collect()
     };
     let row = LandCombatDivisionRow {
-        scales: [0, 0, 50_000, 100_000].map(replay::rows::Recorded::Value),
+        scales: [0, 0, 50_000, 100_000].map(replay_data::rows::Recorded::Value),
         ..Default::default()
     };
     // A missing top-level key shows its own bytes.
@@ -350,17 +350,17 @@ fn naval_invasion_needs_a_sea_to_land_step_against_an_enemy_controller() {
         ..Default::default()
     }];
     let links = [
-        replay::rows::CountryLinkRow {
+        replay_data::rows::CountryLinkRow {
             id: 5,
             canonical_slot: 5,
         },
-        replay::rows::CountryLinkRow {
+        replay_data::rows::CountryLinkRow {
             id: 6,
             canonical_slot: 6,
         },
     ];
-    let war = [replay::rows::RelationTupleRow {
-        type_id: engine::cwar_relation::TYPE,
+    let war = [replay_data::rows::RelationTupleRow {
+        type_id: engine_native::cwar_relation::TYPE,
         first_country: 6,
         second_country: 5,
         ..Default::default()
@@ -478,11 +478,12 @@ fn reserve_rejection_precedes_movement_inputs() {
     condition.strength = ADVANCE_STRENGTH;
     condition.organisation = ADVANCE_ORGANISATION;
     row.context.template = 1;
-    row.width_terms.push(replay::rows::LandDivisionWidthTerm {
-        subunit: 1,
-        count: 1,
-        width: 200_000,
-    });
+    row.width_terms
+        .push(replay_data::rows::LandDivisionWidthTerm {
+            subunit: 1,
+            count: 1,
+            width: 200_000,
+        });
     let mut defines = LandDefines::default();
     defines.reinforce.over_width_penalty = -200_000;
     defines.reinforce.over_width_penalty_max = -100_000;
@@ -506,7 +507,7 @@ fn reserve_rejection_precedes_movement_inputs() {
 /// name.
 #[test]
 fn the_commander_icon_reads_the_hours_unit_leader_and_its_traits() {
-    use replay::rows::{UnitLeaderRow, UnitLeaderTraitRow};
+    use replay_data::{rows::UnitLeaderRow, rows::UnitLeaderTraitRow};
     let handle = (7_u64 << 32) | 0x55;
     let leaders = [
         UnitLeaderRow {
@@ -625,9 +626,9 @@ fn the_commander_icon_reads_the_hours_unit_leader_and_its_traits() {
 /// text in the recording's language.
 #[test]
 fn reserve_sources_join_the_recorded_country_and_commander_trees() {
-    use replay::rows::{
-        DivisionRow, ModifierBreakdownNode, ModifierDefinitionRow, ReserveModifierTreeRow, TableId,
-        TableRows,
+    use replay_data::{
+        rows::DivisionRow, rows::ModifierBreakdownNode, rows::ModifierDefinitionRow,
+        rows::ReserveModifierTreeRow, rows::TableId, rows::TableRows,
     };
     use viewer_foundation::map::test_support::{test_frame, test_put};
     let mut loc = Localisation::default();
@@ -650,7 +651,7 @@ fn reserve_sources_join_the_recorded_country_and_commander_trees() {
     test_put(
         &mut frame,
         TableRows::ModifierDefinitions(vec![ModifierDefinitionRow {
-            index: engine::modifier_keys::LAND_REINFORCE_RATE,
+            index: engine_executable::modifier_keys::LAND_REINFORCE_RATE,
             precision: 2,
             ..Default::default()
         }]),

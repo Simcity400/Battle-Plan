@@ -68,7 +68,7 @@ pub(super) fn release_relations_job(mut job: RelationsJob) {
     job.clear();
     if let Ok(mut pool) = RELATIONS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
+        && engine_allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -113,7 +113,7 @@ pub(super) fn release_characters_job(mut job: CharactersJob) {
     job.clear();
     if let Ok(mut pool) = CHARACTERS_JOB_POOL.lock()
         && pool[job.part].len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool[job.part], 1).is_ok()
+        && engine_allocation::reserve(&mut pool[job.part], 1).is_ok()
     {
         let part = job.part;
         pool[part].push(job);
@@ -156,7 +156,7 @@ pub(super) fn release_projects_job(mut job: ProjectsJob) {
     job.clear();
     if let Ok(mut pool) = PROJECTS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
+        && engine_allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -201,7 +201,7 @@ pub(super) fn release_lexical_job(mut job: LexicalJob) {
     job.clear();
     if let Ok(mut pool) = LEXICAL_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
+        && engine_allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -236,7 +236,7 @@ pub(super) fn release_divisions_job(mut job: DivisionsJob) {
     job.clear();
     if let Ok(mut pool) = DIVISIONS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
+        && engine_allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -286,7 +286,7 @@ pub(super) fn release_air_wing_job(mut job: AirWingJob) {
     job.clear();
     if let Ok(mut pool) = AIR_WING_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
+        && engine_allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -322,7 +322,7 @@ pub(super) fn release_air_stats_job(mut job: AirStatsJob) {
     job.clear();
     if let Ok(mut pool) = AIR_STATS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
+        && engine_allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -364,7 +364,7 @@ pub(super) fn release_naval_job(mut job: NavalJob) {
     job.clear();
     if let Ok(mut pool) = NAVAL_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
+        && engine_allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -405,7 +405,7 @@ pub(super) fn release_players_job(mut job: PlayersJob) {
     job.clear();
     if let Ok(mut pool) = PLAYERS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
+        && engine_allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -446,7 +446,7 @@ pub(super) fn release_session_job(mut job: SessionJob) {
     job.clear();
     if let Ok(mut pool) = SESSION_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
+        && engine_allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -495,7 +495,7 @@ pub(super) fn release_production_rest_job(mut job: ProductionRestJob) {
     job.clear();
     if let Ok(mut pool) = PRODUCTION_REST_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
+        && engine_allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -537,7 +537,7 @@ pub(super) fn release_construction_rest_job(mut job: ConstructionRestJob) {
     job.clear();
     if let Ok(mut pool) = CONSTRUCTION_REST_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
+        && engine_allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -578,7 +578,7 @@ pub(super) fn release_economy_rest_job(mut job: EconomyRestJob) {
     job.clear();
     if let Ok(mut pool) = ECONOMY_REST_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
+        && engine_allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -620,7 +620,7 @@ pub(super) fn release_air_bases_job(mut job: AirBasesJob) {
     job.clear();
     if let Ok(mut pool) = AIR_BASES_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
+        && engine_allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -661,7 +661,7 @@ pub(super) fn release_supremacy_job(mut job: SupremacyJob) {
     job.clear();
     if let Ok(mut pool) = SUPREMACY_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
+        && engine_allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -702,7 +702,7 @@ pub(super) fn release_sunk_job(mut job: SunkJob) {
     job.clear();
     if let Ok(mut pool) = SUNK_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
+        && engine_allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -743,7 +743,7 @@ pub(super) fn release_radar_job(mut job: RadarJob) {
     job.clear();
     if let Ok(mut pool) = RADAR_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
+        && engine_allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -784,7 +784,7 @@ pub(super) fn release_intel_job(mut job: IntelJob) {
     job.clear();
     if let Ok(mut pool) = INTEL_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
+        && engine_allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -835,7 +835,7 @@ pub(super) fn release_weather_job(mut job: WeatherJob) {
     job.clear();
     if let Ok(mut pool) = WEATHER_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
+        && engine_allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -876,7 +876,7 @@ pub(super) fn release_capitulation_job(mut job: CapitulationJob) {
     job.clear();
     if let Ok(mut pool) = CAPITULATION_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
-        && engine::allocation::reserve(&mut pool, 1).is_ok()
+        && engine_allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }

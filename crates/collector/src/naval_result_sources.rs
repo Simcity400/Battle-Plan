@@ -2,8 +2,9 @@
 //! combat from a stack-local strike; no identity is invented for the latter.
 //! All callbacks are allocation-free and never wait for another caller.
 use crate::hook::Hook;
-type Clock = engine::cgame_state::Clock<u64>;
-use engine::{Memory, naval_result_sources as native};
+type Clock = engine_native::cgame_state::Clock<u64>;
+use engine_native::Memory;
+use engine_naval_history::naval_result_sources as native;
 use std::{
     collections::HashMap,
     ops::Range,
@@ -24,8 +25,8 @@ pub struct Entry {
     pub combat_created_hour: Option<i32>,
 }
 impl Entry {
-    pub fn into_row(self) -> replay::rows::NavalResultSourceRow {
-        replay::rows::NavalResultSourceRow {
+    pub fn into_row(self) -> replay_data::rows::NavalResultSourceRow {
+        replay_data::rows::NavalResultSourceRow {
             id: self.id,
             game_hour: self.game_hour,
             result: self.result,
@@ -268,7 +269,7 @@ fn collect_retired() {
 }
 
 fn presize(population: usize) {
-    engine::allocation::advisory(|| presize_storage(population));
+    engine_allocation::advisory(|| presize_storage(population));
 }
 
 fn presize_storage(population: usize) {
@@ -283,8 +284,8 @@ fn presize_storage(population: usize) {
     }
     let mut entries = Vec::new();
     let mut births = HashMap::new();
-    if engine::allocation::reserve_exact(&mut entries, requested).is_err()
-        || engine::allocation::reserve_map(&mut births, requested).is_err()
+    if engine_allocation::reserve_exact(&mut entries, requested).is_err()
+        || engine_allocation::reserve_map(&mut births, requested).is_err()
     {
         PREPARE_FAILURES.fetch_add(1, Ordering::Relaxed);
         return;
@@ -389,12 +390,12 @@ pub fn boundary(clock: Option<Clock>) {
 }
 #[cfg(test)]
 pub fn drain(output: &mut [Entry]) -> Result<usize, &'static str> {
-    drain_buffer(engine::walk::Buffer::Fixed(output))
+    drain_buffer(engine_native::walk::Buffer::Fixed(output))
 }
 pub fn drain_growing(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
-    drain_buffer(engine::walk::Buffer::Growing(output))
+    drain_buffer(engine_native::walk::Buffer::Growing(output))
 }
-fn drain_buffer(mut output: engine::walk::Buffer<'_, Entry>) -> Result<usize, &'static str> {
+fn drain_buffer(mut output: engine_native::walk::Buffer<'_, Entry>) -> Result<usize, &'static str> {
     #[cfg(test)]
     if !tests::owns_observation() {
         return Err("naval result sources hooks unavailable (see status unhooked)");
@@ -547,7 +548,7 @@ unsafe extern "system-unwind" fn constructor(pointer: usize, caller: usize) -> u
         current.refuse("naval result source native world changed during constructor");
         return call.returned(returned);
     }
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let result = native::creation_hour(&memory, base)
         .and_then(|hour| current.birth(pointer, Birth { hour, kind }));
     if let Err(reason) = result {
@@ -583,7 +584,7 @@ unsafe fn result_call(site: usize, result: usize, combat: usize) -> usize {
         current.refuse("naval result source native world changed during original");
         return call.returned(returned);
     }
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let input = native::read_inputs(&memory, BASE.load(Ordering::Relaxed), result, combat);
     if let Err(reason) = input.and_then(|input| current.append(combat, input, site == 1)) {
         current.refuse(reason);

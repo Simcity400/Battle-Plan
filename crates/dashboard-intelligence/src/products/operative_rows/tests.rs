@@ -1,9 +1,7 @@
 use super::*;
 use dashboard_base::test_fixtures::source;
-use replay::{
-    frame::TableView,
-    rows::{SimulationFeatureRow, TableRows},
-};
+use replay_data::{rows::SimulationFeatureRow, rows::TableRows};
+use replay_frame::frame::TableView;
 
 #[test]
 fn saved_names_preserve_localised_empty_literal_and_unrenderable_names() {
@@ -199,7 +197,7 @@ fn operative_admission_uses_native_capture_and_mission_variants() {
 
 fn check_equal_country_link_reads(count: u32) {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let mut input = source(1, 100, None);
     *input.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
         (1..=count)

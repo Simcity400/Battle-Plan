@@ -1,7 +1,7 @@
 use super::test_fixtures::{casualty_frame, chosen, opened, research_replay};
 use super::*;
-use replay::frame::FrameEncoder;
 use replay::spool::Record;
+use replay_frame::frame::FrameEncoder;
 use std::path::PathBuf;
 use std::time::Instant;
 fn params(count: u32) -> CasualtyParams {
@@ -15,7 +15,7 @@ fn params(count: u32) -> CasualtyParams {
 #[test]
 fn supplying_pair_keys_hold_through_counter_changes_and_rebuild_at_a_new_lifetime() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
     let replay = research_replay(vec![casualty_frame(100, Some((10, 3)), 0)]);
     let mut builder = ScanFrames::new(&replay, 1);
     let mut oracle = ScanFrames::new(&replay, 1);
@@ -541,11 +541,9 @@ fn packed_country_lookup_seeks_across_checkpoints_identities_and_holes() {
 }
 
 use dashboard_base::test_fixtures::{CAMPAIGN, records};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{CountryLinkRow, CountryRow, TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 #[test]
 fn selection_validation_and_exact_escaped_json_budget() {
@@ -664,7 +662,7 @@ fn all_countries_includes_a_country_created_after_the_first_catalogue() {
     if let TableView::Complete(TableRows::WarRelations(rows)) =
         &mut *later.tables[TableId::WarRelations.index()]
     {
-        rows.push(replay::rows::WarRelationRow {
+        rows.push(replay_data::rows::WarRelationRow {
             first_country: 2,
             second_country: 3,
             first_casualties: 4,
@@ -806,7 +804,7 @@ fn casualties_unknown_refuses_resets_disagreement_and_disjoint_relations() {
             &mut *after.tables[TableId::WarRelations.index()]
         {
             if mode == 1 {
-                rows.push(replay::rows::WarRelationRow {
+                rows.push(replay_data::rows::WarRelationRow {
                     second_country: 3,
                     first_unknown_casualties: 99,
                     ..rows[0].clone()
@@ -830,7 +828,7 @@ fn casualties_unknown_is_deduplicated_at_every_hourly_read() {
             if let TableView::Complete(TableRows::WarRelations(rows)) =
                 &mut *f.tables[TableId::WarRelations.index()]
             {
-                rows.push(replay::rows::WarRelationRow {
+                rows.push(replay_data::rows::WarRelationRow {
                     second_country: 3,
                     ..rows[0].clone()
                 });
@@ -878,7 +876,7 @@ fn repeated_alias_duplicates_are_never_reused_as_valid_endpoint_joins() {
     if let TableView::Complete(TableRows::WarRelations(rows)) =
         &mut *duplicate.tables[TableId::WarRelations.index()]
     {
-        rows.push(replay::rows::WarRelationRow {
+        rows.push(replay_data::rows::WarRelationRow {
             first_country: 100,
             second_country: 200,
             ..rows[0].clone()
@@ -972,7 +970,7 @@ fn top_ranks_every_country_by_known_totals_and_ignores_unknown() {
                 if let TableView::Complete(TableRows::WarRelations(rows)) =
                     &mut *f.tables[TableId::WarRelations.index()]
                 {
-                    rows.push(replay::rows::WarRelationRow {
+                    rows.push(replay_data::rows::WarRelationRow {
                         first_country: 2,
                         second_country: 3,
                         first_casualties: 1,
@@ -1056,7 +1054,7 @@ fn hourly_confirmation_survives_top_membership_clipping() {
             if let TableView::Complete(TableRows::WarRelations(rows)) =
                 &mut *frame.tables[TableId::WarRelations.index()]
             {
-                rows.push(replay::rows::WarRelationRow {
+                rows.push(replay_data::rows::WarRelationRow {
                     first_country: 2,
                     second_country: 3,
                     first_casualties: if hour < 23 { 0 } else { 100 },
@@ -1088,7 +1086,7 @@ fn top_membership_tracks_every_entrant_and_smaller_n_is_a_cached_prefix() {
             if let TableView::Complete(TableRows::WarRelations(rows)) =
                 &mut *f.tables[TableId::WarRelations.index()]
             {
-                rows.push(replay::rows::WarRelationRow {
+                rows.push(replay_data::rows::WarRelationRow {
                     first_country: 2,
                     second_country: 3,
                     start_hour: 0,
@@ -1142,7 +1140,7 @@ fn top_membership_changes_hourly_and_never_spans_a_missing_hour() {
             if let TableView::Complete(TableRows::WarRelations(rows)) =
                 &mut *frame.tables[TableId::WarRelations.index()]
             {
-                rows.push(replay::rows::WarRelationRow {
+                rows.push(replay_data::rows::WarRelationRow {
                     first_country: 2,
                     second_country: 3,
                     first_casualties: if hour == 101 { 100 } else { 0 },
@@ -1167,7 +1165,7 @@ fn equal_hourly_values_compress_and_keep_wide_signed_totals() {
         &mut *f.tables[TableId::WarRelations.index()]
     {
         rows[0].first_casualties = i64::MAX;
-        rows.push(replay::rows::WarRelationRow {
+        rows.push(replay_data::rows::WarRelationRow {
             second_country: 3,
             ..rows[0].clone()
         });
@@ -1219,7 +1217,7 @@ fn scale_frame(hour: i32) -> DecodedFrame {
     ));
     *f.tables[TableId::WarRelations.index()] = TableView::Complete(TableRows::WarRelations(
         (1..=5000)
-            .map(|id| replay::rows::WarRelationRow {
+            .map(|id| replay_data::rows::WarRelationRow {
                 first_country: id,
                 second_country: id % 5000 + 1,
                 start_hour: 0,
@@ -1252,7 +1250,7 @@ fn scale_frame(hour: i32) -> DecodedFrame {
     *f.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(
             (1..=5000)
-                .map(|country| replay::rows::CountryAppearanceRow {
+                .map(|country| replay_data::rows::CountryAppearanceRow {
                     country: if country == 1 { holder } else { country },
                     ..Default::default()
                 })
@@ -1260,7 +1258,7 @@ fn scale_frame(hour: i32) -> DecodedFrame {
         ));
     *f.tables[TableId::Politics.index()] = TableView::Complete(TableRows::Politics(
         (1..=5000)
-            .map(|country| replay::rows::PoliticsRow {
+            .map(|country| replay_data::rows::PoliticsRow {
                 country: if country == 1 { holder } else { country },
                 ..Default::default()
             })
@@ -1348,13 +1346,13 @@ fn loaded_content(source: &Source) -> (LoadContext, TestFolder) {
     .unwrap();
     let catalogue = Arc::new(
         dashboard_text::catalogue::Catalogue::of_layers(
-            installed_content::ResolvedLayers::from_folders(&[(root, &[])]).unwrap(),
+            installed_content_core::ResolvedLayers::from_folders(&[(root, &[])]).unwrap(),
             "english",
         )
         .unwrap(),
     );
     let options = dashboard_core::config::ContentOptions {
-        options: installed_content::ResolveOptions {
+        options: installed_content_core::ResolveOptions {
             game_dir: root.clone(),
             user_dir: root.clone(),
             cache_dir: root.join("cache"),
@@ -1387,7 +1385,7 @@ fn casualty_titles_preserve_empty_and_key_equal_localisations() {
             &text,
         )]);
         let options = dashboard_core::config::ContentOptions {
-            options: installed_content::ResolveOptions {
+            options: installed_content_core::ResolveOptions {
                 game_dir: folder.0.clone(),
                 user_dir: folder.0.clone(),
                 cache_dir: folder.0.join("cache"),

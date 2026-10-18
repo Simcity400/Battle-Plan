@@ -12,8 +12,10 @@ use dashboard_text::{
     catalogue::Catalogue,
     metadata::{link_slot, tagged_country, validate_campaign},
 };
-use installed_content::equipment::Database;
-use replay::{container::SeekResult, frame::DecodedFrame, rows::tables};
+use installed_content_core::equipment::Database;
+use replay::container::SeekResult;
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,

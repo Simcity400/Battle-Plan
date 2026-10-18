@@ -10,14 +10,12 @@
 
 use std::{collections::BTreeMap, io};
 
-use installed_content::defines::Defines;
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        AirBaseRow, AirMissionInputRow, AirSortieBaseCountryRow, AirSortieModifierRow,
-        AirSortieSpecialBaseRow, AirWingRow, tables,
-    },
+use installed_content_core::defines::Defines;
+use replay_data::{
+    rows::AirBaseRow, rows::AirMissionInputRow, rows::AirSortieBaseCountryRow,
+    rows::AirSortieModifierRow, rows::AirSortieSpecialBaseRow, rows::AirWingRow, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 use crate::map::tables::{Available, rows};
 

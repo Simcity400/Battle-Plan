@@ -1,11 +1,9 @@
 //! Hourly picture-directory inputs for the current land HQ leaders.
 use crate::{clock::qpc, table_capture::CaptureRows, table_conversion::table};
-use engine::allocation::{copy_vec, owned_vec};
-use engine::{Memory, cunit_leader, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{LeaderPortraitPathRow, TableId, tables},
-};
+use engine_allocation::{copy_vec, owned_vec};
+use engine_native::{Memory, cunit_leader, walk::Outcome};
+use replay_data::{rows::LeaderPortraitPathRow, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::LeaderPortraitPaths];
@@ -17,20 +15,18 @@ pub struct Capacities {
 }
 impl Capacities {
     pub fn presize(&mut self, memory: &impl Memory, base: usize) -> Result<(), &'static str> {
-        let count = collector_extended_support::demand::rows(engine::corders_group::walk_roots(
-            memory,
-            base,
-            &mut [],
-        ))?;
+        let count = collector_extended_support::demand::rows(
+            engine_native::corders_group::walk_roots(memory, base, &mut []),
+        )?;
         crate::table_capture::grow_capacity(&mut self.rows, count);
         Ok(())
     }
 }
 
 pub struct Captured {
-    rows: CaptureRows<cunit_leader::PortraitPathRow<engine::capture_text::Owned>>,
+    rows: CaptureRows<cunit_leader::PortraitPathRow<engine_native::capture_text::Owned>>,
     /// One tag cell per country slot, sized from the observed table off-thread.
-    tag_memo: cunit_leader::PortraitTagMemo<engine::capture_text::Owned>,
+    tag_memo: cunit_leader::PortraitTagMemo<engine_native::capture_text::Owned>,
 }
 impl Captured {
     pub fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
@@ -111,7 +107,7 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     #[test]
     fn missing_hq_census_is_unavailable_and_tag_bytes_convert_exactly() {
         let memory = SliceMemory {
@@ -129,7 +125,7 @@ mod tests {
         capture.rows.rows[0].tag.bytes[..3].copy_from_slice(b"G\0R");
         capture.rows.rows[0].tag.len = 3;
         capture.rows.outcome = Outcome::Rows { len: 1 };
-        let [TableView::Complete(replay::rows::TableRows::LeaderPortraitPaths(rows))] =
+        let [TableView::Complete(replay_data::rows::TableRows::LeaderPortraitPaths(rows))] =
             capture.tables()
         else {
             panic!("complete");

@@ -46,16 +46,13 @@ use std::{
     io,
 };
 
-use installed_content::{
-    ResolvedLayers,
-    parser::{Item, Value},
-};
+use installed_content_core::{ResolvedLayers, parser::Item, parser::Value};
 
 #[cfg(test)]
-use installed_content::parser;
+use installed_content_core::parser;
 
 pub(crate) const MONTH_DAYS: [u8; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-pub use installed_content::parser::decimal::{Decimal, FIXED_SCALE};
+pub use installed_content_core::{parser::decimal::Decimal, parser::decimal::FIXED_SCALE};
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -708,7 +705,9 @@ fn regional_convoy_efficiency(items: &[Item]) -> io::Result<Option<BTreeMap<u32,
         .next()
         .ok_or_else(|| invalid("regional_convoys lacks its record count"))?;
     if count.key.is_some() {
-        return Err(invalid("regional_convoys does not lead with its record count"));
+        return Err(invalid(
+            "regional_convoys does not lead with its record count",
+        ));
     }
     let count: usize = integer(scalar(&count.value)?)?;
     let mut seen = 0;
@@ -726,7 +725,9 @@ fn regional_convoy_efficiency(items: &[Item]) -> io::Result<Option<BTreeMap<u32,
         }
     }
     if seen > count {
-        return Err(invalid("regional_convoys holds more records than its count"));
+        return Err(invalid(
+            "regional_convoys holds more records than its count",
+        ));
     }
     Ok(Some(out))
 }
@@ -1155,7 +1156,9 @@ fn state_strategic_locations(state: &[Item]) -> io::Result<Vec<(Vec<u8>, u32)>> 
         .iter()
         .map(|item| {
             let [location, province] = block(&item.value)? else {
-                return Err(invalid("saved strategic location is not one location and province"));
+                return Err(invalid(
+                    "saved strategic location is not one location and province",
+                ));
             };
             if item.key.is_some() || location.key.is_some() || province.key.is_some() {
                 return Err(invalid("saved strategic location has a keyed entry"));
@@ -1164,7 +1167,10 @@ fn state_strategic_locations(state: &[Item]) -> io::Result<Vec<(Vec<u8>, u32)>> 
             if location.is_empty() {
                 return Err(invalid("saved strategic location lacks its location"));
             }
-            Ok((location.to_vec(), integer::<i32>(scalar(&province.value)?)? as u32))
+            Ok((
+                location.to_vec(),
+                integer::<i32>(scalar(&province.value)?)? as u32,
+            ))
         })
         .collect()
 }
@@ -1589,10 +1595,10 @@ pub struct MapMembership {
 
 impl MapMembership {
     /// Every record's id, as `definition.csv` is read for the map
-    /// (`installed_content::map::definition_rows`).
+    /// (`installed_content_core::map::definition_rows`).
     pub fn from_definition(bytes: &[u8]) -> io::Result<Self> {
         let mut provinces = BTreeMap::new();
-        for row in installed_content::map::definition_rows(bytes)? {
+        for row in installed_content_core::map::definition_rows(bytes)? {
             if provinces.insert(u32::from(row.id), None).is_some() {
                 return Err(invalid("duplicate province id in definition.csv"));
             }
@@ -1606,7 +1612,7 @@ impl MapMembership {
     /// Consume the shared StateDefinition used by every content consumer.
     pub fn add_state_history(
         &mut self,
-        state: &installed_content::states::StateDefinition,
+        state: &installed_content_states::states::StateDefinition,
     ) -> io::Result<()> {
         let id = state.id;
         if id == 0
@@ -1716,10 +1722,10 @@ pub fn read_partial_state_history(
 
 fn partial_map_membership(
     layers: &ResolvedLayers,
-    states: &installed_content::states::States,
-    notes: Vec<installed_content::Diagnostic>,
+    states: &installed_content_states::states::States,
+    notes: Vec<installed_content_core::Diagnostic>,
 ) -> io::Result<PartialMapMembership> {
-    let definitions = installed_content::terrain::read_default_map(layers)?.file("definitions")?;
+    let definitions = installed_content_core::terrain::read_default_map(layers)?.file("definitions")?;
     let mut known = MapMembership::from_definition(&layers.read(&definitions)?)?;
     let mut excluded_states = BTreeMap::new();
     let mut unknown_provinces: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
@@ -1780,11 +1786,15 @@ fn partial_map_membership(
 /// the saved post-setup control, buildings or province victory points.
 fn content_state_history(
     layers: &ResolvedLayers,
-) -> io::Result<(installed_content::states::States, Vec<installed_content::Diagnostic>)> {
-    let map = installed_content::terrain::read_default_map(layers)?;
-    let provinces = installed_content::map::parse_definitions(&layers.read(&map.file("definitions")?)?)?;
-    let defines = installed_content::defines::read(layers)?;
-    let (states, notes) = installed_content::states::read(layers, &defines, &provinces)?;
+) -> io::Result<(
+    installed_content_states::states::States,
+    Vec<installed_content_core::Diagnostic>,
+)> {
+    let map = installed_content_core::terrain::read_default_map(layers)?;
+    let provinces =
+        installed_content_core::map::parse_definitions(&layers.read(&map.file("definitions")?)?)?;
+    let defines = installed_content_core::defines::read(layers)?;
+    let (states, notes) = installed_content_states::states::read(layers, &defines, &provinces)?;
     if states.definitions().is_empty() {
         return Err(invalid("verified content contains no state history"));
     }
@@ -1812,16 +1822,16 @@ fn vanilla_state_history_reads_without_diagnostics() {
 }
 
 #[cfg(test)]
-fn history_fixture(input: &[u8]) -> installed_content::states::StateDefinition {
+fn history_fixture(input: &[u8]) -> installed_content_states::states::StateDefinition {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let context = installed_content::states::Context {
-        resource: &|_| installed_content::states::Resource::Found,
+    let context = installed_content_states::states::Context {
+        resource: &|_| installed_content_states::states::Resource::Found,
         max_building_levels: 20,
         province_count: 1000,
-        names: &installed_content::key_names::KeyNames::default(),
+        names: &installed_content_core::key_names::KeyNames::default(),
     };
-    installed_content::states::parse_states(input, &context)
+    installed_content_states::states::parse_states(input, &context)
         .unwrap()
         .0
         .remove(0)

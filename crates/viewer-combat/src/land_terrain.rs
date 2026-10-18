@@ -1,9 +1,8 @@
 //! Land combat terrain hovers.
-use installed_content::{
-    localisation::{Argument, Localisation},
-    terrain::TerrainCategory,
-};
-use replay::{frame::DecodedFrame, rows::tables};
+use installed_content_core::terrain::TerrainCategory;
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 use std::io;
 use viewer_foundation::tooltip_text::ensure_newlines;
 use viewer_foundation::tooltip_text::tooltip_keys;

@@ -3,9 +3,9 @@
 //! the same refusals, naming the same unresolved country.
 
 use super::*;
-use replay::rows::{
-    ActiveIdeaRow, CompletedFocusRow, CountryCharacterRow, CountryLinkRow, PartyLeaderRow,
-    PoliticalPartyRow, TableId, TableRows,
+use replay_data::{
+    rows::ActiveIdeaRow, rows::CompletedFocusRow, rows::CountryCharacterRow, rows::CountryLinkRow,
+    rows::PartyLeaderRow, rows::PoliticalPartyRow, rows::TableId, rows::TableRows,
 };
 
 fn set<T: TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {

@@ -1,8 +1,6 @@
 use super::*;
-use replay::{
-    frame::DecodedFrame,
-    rows::{TableRows, TradeRouteRow},
-};
+use replay_data::{rows::TableRows, rows::TradeRouteRow};
+use replay_frame::frame::DecodedFrame;
 use viewer_foundation::{
     map::test_support::localisation::loaded,
     resource_origins::fixture::{self, AFG, GER, MIXED, ORPHAN},

@@ -273,7 +273,6 @@ fn snap10(value: f32) -> f32 {
 }
 
 impl LightBox {
-
     /// The light's view-projection combines a left-handed view with an off-centre orthographic
     /// projection. Depth spans `[0, 1]`, using the same row-vector `[row][column] convention as
     /// `Camera::view_projection`.
@@ -800,14 +799,6 @@ mod tests {
         }
     }
 
-
-
-
-
-
-
-
-
     /// A free eye fits its light to its capped water-plane footprint and anchors it where its look
     /// reaches the ground, as the game's camera does: looking as the game's camera looks, it has
     /// the game camera's light direction, footprint and box.
@@ -830,14 +821,9 @@ mod tests {
         }
         // Each takes its own light, the same one.
         let [game_light, own_light] = [map, free].map(|camera| {
-            let frame = FrameConstants::try_new(
-                camera,
-                VIEWPORT,
-                DayNight::at_hour(60828490),
-                0.0,
-                false,
-            )
-            .expect("valid camera");
+            let frame =
+                FrameConstants::try_new(camera, VIEWPORT, DayNight::at_hour(60828490), 0.0, false)
+                    .expect("valid camera");
             light_direction(camera, &frame)
         });
         for axis in 0..3 {
@@ -851,13 +837,22 @@ mod tests {
         let [game, own] = [(map, game_light), (free, own_light)]
             .map(|(camera, light)| light_box(camera, VIEWPORT, light).unwrap());
         for axis in 0..3 {
-            assert!((game.min[axis] - own.min[axis]).abs() <= 10.0, "{game:?} {own:?}");
-            assert!((game.max[axis] - own.max[axis]).abs() <= 10.0, "{game:?} {own:?}");
+            assert!(
+                (game.min[axis] - own.min[axis]).abs() <= 10.0,
+                "{game:?} {own:?}"
+            );
+            assert!(
+                (game.max[axis] - own.max[axis]).abs() <= 10.0,
+                "{game:?} {own:?}"
+            );
         }
         let rect = receiver_rect(free, VIEWPORT, None).unwrap();
         let expected = frustum_bounds(&footprint(map, VIEWPORT).unwrap()).unwrap();
         for side in 0..4 {
-            assert!((rect[side] - expected[side]).abs() < 1e-2, "{rect:?} {expected:?}");
+            assert!(
+                (rect[side] - expected[side]).abs() < 1e-2,
+                "{rect:?} {expected:?}"
+            );
         }
     }
 
@@ -903,10 +898,18 @@ mod tests {
                     .min_by(|a, b| (a - ground[0]).abs().total_cmp(&(b - ground[0]).abs()))
                     .unwrap();
                 let game = normalize([ground[0] - x, -light[1], ground[2] - light[2]]);
-                assert_eq!(light_direction(camera, &frame), game, "at {}", camera.height);
+                assert_eq!(
+                    light_direction(camera, &frame),
+                    game,
+                    "at {}",
+                    camera.height
+                );
             }
         }
-        assert!(capped, "no height reaches past a free eye's cap, so this proves nothing");
+        assert!(
+            capped,
+            "no height reaches past a free eye's cap, so this proves nothing"
+        );
     }
 
     /// A free eye tilting through the horizon keeps its light: the anchor ends at its capped look
@@ -934,7 +937,10 @@ mod tests {
         };
         let [steeper, shallower] = [at(-0.001001), at(-0.000999)];
         for axis in 0..3 {
-            assert!((steeper[axis] - shallower[axis]).abs() < 1e-5, "{steeper:?} {shallower:?}");
+            assert!(
+                (steeper[axis] - shallower[axis]).abs() < 1e-5,
+                "{steeper:?} {shallower:?}"
+            );
         }
         // A 20-unit caster's shadow lies the same way within a hundredth of a unit.
         let shadow = |light: [f32; 3]| {
@@ -947,7 +953,10 @@ mod tests {
         // capped look, where the shallowest downward look already had it.
         let level = at(0.0);
         for axis in 0..3 {
-            assert!((level[axis] - shallower[axis]).abs() < 1e-5, "{level:?} {shallower:?}");
+            assert!(
+                (level[axis] - shallower[axis]).abs() < 1e-5,
+                "{level:?} {shallower:?}"
+            );
         }
     }
 
@@ -983,7 +992,10 @@ mod tests {
             }
         }
         let rect = receiver_rect(camera, VIEWPORT, None).expect("receivers");
-        assert!(rect[2] - rect[0] <= 300.0 + 1e-2 && rect[3] - rect[1] <= 300.0 + 1e-2, "{rect:?}");
+        assert!(
+            rect[2] - rect[0] <= 300.0 + 1e-2 && rect[3] - rect[1] <= 300.0 + 1e-2,
+            "{rect:?}"
+        );
     }
 
     fn frustum_bounds(points: &[[f32; 3]]) -> Option<[f32; 4]> {

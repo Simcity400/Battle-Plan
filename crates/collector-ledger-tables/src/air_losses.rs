@@ -6,11 +6,10 @@ use crate::{
     table_conversion::unavailable,
 };
 use collector_observers::air_losses as producer;
-use engine::{Memory, allocation, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{AirLossEventRow, TableId, TableRows},
-};
+use engine_allocation as allocation;
+use engine_native::{Memory, walk::Outcome};
+use replay_data::{rows::AirLossEventRow, rows::TableId, rows::TableRows};
+use replay_frame::frame::TableView;
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [TableId::AirLossEvents, TableId::AirDailyRoster];
@@ -27,7 +26,7 @@ impl Capacities {
 }
 pub struct Captured {
     rows: CaptureRows<producer::Entry>,
-    roster: Vec<engine::air_loss_sites::RosterRow>,
+    roster: Vec<engine_air_history::air_loss_sites::RosterRow>,
     roster_outcome: Outcome,
 }
 impl Captured {
@@ -48,7 +47,8 @@ impl Captured {
     }
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
-            + self.roster.capacity() * std::mem::size_of::<engine::air_loss_sites::RosterRow>()
+            + self.roster.capacity()
+                * std::mem::size_of::<engine_air_history::air_loss_sites::RosterRow>()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         producer::presize(0);
@@ -71,7 +71,8 @@ impl Captured {
         let drained = qpc().saturating_sub(start).max(0) as u64;
         let start = qpc();
         self.roster_outcome =
-            match engine::air_loss_sites::roster(memory, base, state, &mut self.roster) {
+            match engine_air_history::air_loss_sites::roster(memory, base, state, &mut self.roster)
+            {
                 Ok(()) => Outcome::Rows {
                     len: self.roster.len(),
                 },
@@ -94,10 +95,10 @@ impl Captured {
             Outcome::Unavailable { reason } => unavailable(reason),
             _ => unavailable("air loss incomplete drain"),
         };
-        let roster = crate::table_conversion::table::<replay::rows::tables::AirDailyRoster, _>(
+        let roster = crate::table_conversion::table::<replay_data::rows::tables::AirDailyRoster, _>(
             self.roster_outcome,
             &self.roster,
-            |row| replay::rows::AirDailyRosterRow {
+            |row| replay_data::rows::AirDailyRosterRow {
                 country: row.country,
                 eligible: row.eligible,
             },
@@ -156,12 +157,12 @@ mod tests {
         let mut captured = Captured::with_capacities(&capacity);
         assert!(captured.roster.capacity() >= 5000);
         let pointer = captured.roster.as_ptr();
-        captured
-            .roster
-            .extend((0..5000).map(|country| engine::air_loss_sites::RosterRow {
+        captured.roster.extend((0..5000).map(|country| {
+            engine_air_history::air_loss_sites::RosterRow {
                 country,
                 eligible: true,
-            }));
+            }
+        }));
         assert_eq!(captured.roster.as_ptr(), pointer);
         capacity.raise_for_countries(7000);
         captured.grow(&mut capacity);

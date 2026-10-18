@@ -240,7 +240,7 @@ impl Prepared {
         mut reader: Option<&mut Reader<'_>>,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("intelligence:espionage");
+        let _cpu = ::replay_frame::cpu::scope_phase("intelligence:espionage");
         let replay = source.replay_ref();
         self.initialize(source, frame.branch)?;
         self.advance(source, frame.branch, i64::from(frame.hour) - 1, cancelled)?;
@@ -776,7 +776,7 @@ impl Prepared {
         )?;
         if let Some(first) = self.first {
             let last = self.last.unwrap_or(first);
-            let mut manifest = self.raw(branch, last, replay::FORMAT_VERSION);
+            let mut manifest = self.raw(branch, last, replay_data::FORMAT_VERSION);
             manifest.available = self.available.clone();
             manifest.completions_available = self.completions.clone();
             manifest.operations.clear();

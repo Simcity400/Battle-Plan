@@ -1,11 +1,9 @@
 use super::*;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{
-        CountryAppearanceRow, CountryLinkRow, CountryRow, Recorded, ReservedCountryNamingRow,
-        TableId, TableRows,
-    },
+use replay_data::{
+    rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow, rows::Recorded,
+    rows::ReservedCountryNamingRow, rows::TableId, rows::TableRows,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 
 fn frame(owner: u32) -> DecodedFrame {
     let mut tables = std::array::from_fn(|_| TableView::Unavailable {

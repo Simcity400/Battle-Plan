@@ -1,5 +1,5 @@
 use super::*;
-use replay::rows::{TableRows, WeatherProvinceRow};
+use replay_data::{rows::TableRows, rows::WeatherProvinceRow};
 use std::cell::Cell;
 use std::time::Duration;
 

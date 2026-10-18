@@ -1,4 +1,4 @@
-use engine::{Memory, ccountry, cfleet, cship, ctask_force, read, walk::Outcome};
+use engine_native::{Memory, ccountry, cfleet, cship, ctask_force, read, walk::Outcome};
 
 // The shared scale fixture also serves benchmarks; this test uses its fleet subset.
 #[allow(dead_code)]
@@ -6,7 +6,7 @@ use engine::{Memory, ccountry, cfleet, cship, ctask_force, read, walk::Outcome};
 mod fixture;
 
 struct NamedMemory<'a> {
-    source: engine::memory::SliceMemory<'a>,
+    source: engine_native::memory::SliceMemory<'a>,
     invalid: usize,
     refused: Option<usize>,
 }
@@ -34,7 +34,7 @@ fn named_fleet_walk_keeps_all_countries_empty_bytes_and_independent_refusals() {
         ships: 0,
     });
     let pointers = {
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: world.base,
             bytes: &world.bytes,
         };
@@ -62,7 +62,7 @@ fn named_fleet_walk_keeps_all_countries_empty_bytes_and_independent_refusals() {
         };
         bytes[cfleet::LEADER..cfleet::LEADER + 8].copy_from_slice(&leader.to_le_bytes());
     }
-    let invalid = world.base + engine::creference_registry::INVALID_REFERENCE_RVA;
+    let invalid = world.base + engine_native::creference_registry::INVALID_REFERENCE_RVA;
     let mut rows = vec![cfleet::Row::default(); COUNT];
     let mut tasks = vec![ctask_force::Row::default(); COUNT];
     let mut ships: [cship::Row; 0] = [];
@@ -85,7 +85,7 @@ fn named_fleet_walk_keeps_all_countries_empty_bytes_and_independent_refusals() {
         )
     };
     let memory = NamedMemory {
-        source: engine::memory::SliceMemory {
+        source: engine_native::memory::SliceMemory {
             base: world.base,
             bytes: &world.bytes,
         },

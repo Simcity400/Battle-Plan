@@ -12,17 +12,11 @@ use crate::{
 };
 pub(crate) use collector_extended_support::outcomes::RaidReadCounts;
 use collector_extended_support::outcomes::{MISSING, elapsed, failed_capture, truncated_source};
-use engine::{
-    Memory,
-    allocation::{copy_vec, filled, owned_vec},
-    cair_wing,
-    cequipment_variant_pool::DivisionSource,
-    walk::Outcome,
-};
-use replay::{
-    frame::{TABLE_COUNT, TableInput},
-    rows::TableId,
-};
+use engine_allocation::{copy_vec, filled, owned_vec};
+use engine_native::{Memory, cair_wing, cequipment_variant_pool::DivisionSource, walk::Outcome};
+use replay_data::rows::TABLE_COUNT;
+use replay_data::rows::TableId;
+use replay_frame::frame::TableInput;
 use std::mem::size_of;
 use std::sync::Arc;
 
@@ -263,8 +257,8 @@ pub(crate) struct HelperConversion<'a, 'cache> {
     pub(crate) characters: Option<&'a mut characters::CharacterConversion<'cache>>,
     pub(crate) intel: Option<&'a mut intel::IntelConversion<'cache>>,
     pub(crate) variables_baseline: Option<(
-        replay::frame::BaselineToken,
-        &'a [replay::rows::ScriptVariablesRow],
+        replay_frame::frame::BaselineToken,
+        &'a [replay_data::rows::ScriptVariablesRow],
     )>,
     pub(crate) variables_scratch: &'a mut intel::ScriptVariableComparison,
 }
@@ -276,8 +270,8 @@ pub(crate) struct LentCaches<'a, 'cache> {
     pub(crate) characters: Option<&'a mut characters::CharacterConversion<'cache>>,
     pub(crate) intel: Option<&'a mut intel::IntelConversion<'cache>>,
     pub(crate) variables_baseline: Option<(
-        replay::frame::BaselineToken,
-        &'a [replay::rows::ScriptVariablesRow],
+        replay_frame::frame::BaselineToken,
+        &'a [replay_data::rows::ScriptVariablesRow],
     )>,
     pub(crate) variables_scratch: Option<&'a mut intel::ScriptVariableComparison>,
 }
@@ -465,7 +459,7 @@ impl Captured {
                 ])
             }
             pub fn grow(&mut self, capacity: &mut Capacities) {
-                engine::allocation::advisory(|| self.grow_hints(capacity));
+                engine_allocation::advisory(|| self.grow_hints(capacity));
             }
             fn grow_hints(&mut self, capacity: &mut Capacities) {
                 let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
@@ -506,7 +500,7 @@ impl Captured {
                 if crate::allocation::failed() { return; }
                 if let Some(reason) = self.ordinary_failure {
                     for &id in ORDINARY_TABLES.iter().flat_map(|tables| tables.iter()) {
-                        destination[id.index()] = TableInput::Sampled(replay::frame::TableView::Unavailable { reason: reason.into() });
+                        destination[id.index()] = TableInput::Sampled(replay_frame::frame::TableView::Unavailable { reason: reason.into() });
                     }
                 }
             }
@@ -868,7 +862,8 @@ impl Capacities {
                 failure.get_or_insert(reason);
             }
         }
-        if let Some(regions) = engine::cgame_state::read_strategic_region_count(memory, base) {
+        if let Some(regions) = engine_native::cgame_state::read_strategic_region_count(memory, base)
+        {
             self.raise_for_regions(regions as usize);
         }
         failure.map_or(Ok(()), Err)
@@ -1068,7 +1063,7 @@ impl Captured {
 
     pub(crate) fn country_intel_sample(
         &self,
-    ) -> Option<Result<replay::rows::ReservedCountryIntelSample, &'static str>> {
+    ) -> Option<Result<replay_data::rows::ReservedCountryIntelSample, &'static str>> {
         self.intel.country_intel_sample()
     }
 
@@ -1286,8 +1281,8 @@ impl Captured {
         memory: &impl Memory,
         base: usize,
         game_state: usize,
-        provinces: (&[engine::cprovince::Row], Outcome),
-        countries: (&mut [engine::ccountry::Row], &mut Outcome),
+        provinces: (&[engine_native::cprovince::Row], Outcome),
+        countries: (&mut [engine_native::ccountry::Row], &mut Outcome),
     ) -> [u64; 2] {
         let flags = self.state_flags.rows();
         if flags
@@ -1343,7 +1338,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_presentation_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -1435,7 +1430,7 @@ impl Captured {
     /// Take before the family itself; restore after the family is restored.
     pub(crate) fn take_research_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -1498,7 +1493,7 @@ impl Captured {
         let outcomes = self.governance.outcomes();
         if governance::RESEARCH.iter().any(|&index| {
             !matches!(outcomes[index], Outcome::Rows { .. })
-                && !matches!(outcomes[index], Outcome::Unavailable { reason } if reason == replay::cadence::SKIPPED_REASON)
+                && !matches!(outcomes[index], Outcome::Unavailable { reason } if reason == replay_data::cadence::SKIPPED_REASON)
         }) {
             self.governance
                 .research_selection()
@@ -1553,7 +1548,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_governance_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -1599,10 +1594,10 @@ impl Captured {
             hour,
             force_full,
         };
-        if !replay::cadence::should_walk(TableId::VariantDefinitions, hour, force_full) {
+        if !replay_data::cadence::should_walk(TableId::VariantDefinitions, hour, force_full) {
             self.registry.mark_skipped();
             let mut variants = self.production.take_variants();
-            variants.fail(replay::cadence::SKIPPED_REASON, hour, force_full);
+            variants.fail(replay_data::cadence::SKIPPED_REASON, hour, force_full);
             self.production.restore_variants(variants);
             self.variants_ticks = Some([0; production::N]);
             return None;
@@ -1667,7 +1662,7 @@ impl Captured {
         let unread = |family: &[usize]| {
             family.iter().any(|&index| {
                 !matches!(outcomes[index], Outcome::Rows { .. })
-                    && !matches!(outcomes[index], Outcome::Unavailable { reason } if reason == replay::cadence::SKIPPED_REASON)
+                    && !matches!(outcomes[index], Outcome::Unavailable { reason } if reason == replay_data::cadence::SKIPPED_REASON)
             })
         };
         if unread(&governance::TECHNOLOGIES) {
@@ -1702,7 +1697,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_supply_trains_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -1994,7 +1989,7 @@ impl Captured {
     /// Loan one part of the AirCountryRelations copies to its job.
     pub(crate) fn take_air_relations_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         part: usize,
@@ -2028,7 +2023,7 @@ impl Captured {
     /// is `air_root`. It borrows nothing an Ordinary part holds.
     pub(crate) fn take_air_missions_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         mission_store: Option<Box<air::MissionStore>>,
@@ -2072,7 +2067,7 @@ impl Captured {
     /// Loan one part of the naval-patrol history copies to its job.
     pub(crate) fn take_air_histories_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         part: usize,
@@ -2130,7 +2125,7 @@ impl Captured {
     /// them on to the ChildFronts job.
     pub(crate) fn take_orders_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         orders: &mut Orders,
         base: usize,
         game_state: usize,
@@ -2171,7 +2166,7 @@ impl Captured {
     /// model details.
     pub(crate) fn take_ship_models_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
         state: usize,
         census: ShipCensus,
@@ -2214,7 +2209,7 @@ impl Captured {
     /// failed census lends nothing. Allocation-free.
     pub(crate) fn take_ship_model_parts(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
     ) -> [Option<crate::acquisition_jobs::ShipModelDetailsRequest>; ship_models::MAX_PARTS] {
         let mut requests = [const { None }; ship_models::MAX_PARTS];
@@ -2293,7 +2288,7 @@ impl Captured {
     /// ready. The callback restores this family before applying those reports.
     pub(crate) fn take_intel_residual_request(
         &mut self,
-        countries: &Arc<engine::country_memory::Cache>,
+        countries: &Arc<engine_native::country_memory::Cache>,
         context: intel::CaptureContext,
         flags: Option<Box<intel::FlagStore>>,
         variables: Option<Box<intel::VariableStore>>,
@@ -2620,7 +2615,7 @@ impl Captured {
         let reason = if self.production.division_details_active() {
             reason
         } else {
-            replay::cadence::SKIPPED_REASON
+            replay_data::cadence::SKIPPED_REASON
         };
         let outcome = Outcome::Unavailable { reason };
         self.production.division_equipment.outcome = outcome;
@@ -2648,9 +2643,11 @@ impl Captured {
     /// truncated production frame. Capacities are untouched.
     #[cfg(test)]
     pub(crate) fn test_resize_division_buffers(&mut self, lens: [usize; 6]) {
-        use engine::{army_upgrade_request_row, carmy_upgrades_requests, cupgrade_delivery};
+        use engine_deployment::{
+            army_upgrade_request_row, carmy_upgrades_requests, cupgrade_delivery,
+        };
         self.production.division_equipment.rows =
-            vec![engine::cequipment_variant_pool::DivisionRow::default(); lens[1]];
+            vec![engine_native::cequipment_variant_pool::DivisionRow::default(); lens[1]];
         self.production.groups.rows = vec![carmy_upgrades_requests::Row::default(); lens[2]];
         self.production.requests.rows = vec![army_upgrade_request_row::Row::default(); lens[3]];
         self.production.deliveries.rows = vec![cupgrade_delivery::Row::default(); lens[4]];
@@ -2692,7 +2689,7 @@ impl Captured {
     #[cfg(test)]
     pub(crate) fn test_division_presentation_tables(
         &self,
-    ) -> [replay::frame::TableView; division_presentation::N] {
+    ) -> [replay_frame::frame::TableView; division_presentation::N] {
         self.division_presentation.tables()
     }
     pub(crate) fn install_division_counts(&mut self, census: &crate::division_census::Census) {
@@ -2736,7 +2733,8 @@ impl Captured {
         // Synthetic direct-walk fixtures supply the same typed request that a
         // worker owns in production. Production assembly never acquires it.
         if self.ordinary_ticks.is_none() && self.ordinary_failure.is_none() {
-            let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+            let countries =
+                Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
             self.capture_ordinary_inline(
                 &countries,
                 memory,
@@ -2761,7 +2759,8 @@ impl Captured {
                 unit_sources(&self.unit_inputs),
             ));
         }
-        let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+        let countries =
+            Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
         if self.intel_residual_report.is_none() {
             self.intel_residual_report = Some(self.intel.capture_residual(
                 memory,
@@ -3189,7 +3188,7 @@ impl Captured {
                     force_full,
                     self.unit_inputs.as_deref(),
                     Some(&self.divisions),
-                    Some(&mut engine::raid_air_scores::Held::default()),
+                    Some(&mut engine_raid_inputs::raid_air_scores::Held::default()),
                     None,
                 );
                 let cost = self.plans.capture_unit_transports(
@@ -3306,7 +3305,7 @@ impl<M: Memory> MapSources for Sources<'_, M> {
         self.captured.combat_progress.begin();
         self.attribute_overhead(TableId::LandCombatProgress, begin, 0)
     }
-    fn land(&mut self, source: engine::cland_combat::Source) -> u64 {
+    fn land(&mut self, source: engine_native::cland_combat::Source) -> u64 {
         let begin = qpc();
         self.captured
             .combat_progress
@@ -3407,14 +3406,14 @@ impl<M: Memory> MapSources for Sources<'_, M> {
 fn unpublished(outcomes: &[Outcome]) -> bool {
     outcomes.iter().any(|outcome| {
         !matches!(outcome, Outcome::Rows { .. })
-            && !matches!(outcome, Outcome::Unavailable { reason } if *reason == replay::cadence::SKIPPED_REASON)
+            && !matches!(outcome, Outcome::Unavailable { reason } if *reason == replay_data::cadence::SKIPPED_REASON)
     })
 }
 
 #[cfg(test)]
 fn unit_sources(
     inputs: &Option<Arc<UnitInputs>>,
-) -> production::Sources<'_, engine::carmy::DivisionSeed> {
+) -> production::Sources<'_, engine_native::carmy::DivisionSeed> {
     let inputs = inputs.as_deref();
     production::Sources {
         rows: inputs.map_or(&[], UnitInputs::seeds),
@@ -3504,7 +3503,7 @@ pub(crate) fn capture_live_shape(captured: &mut Captured) {
     let c = &mut captured.naval_details;
     let mut capacity = naval_details::Capacities::default();
     capacity.raise_for_live_details(
-        engine::naval_combat_demand::demand(&memory, IMAGE, STATE).unwrap(),
+        engine_naval_history::naval_combat_demand::demand(&memory, IMAGE, STATE).unwrap(),
     );
     c.try_grow_hint(&capacity).unwrap();
     c.capture(&memory, IMAGE, STATE);
@@ -3512,8 +3511,8 @@ pub(crate) fn capture_live_shape(captured: &mut Captured) {
 
 #[cfg(test)]
 pub(crate) fn output_allocation_failure_exercise(arm: impl FnOnce(), disarm: impl FnOnce()) {
-    use replay::frame::TableView;
-    use replay::rows::{BuildingConstructionRow, ProductionLineRow, TableRows};
+    use replay_data::{rows::BuildingConstructionRow, rows::ProductionLineRow, rows::TableRows};
+    use replay_frame::frame::TableView;
     let capacity = output_continuity::Capacities { entries: 4 };
     let mut construction = construction_ic::Captured::with_capacities(&capacity);
     let mut production = line_output::Captured::with_capacities(&capacity);

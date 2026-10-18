@@ -26,10 +26,9 @@ use crate::{
     party_leader_changes::{Changes, Counts},
     sampled_verify::Check,
 };
-use engine::{
-    allocation,
-    cpolitical_party::LeaderRow,
-    cpolitical_status::{LeaderCarry, Parties},
+use engine_allocation as allocation;
+use engine_native::{
+    cpolitical_party::LeaderRow, cpolitical_status::LeaderCarry, cpolitical_status::Parties,
 };
 use std::ops::Range;
 

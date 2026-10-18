@@ -30,15 +30,18 @@
 use crate::{
     clock::qpc, slicing::SliceSelection, table_capture::CaptureRows, table_conversion::table,
 };
-use engine::{
-    Memory, allocation, clend_lease_exchange as lend_lease,
-    ncombat_log_cequipment_loss::month_bucket, ncombat_log_cmanager as native, walk::Outcome,
+use engine_allocation as allocation;
+use engine_land_inputs::{
+    ncombat_log_cequipment_loss::month_bucket, ncombat_log_cmanager as native,
 };
-use replay::{
-    cadence::{SKIPPED_REASON, STAGGER_PERIOD, should_walk},
-    frame::TableView,
-    rows::{CombatLogEquipmentRow, CombatLogStateRow, LendLeaseEquipmentRow, TableId, tables},
+use engine_native::{Memory, walk::Outcome};
+use engine_resources::clend_lease_exchange as lend_lease;
+use replay_data::{
+    cadence::SKIPPED_REASON, cadence::STAGGER_PERIOD, cadence::should_walk,
+    rows::CombatLogEquipmentRow, rows::CombatLogStateRow, rows::LendLeaseEquipmentRow,
+    rows::TableId, rows::tables,
 };
+use replay_frame::frame::TableView;
 use std::sync::{
     Mutex, PoisonError,
     atomic::{AtomicBool, Ordering},
@@ -478,7 +481,9 @@ impl Captured {
                 reason: "combat log final row demand overflow",
             };
         };
-        if let Err(reason) = engine::walk::Buffer::Growing(&mut self.rows.rows).ensure(required) {
+        if let Err(reason) =
+            engine_native::walk::Buffer::Growing(&mut self.rows.rows).ensure(required)
+        {
             return Outcome::Unavailable { reason };
         }
         // Reserve all original visited owners before publishing any new read.
@@ -557,12 +562,12 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
 
     fn game_state(viewing: i32) -> Vec<u8> {
         let mut bytes = vec![0; 0x1000];
-        bytes[engine::cgame_state::LOCAL_PLAYER_COUNTRY
-            ..engine::cgame_state::LOCAL_PLAYER_COUNTRY + 4]
+        bytes[engine_native::cgame_state::LOCAL_PLAYER_COUNTRY
+            ..engine_native::cgame_state::LOCAL_PLAYER_COUNTRY + 4]
             .copy_from_slice(&viewing.to_le_bytes());
         bytes
     }
@@ -585,7 +590,7 @@ mod tests {
         crate::combat_log_prune::observe_for_test(true);
         drain_prune_log_for_test();
         let bytes = game_state(4);
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
@@ -624,7 +629,7 @@ mod tests {
         crate::combat_log_prune::observe_for_test(false);
         drain_prune_log_for_test();
         let bytes = game_state(-1);
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
@@ -640,7 +645,7 @@ mod tests {
                 prune_observed: 0
             }]
         );
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0x10_0000,
             bytes: &bytes,
         };
@@ -657,7 +662,7 @@ mod tests {
     /// complete read with no rows of its own.
     fn logged_state() -> Vec<u8> {
         let mut bytes = game_state(4);
-        let header = engine::cgame_state::COMBAT_LOGS;
+        let header = engine_native::cgame_state::COMBAT_LOGS;
         bytes[header..header + 8].copy_from_slice(&0x1f00_u64.to_le_bytes());
         bytes[header + 8..header + 12].copy_from_slice(&1_u32.to_le_bytes());
         bytes[header + 12..header + 16].copy_from_slice(&1_u32.to_le_bytes());
@@ -666,11 +671,11 @@ mod tests {
 
     #[test]
     fn visited_capacity_follows_selected_country_pushes() {
-        use engine::ncombat_log_corders_group_logs as groups;
+        use engine_land_inputs::ncombat_log_corders_group_logs as groups;
 
         let mut bytes = logged_state();
         bytes.resize(0x6000, 0);
-        let header = engine::cgame_state::COMBAT_LOGS;
+        let header = engine_native::cgame_state::COMBAT_LOGS;
         bytes[header..header + 8].copy_from_slice(&0x2000_u64.to_le_bytes());
         bytes[header + 8..header + 12].copy_from_slice(&41_u32.to_le_bytes());
         bytes[header + 12..header + 16].copy_from_slice(&41_u32.to_le_bytes());
@@ -691,10 +696,10 @@ mod tests {
         }
         bytes[0x3000..0x3008].copy_from_slice(&0x5000_u64.to_le_bytes());
         bytes[0x4000..0x4008].copy_from_slice(&(groups::VTABLE_RVA as u64).to_le_bytes());
-        let reference = (7_u64 << 32) | u64::from(engine::corders_group::REFERENCE_TYPE);
+        let reference = (7_u64 << 32) | u64::from(engine_native::corders_group::REFERENCE_TYPE);
         bytes[0x4000 + groups::GROUP..0x4000 + groups::GROUP + 8]
             .copy_from_slice(&reference.to_le_bytes());
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
@@ -746,7 +751,7 @@ mod tests {
         hour: i32,
         force_full: bool,
     ) -> Vec<native::Row> {
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0x1000,
             bytes,
         };
@@ -770,7 +775,7 @@ mod tests {
         let [mut captured, ..] = buffers();
         for (index, viewing) in [4_i32, 0, -1].into_iter().enumerate() {
             let mut bytes = logged_state();
-            let offset = engine::cgame_state::LOCAL_PLAYER_COUNTRY;
+            let offset = engine_native::cgame_state::LOCAL_PLAYER_COUNTRY;
             bytes[offset..offset + 4].copy_from_slice(&viewing.to_le_bytes());
             let signal = SIGNAL + index as i64;
             crate::combat_log_prune::append_for_test(signal, &[row(29, 7), row(30, 8)]);
@@ -884,7 +889,7 @@ mod tests {
 
     #[test]
     fn original_5000_sparse_owners_grow_read_history_without_a_country_id_ceiling() {
-        use engine::ncombat_log_corders_group_logs as groups;
+        use engine_land_inputs::ncombat_log_corders_group_logs as groups;
         let mut captured = Captured::with_capacities(&Capacities::default());
         for (hour, count) in [(day(1941, 10), 1_500), (day(1941, 11), 5_000)] {
             let pointers = 0x2000;
@@ -895,7 +900,7 @@ mod tests {
             let mut put = |address: usize, value: &[u8]| {
                 bytes[address - 0x1000..address - 0x1000 + value.len()].copy_from_slice(value);
             };
-            let header = 0x1000 + engine::cgame_state::COMBAT_LOGS;
+            let header = 0x1000 + engine_native::cgame_state::COMBAT_LOGS;
             put(header, &(pointers as u64).to_le_bytes());
             put(header + 8, &((count + 1) as u32).to_le_bytes());
             put(header + 12, &((count + 1) as u32).to_le_bytes());
@@ -916,9 +921,9 @@ mod tests {
             }
             put(group_pointer, &(group as u64).to_le_bytes());
             put(group, &(groups::VTABLE_RVA as u64).to_le_bytes());
-            let reference = (7_u64 << 32) | u64::from(engine::corders_group::REFERENCE_TYPE);
+            let reference = (7_u64 << 32) | u64::from(engine_native::corders_group::REFERENCE_TYPE);
             put(group + groups::GROUP, &reference.to_le_bytes());
-            let memory = engine::memory::SliceMemory {
+            let memory = engine_native::memory::SliceMemory {
                 base: 0x1000,
                 bytes: &bytes,
             };

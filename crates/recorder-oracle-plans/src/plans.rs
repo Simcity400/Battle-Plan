@@ -38,7 +38,7 @@ fn orders(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
     }
     let mut rows = BTreeMap::new();
     for row in frame.complete::<tables::ArmyOrderPlans>()? {
-        if row.owner_group as u32 != engine::corders_group::REFERENCE_TYPE {
+        if row.owner_group as u32 != engine_native::corders_group::REFERENCE_TYPE {
             return Err(invalid(
                 "ArmyOrderPlans has invalid owner-group reference type",
             ));
@@ -122,8 +122,8 @@ fn orders(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
                     }
                     // Demand comes from the save, so a missing/shrunken capture
                     // count cannot suppress another independently saved field.
-                    let reached =
-                        stored_count > 0 && saved.order_type == engine::corder_instance::TYPE_LINE;
+                    let reached = stored_count > 0
+                        && saved.order_type == engine_native::corder_instance::TYPE_LINE;
                     let mut expected_prefix = (stored_count == 0).then_some(0);
                     if reached {
                         match saved_groups.get(&key.0) {
@@ -300,7 +300,7 @@ fn orders(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
 
 /// Saved truth/progress remain independent of later unsaved term refusals.
 fn execution(
-    row: &replay::rows::ArmyOrderPlanRow,
+    row: &replay_data::rows::ArmyOrderPlanRow,
     saved: &save::plans::Order,
     label: &str,
     report: &mut Report,
@@ -310,7 +310,8 @@ fn execution(
     };
     if !matches!(
         saved.order_type,
-        engine::corder_instance::TYPE_INVASION | engine::corder_instance::TYPE_PARADROP
+        engine_native::corder_instance::TYPE_INVASION
+            | engine_native::corder_instance::TYPE_PARADROP
     ) {
         if recorded.is_some() {
             report.difference(
@@ -350,7 +351,7 @@ fn execution(
             saved.route_is_ok,
         ),
     }
-    if saved.order_type != engine::corder_instance::TYPE_PARADROP {
+    if saved.order_type != engine_native::corder_instance::TYPE_PARADROP {
         if inputs.paradrop.is_some() {
             report.difference(
                 format!("{label}.execution.paradrop"),
@@ -402,7 +403,7 @@ fn group_plans(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Re
         let label = format!("OrdersGroupPlans {}", row.group);
         // The game tests stored length before the game writes the first-NUL
         // prefix. A leading NUL emits name=""; a zero-length string omits it.
-        let name = (!row.name.is_empty()).then(|| installed_content::parser::c_string(&row.name));
+        let name = (!row.name.is_empty()).then(|| installed_content_core::parser::c_string(&row.name));
         if name.is_some_and(|prefix| prefix.len() < row.name.len()) {
             report.limitation(
                 "native text serialization ends at the first NUL; captured trailing group-name bytes are not save-comparable",
@@ -529,7 +530,7 @@ fn invasions(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Resu
         .plans
         .orders
         .iter()
-        .filter(|(_, order)| order.order_type == engine::corder_instance::TYPE_INVASION)
+        .filter(|(_, order)| order.order_type == engine_native::corder_instance::TYPE_INVASION)
     {
         let label = format!("InvasionPreparations {}:{}", key.0, key.1);
         let Some(row) = rows.remove(key) else {
@@ -563,15 +564,15 @@ mod execution_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TABLE_COUNT},
-        rows::{
-            ArmyOrderPlanRow, ArmyOrderRow, FrontRow, InvasionPreparationRow, OrdersGroupPlanRow,
-        },
+    use replay_data::rows::TABLE_COUNT;
+    use replay_data::{
+        rows::ArmyOrderPlanRow, rows::ArmyOrderRow, rows::FrontRow, rows::InvasionPreparationRow,
+        rows::OrdersGroupPlanRow,
     };
+    use replay_frame::frame::Metrics;
     #[test]
     fn invasion_allocation_is_compared_exactly_and_capture_absence_is_not_zero() {
-        use replay::rows::Recorded;
+        use replay_data::rows::Recorded;
         let (_, mut saved, _, _) = super::super::fixtures::fixture();
         let group = (8_u64 << 32) | 53;
         saved.plans.orders.clear();
@@ -600,7 +601,7 @@ mod tests {
                         owner_group: group,
                         instance: 1,
                         invasion_transports: Recorded::Value(actual),
-                        execution: Recorded::Value(Some(replay::rows::OrderExecutionInputs {
+                        execution: Recorded::Value(Some(replay_data::rows::OrderExecutionInputs {
                             route_is_ok: Some(0),
                             paradrop: None,
                         })),
@@ -615,7 +616,7 @@ mod tests {
                     ..Default::default()
                 };
                 row.invasion_transports = Recorded::NotRecorded;
-                row.execution = Recorded::Value(Some(replay::rows::OrderExecutionInputs {
+                row.execution = Recorded::Value(Some(replay_data::rows::OrderExecutionInputs {
                     route_is_ok: Some(0),
                     paradrop: None,
                 }));
@@ -634,7 +635,7 @@ mod tests {
     }
     #[test]
     fn historical_invasion_suffix_keeps_its_prefix_and_later_orders_compared() {
-        use replay::rows::Recorded;
+        use replay_data::rows::Recorded;
         let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
         let group = (8_u64 << 32) | 53;
         saved.plans.orders.clear();
@@ -757,7 +758,7 @@ mod tests {
                 name_first: b"o_x".to_vec(),
                 name_second: b"o_y".to_vec(),
                 // This saved-prefix fixture predates the child-front packet.
-                child_fronts: replay::rows::Recorded::NotRecorded,
+                child_fronts: replay_data::rows::Recorded::NotRecorded,
                 ..Default::default()
             }]));
         *frame.tables[TableId::Fronts.index()] =
@@ -825,7 +826,7 @@ mod tests {
 
     #[test]
     fn child_front_oracle_compares_ordered_spans_and_refuses_reached_capture_gaps() {
-        use replay::rows::{OrderChildFront, OrderChildFrontInputs, Recorded};
+        use replay_data::{rows::OrderChildFront, rows::OrderChildFrontInputs, rows::Recorded};
         let (_, mut saved, _, _) = super::super::fixtures::fixture();
         let group = (8_u64 << 32) | 53;
         let child = (9_u64 << 32) | 53;
@@ -835,7 +836,7 @@ mod tests {
             (group, 1),
             save::plans::Order {
                 front: Some(front),
-                order_type: engine::corder_instance::TYPE_LINE,
+                order_type: engine_native::corder_instance::TYPE_LINE,
                 has_child: Some(false),
                 child_fronts: vec![
                     save::plans::ChildFront {
@@ -1121,7 +1122,7 @@ mod tests {
                 owner_group: group,
                 instance: 1,
                 country: Vec::new(),
-                order_type: engine::corder_instance::TYPE_LINE,
+                order_type: engine_native::corder_instance::TYPE_LINE,
                 active: 0,
                 paradrop_target: 0,
                 path: Vec::new(),

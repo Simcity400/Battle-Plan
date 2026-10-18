@@ -1,16 +1,17 @@
 //! Fresh counter queries over hourly simulation inputs, never the client's
 //! hover/path cache. Route admission is the shared native `unit_path` search.
 //! A division's searched route is timed as its arrival estimate
-//! ([`replay::eta_derive::estimate_route`]); a railway gun's duration uses its
+//! ([`replay_derive::eta_derive::estimate_route`]); a railway gun's duration uses its
 //! own fresh speed operands ([`super::railway`]).
 
 use super::MovementContent;
-use engine::crailway_manager::fresh_inputs;
-use installed_content::unit_path::{CounterRequest, Fact};
-use replay::{
-    frame::DecodedFrame,
-    rows::{DivisionMovementRow, DivisionRow, ProvinceRow, RailCooldownRow, TableSchema, tables},
+use engine_railways::crailway_manager::fresh_inputs;
+use installed_content_unit_path::{unit_path::CounterRequest, unit_path::Fact};
+use replay_data::{
+    rows::DivisionMovementRow, rows::DivisionRow, rows::ProvinceRow, rows::RailCooldownRow,
+    rows::TableSchema, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 use viewer_foundation::map::movement_reads::Moves;
@@ -24,7 +25,7 @@ pub(super) struct Inputs<'a> {
     pub(super) hour: i32,
     pub(super) content: &'a MovementContent,
     naval: OnceLock<super::naval::NavalInputs<'a>>,
-    railway: OnceLock<Fact<BTreeMap<u64, &'a replay::rows::RailwayGunCounterInputRow>>>,
+    railway: OnceLock<Fact<BTreeMap<u64, &'a replay_data::rows::RailwayGunCounterInputRow>>>,
     movement: OnceLock<Fact<BTreeMap<u64, &'a DivisionMovementRow>>>,
     divisions: Fact<BTreeMap<u64, &'a DivisionRow>>,
     provinces: Fact<BTreeMap<u32, &'a ProvinceRow>>,
@@ -142,7 +143,10 @@ impl<'a> Inputs<'a> {
             .get_or_init(|| super::naval::NavalInputs::new(self.frame))
     }
 
-    pub(super) fn railway(&self, handle: u64) -> Fact<&'a replay::rows::RailwayGunCounterInputRow> {
+    pub(super) fn railway(
+        &self,
+        handle: u64,
+    ) -> Fact<&'a replay_data::rows::RailwayGunCounterInputRow> {
         available(self.railway.get_or_init(|| {
             index::<tables::RailwayGunCounterInputs, _>(self.frame, |row| row.gun)
         }))?
@@ -269,7 +273,7 @@ impl<'a> Inputs<'a> {
                 self.content,
                 defines,
                 |terms| {
-                    replay::eta_derive::estimate_route(
+                    replay_derive::eta_derive::estimate_route(
                         movement,
                         division.province,
                         &route,
@@ -288,14 +292,15 @@ impl<'a> Inputs<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content::movement::{MovementMap, Neighbour, ProvinceTerrain, RailMovementDefines};
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{
-            CountryLinkRow, CountryRow, RailEdgeRow, RailwayBuildingHealth, RailwayBuildingState,
-            Recorded, TableId, TableRows,
-        },
+    use installed_content_core::{
+        movement::MovementMap, movement::Neighbour, movement::ProvinceTerrain,
+        movement::RailMovementDefines,
     };
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::RailEdgeRow, rows::RailwayBuildingHealth,
+        rows::RailwayBuildingState, rows::Recorded, rows::TableId, rows::TableRows,
+    };
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     fn frame() -> DecodedFrame {
         DecodedFrame {
@@ -333,7 +338,7 @@ mod tests {
                 ),
                 (2, ProvinceTerrain { flags: 1, index: 2 }, vec![]),
             ]),
-            defines: replay::eta_derive::Defines {
+            defines: replay_derive::eta_derive::Defines {
                 embark_distance: 400_000,
                 transport_scale: 100_000,
                 outer_scale: 100_000,
@@ -353,7 +358,7 @@ mod tests {
     /// base speed, with no fresh speed profile.
     #[test]
     fn idle_explicit_target_times_the_searched_route_at_the_edge_speed() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use {dashboard_text::triggers::World, viewer_foundation::map::movement_reads::Cells};
         let (assets, mut frame) = (
@@ -629,7 +634,7 @@ mod tests {
 
     #[test]
     fn row_indexes_refuse_duplicate_aliases_slots_and_directed_edges() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let content = content(0);
         let mut frame = country_frame();

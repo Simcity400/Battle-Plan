@@ -1,8 +1,6 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{ProductionLineOutputRow, TableRows},
-};
+use replay_data::{rows::ProductionLineOutputRow, rows::TableRows};
+use replay_frame::frame::TableView;
 
 /// A publication of `lines` in the census and of output rows `(line, ended)`.
 fn frame(hour: Hour, read: bool, lines: &[u64], output: &[(u64, bool)]) -> DecodedFrame {

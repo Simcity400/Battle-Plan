@@ -1,7 +1,7 @@
 use super::*;
 
 pub fn occupation_settings(
-    rows: &[replay::rows::OccupationSettingsRow],
+    rows: &[replay_data::rows::OccupationSettingsRow],
     saved: &saved::Pack,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
@@ -56,7 +56,7 @@ pub fn occupation_settings(
             u8::from(saved.default_law.is_some()),
         );
         match &row.group_laws {
-            replay::rows::Recorded::Value(Some(groups)) => {
+            replay_data::rows::Recorded::Value(Some(groups)) => {
                 let mut recorded = BTreeMap::new();
                 for group in groups {
                     let occupied = required_country_tag(group.occupied, links)?;
@@ -83,12 +83,12 @@ pub fn occupation_settings(
                         .collect::<BTreeMap<_, _>>(),
                 );
             }
-            replay::rows::Recorded::Value(None) => report.difference(
+            replay_data::rows::Recorded::Value(None) => report.difference(
                 format!("{subject}.group_laws"),
                 "capture failed",
                 "saved inventory present",
             ),
-            replay::rows::Recorded::NotRecorded => report.limitation(
+            replay_data::rows::Recorded::NotRecorded => report.limitation(
                 "older occupation settings lack the occupied-country law inventory",
                 format!("{subject}.group_laws"),
             ),
@@ -120,7 +120,7 @@ pub fn occupation_settings(
 }
 
 pub fn occupation_laws(
-    rows: &[replay::rows::StateOccupationLawRow],
+    rows: &[replay_data::rows::StateOccupationLawRow],
     saved: &saved::Pack,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
@@ -163,7 +163,7 @@ pub fn occupation_laws(
 }
 
 pub fn garrisons(
-    rows: &[replay::rows::StateGarrisonRow],
+    rows: &[replay_data::rows::StateGarrisonRow],
     saved: &saved::Pack,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
@@ -232,7 +232,7 @@ pub fn garrisons(
 }
 
 pub fn assigned_manpower(
-    rows: &[replay::rows::StateAssignedManpowerRow],
+    rows: &[replay_data::rows::StateAssignedManpowerRow],
     saved: &saved::Pack,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
@@ -309,14 +309,14 @@ pub fn garrison_equipment(
             continue;
         };
         let inputs = match &row.equipment {
-            replay::rows::Recorded::NotRecorded => {
+            replay_data::rows::Recorded::NotRecorded => {
                 report.limitation(
                     "older garrison rows lack the equipment strength operands",
                     subject,
                 );
                 continue;
             }
-            replay::rows::Recorded::Value(inputs) => inputs,
+            replay_data::rows::Recorded::Value(inputs) => inputs,
         };
         if let Some(reason) = &inputs.failure {
             report.difference(
@@ -366,7 +366,7 @@ pub fn garrison_equipment(
 }
 
 pub fn reserve_manpower(
-    rows: &[replay::rows::CountryOccupationReserveManpowerRow],
+    rows: &[replay_data::rows::CountryOccupationReserveManpowerRow],
     saved: &saved::Pack,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
@@ -405,7 +405,7 @@ pub fn reserve_manpower(
 }
 
 pub fn resistance(
-    rows: &[replay::rows::StateResistanceRow],
+    rows: &[replay_data::rows::StateResistanceRow],
     saved: &saved::Pack,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
@@ -473,7 +473,7 @@ pub fn resistance(
 }
 
 pub fn collaboration(
-    rows: &[replay::rows::CountryCollaborationRow],
+    rows: &[replay_data::rows::CountryCollaborationRow],
     saved: &saved::Pack,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,

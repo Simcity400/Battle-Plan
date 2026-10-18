@@ -13,7 +13,7 @@
 //!
 //! The complete u64 identity, branch and observed episode keep reused handles
 //! separate. The combat stores its province, whose u32 ID is recorded.
-//! LandCombats/LandCombatSides are hourly (replay::cadence); slot_read dates
+//! LandCombats/LandCombatSides are hourly (replay_data::cadence); slot_read dates
 //! successful reads. LandCombatProgress supplies hourly loss counters and
 //! LandCombatResults supplies post-flush losses and the finalizer verdict.
 //! The finalizer uses side bit 1 and a signed qword result. Disappearance alone
@@ -40,11 +40,9 @@ use dashboard_base::{
 };
 use dashboard_core::{config::LoadContext, transport::json_len};
 use dashboard_text::metadata::{LinkTags, check_cancel, slot_read};
-use replay::{
-    container::Replay,
-    frame::DecodedFrame,
-    rows::{TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
@@ -55,7 +53,7 @@ use std::{
 use ts_rs::TS;
 #[cfg(any(test, feature = "test-support"))]
 use {
-    dashboard_text::metadata::validate_campaign, replay::frame::FrameDecoder,
+    dashboard_text::metadata::validate_campaign, replay_frame::frame::FrameDecoder,
     std::collections::VecDeque,
 };
 
@@ -504,7 +502,7 @@ pub struct Census {
     /// The recording's format, which dates its daily tables
     /// ([`dashboard_text::metadata::slot_read`]).
     #[serde(skip)]
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
     episodes: Vec<Episode>,
     #[serde(serialize_with = "dashboard_core::map_pairs::ordered_map")]
     open: HashMap<u64, usize>,
@@ -557,7 +555,11 @@ struct LiveSide {
     warnings: BTreeMap<String, usize>,
 }
 impl LiveSide {
-    fn new(side: Option<&replay::rows::LandCombatSideRow>, links: &LinkTags, labels: bool) -> Self {
+    fn new(
+        side: Option<&replay_data::rows::LandCombatSideRow>,
+        links: &LinkTags,
+        labels: bool,
+    ) -> Self {
         let mut countries = [Vec::new(), Vec::new()];
         let mut unknown = [!labels || side.is_none(); 2];
         let mut warnings = BTreeMap::<String, usize>::new();
@@ -1301,7 +1303,7 @@ fn scan(
     )?;
     Ok(census)
 }
-fn frame_available(format: replay::format::FormatVersion, frame: &DecodedFrame) -> bool {
+fn frame_available(format: replay_data::format::FormatVersion, frame: &DecodedFrame) -> bool {
     slot_read(format, &frame.metrics, TableId::LandCombats, frame.hour)
         && frame.complete::<tables::LandCombats>().is_ok()
         || slot_read(

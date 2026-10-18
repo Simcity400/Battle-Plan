@@ -20,18 +20,16 @@ use viewer_foundation::map::building_facts::{SlotAdmission, admit_slot, is_float
 use viewer_foundation::table_access::Refusals;
 use viewer_foundation::table_access::refuse;
 
-use installed_content::image::native::Decode;
-use installed_content::{
-    ResolvedLayers,
-    buildings::{BuildingType, Buildings, Slot},
-    map::MapData,
-    mesh,
-    positions::BuildingPosition,
+use installed_content_core::{
+    ResolvedLayers, buildings::BuildingType, buildings::Buildings, buildings::Slot, map::MapData,
+    mesh, positions::BuildingPosition,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{BuildingRow, FloatingHarborDeploymentRow, ProvinceSupplyRow, TableId, tables},
+use installed_content_image::native::Decode;
+use replay_data::{
+    rows::BuildingRow, rows::FloatingHarborDeploymentRow, rows::ProvinceSupplyRow, rows::TableId,
+    rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 use viewer_foundation::table_access::{TokenKeys, TokenNames};
 use {
@@ -108,7 +106,7 @@ pub struct Defines {
 }
 
 impl Defines {
-    pub fn load(defines: &installed_content::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
         let graphics = |name| defines.fixed5("NGraphics", name);
         let max_levels = defines.int32("NBuildings", "MAX_BUILDING_LEVELS")?;
         if max_levels <= 0 {
@@ -192,8 +190,8 @@ pub fn health_state(
 /// The hour is part of equality so a seek always reaches the scene.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreparedBuildings {
-    branch: replay::BranchId,
-    hour: replay::Hour,
+    branch: replay_data::BranchId,
+    hour: replay_data::Hour,
     shrink_distance: f32,
     popup_speed: f32,
     slots: Vec<PreparedSlot>,
@@ -806,8 +804,8 @@ impl MapBuildingAssets {
         layers: &ResolvedLayers,
         decode: Decode,
         map: &MapData,
-        defines: &installed_content::defines::Defines,
-        warnings: &mut Vec<installed_content::Diagnostic>,
+        defines: &installed_content_core::defines::Defines,
+        warnings: &mut Vec<installed_content_core::Diagnostic>,
     ) -> io::Result<Self> {
         let provinces = ProvinceMap {
             width: map.width,
@@ -815,12 +813,12 @@ impl MapBuildingAssets {
             ids: &map.province_ids,
         };
         // document.rs reports the state id conflicts once.
-        let (states, _) = installed_content::states::read(layers, defines, &map.definitions)?;
+        let (states, _) = installed_content_states::states::read(layers, defines, &map.definitions)?;
         let defines = Defines::load(defines)?;
-        let types = installed_content::buildings::read(layers)?;
+        let types = installed_content_core::buildings::read(layers)?;
         let roster = layers.descriptor_roster()?;
         if !roster.unreadable.is_empty() {
-            warnings.push((installed_content::DiagnosticKind::ParseFailure, format!(
+            warnings.push((installed_content_core::DiagnosticKind::ParseFailure, format!(
                 "These gfx descriptors do not parse, so the entities they declare are missing: {}.",
                 roster.unreadable.join(", ")
             )));
@@ -831,7 +829,7 @@ impl MapBuildingAssets {
         let mut outside = 0usize;
         // Each floating harbour with the province under it and its file row.
         let mut floating = Vec::new();
-        for (order, position) in installed_content::positions::read_buildings(layers)?
+        for (order, position) in installed_content_core::positions::read_buildings(layers)?
             .into_iter()
             .enumerate()
         {
@@ -886,13 +884,13 @@ impl MapBuildingAssets {
         // Rail and port anchors resolve through the same `Buildings::slot` and skip
         // the same slots; this warning names them for all three.
         if !ambiguous_slots.is_empty() {
-            warnings.push((installed_content::DiagnosticKind::Refused, format!(
+            warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
                 "Map-building slots are not drawn or used as rail and port anchors where content declares their type or bucket more than once differently (names equal but for letter case are one declaration), because the engine's choice is unverified: {}.",
                 ambiguous_slots.into_iter().collect::<Vec<_>>().join(", ")
             )));
         }
         if outside != 0 {
-            warnings.push((installed_content::DiagnosticKind::Warning, format!(
+            warnings.push((installed_content_core::DiagnosticKind::Warning, format!(
                 "{outside} authored map-building positions are ignored, as the engine ignores them: their province is not land or not in the declared state."
             )));
         }
@@ -941,7 +939,7 @@ impl MapBuildingAssets {
         warnings.extend(
             unselected
                 .into_iter()
-                .map(|message| (installed_content::DiagnosticKind::Warning, message)),
+                .map(|message| (installed_content_core::DiagnosticKind::Warning, message)),
         );
         let mut entities = BTreeMap::new();
         let mut damaged_entities = BTreeMap::new();
@@ -958,7 +956,7 @@ impl MapBuildingAssets {
             }
         }
         if !unresolved.is_empty() {
-            warnings.push((installed_content::DiagnosticKind::Refused, format!(
+            warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
                 "{} map-building entities named by common/buildings resolve to no mesh ({}); buildings of those types are not drawn.",
                 unresolved.len(),
                 unresolved.join(", ")
@@ -967,7 +965,7 @@ impl MapBuildingAssets {
         let floating_mesh = library.slot(FLOATING_HARBOR_ENTITY);
         if !floating.is_empty() && floating_mesh.is_none() {
             warnings.push((
-                installed_content::DiagnosticKind::Refused,
+                installed_content_core::DiagnosticKind::Refused,
                 format!(
                     "{FLOATING_HARBOR_ENTITY} resolves to no mesh; floating harbours are not drawn."
                 ),

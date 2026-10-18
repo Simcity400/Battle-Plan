@@ -22,7 +22,8 @@ use crate::{
     sampling,
     war_changes::{Changes, Counts},
 };
-use engine::{Memory, allocation, ccountry, country_memory::Cache, cwar_relation, walk::Outcome};
+use engine_allocation as allocation;
+use engine_native::{Memory, ccountry, country_memory::Cache, cwar_relation, walk::Outcome};
 use std::sync::Arc;
 
 pub(crate) struct Request {
@@ -35,7 +36,7 @@ pub(crate) struct Request {
 }
 
 /// The rotation key of the domain's daily comparison.
-const ROTATION_KEY: u64 = replay::rows::TableId::WarRelations as u64;
+const ROTATION_KEY: u64 = replay_data::rows::TableId::WarRelations as u64;
 
 /// What a quiet hour must find unchanged since the held walk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -219,7 +220,7 @@ impl Request {
     }
 
     fn run_with(&mut self, memory: &impl Memory, growing: bool) -> Report {
-        let _reads = crate::read_accounting::table(replay::rows::TableId::WarRelations);
+        let _reads = crate::read_accounting::table(replay_data::rows::TableId::WarRelations);
         let Self {
             countries,
             table,
@@ -281,7 +282,7 @@ mod tests {
             countries
                 .prepare(&memory, kit::BASE, kit::GAME_STATE)
                 .seed_status(),
-            engine::country_memory::SeedStatus::Ready
+            engine_native::country_memory::SeedStatus::Ready
         );
         let mut snapshot = cwar_relation::OwnedSnapshotScratch::try_with_capacity(5).unwrap();
         cwar_relation::walk_owned(
@@ -542,7 +543,7 @@ mod tests {
         assert!(hour(&bytes).1);
         // Relation replacement retires WAR2 and unlinks it from its owner.
         domain.write();
-        bytes[kit::WAR2 + engine::crelation::RETIRED] = 1;
+        bytes[kit::WAR2 + engine_native::crelation::RETIRED] = 1;
         let (outcome, quiet, rows) = hour(&bytes);
         assert!(!quiet);
         assert_eq!(outcome, Outcome::Rows { len: 1 });
@@ -603,7 +604,7 @@ mod tests {
         assert_eq!((counts.compared_wars, counts.mismatches), (2, 0));
         assert!(run(&bytes, other).1.quiet);
         // An unobserved write of a fixed field.
-        bytes[kit::WAR2 + engine::crelation::CANCEL] = 9;
+        bytes[kit::WAR2 + engine_native::crelation::CANCEL] = 9;
         let (outcome, counts, rows) = run(&bytes, Check::Every);
         assert_eq!(outcome, Outcome::Rows { len: 2 });
         assert_eq!(rows[1].cancel, 9);

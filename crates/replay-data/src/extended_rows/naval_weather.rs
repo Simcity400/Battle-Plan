@@ -363,7 +363,10 @@ pub struct ProvinceModifierEntry {
     pub key: u32,
     pub value: i64,
 }
-value_struct!(ProvinceModifierEntry { key: u32, value: i64 });
+value_struct!(ProvinceModifierEntry {
+    key: u32,
+    value: i64
+});
 
 /// A province weather record's modifier accumulator: every entry, keys ascending. The game
 /// rebuilds it from the province's mud, its temperature range's and ground snow's static

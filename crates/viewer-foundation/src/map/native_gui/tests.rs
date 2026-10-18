@@ -5,7 +5,7 @@ use crate::map::test_support::gpu;
 use crate::map::test_support::gui::*;
 #[cfg(test)]
 use crate::map::test_support::serial;
-use installed_content::gui::native::read;
+use installed_content_core::gui::native::read;
 use lifecycle::{
     Admission, Call, Calls, Held, Instance, MapIconPool, Pool, Rewrote, Tick, Unknown, Withheld,
 };
@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 #[test]
 fn tooltip_uses_native_bake_and_ignores_authored_height() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut resources = fixture();
     resources.templates.push(read(
@@ -40,7 +40,7 @@ fn tooltip_uses_native_bake_and_ignores_authored_height() {
 /// Prewrap enables indentation before the ordinary text-sprite bake.
 #[test]
 fn tooltip_bake_keeps_soft_wrap_indent_and_hard_line_start() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut resources = fixture();
     resources.templates.push(read(
@@ -61,7 +61,7 @@ fn tooltip_bake_keeps_soft_wrap_indent_and_hard_line_start() {
 
 #[test]
 fn tooltip_fallback_fixed_size_and_named_null_refusal() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut resources = fixture();
     let refused = text_sprites::tooltip(&resources, "abcdef", 0.0, false).unwrap_err();
@@ -84,7 +84,7 @@ fn tooltip_fallback_fixed_size_and_named_null_refusal() {
 
 #[test]
 fn tooltip_bakes_native_inline_icons_and_flags_and_counts_missing_inputs() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut resources = fixture();
     resources.templates.push(read(
@@ -129,7 +129,7 @@ fn tooltip_bakes_native_inline_icons_and_flags_and_counts_missing_inputs() {
 
 #[test]
 fn resolved_flag_text_reaches_native_walk_and_tooltip_only_when_bound() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let value = format!("{}GER-Western_group, x", native_text::RESOLVED_FLAG);
     let laid = |resolved_flags| {
@@ -352,7 +352,7 @@ fn size(width: &str, height: &str, extra: &str) -> native::Size {
 /// the position, bounds only once assigned, and the aspect refit.
 #[test]
 fn sizes_evaluate_against_the_parent() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let evaluate = |size: &native::Size, parent| evaluate_size(size, parent, [10, 4], "s");
     assert_eq!(
@@ -422,7 +422,7 @@ fn anchors_halve_toward_zero() {
 /// content, which its margins inset.
 #[test]
 fn a_child_window_anchors_in_its_parent_and_insets_its_margins() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let parts = parts(
         "size = { width = 101 height = 51 } \
@@ -438,7 +438,7 @@ fn a_child_window_anchors_in_its_parent_and_insets_its_margins() {
 /// A root the game's code places refuses a size it cannot evaluate without a parent.
 #[test]
 fn a_root_is_placed_as_the_code_places_it() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // A root is laid out from its own top-left; a size in its parent needs the parent's.
     assert!(laid("origo = center size = { width = 4 height = 4 }", None).is_ok());
@@ -470,7 +470,7 @@ fn a_root_is_placed_as_the_code_places_it() {
 /// (less half its scaled, truncated extent) or on its sprite's anchor, which wins.
 #[test]
 fn an_icon_is_placed_as_the_game_places_it() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let parts = parts(
         "size = { width = 33 height = 43 } \
@@ -499,7 +499,7 @@ fn an_icon_is_placed_as_the_game_places_it() {
 /// fractional frame. Vertical strips divide height and step down.
 #[test]
 fn the_queried_extent_and_the_drawn_frame_differ() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let info = plain([10, 4], 1);
     assert_eq!(info.extent(), [10, 4]);
@@ -548,7 +548,7 @@ fn the_queried_extent_and_the_drawn_frame_differ() {
 /// offsets continue and sampler addressing determines the sample.
 #[test]
 fn frames_follow_the_sprite_draw() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let authored = parts(
         "iconType = { name = \"a\" spriteType = \"GFX_odd\" } \
@@ -582,7 +582,7 @@ fn frames_follow_the_sprite_draw() {
 /// sprite, made with no font, is never baked and draws nothing.
 #[test]
 fn unreproduced_kinds_and_custom_effects_are_refused_by_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let refused = laid(
         "iconType = { name = \"a\" spriteType = \"GFX_tile\" } \
@@ -604,7 +604,7 @@ fn unreproduced_kinds_and_custom_effects_are_refused_by_name() {
 /// stretched centre. Window opacity replaces the tile's own alpha.
 #[test]
 fn a_cornered_tile_slices_its_texture() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let layout = laid_bound(
         "fade_type = linear size = { width = 40 height = 30 } \
@@ -631,7 +631,7 @@ fn a_cornered_tile_slices_its_texture() {
 /// nothing.
 #[test]
 fn tiles_repeat_and_resizeables_draw_nothing() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let parts = parts(
         "iconType = { name = \"t\" spriteType = \"GFX_repeat\" } \
@@ -648,7 +648,7 @@ fn tiles_repeat_and_resizeables_draw_nothing() {
 /// its clock.
 #[test]
 fn a_frame_animated_sprite_follows_its_clock() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let body = "iconType = { name = \"a\" spriteType = \"GFX_animated\" }";
     let error = laid(body, None).unwrap_err();
@@ -677,7 +677,7 @@ fn a_frame_animated_sprite_follows_its_clock() {
 /// overlay; both a pixel below their place.
 #[test]
 fn a_masked_shield_draws_its_flag_under_its_overlay() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let layout = laid(
         "iconType = { name = \"s\" spriteType = \"GFX_shield\" }",
@@ -716,7 +716,7 @@ fn a_masked_shield_draws_its_flag_under_its_overlay() {
 /// through ordinary bindings.
 #[test]
 fn a_shield_overlay_draws_with_zero_clocks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::map::native_shader::clock::Clock;
     let reads_time = || {
@@ -768,7 +768,7 @@ fn a_shield_overlay_draws_with_zero_clocks() {
 /// makes no drawable, which is noted and counted per element.
 #[test]
 fn an_unknown_sprite_draws_the_fallback() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let parts =
         parts("iconType = { name = \"a\" spriteType = \"GFX_mod\" } iconType = { name = \"b\" }");
@@ -799,7 +799,7 @@ fn an_unknown_sprite_draws_the_fallback() {
 /// hidden, and a Hide hides.
 #[test]
 fn bound_state_overrides_the_authored() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let layout = laid_bound(
         "iconType = { name = \"a\" spriteType = \"GFX_odd\" } \
@@ -837,7 +837,7 @@ fn bound_state_overrides_the_authored() {
 /// setter preserves both.
 #[test]
 fn sprite_setters_rebuild_as_the_game_does() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let body = "size = { width = 100 height = 100 } \
                 buttonType = { name = \"b\" spriteType = \"GFX_odd\" orientation = center \
@@ -884,7 +884,7 @@ fn sprite_setters_rebuild_as_the_game_does() {
 /// after a Show leaves the element shown.
 #[test]
 fn show_requests_and_the_hide_bit_are_separate() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = gui("iconType = { name = \"h\" hide = yes } iconType = { name = \"s\" }");
     let window = gui.template("w").unwrap();
@@ -929,7 +929,7 @@ fn show_requests_and_the_hide_bit_are_separate() {
 /// reads an uninitialised drawable; a text without a font is dropped.
 #[test]
 fn a_button_draws_its_state() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let layout = laid(
         "buttonType = { name = \"a\" spriteType = \"GFX_four\" enabled = no } \
@@ -966,7 +966,7 @@ fn a_button_draws_its_state() {
 /// samplers, blending off; with nothing drawn before it, refused as the unknown input it is.
 #[test]
 fn a_missing_technique_keeps_the_previous_program() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let bind = |window: &Element, bindings: &mut Bindings| {
         bindings.pointer = Some(Pointer {
@@ -1010,7 +1010,7 @@ fn a_missing_technique_keeps_the_previous_program() {
 /// (case c).
 #[test]
 fn a_button_lays_out_its_text() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let glyphs = |body: &str| {
         let layout = laid(
@@ -1051,7 +1051,7 @@ fn a_button_lays_out_its_text() {
 /// chain without a sprite are what the game cannot finish.
 #[test]
 fn a_button_takes_its_sprite_from_its_parent() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let sprite = |body: &str| {
         parts(body)
@@ -1107,7 +1107,7 @@ fn a_button_takes_its_sprite_from_its_parent() {
 /// which a layout with no instance does not have; a window mid-fade hides it.
 #[test]
 fn a_check_box_draws_its_state() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let body = "size = { width = 50 height = 50 } \
          checkboxType = { name = \"u\" spriteType = \"GFX_four\" position = { x = 1 y = 2 } \
@@ -1149,7 +1149,7 @@ fn a_check_box_draws_its_state() {
 /// through is never hit, and one that tests alpha needs its texels.
 #[test]
 fn the_pointer_hovers_and_presses_buttons() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let body = "size = { width = 50 height = 50 } \
                 buttonType = { name = \"low\" spriteType = \"GFX_four\" } \
@@ -1203,7 +1203,7 @@ fn the_pointer_hovers_and_presses_buttons() {
 /// unpressed.
 #[test]
 fn a_map_icon_takes_no_pointer() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let layout = laid(
         "buttonType = { name = \"b\" spriteType = \"GFX_four\" }",
@@ -1223,7 +1223,7 @@ fn a_map_icon_takes_no_pointer() {
 // 1.5708 is the angle the files author, not the constant.
 #[allow(clippy::approx_constant)]
 fn turns_keep_their_floating_corners() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let layout = laid(
         "size = { width = 5 height = 5 } clipping = yes \
@@ -1269,7 +1269,7 @@ fn turns_keep_their_floating_corners() {
 /// quad retains fractional corners.
 #[test]
 fn a_stretched_bar_keeps_its_geometry() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let layout = laid_bound(
         "iconType = { name = \"bar\" spriteType = \"GFX_bar3x17\" rotation = 1.5708 \
@@ -1297,7 +1297,7 @@ fn a_stretched_bar_keeps_its_geometry() {
 /// own scale and stretch unused; no button shading.
 #[test]
 fn a_progress_bar_runs_its_own_pipeline() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let parts =
         parts("iconType = { name = \"p\" spriteType = \"GFX_bar\" rotation = 1.5708 scale = 3 }");
@@ -1425,7 +1425,7 @@ fn text_at(body: &str, text: &str) -> Result<[f32; 2], Refusals> {
 /// MaxWidth gives 200; centred orientation uses the parent centre.
 #[test]
 fn text_aligns_as_the_bitmap_font_draws_it() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let box_ =
         "position = { x = 10 y = 20 } maxWidth = 40 maxHeight = 30 borderSize = { x = 2 y = 3 }";
@@ -1466,7 +1466,7 @@ fn text_aligns_as_the_bitmap_font_draws_it() {
 /// box cuts at its width and truncates with three dots.
 #[test]
 fn text_wraps_and_cuts_as_the_game_does() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let box_ = "position = { x = 10 y = 20 } maxWidth = 20 borderSize = { x = 2 y = 0 }";
     let wrapped = text_glyphs(&format!("{box_} multiline = yes"), "abc").unwrap();
@@ -1498,7 +1498,7 @@ fn text_wraps_and_cuts_as_the_game_does() {
 /// stack; an inline icon is its sprite's frame at the pen.
 #[test]
 fn text_colours_follow_the_codes() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let own = native_text::packed([128.0 / 255.0, 64.0 / 255.0, 32.0 / 255.0, 1.0]);
     let glyphs = text_glyphs("", "ab").unwrap();
@@ -1548,7 +1548,7 @@ fn text_colours_follow_the_codes() {
 /// refused by name; an undefined inline icon is counted.
 #[test]
 fn text_flags_and_icons_resolve_through_the_caller() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let flag = native_text::FLAG;
     let icon = native_text::ICON;
@@ -1600,7 +1600,7 @@ fn text_flags_and_icons_resolve_through_the_caller() {
 /// and lies under the rest.
 #[test]
 fn long_text_flushes_its_glyphs_before_later_icons() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let icon = native_text::ICON;
     let kinds = |count: usize| {
@@ -1633,7 +1633,7 @@ fn long_text_flushes_its_glyphs_before_later_icons() {
 /// and diagnoses the glyph.
 #[test]
 fn a_null_font_page_draws_nothing_and_keeps_the_window() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = gui(
         "instantTextBoxType = { name = \"t\" font = \"Main_14\" text = \"MOD_INNER\" } \
@@ -1661,7 +1661,7 @@ fn a_null_font_page_draws_nothing_and_keeps_the_window() {
 /// named, counted refusal, whether the sprite is drawn or only measured.
 #[test]
 fn reader_refusals_reach_the_layout() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = gui("iconType = { name = \"i\" spriteType = \"GFX_even\" } \
          instantTextBoxType = { name = \"t\" font = \"Main_14\" text = \"MOD_INNER\" }");
@@ -1711,7 +1711,7 @@ fn reader_refusals_reach_the_layout() {
 /// missing input.
 #[test]
 fn authored_text_shows_its_localisation() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let shown = |key: &str| {
         parts(&format!(
@@ -1754,7 +1754,7 @@ fn authored_text_shows_its_localisation() {
 /// never runs draws nothing.
 #[test]
 fn a_window_refuses_what_needs_run_time() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(laid("fade_type = linear fade_time = 0", None), Ok(None));
     for body in [
@@ -1786,7 +1786,7 @@ fn a_window_refuses_what_needs_run_time() {
 /// clips a window with backgrounds.
 #[test]
 fn backgrounds_draw_under_the_content() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let layout = laid(
         "size = { width = 40 height = 30 } margin = { left = 5 top = 5 } \
@@ -1820,7 +1820,7 @@ fn backgrounds_draw_under_the_content() {
 /// through the world matrix.
 #[test]
 fn a_content_scale_scales_positions_and_sizes() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let layout = laid(
         "size = { width = 100 height = 100 } margin = { left = 10 top = 10 } scale = 2 \
@@ -1870,7 +1870,7 @@ fn a_content_scale_scales_positions_and_sizes() {
 /// drawing restores it; ordinary text objects set their modulation colour directly.
 #[test]
 fn a_fonts_written_viewport_and_auxiliary_colour_reach_their_draws() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let body = "instantTextBoxType = { name = \"t\" font = \"Main_14\" text = \"x\" \
                 position = { x = 3 y = 1 } maxWidth = 50 maxHeight = 20 format = left \
@@ -1934,7 +1934,7 @@ fn a_fonts_written_viewport_and_auxiliary_colour_reach_their_draws() {
 /// written viewport remain unchanged.
 #[test]
 fn a_zero_font_viewport_keeps_its_siblings() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = gui(
         "iconType = { name = \"i\" spriteType = \"GFX_even\" position = { x = 5 y = 6 } } \
@@ -2016,7 +2016,7 @@ fn layout_refusals(laid: Result<Option<Layout>, Refusals>) -> String {
 /// `ModColor` alpha; a bound position places a child window.
 #[test]
 fn a_bound_opacity_and_position_apply() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let layout = laid_bound(
         "fade_type = linear size = { width = 50 height = 50 } \
@@ -2049,7 +2049,7 @@ fn a_bound_opacity_and_position_apply() {
 /// hides the window when it reaches 0.
 #[test]
 fn fades_run_on_the_clock() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let gui = gui("fade_type = linear fade_time = 1000 fade_delay = 100");
@@ -2098,7 +2098,7 @@ fn fades_run_on_the_clock() {
 /// hides the window the tick after it arrives.
 #[test]
 fn movements_run_on_the_clock() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let gui = gui(
@@ -2131,7 +2131,7 @@ fn movements_run_on_the_clock() {
 /// and an item's offset is its constructed place in the viewport.
 #[test]
 fn run_time_helpers_follow_the_game() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let gui = gui("fade_type = linear fade_time = 1000");
@@ -2193,7 +2193,7 @@ fn gui_item(body: &str) -> native::Gui {
 /// origin; the quad itself is not cropped.
 #[test]
 fn a_clipping_window_scissors_its_children() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let layout = laid(
         "size = { width = 10 height = 10 } clipping = yes \
@@ -2219,7 +2219,7 @@ fn a_clipping_window_scissors_its_children() {
 /// Drawing is all or nothing: a part whose sheet is missing leaves the batch as it was.
 #[test]
 fn a_refused_draw_pushes_nothing() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     struct Some2(SpriteSheet);
     impl Sheets for Some2 {
@@ -2253,7 +2253,7 @@ fn a_refused_draw_pushes_nothing() {
 /// Grid slots retain fill order, limits and every format in whole pixels.
 #[test]
 fn grid_slots_follow_the_formats_and_limits() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let slots = |body: &str, count| {
         let gui = gui(&format!(
@@ -2309,7 +2309,7 @@ fn grid_slots_follow_the_formats_and_limits() {
 /// until a relayout.
 #[test]
 fn a_grid_finalises_its_items() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = read(
         b"guiTypes = { containerWindowType = { name = \"w\" size = { width = 300 height = 300 } \
@@ -2358,7 +2358,7 @@ fn a_grid_finalises_its_items() {
 
 #[test]
 fn explicit_grid_positions_bypass_append_limits_and_scale_the_coordinates() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = read(
         br#"guiTypes = {
@@ -2390,7 +2390,7 @@ fn explicit_grid_positions_bypass_append_limits_and_scale_the_coordinates() {
 
 #[test]
 fn explicit_grid_positions_keep_the_format_and_viewport_constructor_offset() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = read(
         br#"guiTypes = {
@@ -2414,7 +2414,7 @@ fn explicit_grid_positions_keep_the_format_and_viewport_constructor_offset() {
 /// cut by its clip; a window with only its background still draws it.
 #[test]
 fn holder_items_compose_in_attach_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let layout = laid(
         "size = { width = 40 height = 40 } clipping = yes \
@@ -2467,7 +2467,7 @@ fn layout_item(gui: &native::Gui) -> Layout {
 /// ones.
 #[test]
 fn bound_holder_positions_replace_the_authored() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = gui("size = { width = 100 height = 100 } \
          OverlappingElementsBoxType = { name = \"l\" size = { x = 100 y = 50 } position = { x = 3 y = 4 } } \
@@ -2496,7 +2496,7 @@ fn bound_holder_positions_replace_the_authored() {
 /// The step, compressed to fit, each format's origin and order, and the paint order.
 #[test]
 fn list_places_follow_the_layout() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let places = |body: &str, count| {
         let gui = gui(&format!(
@@ -2553,7 +2553,7 @@ fn list_places_follow_the_layout() {
 /// included, and a holder the part its items draw before.
 #[test]
 fn parts_name_their_top_level_child() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let layout = laid(
         "iconType = { name = \"a\" spriteType = \"GFX_odd\" } \
@@ -2575,7 +2575,7 @@ fn parts_name_their_top_level_child() {
 /// sprite would be.
 #[test]
 fn a_bound_texture_replaces_the_frame() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let texture = Texture {
         texture: 7,
@@ -2626,7 +2626,7 @@ fn a_bound_texture_replaces_the_frame() {
 /// included.
 #[test]
 fn assets_list_every_named_sprite_and_font() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = gui("background = { spriteType = \"GFX_bg\" } \
          iconType = { name = \"a\" spriteType = \"GFX_odd\" } \
@@ -2685,7 +2685,7 @@ fn assets_list_every_named_sprite_and_font() {
 /// the GUI's own object.
 #[test]
 fn list_entries_choose_the_native_factory() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let document = read(
         b"guiTypes = { containerWindowType = { name = \"c\" } \
@@ -2738,7 +2738,7 @@ const FIXED_ENTRY: &[u8] = b"guiTypes = {
 
 #[test]
 fn a_window_type_entry_lays_out_as_its_fixed_window() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture_with(read(FIXED_ENTRY));
     let entry = resources.gui_type(b"entry").unwrap();
@@ -2799,7 +2799,7 @@ fn a_window_type_entry_lays_out_as_its_fixed_window() {
 /// [`fixed_window_layout`]; hidden children remain hidden.
 #[test]
 fn a_window_type_entry_draws_through_its_instance() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture_with(read(FIXED_ENTRY));
     let entry = resources.gui_type(b"entry").unwrap();
@@ -2820,7 +2820,7 @@ fn a_window_type_entry_draws_through_its_instance() {
 /// saturation receives its first-draw restart and settles after that interval.
 #[test]
 fn a_window_type_root_draws_on_the_views_clock() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::map::native_shader::clock::{Bounded, Clock};
     let mut resources = fixture_with(read(
@@ -2885,7 +2885,7 @@ fn a_window_type_root_draws_on_the_views_clock() {
 /// never attached; a factory given a type of another class is refused.
 #[test]
 fn a_fixed_window_attaches_as_the_game_attaches() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture_with(read(
         b"guiTypes = { windowType = { name = \"dup\" size = { x = 100 y = 100 }
@@ -2989,7 +2989,7 @@ fn a_fixed_window_attaches_as_the_game_attaches() {
 /// the window shows it, and nothing while its own `hide` keeps it hidden.
 #[test]
 fn a_fixed_window_scrollbar_draws_only_when_shown() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let bar = |name: &str, hide: &str| {
         format!(
@@ -3036,7 +3036,7 @@ fn a_fixed_window_scrollbar_draws_only_when_shown() {
 /// fallback draws. The text box's own lookup is unaffected.
 #[test]
 fn a_text_box_name_used_as_a_sprite_is_session_history() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let body = "iconType = { name = \"i\" spriteType = \"label\" }";
     let mut resources = fixture_with(gui(body));
@@ -3065,7 +3065,7 @@ fn a_text_box_name_used_as_a_sprite_is_session_history() {
 /// constructor finds it (the `parent` template's child here), and a `textBoxType`'s bake.
 #[test]
 fn a_window_type_entry_collects_what_it_draws() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let document = read(FIXED_ENTRY);
     let entry = document.template("entry").unwrap();
@@ -3149,7 +3149,7 @@ impl Resources for Asked<'_> {
 /// layout was collected.
 #[test]
 fn acquisition_follows_construction() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let document = read(
         b"guiTypes = { scrollbarType = { name = \"base\" \
@@ -3209,7 +3209,7 @@ fn acquisition_follows_construction() {
 /// window subtree. Named list scrollbars and their parts use the same rule.
 #[test]
 fn externally_resolved_parts_carry_their_refusals() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let base = |up_position: &str| {
         format!(
@@ -3283,7 +3283,7 @@ fn externally_resolved_parts_carry_their_refusals() {
 /// animation records needs them loaded and its clock bound.
 #[test]
 fn text_icons_are_acquired_and_animations_refused() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut assets = Assets::default();
     let icon = native_text::ICON;
@@ -3309,7 +3309,7 @@ fn text_icons_are_acquired_and_animations_refused() {
 /// the grid before its items.
 #[test]
 fn a_grid_background_draws_under_its_items() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let layout = laid(
         "size = { width = 100 height = 100 } \
@@ -3353,7 +3353,7 @@ PixelShader = { MainCode P [[ float4 main(Out v) : PDX_COLOR { return v.color; }
 Effect Text { VertexShader = V PixelShader = P }
 "#;
     let program =
-        installed_content::gui::native::shader::program::read_with(b"custom-text.shader", &|path| {
+        installed_content_core::gui::native::shader::program::read_with(b"custom-text.shader", &|path| {
             Some(if path == b"custom-text.shader" {
                 source.to_vec()
             } else {
@@ -3431,10 +3431,10 @@ Effect Text { VertexShader = V PixelShader = P }
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn compiled_gui_samples_sixteen_bit_texels_at_full_precision() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::map::native_shader::{self as shader, library};
-    use installed_content::image::dds;
+    use installed_content_image::dds;
     use std::sync::Arc;
     let source = br#"
 VertexStruct In {
@@ -3458,14 +3458,15 @@ return float4(c.r > 0.0322575, c.g > 0.01587, c.b > 0.0322575, 1);
 }
 Effect Up { VertexShader = V PixelShader = P }
 "#;
-    let program = installed_content::gui::native::shader::program::read_with(b"sixteen.shader", &|path| {
-        Some(if path == b"sixteen.shader" {
-            source.to_vec()
-        } else {
-            b"#define PDX_POSITION SV_POSITION\n#define PDX_COLOR SV_TARGET\n".to_vec()
+    let program =
+        installed_content_core::gui::native::shader::program::read_with(b"sixteen.shader", &|path| {
+            Some(if path == b"sixteen.shader" {
+                source.to_vec()
+            } else {
+                b"#define PDX_POSITION SV_POSITION\n#define PDX_COLOR SV_TARGET\n".to_vec()
+            })
         })
-    })
-    .unwrap();
+        .unwrap();
     let compiled = shader::Compiler::discover()
         .unwrap()
         .compile(&program, &program.techniques[0], &[])
@@ -3499,7 +3500,7 @@ Effect Up { VertexShader = V PixelShader = P }
             data: [0x0821_u16; 2].map(u16::to_le_bytes).concat(),
         }]],
     };
-    let filler = dds::Texture::from_rgba8(installed_content::image::Rgba8Image {
+    let filler = dds::Texture::from_rgba8(installed_content_image::Rgba8Image {
         width: 1,
         height: 1,
         pixels: vec![0; 4],
@@ -3531,7 +3532,7 @@ Effect Up { VertexShader = V PixelShader = P }
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn compiled_gui_past_the_dynamic_offset_limit_is_refused_and_counted() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::map::native_shader::{self as shader, library};
     use std::sync::Arc;
@@ -3576,14 +3577,15 @@ MainCode P [[ float4 main(Out v) : PDX_COLOR {{ return tint{sum}; }} ]]
 Effect Up {{ VertexShader = V PixelShader = P }}
 "#
     );
-    let program = installed_content::gui::native::shader::program::read_with(b"blocks.shader", &|path| {
-        Some(if path == b"blocks.shader" {
-            source.as_bytes().to_vec()
-        } else {
-            b"#define PDX_POSITION SV_POSITION\n#define PDX_COLOR SV_TARGET\n".to_vec()
+    let program =
+        installed_content_core::gui::native::shader::program::read_with(b"blocks.shader", &|path| {
+            Some(if path == b"blocks.shader" {
+                source.as_bytes().to_vec()
+            } else {
+                b"#define PDX_POSITION SV_POSITION\n#define PDX_COLOR SV_TARGET\n".to_vec()
+            })
         })
-    })
-    .unwrap();
+        .unwrap();
     let compiled = shader::Compiler::discover()
         .unwrap()
         .compile(&program, &program.techniques[0], &[])
@@ -3627,7 +3629,7 @@ Effect Up {{ VertexShader = V PixelShader = P }}
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn compiled_gui_reads_past_the_written_sprite_constants_are_refused() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::map::native_shader::{self as shader, library};
     use std::sync::Arc;
@@ -3656,14 +3658,15 @@ PixelShader = {{ MainCode P [[ float4 main(Out v) : PDX_COLOR {{ return {pixel};
 Effect Up {{ VertexShader = V PixelShader = P }}
 "#
         );
-        let program = installed_content::gui::native::shader::program::read_with(b"tail.shader", &|path| {
-            Some(if path == b"tail.shader" {
-                source.as_bytes().to_vec()
-            } else {
-                b"#define PDX_POSITION SV_POSITION\n#define PDX_COLOR SV_TARGET\n".to_vec()
+        let program =
+            installed_content_core::gui::native::shader::program::read_with(b"tail.shader", &|path| {
+                Some(if path == b"tail.shader" {
+                    source.as_bytes().to_vec()
+                } else {
+                    b"#define PDX_POSITION SV_POSITION\n#define PDX_COLOR SV_TARGET\n".to_vec()
+                })
             })
-        })
-        .unwrap();
+            .unwrap();
         let compiled = shader::Compiler::discover()
             .unwrap()
             .compile(&program, &program.techniques[0], &[])
@@ -3794,14 +3797,15 @@ Effect Text { VertexShader = V PixelShader = P }
 fn compiled_effect(file: &str, source: &str) -> Arc<crate::map::native_shader::library::Effect> {
     use crate::map::native_shader::{self as shader, library};
     use std::sync::Arc;
-    let program = installed_content::gui::native::shader::program::read_with(file.as_bytes(), &|path| {
-        Some(if path == file.as_bytes() {
-            source.as_bytes().to_vec()
-        } else {
-            b"#define PDX_POSITION SV_POSITION\n#define PDX_COLOR SV_TARGET\n".to_vec()
+    let program =
+        installed_content_core::gui::native::shader::program::read_with(file.as_bytes(), &|path| {
+            Some(if path == file.as_bytes() {
+                source.as_bytes().to_vec()
+            } else {
+                b"#define PDX_POSITION SV_POSITION\n#define PDX_COLOR SV_TARGET\n".to_vec()
+            })
         })
-    })
-    .unwrap();
+        .unwrap();
     library::Effect::new(
         Arc::new(program),
         Vec::new(),
@@ -3841,7 +3845,7 @@ fn compiled_part(
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn compiled_sprite_draws_four_records_as_a_strip() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let effect = compiled_effect(
         "vertex_id.shader",
@@ -4067,7 +4071,7 @@ Effect Up {{ VertexShader = V PixelShader = P }}
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn compiled_gui_runs_local_vertices_clocks_and_sorted_null_techniques() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::map::native_shader::{self as shader, library};
     use std::sync::Arc;
@@ -4098,7 +4102,7 @@ v.local.z == 1 && clock == 10 && changed == 7 && frame.x > 0.3 && nextFrame.x > 
 Effect Up { VertexShader = V PixelShader = P }
 "#;
     let program =
-        installed_content::gui::native::shader::program::read_with(b"mod-owned.shader", &|path| {
+        installed_content_core::gui::native::shader::program::read_with(b"mod-owned.shader", &|path| {
             Some(if path == b"mod-owned.shader" {
                 source.to_vec()
             } else {
@@ -4163,7 +4167,7 @@ Effect Up { VertexShader = V PixelShader = P }
     );
     let mut absent = batch.quads[0].clone();
     let payload = Arc::make_mut(absent.exact.as_mut().unwrap().native.as_mut().unwrap());
-    let empty = installed_content::pdxshader::program::read_with(b"absent.lua", &|_| None).unwrap();
+    let empty = installed_content_core::pdxshader::program::read_with(b"absent.lua", &|_| None).unwrap();
     payload.effect.asset = library::Effect::from_compiled(Arc::new(empty), vec![], vec![]);
     payload.effect.technique = "Up".into();
     absent.layer = 3;
@@ -4283,7 +4287,7 @@ Effect Up { VertexShader = V PixelShader = P }
 /// The shipped naval combat window lays out with nothing refused.
 #[test]
 fn the_shipped_naval_combat_window_lays_out() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = read(
         br#"guiTypes = {
@@ -4381,7 +4385,7 @@ fn scrollbar_rects(layout: &Layout) -> Vec<(String, Rect)> {
 /// slider at the track's start (the range is empty).
 #[test]
 fn a_container_shows_its_extended_scrollbar() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let document = format!(
         "guiTypes = {{ {SCROLLBAR} containerWindowType = {{ name = \"w\" \
@@ -4416,7 +4420,7 @@ fn a_container_shows_its_extended_scrollbar() {
 /// sits at the track's end (`round_away(travel * 1)`).
 #[test]
 fn overflowing_children_show_and_move_the_scrollbar() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let document = |icon: &str| {
         format!(
@@ -4449,7 +4453,7 @@ fn overflowing_children_show_and_move_the_scrollbar() {
 /// reads the uninitialised field.
 #[test]
 fn scrollbar_children_draw_as_constructed() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let child = SCROLLBAR.replace(
         "size = { width = 10 height = 50 }",
@@ -4514,7 +4518,7 @@ fn rects_of(parts: &[Part]) -> Vec<Rect> {
 /// INT_MIN and hides all rows without a crash. Orientation uses the supplied GUI viewport.
 #[test]
 fn list_boxes_hold_their_rows() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let body = "listBoxType = { name = \"l\" position = { x = 4 y = 6 } \
                 size = { x = 30 y = 25 } borderSize = { x = 2 y = 9 } \
@@ -4561,7 +4565,7 @@ fn list_boxes_hold_their_rows() {
 /// and offset rows from their border by the smooth value.
 #[test]
 fn list_box_scrollbars_show_as_their_rows_leave_them() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let document = |body: &str| {
         read(
@@ -4634,7 +4638,7 @@ fn list_box_scrollbars_show_as_their_rows_leave_them() {
 /// points are what a recording lacks, and a curve graph is hidden until its code shows it.
 #[test]
 fn edit_boxes_drop_downs_browsers_and_curves() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let paths = |body: &str| {
         laid_document(
@@ -4731,7 +4735,7 @@ fn edit_boxes_drop_downs_browsers_and_curves() {
 /// the header's own `hide` keeps it hidden. With no viewport bound it is refused.
 #[test]
 fn drop_down_headers_take_the_viewport() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let body = |hide: &str| {
         format!(
@@ -4782,7 +4786,7 @@ fn scroll_values_snap_as_the_game_snaps_them() {
 /// as its alpha, replacing the drawable's previous alpha.
 #[test]
 fn charts_and_cornered_tiles_follow_their_native_state() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut resources = fixture();
     let even = resources.sprites["GFX_even"].clone();
@@ -4839,7 +4843,7 @@ fn charts_and_cornered_tiles_follow_their_native_state() {
 /// sector for the program.
 #[test]
 fn circular_progress_bars_draw_their_fan() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut resources = fixture();
     let circle = SpriteInfo {
@@ -4910,7 +4914,7 @@ fn circular_progress_bars_draw_their_fan() {
 /// scrollbar itself is hidden.
 #[test]
 fn plain_scrollbar_parts_follow_their_constructor() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let run = |templates: &str, bar: &str| {
         laid_document(
@@ -5015,7 +5019,7 @@ fn plain_scrollbar_parts_follow_their_constructor() {
 /// or of another kind is refused as the game fails.
 #[test]
 fn text_box_scrollbars_show_when_the_text_overflows() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let run = |key: &str, scrollbar: &str, bind: Option<&str>| {
         laid_document(
@@ -5065,7 +5069,7 @@ fn text_box_scrollbars_show_when_the_text_overflows() {
 
 #[test]
 fn text_box_bound_offsets_move_glyphs_regions_and_scrollbars() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let run = |offset| {
         laid_document(
@@ -5132,7 +5136,7 @@ fn finalized_grid_resources(smooth: bool) -> Fixture {
 
 #[test]
 fn runtime_container_size_keeps_flag_zero_child_geometry() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture_with(read(
         br#"guiTypes = {
@@ -5208,7 +5212,7 @@ fn runtime_container_size_keeps_flag_zero_child_geometry() {
 
 #[test]
 fn finalized_grid_resolved_offsets_keep_runtime_extents() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = finalized_grid_resources(false);
     let window = resources.gui_type(b"w").unwrap();
@@ -5244,7 +5248,7 @@ fn finalized_grid_resolved_offsets_keep_runtime_extents() {
 
 #[test]
 fn scrollbar_regions_keep_native_owner_and_action() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let bar = SCROLLBAR
         .replace("name = \"inc\"", "name = \"more\"")
@@ -5293,7 +5297,7 @@ fn scrollbar_regions_keep_native_owner_and_action() {
 /// Finalize's extent reaches synchronize_scroll, and a hidden bar resets only the offset.
 #[test]
 fn finalized_grid_extents_synchronize_container_scrolling() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = finalized_grid_resources(false);
     let window = resources.gui_type(b"w").unwrap();
@@ -5341,7 +5345,7 @@ fn finalized_grid_extents_synchronize_container_scrolling() {
 /// Arrow steps read the smoothed current; wheel reads the target and immediately moves content.
 #[test]
 fn native_scroll_inputs_keep_current_and_target_distinct() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = finalized_grid_resources(true);
     let window = resources.gui_type(b"w").unwrap();
@@ -5424,7 +5428,7 @@ fn native_scroll_inputs_keep_current_and_target_distinct() {
 /// A newly shown bar smooths; synchronization can include or exclude hidden filled grids.
 #[test]
 fn finalized_grid_scrolling_runs_on_the_instance_clock() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = finalized_grid_resources(true);
     let window = resources.gui_type(b"w").unwrap();
@@ -5485,7 +5489,7 @@ fn finalized_grid_scrolling_runs_on_the_instance_clock() {
 /// and without a slider that reads null.
 #[test]
 fn container_scrollbars_move_their_content() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let bar = |extra: &str| {
         SCROLLBAR.replace(
@@ -5575,7 +5579,7 @@ fn container_scrollbars_move_their_content() {
 /// measure text, and curve graphs measure their sprite at its size.
 #[test]
 fn overflow_boxes_measure_each_kind() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let shows = |child: &str| {
         let layout = laid_document(
@@ -5621,7 +5625,7 @@ fn overflow_boxes_measure_each_kind() {
 /// Cornered tiles retain a turn but draw unturned.
 #[test]
 fn a_turned_cornered_tile_draws_unturned() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let turned = parts("iconType = { name = \"c\" spriteType = \"GFX_cornered\" rotation = 30 }");
     let still = parts("iconType = { name = \"c\" spriteType = \"GFX_cornered\" }");
@@ -5635,7 +5639,7 @@ fn a_turned_cornered_tile_draws_unturned() {
 /// batch.
 #[test]
 fn text_bakes_submit_each_frames_glyphs_once() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let icon = native_text::ICON;
     // Two 4,500-wide frames: room for 600 glyphs of the 7-wide fixture font on one line.
@@ -5664,7 +5668,7 @@ fn text_bakes_submit_each_frames_glyphs_once() {
 
 #[test]
 fn text_sprites_follow_the_setter_and_measure_their_bake() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = gui("size = { width = 100 height = 50 } \
          buttonType = { name = \"b\" spriteType = \"GFX_even\" font = \"Main_14\" \
@@ -5717,7 +5721,7 @@ fn text_sprites_follow_the_setter_and_measure_their_bake() {
 /// divides by zero.
 #[test]
 fn text_sprites_bake_as_the_game_bakes_them() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let baked = laid(
         "buttonType = { name = \"b\" spriteType = \"GFX_text\" font = \"Main_14\" \
@@ -5794,10 +5798,10 @@ fn text_sprites_bake_as_the_game_bakes_them() {
 /// `ANIMATED` set, which only a shader pipeline renders.
 #[test]
 fn animation_records_run_on_the_instance_clock() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let record = |kind: i32, looping: bool| AnimationRecord {
-        data: installed_content::gui::native::sprites::AnimationData {
+        data: installed_content_core::gui::native::sprites::AnimationData {
             kind,
             looping,
             ..Default::default()
@@ -5843,7 +5847,7 @@ fn animation_records_run_on_the_instance_clock() {
 /// and replaces the map's point until it ends, after which the map's point holds again.
 #[test]
 fn a_map_icon_window_moves_over_the_map_point() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let gui = gui(
@@ -5912,7 +5916,7 @@ fn text_bytes_decode_as_the_game_converts_them() {
 /// while the root draws opaque.
 #[test]
 fn a_child_window_takes_the_roots_show_and_fades_on_its_own() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let gui = gui("size = { width = 100 height = 100 } \
@@ -5963,7 +5967,7 @@ fn a_child_window_takes_the_roots_show_and_fades_on_its_own() {
 /// fade start still reaches it (`begin_show_fade` does not test it).
 #[test]
 fn a_rejected_show_changes_nothing() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let gui = gui(
@@ -6004,7 +6008,7 @@ fn a_rejected_show_changes_nothing() {
 /// report their item Shows.
 #[test]
 fn an_immediate_hide_and_a_show_reach_every_child() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = gui("size = { width = 100 height = 100 } \
          iconType = { name = \"a\" spriteType = \"GFX_even\" } \
@@ -6053,7 +6057,7 @@ fn an_immediate_hide_and_a_show_reach_every_child() {
 /// frame and derives AnimationTime from it, with or without an instance.
 #[test]
 fn drawable_clocks_run_on_the_instance() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut resources = fixture();
     resources.sprites.insert(
@@ -6100,7 +6104,7 @@ fn drawable_clocks_run_on_the_instance() {
 /// finish refuses as the game hang.
 #[test]
 fn a_looping_tile_pulses_on_the_instance() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut resources = fixture();
     let tile = |rate: f32| SpriteInfo {
@@ -6137,14 +6141,14 @@ fn a_looping_tile_pulses_on_the_instance() {
 /// begin at the next draw.
 #[test]
 fn a_code_check_restarts_the_drawables_clock() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut resources = fixture();
     resources.sprites.get_mut("GFX_four").unwrap().animated = true;
     resources.animations.insert(
         "GFX_four",
         vec![AnimationRecord {
-            data: installed_content::gui::native::sprites::AnimationData {
+            data: installed_content_core::gui::native::sprites::AnimationData {
                 kind: 4,
                 looping: true,
                 trigger_frames: 1 << 2,
@@ -6189,7 +6193,7 @@ fn a_code_check_restarts_the_drawables_clock() {
 /// settles it; then it rests.
 #[test]
 fn an_instance_is_active_while_anything_runs() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let gui = gui(
@@ -6214,7 +6218,7 @@ fn an_instance_is_active_while_anything_runs() {
 /// growth by 16 on the next tick.
 #[test]
 fn a_pool_reuses_released_windows_with_their_state() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let gui = gui("size = { width = 10 height = 10 } \
@@ -6278,7 +6282,7 @@ fn a_pool_reuses_released_windows_with_their_state() {
 /// when it returns.
 #[test]
 fn an_icon_leaves_and_reenters_the_viewport() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = gui("size = { width = 10 height = 10 } \
          OverlappingElementsBoxType = { name = \"l\" size = { width = 10 height = 10 } }");
@@ -6340,7 +6344,7 @@ fn an_icon_leaves_and_reenters_the_viewport() {
 /// then reported from the free slot.
 #[test]
 fn a_freed_fading_window_reports_its_lists_when_the_fade_ends() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let gui = gui(
@@ -6390,7 +6394,7 @@ fn a_freed_fading_window_reports_its_lists_when_the_fade_ends() {
 /// through their fade and leave the list at its completion.
 #[test]
 fn the_visible_list_holds_the_live_icons_whose_window_is_visible() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let gui = gui(
@@ -6454,7 +6458,7 @@ fn the_visible_list_holds_the_live_icons_whose_window_is_visible() {
 /// window's: the icon stays in the visible list with it, and a freed slot keeps it for its next owner.
 #[test]
 fn a_refusal_stands_until_what_it_left_unknown_is_written_again() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut withheld = Withheld::default();
     withheld.refuse('a', Unknown::Update, "an operand".into());
@@ -6509,7 +6513,7 @@ fn a_refusal_stands_until_what_it_left_unknown_is_written_again() {
 /// reached where it stood.
 #[test]
 fn the_pass_walks_the_live_array_as_it_stood() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = gui("size = { width = 10 height = 10 }");
     let window = gui.template("w").unwrap();
@@ -6541,7 +6545,7 @@ fn the_pass_walks_the_live_array_as_it_stood() {
 /// of them than the pool holds exhaust it while nothing is drawn, and it grows.
 #[test]
 fn a_pool_exhausts_while_its_icons_are_off_screen() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let gui = gui("size = { width = 10 height = 10 }");
@@ -6576,7 +6580,7 @@ fn a_pool_exhausts_while_its_icons_are_off_screen() {
 /// opacity call without children affects only the window.
 #[test]
 fn a_window_takes_an_opacity_set_on_it() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let gui = gui(
@@ -6626,7 +6630,7 @@ fn a_window_takes_an_opacity_set_on_it() {
 /// movement.
 #[test]
 fn a_window_type_root_shows_and_hides_its_children() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = read(
         b"guiTypes = { windowType = { name = \"f\" size = { width = 40 height = 20 } \
@@ -6671,7 +6675,7 @@ fn a_window_type_root_shows_and_hides_its_children() {
 /// same.
 #[test]
 fn a_controls_show_reaches_its_parts() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let gui = gui(
@@ -6752,7 +6756,7 @@ fn sprites_at(layout: &Layout, path: &str) -> Vec<(Vec<u8>, i32, f32)> {
 /// hidden and shown again.
 #[test]
 fn inherited_scrollbar_parts_run_on_their_own_clocks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let bar = |name: &str, x: i32| {
         format!(
@@ -6821,7 +6825,7 @@ fn inherited_scrollbar_parts_run_on_their_own_clocks() {
 /// do the same with the window.
 #[test]
 fn list_box_backgrounds_and_window_scrollbars_run_on_the_instance() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let gui = gui("size = { width = 100 height = 100 } \
@@ -6891,7 +6895,7 @@ fn list_box_backgrounds_and_window_scrollbars_run_on_the_instance() {
 /// again.
 #[test]
 fn a_fallback_sprite_runs_on_the_instance() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut resources = fixture();
     let animated = resources.sprites["GFX_animated"].clone();
@@ -6942,7 +6946,7 @@ fn a_fallback_sprite_runs_on_the_instance() {
 /// preceding fixture technique and use their own restart metadata.
 #[test]
 fn state_effects_run_on_the_graphics_clock_for_as_long_as_they_change() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let gui = gui("checkboxType = { name = \"c\" spriteType = \"GFX_four\" } \
@@ -7022,7 +7026,7 @@ fn clocked_icon(effect: Effect, seconds: usize) -> (f32, Vec<(bool, f32, f32)>) 
 /// `AnimationTime` settles at once. No bindings are made by hand.
 #[test]
 fn compiled_effects_keep_frames_coming_for_as_long_as_their_programs_change() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::map::native_shader::clock::{Bounded, Clock};
     let effect = |pixel| clocked_effect("Up", pixel);
@@ -7072,7 +7076,7 @@ fn compiled_effects_keep_frames_coming_for_as_long_as_their_programs_change() {
 /// presented; past it, it settles. No bindings are made by hand.
 #[test]
 fn a_descending_step_keeps_its_instance_active_at_its_edge() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::map::native_shader::clock::{Bounded, Clock};
     let mut resources = fixture();
@@ -7110,7 +7114,7 @@ fn a_descending_step_keeps_its_instance_active_at_its_edge() {
 #[test]
 #[ignore = "requires the shader compiler"]
 fn compiled_programs_reading_time_keep_their_instance_active() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::map::native_shader::{self as shader, library};
     use std::sync::Arc;
@@ -7123,7 +7127,7 @@ fn compiled_programs_reading_time_keep_their_instance_active() {
              PixelShader = {{ MainCode P [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ return {pixel}; }} ]] }}\n\
              Effect Up {{ VertexShader = V PixelShader = P }}\n"
         );
-        let program = installed_content::pdxshader::program::read_with(b"gfx/FX/mod.lua", &|path| {
+        let program = installed_content_core::pdxshader::program::read_with(b"gfx/FX/mod.lua", &|path| {
             Some(if path.ends_with(b".shader") {
                 source.as_bytes().to_vec()
             } else {
@@ -7162,7 +7166,7 @@ fn compiled_programs_reading_time_keep_their_instance_active() {
 /// outside its window and remains active.
 #[test]
 fn a_missing_technique_changes_for_as_long_as_the_previous_program() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let tree = gui("checkboxType = { name = \"c\" spriteType = \"GFX_four\" } \
@@ -7221,7 +7225,7 @@ fn clocked_effect(techniques: &str, clock: crate::map::native_shader::clock::Clo
         .split(' ')
         .map(|name| format!("Effect {name} {{ VertexShader = V PixelShader = P }}\n"))
         .collect();
-    let program = installed_content::pdxshader::program::read_with(b"gfx/FX/mod.lua", &|path| {
+    let program = installed_content_core::pdxshader::program::read_with(b"gfx/FX/mod.lua", &|path| {
         Some(if path.ends_with(b".shader") {
             source.as_bytes().to_vec()
         } else {
@@ -7269,7 +7273,7 @@ fn clocked_effect(techniques: &str, clock: crate::map::native_shader::clock::Clo
 /// `k`'s own first draw, shown a second after the text's. No manual bindings.
 #[test]
 fn a_missing_compiled_technique_runs_on_the_previous_program() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::map::native_shader::clock::{Bounded, Clock};
     let run = |text: Clock| {
@@ -7346,7 +7350,7 @@ fn a_missing_compiled_technique_runs_on_the_previous_program() {
 /// keep frames running for an earlier text program.
 #[test]
 fn a_kept_draw_after_a_refused_one_does_not_keep_frames_coming() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::map::native_shader::{clock::Clock, library};
     let mut resources = fixture();
@@ -7398,7 +7402,7 @@ fn a_kept_draw_after_a_refused_one_does_not_keep_frames_coming() {
 /// creates a drawable with the setter-selected frame.
 #[test]
 fn a_failed_replacement_keeps_the_retained_drawable() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let gui = gui("iconType = { name = \"type\" spriteType = \"GFX_even\" }");
@@ -7484,7 +7488,7 @@ fn a_failed_replacement_keeps_the_retained_drawable() {
 /// nested windows.
 #[test]
 fn a_drop_down_headers_fade_runs_on_the_instance() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let drop = read(
@@ -7541,7 +7545,7 @@ fn a_drop_down_headers_fade_runs_on_the_instance() {
 /// by hand.
 #[test]
 fn a_replaced_drawables_compiled_effect_restarts_its_clock() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::map::native_shader::clock::{Bounded, Clock};
     let fading = || {
@@ -7611,11 +7615,11 @@ fn a_replaced_drawables_compiled_effect_restarts_its_clock() {
 /// preserves all of that state.
 #[test]
 fn a_replaced_drawable_starts_its_own_history() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut resources = fixture();
     let record = |trigger_frames: u32| AnimationRecord {
-        data: installed_content::gui::native::sprites::AnimationData {
+        data: installed_content_core::gui::native::sprites::AnimationData {
             kind: 4,
             looping: true,
             trigger_frames,
@@ -7717,7 +7721,7 @@ fn a_replaced_drawable_starts_its_own_history() {
 /// replacement preserves playback. These sprites do not play on show.
 #[test]
 fn a_play_reaches_the_drawable_its_earlier_calls_left() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut resources = fixture();
     let still = SpriteInfo {
@@ -7794,7 +7798,7 @@ fn a_play_reaches_the_drawable_its_earlier_calls_left() {
 /// keep the instance active.
 #[test]
 fn a_compiled_frame_animation_plays_only_the_drawable_play_reached() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::map::native_shader::clock::Clock;
     let mut resources = fixture();
@@ -7859,7 +7863,7 @@ fn a_compiled_frame_animation_plays_only_the_drawable_play_reached() {
 /// periods still wrap.
 #[test]
 fn a_frame_animation_whose_wrap_never_ends_is_a_hang() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let animated = |pause: f32| SpriteKind::FrameAnimated {
         seconds_per_frame: 0.25,
@@ -7915,7 +7919,7 @@ fn a_frame_animation_whose_wrap_never_ends_is_a_hang() {
 /// that frame's time. A phase out of order is refused by name.
 #[test]
 fn several_instances_tick_in_the_games_phase_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let icons = gui(
@@ -8041,7 +8045,7 @@ fn text_bar_slider(instance: &Instance, window: &Element, resources: &Fixture) -
 /// refuses because it misses that ordered refresh.
 #[test]
 fn a_text_write_refreshes_its_scrollbar_in_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = text_box_window("MOD_KEY", "GFX_animated", "maxValue = 1");
     let window = resources.gui_type(b"w").unwrap();
@@ -8107,7 +8111,7 @@ fn a_text_write_refreshes_its_scrollbar_in_order() {
 
 #[test]
 fn resolved_flag_text_setter_keeps_native_scroll_range() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = text_box_window("MOD_KEY", "GFX_bar3x17", "maxValue = 1");
     let window = resources.gui_type(b"w").unwrap();
@@ -8132,7 +8136,7 @@ fn resolved_flag_text_setter_keeps_native_scroll_range() {
 /// 17 * 10 / 22)`.
 #[test]
 fn a_text_box_scrollbar_keeps_the_clamp_of_a_smaller_range() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = text_box_window(
         "MOD_LONG",
@@ -8176,7 +8180,7 @@ fn a_text_box_scrollbar_keeps_the_clamp_of_a_smaller_range() {
 
 #[test]
 fn retained_result_text_scroll_moves_glyphs_by_the_native_line_step() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = text_box_window(
         "MOD_KEY",
@@ -8253,7 +8257,7 @@ fn retained_result_text_scroll_moves_glyphs_by_the_native_line_step() {
 /// frame applies them once.
 #[test]
 fn calls_prepared_off_the_view_apply_once() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = gui(
         "size = { width = 10 height = 10 } iconType = { name = \"a\" spriteType = \"GFX_even\" }",
@@ -8304,7 +8308,7 @@ fn calls_prepared_off_the_view_apply_once() {
 /// a far-edge orientation evaluate against it.
 #[test]
 fn a_root_is_built_in_the_viewport() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture();
     let gui = gui(
@@ -8324,7 +8328,7 @@ fn a_root_is_built_in_the_viewport() {
 
 #[test]
 fn alpha_hover_keeps_an_out_of_range_selected_frame_offset() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut resources = fixture();
     resources.physical = Some([800, 600]);

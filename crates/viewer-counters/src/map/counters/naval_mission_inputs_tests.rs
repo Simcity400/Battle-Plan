@@ -1,5 +1,5 @@
 use super::*;
-use replay::frame::{Metrics, TableView};
+use replay_frame::{frame::Metrics, frame::TableView};
 use viewer_foundation::table_access::TokenKeys;
 
 fn frame() -> DecodedFrame {
@@ -44,7 +44,7 @@ fn hour<'a>(
 }
 fn content(terrain: &[u8]) -> Content {
     Content {
-        terrain: installed_content::terrain::parse_definitions(terrain).unwrap(),
+        terrain: installed_content_core::terrain::parse_definitions(terrain).unwrap(),
         naval_terrain: BTreeMap::new(),
         efficiencies: derive::Defines {
             convoy_defense_max_convoy_to_ship_ratio: 1_000_000,
@@ -64,7 +64,7 @@ fn anchors() -> CounterContent {
         terrain: Default::default(),
         mission_content: Err("unused in fixture".into()),
         port_mission_defines: viewer_foundation::map::port_mission_defines::Defines::read(
-            &installed_content::defines::Defines::new().unwrap(),
+            &installed_content_core::defines::Defines::new().unwrap(),
         ),
         anchors: Arc::new(BTreeMap::new()),
         stack_scales: BTreeMap::new(),
@@ -135,7 +135,7 @@ fn force_frame() -> DecodedFrame {
 
 #[test]
 fn unread_commander_is_named_unknown_and_read_zero_is_explicit() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = force_frame();
     let content = content(b"categories={ocean={}}");
@@ -232,7 +232,7 @@ fn unread_commander_is_named_unknown_and_read_zero_is_explicit() {
 
 #[test]
 fn ship_indexes_stay_cold_until_a_mission_chain_needs_ships() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = frame();
     set(
@@ -264,7 +264,7 @@ fn ship_indexes_stay_cold_until_a_mission_chain_needs_ships() {
 
 #[test]
 fn p3_terrain_merges_common_before_clamping_and_keeps_the_first_class_bucket() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = force_frame();
     let content=content(b"categories={ocean={naval_coordination=0.5 cruiser={naval_coordination=0.9} cruiser={naval_coordination=-0.9}}}");
@@ -288,7 +288,7 @@ fn p3_terrain_merges_common_before_clamping_and_keeps_the_first_class_bucket() {
         TableRows::ModifierDefinitions(vec![ModifierDefinitionRow {
             index: keys::NAVAL_COORDINATION,
             token: 19,
-            flags: engine::modifier_definition::CLAMP_MAXIMUM,
+            flags: engine_native::modifier_definition::CLAMP_MAXIMUM,
             ..Default::default()
         }]),
     );
@@ -346,7 +346,7 @@ fn p3_terrain_merges_common_before_clamping_and_keeps_the_first_class_bucket() {
 
 #[test]
 fn p2_join_keeps_the_native_range_boundary_and_null_home_base_hub_guard() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = force_frame();
     let content = content(b"categories={ocean={}}");
@@ -370,11 +370,11 @@ fn p2_join_keeps_the_native_range_boundary_and_null_home_base_hub_guard() {
             ..Default::default()
         }]),
     );
-    let graph = installed_content::province_graph::ProvinceGraph {
+    let graph = installed_content_core::province_graph::ProvinceGraph {
         edges: [(1, vec![(2, Some(300_000))]), (2, vec![(1, Some(300_000))])].into(),
         ..Default::default()
     };
-    let geometry = installed_content::province_geometry::ProvinceGeometry {
+    let geometry = installed_content_core::province_geometry::ProvinceGeometry {
         centroids: [(1, [0, 0]), (2, [3, 0]), (3, [0, 0]), (4, [3, 0])].into(),
         land: [3, 4].into(),
         width: 10,
@@ -432,7 +432,7 @@ fn p2_join_keeps_the_native_range_boundary_and_null_home_base_hub_guard() {
 
 #[test]
 fn unlinked_mission_owner_is_named_without_losing_the_other_operands() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = force_frame();
     if let TableView::Complete(TableRows::NavalMissionTaskForces(rows)) =

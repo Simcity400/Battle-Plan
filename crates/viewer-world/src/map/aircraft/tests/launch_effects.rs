@@ -4,10 +4,11 @@ use super::*;
 use crate::map::aircraft::launches::{
     AIR_BASE, GUN_EMPLACEMENT, Launch, PASS_SECONDS, ROCKET_SITE,
 };
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{LexicalTokenRow, TableId, TableRows, VariantDefinitionRow, WingEquipmentRow},
+use replay_data::{
+    rows::LexicalTokenRow, rows::TableId, rows::TableRows, rows::VariantDefinitionRow,
+    rows::WingEquipmentRow,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 
 fn launch(spawn: f32, length: f32) -> Launch {
     Launch {
@@ -189,7 +190,7 @@ fn launch_assets() -> (AircraftAssets, std::path::PathBuf) {
         std::fs::write(path, bytes).unwrap();
     }
     let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let definition = |id| installed_content::map::ProvinceDefinition {
+    let definition = |id| installed_content_core::map::ProvinceDefinition {
         id,
         rgb: [0, 0, 0],
         kind: ProvinceKind::Land,
@@ -419,20 +420,29 @@ fn a_launch_finishing_at_the_opening_instant_explodes_once() {
     };
     // The scene's first frame drains an empty interval at zero.
     assert_eq!(records(plan.missile_explosions(0.0, 0.0)), [0]);
-    assert_eq!(records(plan.missile_explosions(0.0, 0.016)), Vec::<u32>::new());
+    assert_eq!(
+        records(plan.missile_explosions(0.0, 0.016)),
+        Vec::<u32>::new()
+    );
     let mut swapped = AircraftPlan {
         launches: plan.launches.clone(),
         ..Default::default()
     };
     swapped.carry_opening(&plan);
-    assert_eq!(records(swapped.missile_explosions(0.016, 0.5)), Vec::<u32>::new());
+    assert_eq!(
+        records(swapped.missile_explosions(0.016, 0.5)),
+        Vec::<u32>::new()
+    );
     assert_eq!(records(swapped.missile_explosions(0.5, 2.0)), [1]);
     // A plan whose first drain starts after the opening instant never takes it.
     let mut late = AircraftPlan {
         launches: plan.launches.clone(),
         ..Default::default()
     };
-    assert_eq!(records(late.missile_explosions(0.5, 1.0)), Vec::<u32>::new());
+    assert_eq!(
+        records(late.missile_explosions(0.5, 1.0)),
+        Vec::<u32>::new()
+    );
     // A drain from before the instant takes record 0 once, not twice.
     let mut early = AircraftPlan {
         launches: plan.launches.clone(),

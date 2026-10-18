@@ -38,7 +38,7 @@ fn process_test_job(shared: &Shared, job: &mut DecodeJob, memo: &mut AirBasesMem
 }
 
 fn copy_divisions_worker_refresh(
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     ctx: crate::sampling::DivisionsCopyContext,
     payload: &mut crate::sampling::DivisionsJob,
 ) -> crate::sampling::DivisionsCopyReport {
@@ -287,7 +287,7 @@ fn overflow_growth_is_deferred_and_keeps_its_flag_until_reclaimed() {
     let mut job = AirStatsJob::new();
     job.log = crate::raw::RawLog::new(1, 1);
     let bytes = [0u8; 2];
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: 0x1000,
         bytes: &bytes,
     };
@@ -328,7 +328,7 @@ fn fifo_absent_daily_payloads_preserve_skipped_outcomes_and_idle_pools() {
     frame
         .extended
         .air_stats_pilot()
-        .fail_air_stats_capture(replay::cadence::SKIPPED_REASON);
+        .fail_air_stats_capture(replay_data::cadence::SKIPPED_REASON);
     let air_before = frame.extended.air_stats_pilot().outcomes();
     let retired = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
     assert!(retired.is_empty());
@@ -369,7 +369,7 @@ fn lazy_world_request_acquires_only_scheduled_parts_and_retires_them_once() {
     };
     let idle = pool_lengths();
     let retired = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
-    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(16).unwrap());
+    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(16).unwrap());
     let shared = Shared::new(0, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
     for (hour, force_full, parts, economy) in [
@@ -454,12 +454,12 @@ fn lazy_world_request_acquires_only_scheduled_parts_and_retires_them_once() {
 #[test]
 fn the_economy_rest_is_its_own_job_and_each_failure_refuses_only_its_tables() {
     use crate::extended::{economy, production};
-    use engine::walk::Outcome;
+    use engine_native::walk::Outcome;
 
     let _guard = TEST_LOCK.lock().unwrap();
     reset_calibration_for_test();
     let retired = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
-    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(16).unwrap());
+    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(16).unwrap());
     let reason = "acquisition worker panicked";
     let world_tables = || PRODUCTION_REST.into_iter().chain(CONSTRUCTION_REST);
     for (world_failed, economy_failed) in
@@ -533,7 +533,7 @@ fn the_economy_rest_is_its_own_job_and_each_failure_refuses_only_its_tables() {
         assert_eq!(world_report.production.raw_ok, !world_failed);
         assert_eq!(world_report.construction.raw_ok, !world_failed);
         assert_eq!(economy_report.raw_ok, !economy_failed);
-        let mut ticks = [0; replay::frame::TABLE_COUNT];
+        let mut ticks = [0; replay_data::rows::TABLE_COUNT];
         sampling::refuse_world_rest(
             &mut captured,
             active,
@@ -598,7 +598,7 @@ fn the_economy_rest_is_its_own_job_and_each_failure_refuses_only_its_tables() {
 
 #[test]
 fn missing_declared_payloads_fail_only_the_frozen_active_tables() {
-    use engine::walk::Outcome;
+    use engine_native::walk::Outcome;
 
     let _guard = TEST_LOCK.lock().unwrap();
     reset_calibration_for_test();
@@ -635,7 +635,7 @@ fn missing_declared_payloads_fail_only_the_frozen_active_tables() {
         reason: MISSING_PAYLOAD_REASON,
     };
     let skipped = Outcome::Unavailable {
-        reason: replay::cadence::SKIPPED_REASON,
+        reason: replay_data::cadence::SKIPPED_REASON,
     };
     for (active, outcome) in characters
         .into_iter()
@@ -653,7 +653,7 @@ fn missing_declared_payloads_fail_only_the_frozen_active_tables() {
             air[0],
             air[1],
             air[2],
-            air[air_slot(replay::rows::TableId::AirAces)]
+            air[air_slot(replay_data::rows::TableId::AirAces)]
         ],
         [missing, missing, skipped, skipped]
     );
@@ -668,11 +668,11 @@ fn missing_declared_payloads_fail_only_the_frozen_active_tables() {
 
 #[test]
 fn missing_division_payload_publishes_hourly_census_reason_even_without_details() {
-    use engine::walk::Outcome;
-    use replay::rows::TableId;
+    use engine_native::walk::Outcome;
+    use replay_data::rows::TableId;
 
     struct NoReads;
-    impl engine::Memory for NoReads {
+    impl engine_native::Memory for NoReads {
         fn copy(&self, _: usize, _: &mut [u8]) -> bool {
             panic!("missing division payload must not retry native reads");
         }
@@ -682,7 +682,7 @@ fn missing_division_payload_publishes_hourly_census_reason_even_without_details(
         frame.extended.reset();
         let hour = (0..24)
             .find(|&hour| {
-                replay::cadence::should_walk(TableId::DivisionEquipment, hour, false)
+                replay_data::cadence::should_walk(TableId::DivisionEquipment, hour, false)
                     == details_active
             })
             .unwrap();
@@ -723,7 +723,7 @@ fn missing_division_payload_publishes_hourly_census_reason_even_without_details(
                     missing
                 } else {
                     Outcome::Unavailable {
-                        reason: replay::cadence::SKIPPED_REASON,
+                        reason: replay_data::cadence::SKIPPED_REASON,
                     }
                 }
             );
@@ -737,8 +737,8 @@ fn relations_gate_admits_every_hour_for_its_owner_slice() {
     for hour in -48..48i32 {
         assert!(relations_refresh_hour(hour, false), "hour {hour}");
         for table in RELATIONS {
-            assert!(replay::cadence::is_sliced(table));
-            assert!(replay::cadence::should_walk(table, hour, false));
+            assert!(replay_data::cadence::is_sliced(table));
+            assert!(replay_data::cadence::should_walk(table, hour, false));
         }
         assert!(relations_refresh_hour(hour, true), "forced hour {hour}");
     }
@@ -750,10 +750,10 @@ fn characters_gate_walks_the_roster_roles_and_traits_every_hour() {
         assert!(characters_refresh_hour(hour, false), "hour {hour}");
         for table in CHARACTERS {
             assert!(
-                replay::cadence::should_walk(table, hour, false),
+                replay_data::cadence::should_walk(table, hour, false),
                 "{table:?} at hour {hour}"
             );
-            assert!(replay::cadence::should_walk(table, hour, true));
+            assert!(replay_data::cadence::should_walk(table, hour, true));
         }
         assert!(characters_refresh_hour(hour, true), "forced hour {hour}");
     }
@@ -761,7 +761,7 @@ fn characters_gate_walks_the_roster_roles_and_traits_every_hour() {
 
 #[test]
 fn projects_gate_matches_their_daily_slot_and_force_full() {
-    let slot = replay::cadence::refresh_slot(PROJECTS[0]).unwrap() as i32;
+    let slot = replay_data::cadence::refresh_slot(PROJECTS[0]).unwrap() as i32;
     for hour in -48..48i32 {
         let refresh = hour.rem_euclid(24) == slot;
         assert_eq!(projects_refresh_hour(hour, false), refresh, "hour {hour}");
@@ -1029,7 +1029,7 @@ fn worker_decodes_a_relations_refresh_payload_into_the_same_typed_rows() {
 #[test]
 fn worker_relations_mixed_payload_keeps_hourly_tuples_and_skips_opinions() {
     use crate::extended::intel::{self, RelationsCopyContext, RelationsJob};
-    use engine::walk::Outcome;
+    use engine_native::walk::Outcome;
     use intel::relations_test_kit as kit;
 
     let _guard = TEST_LOCK.lock().unwrap();
@@ -1047,7 +1047,7 @@ fn worker_relations_mixed_payload_keeps_hourly_tuples_and_skips_opinions() {
         if !opinions_active {
             direct.opinion_rows.clear();
             direct.opinion_outcome = Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON,
+                reason: replay_data::cadence::SKIPPED_REASON,
             };
         }
         let mut payload = RelationsJob::new();
@@ -1209,7 +1209,7 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
         let bytes = kit::mapped_fixture();
         let memory = kit::memory(&bytes);
         characters::advisors::note_modifier_demand(
-            engine::cadvisor::modifier_demand(&memory, kit::BASE, kit::GAME_STATE).unwrap(),
+            engine_native::cadvisor::modifier_demand(&memory, kit::BASE, kit::GAME_STATE).unwrap(),
         );
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         let captured = frame.extended.characters_pilot();
@@ -1257,7 +1257,7 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
 fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
     use crate::extended::characters::{self, CharactersCopyContext, CharactersJob};
     use characters::characters_test_kit as kit;
-    use engine::walk::Outcome;
+    use engine_native::walk::Outcome;
 
     let _guard = TEST_LOCK.lock().unwrap();
     reset_calibration_for_test();
@@ -1270,7 +1270,8 @@ fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
         bytes: [131_072; 5],
     };
     for (hour, force_full) in [(0, false), (21, false), (7, true)] {
-        let active = CHARACTERS.map(|table| replay::cadence::should_walk(table, hour, force_full));
+        let active =
+            CHARACTERS.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
         let mut direct = characters::Captured::with_capacities(&capacities);
         direct.capture(&memory, kit::BASE, kit::GAME_STATE, hour, force_full);
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -1313,7 +1314,7 @@ fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
                 assert_eq!(
                     outcome,
                     Outcome::Unavailable {
-                        reason: replay::cadence::SKIPPED_REASON
+                        reason: replay_data::cadence::SKIPPED_REASON
                     }
                 );
             }
@@ -1694,7 +1695,7 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
 #[test]
 fn fifo_uses_frozen_division_detail_activity_and_retires_the_owned_core_once() {
     use crate::sampling::{DivisionsCopyContext, divisions_test_kit as kit};
-    use engine::walk::Outcome;
+    use engine_native::walk::Outcome;
 
     let _guard = TEST_LOCK.lock().unwrap();
     reset_calibration_for_test();
@@ -1704,11 +1705,11 @@ fn fifo_uses_frozen_division_detail_activity_and_retires_the_owned_core_once() {
     let index = shared.free.pop().expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let skipped = Outcome::Unavailable {
-        reason: replay::cadence::SKIPPED_REASON,
+        reason: replay_data::cadence::SKIPPED_REASON,
     };
     frame
         .extended
-        .fail_division_details(replay::cadence::SKIPPED_REASON);
+        .fail_division_details(replay_data::cadence::SKIPPED_REASON);
     frame.extended.set_divisions_raw_mode(true);
     let detail_pointer = frame
         .extended
@@ -1773,11 +1774,7 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
             copy_divisions_inputs_refresh_growing, divisions_test_kit as kit,
         },
     };
-    use engine::{
-        Memory,
-        memory::{CountedMemory, ReadCounts},
-        walk::Outcome,
-    };
+    use engine_native::{Memory, memory::CountedMemory, memory::ReadCounts, walk::Outcome};
     use std::cell::{Cell, RefCell};
 
     struct NoRead;
@@ -1794,7 +1791,7 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
     impl Memory for CoreFault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.calls.borrow_mut().push((address, output.len()));
-            let fault = kit::GAME_STATE + engine::cgame_state::PROVINCES;
+            let fault = kit::GAME_STATE + engine_native::cgame_state::PROVINCES;
             if address <= fault && address.saturating_add(output.len()) > fault {
                 let attempts = self.fault_attempts.get();
                 self.fault_attempts.set(attempts + 1);
@@ -2018,7 +2015,7 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
             assert_eq!(
                 outcome,
                 Outcome::Unavailable {
-                    reason: replay::cadence::SKIPPED_REASON
+                    reason: replay_data::cadence::SKIPPED_REASON
                 }
             );
         }
@@ -2035,7 +2032,7 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
 #[test]
 fn cold_worker_payload_grows_from_native_headers_before_publication_and_reuses_storage() {
     use crate::extended::air::{AirStatsCopyContext, Capacities, stats_test_kit as kit};
-    use engine::walk::Outcome;
+    use engine_native::walk::Outcome;
     let _guard = TEST_LOCK.lock().unwrap();
     reset_calibration_for_test();
     let saved = std::mem::take(&mut *AIR_STATS_JOB_POOL.lock().unwrap());
@@ -2074,7 +2071,7 @@ fn cold_worker_payload_grows_from_native_headers_before_publication_and_reuses_s
         let bytes = kit::mod_fixture(count);
         let memory = kit::memory(&bytes);
         let mut capacities = Capacities::default();
-        capacities.rows[air_slot(replay::rows::TableId::AirStatistics)] = count;
+        capacities.rows[air_slot(replay_data::rows::TableId::AirStatistics)] = count;
         let direct = kit::direct(&memory, &capacities);
         assert_eq!(direct.outcome, Outcome::Rows { len: count });
         let report =
@@ -2256,7 +2253,7 @@ fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
     let shared = Shared::new(stats_test_kit::BASE, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
     let mut capacities = crate::extended::air::Capacities::default();
-    capacities.rows[air_slot(replay::rows::TableId::AirStatistics)] = 2;
+    capacities.rows[air_slot(replay_data::rows::TableId::AirStatistics)] = 2;
     let direct = stats_test_kit::direct(&memory, &capacities);
     let ctx = AirStatsCopyContext {
         base: stats_test_kit::BASE,
@@ -2479,7 +2476,7 @@ fn worker_decodes_a_production_rest_payload_into_the_same_typed_rows() {
     let _guard = TEST_LOCK.lock().unwrap();
     reset_calibration_for_test();
     let bytes = kit::fixture();
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -2570,7 +2567,7 @@ fn worker_decodes_a_construction_rest_payload_into_the_same_typed_rows() {
     let _guard = TEST_LOCK.lock().unwrap();
     reset_calibration_for_test();
     let bytes = kit::fixture();
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -2888,18 +2885,18 @@ fn bare_job(index: usize, seq: u64, hour: i32, game_elapsed: i64) -> DecodeJob {
 #[test]
 fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() {
     use crate::extended::air::{AirStatsCopyContext, Capacities, stats_test_kit as kit};
-    use engine::walk::Outcome;
+    use engine_native::walk::Outcome;
     let _guard = TEST_LOCK.lock().unwrap();
     reset_calibration_for_test();
     let mut bytes = kit::fixture();
     let mut capacities = Capacities::default();
-    capacities.rows[air_slot(replay::rows::TableId::AirStatistics)] = 2;
+    capacities.rows[air_slot(replay_data::rows::TableId::AirStatistics)] = 2;
     let shared = Shared::new(kit::BASE, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
     let mut bases_memo = AirBasesMemo::default();
     for (step, hour) in [5, 29, 30, 53, 77, 101, 125, 149].into_iter().enumerate() {
         let mut job = bare_job(index, step as u64 + 1, hour, 41);
-        job.air_stats_refresh = replay::cadence::should_walk(AIR_STATS[0], hour, false);
+        job.air_stats_refresh = replay_data::cadence::should_walk(AIR_STATS[0], hour, false);
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         let captured = frame.extended.air_stats_pilot();
         captured.prepare_hour(hour, false);
@@ -2933,7 +2930,7 @@ fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() 
             );
             job.air_stats_payload = Some(payload);
         } else if !job.air_stats_refresh {
-            captured.fail_air_stats_capture(replay::cadence::SKIPPED_REASON);
+            captured.fail_air_stats_capture(replay_data::cadence::SKIPPED_REASON);
         }
         process_test_job(&shared, &mut job, &mut bases_memo);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -2942,10 +2939,10 @@ fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() 
         let captured = frame.extended.air_stats_pilot();
         if step == 2 || step == 5 {
             assert_eq!(
-                captured.outcomes()[air_slot(replay::rows::TableId::AirStatistics)],
+                captured.outcomes()[air_slot(replay_data::rows::TableId::AirStatistics)],
                 Outcome::Unavailable {
                     reason: if step == 2 {
-                        replay::cadence::SKIPPED_REASON
+                        replay_data::cadence::SKIPPED_REASON
                     } else {
                         MISSING_PAYLOAD_REASON
                     },
@@ -2964,7 +2961,7 @@ fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_change
     use crate::extended::air::{
         AirBasesCopyContext, Capacities, Captured, air_bases_test_kit as kit,
     };
-    use engine::walk::Outcome;
+    use engine_native::walk::Outcome;
     let _guard = TEST_LOCK.lock().unwrap();
     reset_calibration_for_test();
     let bytes = kit::fixture();
@@ -2973,7 +2970,7 @@ fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_change
     let reference = kit::direct(&kit::memory(&bytes));
     let mut capacities = Capacities::default();
     capacities.rows[1] = reference.bases_outcome.len();
-    capacities.rows[air_slot(replay::rows::TableId::AirAces)] = reference.aces_outcome.len();
+    capacities.rows[air_slot(replay_data::rows::TableId::AirAces)] = reference.aces_outcome.len();
     capacities.ace_names = reference.ace_names.len();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     *frame.extended.air_bases_pilot() = Captured::with_capacities(&capacities);
@@ -3021,9 +3018,9 @@ fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_change
         if !(9..=10).contains(&step) {
             assert_eq!(
                 frame.extended.air_bases_pilot().outcomes()
-                    [air_slot(replay::rows::TableId::AirAces)],
+                    [air_slot(replay_data::rows::TableId::AirAces)],
                 Outcome::Unavailable {
-                    reason: replay::cadence::SKIPPED_REASON,
+                    reason: replay_data::cadence::SKIPPED_REASON,
                 }
             );
         }
@@ -3044,7 +3041,7 @@ fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_change
 #[test]
 fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
     use crate::extended::air::air_bases_test_kit as kit;
-    use replay::frame::TableView;
+    use replay_frame::frame::TableView;
     let _guard = TEST_LOCK.lock().unwrap();
     reset_calibration_for_test();
     let bytes = kit::fixture();
@@ -3079,7 +3076,7 @@ fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
     let fog = frame.extended.radar_pilot().tables();
     assert!(matches!(air[1], TableView::Complete(_)));
     assert!(matches!(
-        air[air_slot(replay::rows::TableId::AirAces)],
+        air[air_slot(replay_data::rows::TableId::AirAces)],
         TableView::Complete(_)
     ));
     assert!(matches!(fog[5], TableView::Complete(_)));
@@ -3088,7 +3085,7 @@ fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
         direct.bases_outcome
     );
     assert_eq!(
-        frame.extended.air_bases_pilot().outcomes()[air_slot(replay::rows::TableId::AirAces)],
+        frame.extended.air_bases_pilot().outcomes()[air_slot(replay_data::rows::TableId::AirAces)],
         direct.aces_outcome
     );
     assert!(!frame.extended.air_bases_pilot().bases_raw_mode);
@@ -3106,7 +3103,7 @@ fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
 #[test]
 fn worker_decodes_a_supremacy_payload_into_the_same_typed_rows() {
     use crate::extended::naval_history::supremacy_test_kit as kit;
-    use replay::frame::TableView;
+    use replay_frame::frame::TableView;
     let _guard = TEST_LOCK.lock().unwrap();
     reset_calibration_for_test();
     let bytes = kit::fixture();
@@ -3150,7 +3147,7 @@ fn worker_decodes_a_supremacy_payload_into_the_same_typed_rows() {
 #[test]
 fn worker_decodes_a_sunk_payload_into_the_same_typed_rows() {
     use crate::extended::naval_history::sunk_test_kit as kit;
-    use replay::frame::TableView;
+    use replay_frame::frame::TableView;
     let _guard = TEST_LOCK.lock().unwrap();
     reset_calibration_for_test();
     let bytes = kit::fixture();
@@ -3181,10 +3178,13 @@ fn worker_decodes_a_sunk_payload_into_the_same_typed_rows() {
     // The sunk table is pack slot 13; the singleton conversion owns the
     // single row, so compare the converted view (one row, two entries).
     // The raw walk holds two records; the singleton owns one row.
-    assert_eq!(direct.outcome, engine::walk::Outcome::Rows { len: 2 });
+    assert_eq!(
+        direct.outcome,
+        engine_native::walk::Outcome::Rows { len: 2 }
+    );
     let naval = frame.extended.sunk_pilot().tables();
     let entries = match &naval[13] {
-        TableView::Complete(replay::rows::TableRows::SunkShips(rows)) => {
+        TableView::Complete(replay_data::rows::TableRows::SunkShips(rows)) => {
             assert_eq!(rows.len(), 1);
             rows[0].entries.len()
         }
@@ -3201,7 +3201,7 @@ fn worker_decodes_a_sunk_payload_into_the_same_typed_rows() {
 #[test]
 fn worker_decodes_a_radar_payload_into_the_same_typed_rows() {
     use crate::extended::fog::radar_test_kit as kit;
-    use replay::frame::TableView;
+    use replay_frame::frame::TableView;
     let _guard = TEST_LOCK.lock().unwrap();
     reset_calibration_for_test();
     let bytes = kit::fixture();
@@ -3239,7 +3239,7 @@ fn worker_decodes_a_radar_payload_into_the_same_typed_rows() {
 #[test]
 fn worker_decodes_an_intel_payload_into_the_same_typed_rows() {
     use crate::extended::fog::intel_test_kit as kit;
-    use replay::frame::TableView;
+    use replay_frame::frame::TableView;
     let _guard = TEST_LOCK.lock().unwrap();
     reset_calibration_for_test();
     let bytes = kit::fixture();
@@ -3411,7 +3411,7 @@ fn a_reserved_job_publishes_in_place_and_an_unpublished_one_returns_vacant() {
 }
 
 /// The air pack's slot of `table`, so fixtures follow the pack's order.
-fn air_slot(table: replay::rows::TableId) -> usize {
+fn air_slot(table: replay_data::rows::TableId) -> usize {
     crate::extended::air::TABLES
         .iter()
         .position(|&candidate| candidate == table)

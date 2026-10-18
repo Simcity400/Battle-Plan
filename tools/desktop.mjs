@@ -37,8 +37,24 @@ function run(executable, args, cwd = root) {
   });
 }
 
+const extra = process.argv.slice(3);
+// Tauri separates its own flags, Cargo runner flags and application arguments.
+const separator = extra.indexOf("--");
+const cliArgs = separator < 0 ? extra : extra.slice(0, separator);
+const runnerArgs = separator < 0 ? [] : extra.slice(separator + 1);
+const appSeparator = runnerArgs.indexOf("--");
+const cargoArgs = appSeparator < 0 ? runnerArgs : runnerArgs.slice(0, appSeparator);
+const profileIndex = cargoArgs.indexOf("--profile");
+const explicitProfile = profileIndex < 0
+  ? cargoArgs.find((arg) => arg.startsWith("--profile="))?.slice("--profile=".length)
+  : cargoArgs[profileIndex + 1];
+const release = mode === "build" || cliArgs.includes("--release")
+  || cargoArgs.includes("--release") || cargoArgs.includes("-r");
+const profile = explicitProfile ?? (release ? "release" : "interactive");
+const defaultProfile = !explicitProfile && !release ? ["--profile", "interactive"] : [];
+
 try {
-  await run("cargo", ["build", "-p", "viewer", ...(mode === "build" ? ["--release"] : [])]);
+  await run("cargo", ["build", "-p", "viewer", "--profile", profile]);
   // Every shipped viewer uses the same pinned compiler, including vanilla recordings.
   if (mode === "build") {
     await run("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
@@ -52,7 +68,11 @@ try {
     beforeDevCommand: { script: "npm run dev:ui", cwd: root },
     beforeBuildCommand: { script: "npm run build:ui", cwd: root },
   } });
-  await run(process.execPath, [cli, mode, "--config", hooks, ...(mode === "build" ? ["--no-bundle"] : []), ...process.argv.slice(3)], path.join(root, "crates", "desktop"));
+  // Keep both separators and use the same profile for the host and viewer.
+  const args = mode === "build"
+    ? ["--no-bundle", ...extra]
+    : [...cliArgs, "--", ...defaultProfile, ...runnerArgs];
+  await run(process.execPath, [cli, mode, "--config", hooks, ...args], path.join(root, "crates", "desktop"));
   if (mode === "build") {
     // Battle Plan Recorder ships beside the replay app, embeds the same frontend build
     // and injects the collector from its own folder.

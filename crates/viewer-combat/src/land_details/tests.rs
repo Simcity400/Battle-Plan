@@ -1,10 +1,10 @@
 use super::*;
-use replay::rows::{LandDivisionModifier, LandDivisionWidthTerm, Recorded};
+use replay_data::{rows::LandDivisionModifier, rows::LandDivisionWidthTerm, rows::Recorded};
 
 #[test]
 fn border_width_uses_the_recorded_base_and_native_signed_wrapping() {
     let mut detail = LandCombatDetailsRow {
-        border_war: Recorded::Value(Some(replay::rows::LandBorderWarInputs {
+        border_war: Recorded::Value(Some(replay_data::rows::LandBorderWarInputs {
             combat_width: Recorded::Value(8_000_000),
             ..Default::default()
         })),
@@ -158,7 +158,7 @@ fn width_replays_direction_grouping_and_totals() {
 #[test]
 fn border_width_badge_refuses_missing_configured_width_instead_of_terrain_totals() {
     let mut detail = LandCombatDetailsRow {
-        border_war: Recorded::Value(Some(replay::rows::LandBorderWarInputs {
+        border_war: Recorded::Value(Some(replay_data::rows::LandBorderWarInputs {
             combat_width: Recorded::NotRecorded,
             ..Default::default()
         })),
@@ -192,7 +192,7 @@ fn border_width_badge_refuses_missing_configured_width_instead_of_terrain_totals
         width_badge(&detail, Some(true), || unreachable!()),
         Err("LandCombatDetails.border_war not recorded".into())
     );
-    detail.border_war = Recorded::Value(Some(replay::rows::LandBorderWarInputs {
+    detail.border_war = Recorded::Value(Some(replay_data::rows::LandBorderWarInputs {
         combat_width: Recorded::Value(0),
         ..Default::default()
     }));

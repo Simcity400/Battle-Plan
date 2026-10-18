@@ -8,18 +8,18 @@ pub(super) fn compare_variants(
     report: &mut Report,
 ) -> io::Result<()> {
     // Tier-4 slot3; cadence table is the single source of truth.
-    if !report.refresh_is_current(replay::rows::TableId::VariantDefinitions, frame.hour) {
+    if !report.refresh_is_current(replay_data::rows::TableId::VariantDefinitions, frame.hour) {
         for table in [
-            replay::rows::TableId::VariantDefinitions,
-            replay::rows::TableId::VariantModules,
-            replay::rows::TableId::VariantStats,
-            replay::rows::TableId::VariantUpgrades,
+            replay_data::rows::TableId::VariantDefinitions,
+            replay_data::rows::TableId::VariantModules,
+            replay_data::rows::TableId::VariantStats,
+            replay_data::rows::TableId::VariantUpgrades,
         ] {
             report.limitation(
-                &format!("Variants {}", replay::cadence::STAGGER_LIMITATION),
+                &format!("Variants {}", replay_data::cadence::STAGGER_LIMITATION),
                 format!(
                     "{table:?} refreshes on {} (oracle hour {})",
-                    replay::cadence::refresh_text(table),
+                    replay_data::cadence::refresh_text(table),
                     frame.hour
                 ),
             );
@@ -61,7 +61,7 @@ pub(super) fn compare_variants(
 /// not only rows read at the frame's hour.
 pub fn compare_variant_archetypes(
     frame: &DecodedFrame,
-    equipment: &installed_content::equipment::Database,
+    equipment: &installed_content_core::equipment::Database,
     tokens: &TokenNames<'_>,
     report: &mut Report,
 ) -> io::Result<()> {

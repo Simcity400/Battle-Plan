@@ -1,9 +1,7 @@
 use super::*;
 use dashboard_base::{prepared::series::tests::Fixture, test_fixtures};
-use replay::{
-    frame::TableView,
-    rows::{CountryLinkRow, CountryRow, TableRows},
-};
+use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableRows};
+use replay_frame::frame::TableView;
 
 fn frame(hour: i32, count: u32) -> DecodedFrame {
     let mut frame = test_fixtures::source(1, hour, None);

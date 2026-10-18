@@ -2,16 +2,11 @@
 //! beside Slow.
 //! Native order is explicit in keys; all growth/conversion is off-thread.
 use crate::{clock::qpc, table_capture::CaptureRows, table_conversion::table};
-use engine::{
-    Memory, cwar_goal,
-    cwar_relation::{self, overview as native},
-    read,
-    walk::Outcome,
+use engine_native::{
+    Memory, cwar_goal, cwar_relation, cwar_relation::overview as native, read, walk::Outcome,
 };
-use replay::{
-    frame::TableView,
-    rows::{self, TableId, tables},
-};
+use replay_data::{rows, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 
 pub const N: usize = 4;
 pub const TABLES: [TableId; N] = [
@@ -209,7 +204,7 @@ impl Captured {
                 self.prefix.as_slice(),
                 |prefix| rows::WarNameRuleRow {
                     index: 0,
-                    prefix: engine::allocation::owned_vec(engine::allocation::copy_vec(prefix)),
+                    prefix: engine_allocation::owned_vec(engine_allocation::copy_vec(prefix)),
                     viewpoint: self.prefix_view,
                 },
             ),

@@ -1,14 +1,13 @@
 use super::*;
-use installed_content::province_geometry::ProvinceGeometry;
+use installed_content_core::province_geometry::ProvinceGeometry;
 use std::collections::BTreeMap;
 
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{
-        AirBaseRegistrationRow, AirBaseRow, AirReferenceWitnessRow, AirWingRaidReference,
-        CountryLinkRow, ProvinceRow, Recorded, ShipRow, TableId, TableSchema,
-    },
+use replay_data::{
+    rows::AirBaseRegistrationRow, rows::AirBaseRow, rows::AirReferenceWitnessRow,
+    rows::AirWingRaidReference, rows::CountryLinkRow, rows::ProvinceRow, rows::Recorded,
+    rows::ShipRow, rows::TableId, rows::TableSchema,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 
 pub(in crate::map::orders) struct Fixture {
     pub(in crate::map::orders) frame: DecodedFrame,
@@ -16,7 +15,7 @@ pub(in crate::map::orders) struct Fixture {
     states: BTreeMap<u32, Vec<u32>>,
     region_by_province: BTreeMap<u32, u32>,
     regions: BTreeMap<u32, Vec<u32>>,
-    units: installed_content::unit_leader::SubUnits,
+    units: installed_content_core::unit_leader::SubUnits,
 }
 
 impl Fixture {
@@ -100,7 +99,7 @@ impl Fixture {
     }
 
     fn put<T: TableSchema>(&mut self, mut rows: Vec<T::Row>) {
-        use replay::rows::RowCodec;
+        use replay_data::rows::RowCodec;
         rows.sort_by_key(RowCodec::key);
         self.frame.tables[T::ID.index()] = TableView::Complete(T::wrap(rows)).into();
     }
@@ -192,7 +191,7 @@ fn no_source_state_base_or_container_returns_zero_without_later_tables() {
 
 #[test]
 fn owner_group_container_preserves_repeated_signed_planes_and_ignores_capacity() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.put::<tables::AirBaseRegistrations>(vec![AirBaseRegistrationRow {
@@ -211,7 +210,7 @@ fn owner_group_container_preserves_repeated_signed_planes_and_ignores_capacity()
 
 #[test]
 fn nontransport_pool_and_earlier_idle_gates_do_not_demand_later_operands() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.wing(|wing| wing.pool_subunit = Recorded::Value(Some(0)));
@@ -240,7 +239,7 @@ fn nontransport_pool_and_earlier_idle_gates_do_not_demand_later_operands() {
 
 #[test]
 fn missing_pool_identity_and_uncertain_content_refuse_instead_of_guessing() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.wing(|wing| wing.pool_subunit = Recorded::NotRecorded);
@@ -269,7 +268,7 @@ fn missing_pool_identity_and_uncertain_content_refuse_instead_of_guessing() {
 
 #[test]
 fn transfer_and_raid_liveness_use_their_witnesses_without_raid_roster_inference() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.region();
@@ -298,7 +297,7 @@ fn transfer_and_raid_liveness_use_their_witnesses_without_raid_roster_inference(
 
 #[test]
 fn region_reach_uses_the_wings_pool_base_not_the_orders_source_base() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.region();
@@ -319,7 +318,7 @@ fn region_reach_uses_the_wings_pool_base_not_the_orders_source_base() {
 
 #[test]
 fn resolved_carrier_requires_its_task_force_mission_and_uses_its_province_anchor() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.region();
@@ -383,7 +382,7 @@ fn resolved_carrier_requires_its_task_force_mission_and_uses_its_province_anchor
 
 #[test]
 fn nonzero_stale_state_host_uses_state_geometry_without_ship_tables() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.region();
@@ -402,7 +401,7 @@ fn nonzero_stale_state_host_uses_state_geometry_without_ship_tables() {
 
 #[test]
 fn a_live_host_takes_precedence_over_the_state_for_mixed_base_geometry() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.region();
@@ -450,7 +449,7 @@ fn a_live_host_takes_precedence_over_the_state_for_mixed_base_geometry() {
 
 #[test]
 fn missing_ace_range_is_reached_before_idle_mission_gates() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.wing(|wing| {

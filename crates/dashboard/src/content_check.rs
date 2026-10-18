@@ -2,7 +2,7 @@
 
 use crate::{catalogue::Catalogue, products};
 pub use dashboard_core::findings::{Finding, Kind};
-use installed_content::content::ResolvedContent;
+use installed_content_core::content::ResolvedContent;
 use std::{
     sync::{Arc, OnceLock},
     time::{Duration, Instant},
@@ -38,23 +38,26 @@ struct Content {
     language: String,
     catalogue: OnceLock<Result<Arc<Catalogue>, String>>,
     politics: OnceLock<Result<Arc<products::politics_content::PoliticsContent>, String>>,
-    equipment: OnceLock<Result<Arc<installed_content::equipment::Database>, String>>,
+    equipment: OnceLock<Result<Arc<installed_content_core::equipment::Database>, String>>,
     autonomy: OnceLock<
         Result<
             (
-                installed_content::autonomy::AutonomyStates,
-                Vec<installed_content::Diagnostic>,
+                installed_content_core::autonomy::AutonomyStates,
+                Vec<installed_content_core::Diagnostic>,
             ),
             String,
         >,
     >,
     resources: OnceLock<Result<Vec<Finding>, String>>,
     construction: Prepared<Finding>,
-    production: Prepared<installed_content::Diagnostic>,
+    production: Prepared<installed_content_core::Diagnostic>,
     tags: OnceLock<
-        Result<std::collections::BTreeMap<String, installed_content::country_tags::CountryTag>, String>,
+        Result<
+            std::collections::BTreeMap<String, installed_content_core::country_tags::CountryTag>,
+            String,
+        >,
     >,
-    ideologies: OnceLock<Result<installed_content::ideologies::Ideologies, String>>,
+    ideologies: OnceLock<Result<installed_content_core::ideologies::Ideologies, String>>,
     intelligence:
         OnceLock<Result<Arc<products::intelligence_content::IntelligenceContent>, String>>,
     agency: OnceLock<Result<Arc<products::intelligence_content::IntelligenceContent>, String>>,
@@ -83,10 +86,10 @@ impl Content {
         }
     }
 
-    fn equipment(&self) -> Result<&Arc<installed_content::equipment::Database>, String> {
+    fn equipment(&self) -> Result<&Arc<installed_content_core::equipment::Database>, String> {
         self.equipment
             .get_or_init(|| {
-                installed_content::equipment::Database::load_complete(&self.resolved.layers)
+                installed_content_core::equipment::Database::load_complete(&self.resolved.layers)
                     .map(Arc::new)
                     .map_err(|error| error.to_string())
             })
@@ -94,10 +97,11 @@ impl Content {
             .map_err(Clone::clone)
     }
 
-    fn autonomy(&self) -> Result<&installed_content::autonomy::AutonomyStates, String> {
+    fn autonomy(&self) -> Result<&installed_content_core::autonomy::AutonomyStates, String> {
         self.autonomy
             .get_or_init(|| {
-                installed_content::autonomy::read(&self.resolved.layers).map_err(|error| error.to_string())
+                installed_content_core::autonomy::read(&self.resolved.layers)
+                    .map_err(|error| error.to_string())
             })
             .as_ref()
             .map(|(states, _)| states)
@@ -154,22 +158,22 @@ impl Content {
 
     fn tags(
         &self,
-    ) -> Result<&std::collections::BTreeMap<String, installed_content::country_tags::CountryTag>, String>
+    ) -> Result<&std::collections::BTreeMap<String, installed_content_core::country_tags::CountryTag>, String>
     {
         self.tags
             .get_or_init(|| {
-                installed_content::country_tags::read_definitions(&self.resolved.layers)
+                installed_content_core::country_tags::read_definitions(&self.resolved.layers)
                     .map_err(|error| error.to_string())
             })
             .as_ref()
             .map_err(Clone::clone)
     }
 
-    fn ideologies(&self) -> Result<&installed_content::ideologies::Ideologies, String> {
+    fn ideologies(&self) -> Result<&installed_content_core::ideologies::Ideologies, String> {
         // The corpus ideologies reader owns these typed native notes.
         self.ideologies
             .get_or_init(|| {
-                installed_content::ideologies::read(&self.resolved.layers)
+                installed_content_core::ideologies::read(&self.resolved.layers)
                     .map(|(ideologies, _)| ideologies)
                     .map_err(|error| error.to_string())
             })
@@ -406,7 +410,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         }
         occupied_states::OccupiedStates::KEY | occupied_states::OccupiedStatesManifest::KEY => {
             let catalogue = content.catalogue()?;
-            let laws = installed_content::occupation_laws::read(&content.resolved.layers)
+            let laws = installed_content_core::occupation_laws::read(&content.resolved.layers)
                 .map_err(|why| why.to_string())?;
             // Laws::warnings contains failed file reads, which settle no law.
             findings.extend(
@@ -505,7 +509,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
                     .chain(&listing.diagnostics)
                     .map(|warning| Finding::new(Kind::Warning, "aircraft catalogue", warning.clone())),
             );
-            let refused = installed_content::equipment_graphics::aircraft::Catalogue::refusal_counts(&listing.entries);
+            let refused = installed_content_equipment_graphics::equipment_graphics::aircraft::Catalogue::refusal_counts(&listing.entries);
             for (kind, count) in refused {
                 let mut finding = Finding::new(Kind::Refused, "aircraft catalogue", kind.label());
                 finding.count = Some(count);
@@ -671,7 +675,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             Ok("Authored state-template and strategic-region names checked through the shared state content, region reader and plain localiser. Province overrides, owner-qualified victory-point names, stored state names and their language require recorded Provinces, ProvinceNames, States, Countries, CountryLinks, CountryAppearance and Campaign context.".into())
         }
         territory::Territory::KEY => {
-            installed_content::province_area::ProvinceAreas::read(&content.resolved.layers)
+            installed_content_province_area::province_area::ProvinceAreas::read(&content.resolved.layers)
                 .map_err(|error| error.to_string())?;
             Ok("Native land map-cell weights loaded; totals and owned/controlled identities need recorded States and Provinces rows.".into())
         }
@@ -696,7 +700,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             if key == air_force::AirForceSize::KEY {
                 content.equipment()?;
             } else {
-                let units = installed_content::unit_leader::sub_units(&content.resolved.layers)
+                let units = installed_content_core::unit_leader::sub_units(&content.resolved.layers)
                     .map_err(|error| error.to_string())?;
                 for token in units.registered() {
                     let token = std::str::from_utf8(token).map_err(|error| error.to_string())?;
@@ -766,7 +770,7 @@ fn place_names_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(
         }
     }
     // The corpus regions reader owns its native skip/replacement notes.
-    let regions = installed_content::regions::read(&content.resolved.layers)
+    let regions = installed_content_regions::regions::read(&content.resolved.layers)
         .map_err(|error| format!("Strategic-region names unavailable: {error}"))?;
     for region in regions.regions.values() {
         let subject = format!("strategic region {}", region.id);
@@ -925,7 +929,8 @@ fn flags_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), Str
         }
         let mut any = false;
         for group in groups.iter().map(|group| Some(group.token.as_str())) {
-            let candidates = installed_content::country_names::flag_keys(Some(tag), "", group);
+            let candidates =
+                installed_content_country_names::country_names::flag_keys(Some(tag), "", group);
             for size in [
                 CountryFlagSize::Full,
                 CountryFlagSize::Medium,
@@ -962,7 +967,7 @@ fn flags_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), Str
         // and retain one visible-fallback note per tag, rather than three
         // impossible requests.
         if !any {
-            let candidates = installed_content::country_names::flag_keys(Some(tag), "", None);
+            let candidates = installed_content_country_names::country_names::flag_keys(Some(tag), "", None);
             let mut plain_found = false;
             for size in [
                 CountryFlagSize::Full,
@@ -1167,8 +1172,8 @@ fn stability_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(),
 fn resources_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), String> {
     use products::resources::{ContentView, ordinals, resource_content};
     let catalogue = content.catalogue()?;
-    let (resources, _) =
-        installed_content::resources::read(&content.resolved.layers).map_err(|error| error.to_string())?;
+    let (resources, _) = installed_content_core::resources::read(&content.resolved.layers)
+        .map_err(|error| error.to_string())?;
     let numbered: Vec<_> = resources
         .into_iter()
         .enumerate()
@@ -1196,7 +1201,7 @@ fn resources_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(),
 }
 
 fn names_check(content: &Content, plain: bool, findings: &mut Vec<Finding>) -> Result<(), String> {
-    use installed_content::country_names::{CountryNames, Operands};
+    use installed_content_country_names::{country_names::CountryNames, country_names::Operands};
     let catalogue = content.catalogue()?;
     let tags = content.tags()?;
     let ideologies = content.ideologies()?;
@@ -1279,7 +1284,7 @@ mod tests {
 
     #[test]
     fn place_name_inventory_accepts_successful_empty_text_and_native_defaults() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
             (
@@ -1322,7 +1327,7 @@ mod tests {
             [11, 12, 13]
         );
         assert_eq!(
-            installed_content::regions::read(&catalogue.content.layers)
+            installed_content_regions::regions::read(&catalogue.content.layers)
                 .unwrap()
                 .regions
                 .keys()
@@ -1345,7 +1350,7 @@ mod tests {
 
     #[test]
     fn operative_content_checks_prepare_roster_and_keep_placements_recording_only() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (operative, _folder) = products::operative_content::test_content(&[
             (
@@ -1376,11 +1381,11 @@ mod tests {
 
     #[test]
     fn equipment_and_autonomy_preparation_reuse_the_same_loaded_objects() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let content = Content::new(
             Arc::new(ResolvedContent {
-                layers: installed_content::ResolvedLayers::from_folders(&[]).unwrap(),
+                layers: installed_content_core::ResolvedLayers::from_folders(&[]).unwrap(),
                 stats: Default::default(),
             }),
             "english",
@@ -1406,13 +1411,19 @@ mod tests {
     #[test]
     fn reader_kinds_preserve_the_producer_without_reading_message_words() {
         for (producer, expected) in [
-            (installed_content::DiagnosticKind::ParseFailure, Kind::ParseFailure),
-            (installed_content::DiagnosticKind::Misread, Kind::Misread),
-            (installed_content::DiagnosticKind::Unsettled, Kind::Unsettled),
-            (installed_content::DiagnosticKind::Unsupported, Kind::Unsupported),
-            (installed_content::DiagnosticKind::Refused, Kind::Refused),
-            (installed_content::DiagnosticKind::Logged, Kind::Logged),
-            (installed_content::DiagnosticKind::Warning, Kind::Warning),
+            (
+                installed_content_core::DiagnosticKind::ParseFailure,
+                Kind::ParseFailure,
+            ),
+            (installed_content_core::DiagnosticKind::Misread, Kind::Misread),
+            (installed_content_core::DiagnosticKind::Unsettled, Kind::Unsettled),
+            (
+                installed_content_core::DiagnosticKind::Unsupported,
+                Kind::Unsupported,
+            ),
+            (installed_content_core::DiagnosticKind::Refused, Kind::Refused),
+            (installed_content_core::DiagnosticKind::Logged, Kind::Logged),
+            (installed_content_core::DiagnosticKind::Warning, Kind::Warning),
         ] {
             let note = Finding::reader(
                 "fixture",

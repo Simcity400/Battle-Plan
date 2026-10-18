@@ -11,10 +11,8 @@
 
 use super::{Report, complete, invalid, required_country_tag};
 use installed_content_save::Save;
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryRow, TableId, tables},
-};
+use replay_data::{rows::CountryRow, rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 
 pub fn compare(
@@ -51,7 +49,7 @@ fn inputs(
     for row in rows {
         // A row keeps the hour its country's slice read it; only rows read at
         // the oracle hour describe the saved instant.
-        if replay::sliced::read_hour(reads, TableId::CountryStabilityInputs, row.country)
+        if replay_data::sliced::read_hour(reads, TableId::CountryStabilityInputs, row.country)
             != Some(frame.hour)
         {
             stale += 1;
@@ -83,7 +81,7 @@ fn inputs(
         let terms = &saved.stability_terms;
         let fixed = |value: &Option<installed_content_save::Decimal>| value.as_ref().map(|value| value.raw);
         // The save truncates a Q15 word to five decimals (see `q15_to_saved_fixed5`).
-        let q15 = replay::fixed_point::q15_to_saved_fixed5;
+        let q15 = replay_data::fixed_point::q15_to_saved_fixed5;
         for (field, captured, saved) in [
             (
                 "propaganda_stability_penalty",
@@ -126,7 +124,10 @@ fn inputs(
     }
     if stale != 0 {
         report.limitation(
-            &format!("stability inputs {}", replay::cadence::STAGGER_LIMITATION),
+            &format!(
+                "stability inputs {}",
+                replay_data::cadence::STAGGER_LIMITATION
+            ),
             format!(
                 "CountryStabilityInputs: {stale} countries read before hour {}",
                 frame.hour
@@ -154,10 +155,8 @@ fn lines(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{CountryStabilityInputRow, SliceReadRow, TableRows},
-    };
+    use replay_data::{rows::CountryStabilityInputRow, rows::SliceReadRow, rows::TableRows};
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     const HOUR: i32 = 100;
 

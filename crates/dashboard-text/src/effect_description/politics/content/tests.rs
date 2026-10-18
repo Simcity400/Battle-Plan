@@ -1,10 +1,8 @@
 use super::*;
 use crate::effect_description::politics::tests::fixture;
 use crate::scripted_text::Link;
-use replay::{
-    frame::TableView,
-    rows::{TableId, TableRows, TechSharingGroupRow},
-};
+use replay_data::{rows::TableId, rows::TableRows, rows::TechSharingGroupRow};
+use replay_frame::frame::TableView;
 
 fn caller() -> EventScopes {
     let mut scope = EventScope::of(EventObject::Country(1));
@@ -20,7 +18,7 @@ fn caller() -> EventScopes {
 
 #[test]
 fn content_description_cases() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
@@ -120,7 +118,7 @@ fn content_description_cases() {
 
 #[test]
 fn sharing_bonus_keeps_empty_gates() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let content = fixture
@@ -172,7 +170,7 @@ fn sharing_bonus_keeps_empty_gates() {
 
 #[test]
 fn sharing_bonus_counts_missing_recorded_membership() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::TechSharingMembers.index()] = TableView::Unavailable {
@@ -202,7 +200,7 @@ fn sharing_bonus_counts_missing_recorded_membership() {
 
 #[test]
 fn focus_unknown_tooltip_key_uses_core_child_projection() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
@@ -228,7 +226,7 @@ fn focus_unknown_tooltip_key_uses_core_child_projection() {
 
 #[test]
 fn focus_bound_originator_is_named_and_counted() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
@@ -252,7 +250,7 @@ fn focus_bound_originator_is_named_and_counted() {
 
 #[test]
 fn focus_operands_keep_each_reader_shape() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
@@ -279,7 +277,7 @@ fn focus_operands_keep_each_reader_shape() {
 
 #[test]
 fn focus_uses_state_owner_and_fresh_seeded_country_scope() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
@@ -307,7 +305,7 @@ fn focus_uses_state_owner_and_fresh_seeded_country_scope() {
 
 #[test]
 fn absent_catalogue_entries_keep_empty_gates_and_count_missing_names() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture

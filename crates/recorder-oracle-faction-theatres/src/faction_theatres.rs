@@ -5,10 +5,8 @@
 use std::{collections::BTreeMap, io};
 
 use installed_content_save::Save;
-use replay::{
-    frame::DecodedFrame,
-    rows::{FactionTheatreRow, tables},
-};
+use replay_data::{rows::FactionTheatreRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::{CountryContext, Report, complete, invalid, required_country_tag};
 
@@ -134,10 +132,8 @@ fn check<T: PartialEq + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::TableView,
-        rows::{TableId, TableRows},
-    };
+    use replay_data::{rows::TableId, rows::TableRows};
+    use replay_frame::frame::TableView;
 
     const AXIS: u64 = (1 << 32) | 88;
     const ALLIES: u64 = (2 << 32) | 88;

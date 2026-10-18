@@ -2,10 +2,8 @@
 
 use super::{CostTotal, Identity, ProductionSpendingUnknown, TagHistory, Total};
 use crate::metadata::slot_read;
-use replay::{
-    frame::DecodedFrame,
-    rows::{RocketProductionOutputRow, TableId, tables},
-};
+use replay_data::{rows::RocketProductionOutputRow, rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -86,7 +84,7 @@ impl RocketProduced {
 
     pub fn observe(
         &mut self,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         frame: &DecodedFrame,
     ) -> io::Result<()> {
         let reads = frame
@@ -98,7 +96,7 @@ impl RocketProduced {
 
     pub(crate) fn observe_resolved(
         &mut self,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         frame: &DecodedFrame,
         reads: Option<&crate::products::territory::CountryReads>,
     ) -> io::Result<()> {

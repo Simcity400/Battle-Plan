@@ -187,7 +187,7 @@ fn reserved_original_tag(frame: &DecodedFrame, save: &Save, report: &mut Report)
             &label,
         ) {
             Some(Some(bytes)) => {
-                let comparable = installed_content::parser::c_string(bytes);
+                let comparable = installed_content_core::parser::c_string(bytes);
                 if comparable.len() < bytes.len() {
                     report.limitation("native text serialization ends at the first NUL; captured trailing original-tag bytes are not save-comparable", &label);
                 }
@@ -232,7 +232,7 @@ mod reserved_original_tag_tests;
 #[cfg(test)]
 mod original_tag_tests {
     use super::*;
-    use replay::rows::{Recorded, ReservedCountryNamingRow};
+    use replay_data::{rows::Recorded, rows::ReservedCountryNamingRow};
 
     #[test]
     fn reserved_original_tag_oracle_reports_unsaved_and_independent_refusal() {
@@ -280,7 +280,7 @@ mod original_tag_tests {
 
     #[test]
     fn positive_original_tag_oracle_compares_presence_bytes_and_preserves_refusals() {
-        use replay::rows::CountryAppearanceRow;
+        use replay_data::rows::CountryAppearanceRow;
         for (reference, actual, saved, differences) in [
             (i32::MIN, Some(Vec::new()), None, 0),
             (0, Some(Vec::new()), Some(Vec::new()), 1),
@@ -333,7 +333,7 @@ mod original_tag_tests {
     fn raw_reference_and_native_domain_oracles_preserve_gaps_and_refusals() {
         for value in [Recorded::Value(None), Recorded::NotRecorded] {
             let historical = matches!(value, Recorded::NotRecorded);
-            let row = replay::rows::CountryAppearanceRow {
+            let row = replay_data::rows::CountryAppearanceRow {
                 original_tag: Recorded::Value(Some(b"OWN".to_vec())),
                 original_tag_reference: value,
                 ..Default::default()
@@ -555,7 +555,7 @@ pub fn countries(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
 /// The signed reference selects original bytes, including actual empty strings;
 /// nonpositive references certify saved omission without inventing zero.
 fn original_tag(
-    row: &replay::rows::CountryAppearanceRow,
+    row: &replay_data::rows::CountryAppearanceRow,
     saved: &save::Country,
     label: &str,
     report: &mut Report,
@@ -597,7 +597,7 @@ fn original_tag(
             );
             return;
         };
-        let comparable = installed_content::parser::c_string(bytes);
+        let comparable = installed_content_core::parser::c_string(bytes);
         if comparable.len() < bytes.len() {
             report.limitation("native text serialization ends at the first NUL; captured trailing original-tag bytes are not save-comparable", format!("{label}.original_tag"));
         }
@@ -623,7 +623,7 @@ fn ruling_leader(
     save: &Save,
     tag: &[u8],
     label: &str,
-    row: &replay::rows::CountryAppearanceRow,
+    row: &replay_data::rows::CountryAppearanceRow,
     report: &mut Report,
 ) -> io::Result<()> {
     let politics = save
@@ -650,7 +650,7 @@ fn ruling_leader(
         report,
         &format!("{label}.leader_character"),
         row.leader_character
-            .map(|id| (id, engine::ccharacter::REFERENCE_TYPE)),
+            .map(|id| (id, engine_native::ccharacter::REFERENCE_TYPE)),
         leader
             .map(|leader| leader.character)
             .filter(|&reference| reference != (0, 0)),
@@ -785,7 +785,7 @@ fn ships(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<(
     Ok(())
 }
 
-fn ship_tooltip_suffixes(row: &replay::rows::ShipModelRow, save: &Save, r: &mut Report) {
+fn ship_tooltip_suffixes(row: &replay_data::rows::ShipModelRow, save: &Save, r: &mut Report) {
     let label = format!("ShipModels {}", row.ship);
     let hull_label = format!("{label}.hull_variant");
     let Some(hull) = r.recorded(&row.hull_variant, "ShipModels.hull_variant", &hull_label) else {
@@ -883,13 +883,15 @@ fn ship_tooltip_suffixes(row: &replay::rows::ShipModelRow, save: &Save, r: &mut 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{ArmyIconInputRow, CountryAppearanceRow, Recorded, ShipModelRow};
+    use replay_data::{
+        rows::ArmyIconInputRow, rows::CountryAppearanceRow, rows::Recorded, rows::ShipModelRow,
+    };
 
     #[test]
     fn ship_tooltip_suffixes_use_current_saved_variant_and_keep_runtime_caches_explicit() {
-        use replay::rows::HullVariantInputs;
+        use replay_data::rows::HullVariantInputs;
         let (_, mut saved, _, _) = super::super::fixtures::fixture();
-        let doc = installed_content::parser::parse(
+        let doc = installed_content_core::parser::parse(
             br#"equipments={type={id={id=3 type=70}
             version=255 number_of_design_team_traits=-2147483648
             upgrades={upgrades={{engine 255} {engine 0}}}
@@ -930,7 +932,7 @@ mod tests {
         ship_tooltip_suffixes(&row, &saved, &mut report);
         assert_eq!(report.differences.len(), 3);
         // Zero omission is compared, not inferred from daily rows or a names token.
-        let doc = installed_content::parser::parse(b"equipments={type={id={id=3 type=70}}}").unwrap();
+        let doc = installed_content_core::parser::parse(b"equipments={type={id={id=3 type=70}}}").unwrap();
         saved.production = save::production::parse(&doc.items).unwrap();
         row.hull_variant = Recorded::Value(Some(HullVariantInputs {
             version: Some(0),
@@ -969,7 +971,7 @@ mod tests {
     }
 
     fn pool(source: &[u8]) -> save::production::Pool {
-        let doc = installed_content::parser::parse(source).unwrap();
+        let doc = installed_content_core::parser::parse(source).unwrap();
         save::production::parse_pool(&doc.items).unwrap()
     }
 
@@ -1031,12 +1033,12 @@ mod tests {
             },
         );
         *frame.tables[TableId::Divisions.index()] =
-            TableView::Complete(TableRows::Divisions(vec![replay::rows::DivisionRow {
+            TableView::Complete(TableRows::Divisions(vec![replay_data::rows::DivisionRow {
                 id: division,
                 ..Default::default()
             }]));
         *frame.tables[TableId::Ships.index()] =
-            TableView::Complete(TableRows::Ships(vec![replay::rows::ShipRow {
+            TableView::Complete(TableRows::Ships(vec![replay_data::rows::ShipRow {
                 id: ship,
                 ..Default::default()
             }]));

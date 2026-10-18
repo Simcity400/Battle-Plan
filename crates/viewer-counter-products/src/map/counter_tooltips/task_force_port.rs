@@ -143,40 +143,41 @@ fn pride(context: &Context<'_>, metadata: &Metadata, out: &mut Tooltip) -> bool 
     if metadata.pride == Some(false) {
         return false;
     }
-    let chosen: Result<Option<(&replay::rows::CountryCounterInputRow, u64)>, String> = (|| {
-        if metadata.pride.is_none() {
-            return Err("retained naval mission pride flag is unavailable".to_owned());
-        }
-        let slot = context.slot(metadata.country)?;
-        let countries = context
-            .frame
-            .complete::<tables::Countries>()
-            .map_err(|e| e.to_string())?;
-        let raw = countries
-            .iter()
-            .find(|row| row.canonical_slot == slot)
-            .map(|row| row.id)
-            .ok_or_else(|| format!("Countries canonical slot {slot} is absent"))?;
-        let inputs = context
-            .frame
-            .complete::<tables::CountryCounterInputs>()
-            .map_err(|e| e.to_string())?;
-        let country = inputs
-            .binary_search_by_key(&raw, |row| row.country)
-            .map(|index| &inputs[index])
-            .map_err(|_| format!("CountryCounterInputs country {raw} is absent"))?;
-        if country.pride_of_the_fleet == 0 {
-            return Ok(None);
-        }
-        let ships = context
-            .frame
-            .complete::<tables::Ships>()
-            .map_err(|e| e.to_string())?;
-        Ok(ships
-            .binary_search_by_key(&country.pride_of_the_fleet, |row| row.id)
-            .ok()
-            .map(|index| (country, ships[index].task_force)))
-    })();
+    let chosen: Result<Option<(&replay_data::rows::CountryCounterInputRow, u64)>, String> =
+        (|| {
+            if metadata.pride.is_none() {
+                return Err("retained naval mission pride flag is unavailable".to_owned());
+            }
+            let slot = context.slot(metadata.country)?;
+            let countries = context
+                .frame
+                .complete::<tables::Countries>()
+                .map_err(|e| e.to_string())?;
+            let raw = countries
+                .iter()
+                .find(|row| row.canonical_slot == slot)
+                .map(|row| row.id)
+                .ok_or_else(|| format!("Countries canonical slot {slot} is absent"))?;
+            let inputs = context
+                .frame
+                .complete::<tables::CountryCounterInputs>()
+                .map_err(|e| e.to_string())?;
+            let country = inputs
+                .binary_search_by_key(&raw, |row| row.country)
+                .map(|index| &inputs[index])
+                .map_err(|_| format!("CountryCounterInputs country {raw} is absent"))?;
+            if country.pride_of_the_fleet == 0 {
+                return Ok(None);
+            }
+            let ships = context
+                .frame
+                .complete::<tables::Ships>()
+                .map_err(|e| e.to_string())?;
+            Ok(ships
+                .binary_search_by_key(&country.pride_of_the_fleet, |row| row.id)
+                .ok()
+                .map(|index| (country, ships[index].task_force)))
+        })();
     match chosen {
         Ok(None) => false,
         Ok(Some((country, task_force))) => {
@@ -199,7 +200,7 @@ fn pride(context: &Context<'_>, metadata: &Metadata, out: &mut Tooltip) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{TableRows, TaskForceCounterInputRow, TaskForceRow};
+    use replay_data::{rows::TableRows, rows::TaskForceCounterInputRow, rows::TaskForceRow};
     use viewer_foundation::map::test_support::{test_frame, test_put};
 
     fn metadata() -> Metadata {
@@ -356,10 +357,10 @@ mod tests {
 
     #[test]
     fn unbound_port_authored_fallback_keeps_raw_lookup_and_bound_localisation_distinct() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = test_frame(0);
-        let gui = installed_content::gui::native::read(
+        let gui = installed_content_core::gui::native::read(
             br#"guiTypes = {
             guiButtonType = { name = raw pdx_tooltip = RAW }
             guiButtonType = { name = missing pdx_tooltip = MISSING }
@@ -391,9 +392,9 @@ mod tests {
 
     #[test]
     fn port_callback_handled_empty_controls_suppress_authored_fallback() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let gui = installed_content::gui::native::read(
+        let gui = installed_content_core::gui::native::read(
             b"guiTypes = { guiButtonType = { name = authored pdx_tooltip = RAW } }",
         );
         let authored = Authored::read(gui.template("authored").unwrap(), false);
@@ -432,9 +433,9 @@ mod tests {
 
     #[test]
     fn port_callback_false_allows_fallback_but_unknown_admission_does_not() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let gui = installed_content::gui::native::read(
+        let gui = installed_content_core::gui::native::read(
             b"guiTypes = { guiButtonType = { name = authored pdx_tooltip = RAW } }",
         );
         let input = Hover {
@@ -466,9 +467,9 @@ mod tests {
 
     #[test]
     fn authored_fallback_replaces_only_present_hash_fields_and_appends_unscoped_bound() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let gui = installed_content::gui::native::read(
+        let gui = installed_content_core::gui::native::read(
             br#"guiTypes = {
             guiButtonType = { name = absent pdx_tooltip = MISSING pdx_tooltip_delayed = BODY }
             guiButtonType = { name = empty pdx_tooltip = EMPTY }
@@ -502,7 +503,9 @@ mod tests {
 
     #[test]
     fn port_pride_uses_metadata_country_and_registered_ships_current_force_name() {
-        use replay::rows::{CountryCounterInputRow, CountryLinkRow, CountryRow, ShipRow};
+        use replay_data::{
+            rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryRow, rows::ShipRow,
+        };
         let mut frame = test_frame(0);
         test_put(
             &mut frame,
@@ -522,7 +525,7 @@ mod tests {
         test_put(
             &mut frame,
             TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
+                forward_visibility: replay_data::rows::Recorded::NotRecorded,
                 country: 7,
                 pride_of_the_fleet: 11,
                 pride_name: Some(b"ship eleven".to_vec()).into(),

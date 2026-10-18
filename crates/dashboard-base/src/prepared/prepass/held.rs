@@ -6,10 +6,8 @@ use crate::prepared::{
     frame_changes::FrameChanges,
     series::{Accumulator, Recording},
 };
-use replay::{
-    frame::{DecodedFrame, SharedView, ViewIdentity},
-    rows::RowCodec,
-};
+use replay_data::rows::RowCodec;
+use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::ViewIdentity};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     sync::Arc,
@@ -133,11 +131,11 @@ macro_rules! rows {
 }
 
 rows!(
-    replay::rows::CountryRow,
-    replay::rows::PoliticsCaptureCoverageRow,
-    replay::rows::WarRelationRow,
-    replay::rows::WarOverviewCountryRow,
-    replay::rows::WarOwnedRelationRow,
+    replay_data::rows::CountryRow,
+    replay_data::rows::PoliticsCaptureCoverageRow,
+    replay_data::rows::WarRelationRow,
+    replay_data::rows::WarOverviewCountryRow,
+    replay_data::rows::WarOwnedRelationRow,
 );
 
 /// A borrow owns nothing.
@@ -322,7 +320,7 @@ impl Held for dashboard_text::metadata::LinkTags {
     }
 }
 
-impl Held for replay::frame::RecordedFrame {
+impl Held for replay_frame::frame::RecordedFrame {
     fn held(&self, bytes: &mut HeldBytes) {
         self.allocations(|pointer, size| {
             bytes.shared(pointer, size);
@@ -336,10 +334,8 @@ mod tests {
 
     #[test]
     fn families_size_shared_views_once_and_keep_their_own_totals() {
-        use replay::{
-            frame::TableView,
-            rows::{CountryRow, TableRows},
-        };
+        use replay_data::{rows::CountryRow, rows::TableRows};
+        use replay_frame::frame::TableView;
         let mut view: SharedView = TableView::Complete(TableRows::Countries(vec![CountryRow {
             id: 1,
             tag: b"SYN".to_vec(),

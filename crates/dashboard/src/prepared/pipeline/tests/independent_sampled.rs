@@ -9,9 +9,9 @@
 use super::family_lanes::{assert_payloads_equal, payloads};
 use super::*;
 use crate::prepared::prepass;
-use replay::rows::{
-    CountryFuelRow, CountryStabilityLineRow, LexicalTokenRow, ResourceDefinitionRow,
-    ResourceExchangeRow, ShipRow, SliceReadRow,
+use replay_data::{
+    rows::CountryFuelRow, rows::CountryStabilityLineRow, rows::LexicalTokenRow,
+    rows::ResourceDefinitionRow, rows::ResourceExchangeRow, rows::ShipRow, rows::SliceReadRow,
 };
 use serde_json::Value;
 use std::sync::Mutex;
@@ -1023,15 +1023,15 @@ fn named_variant_frame(branch: u64, hour: i32) -> DecodedFrame {
     let mut observed = sampled_frame(branch, hour);
     set(
         &mut observed,
-        TableRows::VariantDefinitions(vec![replay::rows::VariantDefinitionRow {
+        TableRows::VariantDefinitions(vec![replay_data::rows::VariantDefinitionRow {
             id: 1,
             equipment_token: 1,
             ..Default::default()
         }]),
     );
-    let slot = replay::cadence::cadence(TableId::VariantDefinitions);
+    let slot = replay_data::cadence::cadence(TableId::VariantDefinitions);
     for table in TableId::ALL {
-        if replay::cadence::cadence(table) == slot {
+        if replay_data::cadence::cadence(table) == slot {
             observed.metrics.table_ns[table.index()] = 0;
         }
     }
@@ -1119,7 +1119,7 @@ fn returning_country_frame(hour: i32) -> DecodedFrame {
         TableRows::TaskForces(
             present
                 .iter()
-                .map(|&index| replay::rows::TaskForceRow {
+                .map(|&index| replay_data::rows::TaskForceRow {
                     id: u64::from(index) + 1,
                     roster_owner: FIRST + index,
                     logical_owner: FIRST + index,
@@ -1354,7 +1354,7 @@ fn sampled_families_answer_from_their_own_coverage_while_the_hourly_walk_accepts
 /// [`frame`]'s two countries in one recorded faction, with the tables the
 /// faction rosters read.
 fn faction_frame(branch: u64, hour: i32) -> DecodedFrame {
-    use replay::rows::{FactionMemberRow, FactionRow};
+    use replay_data::{rows::FactionMemberRow, rows::FactionRow};
     let mut observed = frame(branch, hour, 2);
     set(
         &mut observed,
@@ -1570,8 +1570,9 @@ fn territory_readers_wait_for_territory_coverage_while_the_branch_is_ahead() {
 /// earlier owner's rows, holds two raw owners of one slot, and also records
 /// an unresolved owner. Truncated log reads retain their supplied rows.
 fn loss_frame(branch: u64, hour: i32) -> DecodedFrame {
-    use replay::rows::{
-        CombatLogEquipmentRow, CountryLinkRow, EquipmentDestructionCause, EquipmentDestructionRow,
+    use replay_data::{
+        rows::CombatLogEquipmentRow, rows::CountryLinkRow, rows::EquipmentDestructionCause,
+        rows::EquipmentDestructionRow,
     };
     let mut frame = sampled_frame(branch, hour);
     let at = hour - BASE - if branch == 2 { 100 } else { 0 };
@@ -1593,7 +1594,8 @@ fn loss_frame(branch: u64, hour: i32) -> DecodedFrame {
                 .map(|index| EquipmentDestructionRow {
                     country: FIRST + index,
                     cause: EquipmentDestructionCause::LandCombat,
-                    variant: 17_u64 << 32 | u64::from(engine::cequipment_variant::REFERENCE_TYPE),
+                    variant: 17_u64 << 32
+                        | u64::from(engine_native::cequipment_variant::REFERENCE_TYPE),
                     amount_raw: if at % 2 == 0 {
                         100 + i64::from(at)
                     } else {
@@ -1627,7 +1629,7 @@ fn loss_frame(branch: u64, hour: i32) -> DecodedFrame {
         };
     }
     let mut reads = frame
-        .complete::<replay::rows::tables::SliceReads>()
+        .complete::<replay_data::rows::tables::SliceReads>()
         .unwrap()
         .to_vec();
     reads.extend([42, FIRST, FIRST + 1, 999_999].map(|owner| SliceReadRow {

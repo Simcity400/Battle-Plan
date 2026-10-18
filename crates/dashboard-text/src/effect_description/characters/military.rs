@@ -1,5 +1,5 @@
 use super::*;
-use replay::rows::CountryCharacterRow;
+use replay_data::rows::CountryCharacterRow;
 
 #[cfg(test)]
 mod tests;
@@ -96,7 +96,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             let roster = self.character_table::<tables::CountryCharacters>()?;
             let id = field(children(item), "id")
                 .and_then(|item| item.value.scalar())
-                .and_then(|value| installed_content::crt::scan_i32(value).stored())
+                .and_then(|value| installed_content_core::crt::scan_i32(value).stored())
                 .unwrap_or(0);
             let mut character = self.military_roster_character(roster, country, id)?;
             if character.is_none() {
@@ -165,7 +165,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        let operand = installed_content::parser::c_string(
+        let operand = installed_content_core::parser::c_string(
             item.value
                 .scalar()
                 .ok_or("unit leader tooltip token is not scalar")?,
@@ -241,7 +241,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let id = item
             .value
             .scalar()
-            .and_then(|value| installed_content::crt::scan_i32(value).stored())
+            .and_then(|value| installed_content_core::crt::scan_i32(value).stored())
             .unwrap_or(0);
         let leader = if id > 0 {
             let Some(character) = self.effect_character(Scope::Character(id as u32))? else {
@@ -418,7 +418,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let world = self.context.world()?;
         let raid = world.raid(reference)?;
         let army_resolved = raid.unit != 0
-            && match world.frame().complete::<replay::rows::tables::Divisions>() {
+            && match world
+                .frame()
+                .complete::<replay_data::rows::tables::Divisions>()
+            {
                 Ok(rows) => rows.iter().any(|row| row.id == raid.unit),
                 Err(why) => {
                     // The legacy active-raid witness proves Army resolution

@@ -9,8 +9,8 @@ use super::{
 };
 use dashboard_base::products::country_groups::Scan;
 #[cfg(test)]
-use replay::frame::TableUpdate;
-use replay::frame::{DecodedFrame, ViewIdentity};
+use replay_frame::frame::TableUpdate;
+use replay_frame::{frame::DecodedFrame, frame::ViewIdentity};
 use std::sync::Arc;
 
 #[derive(Clone, Default)]
@@ -219,7 +219,7 @@ fn reason(reason: &str) -> AirCell {
     AirCell(Some(AirValue::Reason(reason.into())))
 }
 
-fn check_country_tags(countries: &[replay::rows::CountryRow]) -> io::Result<()> {
+fn check_country_tags(countries: &[replay_data::rows::CountryRow]) -> io::Result<()> {
     let unsupported = countries
         .iter()
         .filter(|country| country.tag.contains(&0) || std::str::from_utf8(&country.tag).is_err())
@@ -468,7 +468,7 @@ pub(super) fn score_values(
         return projection;
     }
     let mut supplied = BTreeMap::new();
-    let mut visit = |row: &replay::rows::RaidAirScoreRow| {
+    let mut visit = |row: &replay_data::rows::RaidAirScoreRow| {
         let Some(tag) = owners.get(&row.country).map(String::as_str) else {
             projection.operands.unresolved = true;
             return;
@@ -921,7 +921,7 @@ fn dated_auxiliary(frame: &DecodedFrame, last_read: &mut Option<i32>) -> Auxilia
     let mut result = auxiliary(frame);
     date_theatres(
         dashboard_text::metadata::slot_read(
-            replay::format::FormatVersion::CURRENT,
+            replay_data::format::FormatVersion::CURRENT,
             &frame.metrics,
             TableId::AirTheatres,
             frame.hour,
@@ -994,7 +994,7 @@ impl AuxiliaryRead {
 pub(super) struct DayReads {
     /// The recording's format, which dates its daily tables
     /// ([`dashboard_text::metadata::slot_read`]).
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
     scores: ScoreRead,
     regions: HashSet<u32>,
     countries: BTreeSet<String>,
@@ -1040,7 +1040,7 @@ impl DayReads {
 
     pub(super) fn observe(
         &mut self,
-        frame: &(impl replay::frame::FrameSource + ?Sized),
+        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
         include_auxiliary: bool,
     ) -> io::Result<Option<Arc<Auxiliary>>> {
@@ -1071,7 +1071,7 @@ impl DayReads {
     // are not part of the requested view. Validate labels only when sampled.
     fn observe_tables(
         &mut self,
-        frame: &(impl replay::frame::FrameSource + ?Sized),
+        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
         include_auxiliary: bool,
     ) -> Option<Arc<Auxiliary>> {
@@ -1554,10 +1554,8 @@ pub(super) fn scan_window_measured(
 #[cfg(test)]
 mod index_tests {
     use super::*;
-    use replay::{
-        frame::{FrameEncoder, TableView},
-        rows::{RaidAirScoreRow, TableRows},
-    };
+    use replay_data::{rows::RaidAirScoreRow, rows::TableRows};
+    use replay_frame::{frame::FrameEncoder, frame::TableView};
 
     #[test]
     fn air_superiority_side_join_reuses_rosters_until_a_recorded_boundary() {
@@ -1565,7 +1563,7 @@ mod index_tests {
             .map(|hour| {
                 let mut frame = dashboard_core::test_fixtures::ownership_frame(1, hour, 44);
                 *frame.tables[TableId::Factions.index()] =
-                    TableView::Complete(TableRows::Factions(vec![replay::rows::FactionRow {
+                    TableView::Complete(TableRows::Factions(vec![replay_data::rows::FactionRow {
                         id: 7,
                         name: if hour < 2 {
                             b"First".to_vec()
@@ -1576,7 +1574,7 @@ mod index_tests {
                     }]));
                 *frame.tables[TableId::FactionMembers.index()] =
                     TableView::Complete(TableRows::FactionMembers(vec![
-                        replay::rows::FactionMemberRow {
+                        replay_data::rows::FactionMemberRow {
                             country: 9001,
                             faction: 7,
                             ordinal: 0,
@@ -1725,7 +1723,7 @@ mod index_tests {
     #[test]
     fn air_superiority_auxiliary_reuses_unchanged_reads_and_observes_changed_wings() {
         let first = (0..DAY_HOURS)
-            .find(|hour| !replay::cadence::is_refresh(TableId::AirTheatres, hour + 1))
+            .find(|hour| !replay_data::cadence::is_refresh(TableId::AirTheatres, hour + 1))
             .unwrap();
         let mut frame = dashboard_core::test_fixtures::source(1, first, Some(1));
         *frame.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(vec![]));
@@ -1744,7 +1742,7 @@ mod index_tests {
             frame.hour = first + offset;
             if offset == 2 {
                 *frame.tables[TableId::AirWings.index()] =
-                    TableView::Complete(TableRows::AirWings(vec![replay::rows::AirWingRow {
+                    TableView::Complete(TableRows::AirWings(vec![replay_data::rows::AirWingRow {
                         id: 55,
                         owner: 9001,
                         mission_region: Some(7001),
@@ -1755,7 +1753,7 @@ mod index_tests {
             let decoded = decoder.advance(&encoded).unwrap();
             let value = reads.read(
                 dashboard_text::metadata::slot_read(
-                    replay::format::FormatVersion::CURRENT,
+                    replay_data::format::FormatVersion::CURRENT,
                     &decoded.metrics,
                     TableId::AirTheatres,
                     decoded.hour,

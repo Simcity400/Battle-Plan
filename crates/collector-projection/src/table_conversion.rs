@@ -1,10 +1,8 @@
 //! Checked conversion from bounded native rows to recorded table outcomes.
 
-use engine::walk::Outcome;
-use replay::{
-    frame::TableView,
-    rows::{RowCodec, TableRows, TableSchema},
-};
+use engine_native::walk::Outcome;
+use replay_data::{rows::RowCodec, rows::TableRows, rows::TableSchema};
+use replay_frame::frame::TableView;
 
 pub fn unavailable(reason: &str) -> TableView {
     TableView::Unavailable {
@@ -13,7 +11,7 @@ pub fn unavailable(reason: &str) -> TableView {
         } else {
             // prepare_frame and write_prepared reject the latched terminal
             // state before any unavailable fallback can be published.
-            engine::allocation::string(reason).unwrap_or_default()
+            engine_allocation::string(reason).unwrap_or_default()
         },
     }
 }
@@ -43,7 +41,7 @@ pub fn table_iter<S: TableSchema, T>(
     match outcome {
         Outcome::Unavailable { reason } => unavailable(reason),
         Outcome::Rows { len } | Outcome::Truncated { len, .. } => {
-            let mut rows = match engine::allocation::vec(len) {
+            let mut rows = match engine_allocation::vec(len) {
                 Ok(rows) => rows,
                 Err(_) => {
                     return TableView::Unavailable {

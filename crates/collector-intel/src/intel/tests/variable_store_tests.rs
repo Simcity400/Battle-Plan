@@ -9,7 +9,7 @@ use crate::{
     sampled_verify::{Check, ROTATION},
     variable_changes::{Counts, Watches},
 };
-use engine::variable_hash_node as node;
+use engine_scripts::variable_hash_node as node;
 use std::cell::RefCell;
 
 /// Every guarded call's first address, over the [`variable_scopes`] bytes.
@@ -272,9 +272,9 @@ fn walk(bytes: &[u8], store: &mut VariableStore, watches: &Watches, check: Check
             &memory,
             BASE,
             GAME,
-            engine::walk::Buffer::Growing(&mut scopes),
-            engine::walk::Buffer::Growing(&mut entries),
-            engine::walk::Buffer::Growing(&mut names),
+            engine_native::walk::Buffer::Growing(&mut scopes),
+            engine_native::walk::Buffer::Growing(&mut entries),
+            engine_native::walk::Buffer::Growing(&mut names),
             &mut reuse,
         ),
     };
@@ -359,7 +359,7 @@ fn settled(bytes: &[u8], store: &mut VariableStore, watches: &Watches) -> Hour {
 }
 
 fn site(name: &str) -> usize {
-    engine::script_variable_mutations::MUTATIONS
+    engine_mutations::script_variable_mutations::MUTATIONS
         .iter()
         .position(|(site, _, _)| site.name == name)
         .expect("variable site")

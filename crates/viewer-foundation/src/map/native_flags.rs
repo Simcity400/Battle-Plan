@@ -95,7 +95,7 @@ fn record(source: &dyn FlagSource, small: bool, index: i32) -> Result<FlagRecord
 pub fn text_flag(source: &dyn FlagSource, tag: &str) -> Result<Option<Texture>, String> {
     let tag = tag.as_bytes();
     // `inline flag drawing` measures the tag as a C string: a NUL ends it.
-    let tag = installed_content::parser::c_string(tag);
+    let tag = installed_content_core::parser::c_string(tag);
     if tag.len() <= 2 {
         return Ok(None);
     }
@@ -188,7 +188,7 @@ mod tests {
             ]),
             CellPages::plan(cell, 64, "resolved flags").unwrap(),
             Arc::new(move |path| {
-                (path == "plain").then(|| installed_content::image::Rgba8Image {
+                (path == "plain").then(|| installed_content_image::Rgba8Image {
                     width: cell[0],
                     height: cell[1],
                     pixels: vec![255; (cell[0] * cell[1] * 4) as usize],

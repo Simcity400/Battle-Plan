@@ -1,5 +1,5 @@
 //! Particle space selection, birth and motion.
-use installed_content::mesh::Transform;
+use installed_content_core::mesh::Transform;
 
 #[derive(Clone, Copy)]
 pub(super) struct Space {

@@ -5,8 +5,8 @@
 //! country-leader map header (head node and size) equal the held read's and no hooked writer
 //! touched the character since that read registered it; the country comes from this hour's census.
 //! The map, its roles' parent links and current ideologies (`ccountry::LEADER_IDEOLOGY`) are
-//! written only at hooked sites ([`engine::character_role_mutations`],
-//! [`engine::advisor_mutations`]); set_country_leader_ideology names no character and revokes every
+//! written only at hooked sites ([`engine_mutations::character_role_mutations`],
+//! [`engine_mutations::advisor_mutations`]); set_country_leader_ideology names no character and revokes every
 //! certificate, and a `CIdeology` token is a database value. Verify mode reads every carryable
 //! character afresh, publishes the fresh rows and poisons reuse on a difference. Without an
 //! admitted census the job walks the roster and the cache forgets its rows.
@@ -71,9 +71,9 @@ impl Held {
     /// `false` when storage could not grow, which only withholds the
     /// certificate.
     fn hold(&mut self, certificate: Certificate, rows: &[ccountry_leader::Row]) -> bool {
-        let stored = engine::allocation::advisory(|| {
-            engine::allocation::reserve(&mut self.entries, 1)?;
-            engine::allocation::reserve(&mut self.rows, rows.len())?;
+        let stored = engine_allocation::advisory(|| {
+            engine_allocation::reserve(&mut self.entries, 1)?;
+            engine_allocation::reserve(&mut self.rows, rows.len())?;
             std::io::Result::Ok(())
         });
         if stored.is_err() {
@@ -202,7 +202,7 @@ impl LeaderCache {
         }
         let count = head.map_or(0, |(_, count)| count as usize);
         let room = if room { count } else { 0 };
-        if engine::allocation::reserve(rows, (start + room).saturating_sub(rows.len())).is_err() {
+        if engine_allocation::reserve(rows, (start + room).saturating_sub(rows.len())).is_err() {
             return Err(ROWS_ALLOCATION);
         }
         rows.resize(start + room, ccountry_leader::Row::default());
@@ -420,7 +420,7 @@ impl LeaderCache {
                     Some(held) => {
                         let rows = self.previous.entries[held].rows.clone();
                         if unread == 0 {
-                            if engine::allocation::reserve(&mut self.rows, rows.len()).is_err() {
+                            if engine_allocation::reserve(&mut self.rows, rows.len()).is_err() {
                                 failure = Some(ROWS_ALLOCATION);
                                 break 'batches;
                             }
@@ -546,7 +546,7 @@ impl LeaderCache {
     pub(super) fn decode(&self, captured: &mut Captured) {
         let len = self.outcome.len();
         let rows = &mut captured.leaders.rows.rows;
-        if let Err(reason) = engine::walk::Buffer::Growing(rows).ensure(len) {
+        if let Err(reason) = engine_native::walk::Buffer::Growing(rows).ensure(len) {
             captured
                 .leaders
                 .primary(ReadResult::rows(Outcome::Unavailable { reason }));

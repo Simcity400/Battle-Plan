@@ -5,7 +5,7 @@ use crate::{
     ResearchCoverage, ResearchEntry, ResearchHistory, ResearchProgress, ResearchSlotHistory,
     ResearchSlotState,
 };
-use replay::frame::DecodedFrame;
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
 
@@ -72,9 +72,9 @@ impl Prepared {
         self.observe_changed(
             frame,
             &crate::prepared::frame_changes::FrameChanges {
-                rows_changed: [true; replay::frame::TABLE_COUNT],
-                table_read: [true; replay::frame::TABLE_COUNT],
-                slot_read: [true; replay::frame::TABLE_COUNT],
+                rows_changed: [true; replay_data::rows::TABLE_COUNT],
+                table_read: [true; replay_data::rows::TABLE_COUNT],
+                slot_read: [true; replay_data::rows::TABLE_COUNT],
                 updates: None,
             },
         )
@@ -96,7 +96,7 @@ impl Prepared {
         hour: i32,
         step: impl FnOnce(&mut Scan) -> io::Result<()>,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("research:observe");
+        let _cpu = ::replay_frame::cpu::scope_phase("research:observe");
         self.values.advance(hour)?;
         step(&mut self.scan)?;
         for tag in &self.scan.observed {
@@ -547,7 +547,7 @@ pub fn state_query(
                 source,
                 branch,
                 read.hour
-                    .saturating_sub(2 * replay::cadence::STAGGER_PERIOD - 1),
+                    .saturating_sub(2 * replay_data::cadence::STAGGER_PERIOD - 1),
                 read.hour,
                 block::TABLES,
                 cancelled,

@@ -13,7 +13,8 @@ doctest = false
 test-support = ["collector-memory/test-support"]
 
 [dependencies]
-engine.workspace = true
+engine-allocation.workspace = true
+engine-native.workspace = true
 collector-memory.workspace = true
 collector-primitives.workspace = true
 collector-status.workspace = true
@@ -21,6 +22,6 @@ collector-snapshots.workspace = true
 serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
-engine = { workspace = true, features = ["batch-fallback-test-counts"] }
+engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-memory = { workspace = true, features = ["test-support"] }
 collector-test-support.workspace = true

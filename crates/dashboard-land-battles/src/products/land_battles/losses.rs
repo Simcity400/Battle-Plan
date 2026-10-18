@@ -1,13 +1,13 @@
 //! Hourly observer counters and post-flush FinalizeCombat results.
 use super::*;
-use replay::rows::{LandSideLosses, Recorded};
+use replay_data::{rows::LandSideLosses, rows::Recorded};
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct SideLossInputs {
     manpower: Option<i32>,
     equipment: Option<Vec<(u64, i64)>>,
 }
-fn amounts(value: &Recorded<Vec<replay::rows::LandEquipmentLoss>>) -> Option<Vec<(u64, i64)>> {
+fn amounts(value: &Recorded<Vec<replay_data::rows::LandEquipmentLoss>>) -> Option<Vec<(u64, i64)>> {
     match value {
         Recorded::Value(rows) => rows
             .iter()

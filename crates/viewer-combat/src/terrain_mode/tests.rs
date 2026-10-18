@@ -1,5 +1,7 @@
 use super::*;
-use replay::rows::{ModifierDefinitionRow, ProvinceModifierEntry, ProvinceWeatherModifiers};
+use replay_data::{
+    rows::ModifierDefinitionRow, rows::ProvinceModifierEntry, rows::ProvinceWeatherModifiers,
+};
 use viewer_foundation::tooltip_text::NoIcons;
 
 fn localisation() -> Localisation {
@@ -43,9 +45,9 @@ fn accumulator(entries: &[(u32, i64)]) -> ProvinceWeatherModifiers {
 /// accumulator in definition order under its heading.
 #[test]
 fn a_land_province_shows_its_category_then_its_local_effects() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let content = installed_content::terrain::parse_definitions(
+    let content = installed_content_core::terrain::parse_definitions(
         b"categories={forest={movement_cost=1.5 supply_flow_penalty_factor=0.08}}",
     )
     .unwrap();

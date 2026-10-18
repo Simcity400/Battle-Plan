@@ -27,7 +27,7 @@ fn earlier_states(
 /// operands of the same rows are not saved. Only states `sampled` at the
 /// frame's hour are compared.
 pub fn state_pools(
-    rows: &[replay::rows::StateResourceRow],
+    rows: &[replay_data::rows::StateResourceRow],
     saved: &BTreeMap<(u32, Vec<u8>), installed_content_save::Decimal>,
     names: &BTreeMap<u32, &[u8]>,
     sampled: &dyn Fn(u32) -> bool,
@@ -109,13 +109,13 @@ pub fn state_pools(
 /// A state has an origin when its controller's saved `resources` block has an
 /// `origin` of that state (the resource-origin state, the pointer the walk
 /// matches). The level is that of the state's building whose token the
-/// engine fixes (`engine::cbuilding_database::INFRASTRUCTURE_TOKEN`), damage
+/// engine fixes (`engine_native::cbuilding_database::INFRASTRUCTURE_TOKEN`), damage
 /// included: the saved `buildings` entry's `level`. It is read only with an
 /// origin. Only states `sampled` at the frame's hour are compared.
 #[allow(clippy::too_many_arguments)]
 pub fn resource_inputs(
-    rows: &[replay::rows::StateResourceInputRow],
-    states: &[replay::rows::StateRow],
+    rows: &[replay_data::rows::StateResourceInputRow],
+    states: &[replay_data::rows::StateRow],
     saved: &saved::Pack,
     links: &BTreeMap<u32, &CountryRow>,
     names: &BTreeMap<u32, &[u8]>,
@@ -128,8 +128,11 @@ pub fn resource_inputs(
         rows.iter().map(|row| row.state),
         sampled,
     );
-    let infrastructure = token(names, engine::cbuilding_database::INFRASTRUCTURE_TOKEN)
-        .map_err(|reason| invalid(format!("the infrastructure building {reason}")))?;
+    let infrastructure = token(
+        names,
+        engine_native::cbuilding_database::INFRASTRUCTURE_TOKEN,
+    )
+    .map_err(|reason| invalid(format!("the infrastructure building {reason}")))?;
     let controllers: BTreeMap<u32, u32> = states
         .iter()
         .map(|state| (state.id, state.controller))
@@ -189,14 +192,14 @@ type OverrideEntries = Vec<(u32, Vec<(u32, i64)>)>;
 /// no known read and is named, not compared.
 #[allow(clippy::too_many_arguments)]
 pub fn building_overrides(
-    rows: &[replay::rows::CountryBuildingResourceRow],
-    reads: &[replay::rows::SliceReadRow],
-    resources: &[replay::rows::ResourceDefinitionRow],
-    states: &[replay::rows::StateRow],
+    rows: &[replay_data::rows::CountryBuildingResourceRow],
+    reads: &[replay_data::rows::SliceReadRow],
+    resources: &[replay_data::rows::ResourceDefinitionRow],
+    states: &[replay_data::rows::StateRow],
     saved: &saved::Pack,
     links: &BTreeMap<u32, &CountryRow>,
     names: &BTreeMap<u32, &[u8]>,
-    hour: replay::Hour,
+    hour: replay_data::Hour,
     report: &mut Report,
 ) -> io::Result<()> {
     let mut captured: BTreeMap<u32, OverrideEntries> = BTreeMap::new();
@@ -243,9 +246,9 @@ pub fn building_overrides(
     let mut earlier = BTreeSet::new();
     let mut unread = BTreeSet::new();
     for &country in captured.keys().chain(&controllers) {
-        match replay::sliced::read_hour(
+        match replay_data::sliced::read_hour(
             reads,
-            replay::rows::TableId::CountryBuildingResources,
+            replay_data::rows::TableId::CountryBuildingResources,
             country,
         ) {
             Some(read_at) if read_at == hour => {
@@ -383,20 +386,22 @@ pub fn building_overrides(
 /// compare as a sorted list. Only states whose StateCores row was read at the
 /// frame's hour are compared.
 pub fn state_cores(
-    rows: &[replay::rows::StateCoreRow],
+    rows: &[replay_data::rows::StateCoreRow],
     countries: &BTreeMap<Vec<u8>, installed_content_save::Country>,
     links: &BTreeMap<u32, &CountryRow>,
-    reads: &[replay::rows::SliceReadRow],
+    reads: &[replay_data::rows::SliceReadRow],
     hour: i32,
     report: &mut Report,
 ) -> io::Result<()> {
     let sampled = |state: u32| {
-        replay::sliced::read_hour(reads, replay::rows::TableId::StateCores, state) == Some(hour)
+        replay_data::sliced::read_hour(reads, replay_data::rows::TableId::StateCores, state)
+            == Some(hour)
     };
     let rows: Vec<_> = rows.iter().filter(|row| sampled(row.state)).collect();
     membership(
         "cores",
-        rows.iter().map(|row| (row.state, Some(row.cores.as_slice()))),
+        rows.iter()
+            .map(|row| (row.state, Some(row.cores.as_slice()))),
         countries.iter().map(|(tag, country)| (tag, &country.cores)),
         links,
         &sampled,
@@ -411,7 +416,9 @@ pub fn state_cores(
     membership(
         "claims",
         claims.into_iter(),
-        countries.iter().map(|(tag, country)| (tag, &country.claims)),
+        countries
+            .iter()
+            .map(|(tag, country)| (tag, &country.claims)),
         links,
         &sampled,
         report,
@@ -433,29 +440,34 @@ pub fn state_cores(
 /// provinces its entries name and the save lists under its province ids.
 #[allow(clippy::too_many_arguments)]
 pub fn state_strategic_locations(
-    rows: &[replay::rows::StateCoreRow],
+    rows: &[replay_data::rows::StateCoreRow],
     states: &BTreeMap<u32, installed_content_save::State>,
     provinces: &BTreeMap<u32, installed_content_save::ProvinceOverride>,
     state_of: &BTreeMap<u32, u32>,
     names: &BTreeMap<u32, &[u8]>,
-    reads: &[replay::rows::SliceReadRow],
+    reads: &[replay_data::rows::SliceReadRow],
     hour: i32,
     report: &mut Report,
 ) -> io::Result<()> {
     let sampled = |state: u32| {
-        replay::sliced::read_hour(reads, replay::rows::TableId::StateCores, state) == Some(hour)
+        replay_data::sliced::read_hour(reads, replay_data::rows::TableId::StateCores, state)
+            == Some(hour)
     };
     let spell = |token: u32| -> io::Result<Vec<u8>> {
-        names
-            .get(&token)
-            .map(|name| name.to_vec())
-            .ok_or_else(|| invalid(format!("strategic location token {token} has no recorded spelling")))
+        names.get(&token).map(|name| name.to_vec()).ok_or_else(|| {
+            invalid(format!(
+                "strategic location token {token} has no recorded spelling"
+            ))
+        })
     };
     let mut compared = 0;
     for row in rows.iter().filter(|row| sampled(row.state)) {
         let label = format!("state {} strategic locations", row.state);
-        let Some(pairs) = report.recorded(&row.strategic_locations, "StateCores.strategic_locations", label)
-        else {
+        let Some(pairs) = report.recorded(
+            &row.strategic_locations,
+            "StateCores.strategic_locations",
+            label,
+        ) else {
             continue;
         };
         let captured = pairs
@@ -546,7 +558,11 @@ fn membership<'a>(
         }
     }
     for state in expected.keys().filter(|state| sampled(**state)) {
-        report.difference(format!("state {state} {kind}"), "no row", format!("saved {kind}"));
+        report.difference(
+            format!("state {state} {kind}"),
+            "no row",
+            format!("saved {kind}"),
+        );
     }
     Ok(())
 }
@@ -555,7 +571,7 @@ fn membership<'a>(
 /// container, in order: name, scope country and scope state. Only states
 /// `sampled` at the frame's hour are compared.
 pub fn state_modifiers(
-    rows: &[replay::rows::StateDynamicModifierRow],
+    rows: &[replay_data::rows::StateDynamicModifierRow],
     saved: &BTreeMap<u32, Vec<installed_content_save::governance::DynamicModifier>>,
     links: &BTreeMap<u32, &CountryRow>,
     sampled: &dyn Fn(u32) -> bool,

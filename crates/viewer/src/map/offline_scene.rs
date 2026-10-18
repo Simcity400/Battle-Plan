@@ -1,7 +1,7 @@
 //! Opt-in content-stack integration check; never launches or attaches to the game.
 use crate::map_icons::MapIcons;
 use eframe::wgpu;
-use installed_content::ResolvedLayers;
+use installed_content_core::ResolvedLayers;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::{fs, io, path::PathBuf};
@@ -75,7 +75,7 @@ fn default_steps() -> u32 {
 #[test]
 #[ignore = "offline installed-content integration; requires BATTLE_PLAN_CONTENT_SCENE_INPUT JSON"]
 fn content_stack_scene() -> io::Result<()> {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let path = std::env::var_os("BATTLE_PLAN_CONTENT_SCENE_INPUT").or_else(|| std::env::var_os("HOI4_CONTENT_SCENE_INPUT"))
         .ok_or_else(|| io::Error::other("BATTLE_PLAN_CONTENT_SCENE_INPUT is required"))?;
@@ -114,17 +114,16 @@ fn content_stack_scene() -> io::Result<()> {
 
 fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) -> io::Result<()> {
     eprintln!("Content scene: static map assets");
-    let definitions = installed_content::terrain::read_definitions(layers)?;
-    let default_map = installed_content::terrain::read_default_map(layers)?;
-    let province_image = installed_content::image::bmp::decode_rgb(
-        &layers.read(&format!("map/{}", default_map.provinces))?,
-    )?;
+    let definitions = installed_content_core::terrain::read_definitions(layers)?;
+    let default_map = installed_content_core::terrain::read_default_map(layers)?;
+    let province_image =
+        installed_content_image::bmp::decode_rgb(&layers.read(&format!("map/{}", default_map.provinces))?)?;
     let map = camera::MapSize {
         width: province_image.width,
         height: province_image.height,
     };
-    let defines = installed_content::defines::read(layers)?;
-    let decode = installed_content::image::native::Decode {
+    let defines = installed_content_core::defines::read(layers)?;
+    let decode = installed_content_image::native::Decode {
         force_pow2_textures: input.force_pow2_textures,
     };
     // The offline scene renders the recorded content alone, so both define sets are recorded.
@@ -140,8 +139,8 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         decode,
     )?;
     eprintln!("Content scene: interface assets");
-    let map_data = installed_content::map::load(layers)?;
-    let regions = installed_content::regions::read(layers)?.regions;
+    let map_data = installed_content_core::map::load(layers)?;
+    let regions = installed_content_regions::regions::read(layers)?.regions;
     // No settings.txt here: the constructor's 1280 x 720 frame, which decides
     // only which resources the map-icon windows load.
     let crate::map_icons::LoadedIcons {
@@ -320,8 +319,8 @@ fn synthetic_impacts(
     layers: &ResolvedLayers,
     impacts: &[SyntheticImpact],
 ) -> io::Result<viewer_world::map::strike_effects::Impacts> {
-    let stacks = installed_content::positions::read_unit_stacks(layers)?;
-    let map = installed_content::map::load(layers)?;
+    let stacks = installed_content_core::positions::read_unit_stacks(layers)?;
+    let map = installed_content_core::map::load(layers)?;
     let boxes = viewer_foundation::map::province_admission::province_boxes(
         &viewer_foundation::map::province_map::ProvinceMap {
             width: map.width,

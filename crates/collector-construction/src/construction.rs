@@ -7,22 +7,24 @@ use crate::{
     table_capture::{Arena, CaptureRows},
     table_conversion::{table, unavailable},
 };
-use engine::{
-    Memory,
-    allocation::{copy_vec, map_slice, owned_vec, reserve, reserve_exact},
-    carmy_manpower_values, cbuilding, cbuilding_production_line, cbuilding_status, ccountry,
-    ccountry_collaboration_data, ccountry_collaboration_status, ccountry_occupation_data,
-    ccountry_occupation_status, cgame_state, cgeneral_production_line, coccupation_law,
-    cpdx_array::Array,
-    cproduction_line, cproduction_status, cprovince, crailway_production_line,
-    creferenced_division_template, cresistance, cstate, cstate_garrison_data, cstate_template,
-    manpower_value_entry, msvc_string, pdx_robin_hood_bucket, state_resource_entry,
-    walk::Outcome,
+use engine_allocation::{copy_vec, map_slice, owned_vec, reserve, reserve_exact};
+use engine_deployment::manpower_value_entry;
+use engine_intelligence::{ccountry_collaboration_data, ccountry_collaboration_status};
+use engine_native::{
+    Memory, carmy_manpower_values, cbuilding, cbuilding_status, ccountry, cgame_state,
+    cpdx_array::Array, cproduction_line, cproduction_status, cprovince,
+    creferenced_division_template, cstate, cstate_template, msvc_string, walk::Outcome,
 };
-use replay::{
-    frame::TableView,
-    rows::{self, TableId, tables},
+use engine_occupation::{
+    ccountry_occupation_data, ccountry_occupation_status, coccupation_law, cresistance,
+    cstate_garrison_data, pdx_robin_hood_bucket,
 };
+use engine_production::{
+    cbuilding_production_line, cgeneral_production_line, crailway_production_line,
+};
+use engine_resources::state_resource_entry;
+use replay_data::{rows, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 
 pub const N: usize = 12;
 pub const TABLES: [TableId; N] = [
@@ -153,8 +155,8 @@ impl Buildings {
         force_full: bool,
         store: Option<&mut BuildingStore>,
     ) -> u64 {
-        if !replay::cadence::should_walk(TableId::StateBuildings, hour, force_full) {
-            self.fail(replay::cadence::SKIPPED_REASON);
+        if !replay_data::cadence::should_walk(TableId::StateBuildings, hour, force_full) {
+            self.fail(replay_data::cadence::SKIPPED_REASON);
             return 0;
         }
         let check = crate::sampled_verify::Check::burned_in(hour, crate::building_changes::VERIFY);
@@ -257,10 +259,11 @@ impl Captured {
     pub fn fail_gated_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         if !self.rest_raw_mode {
             let reason =
-                if replay::cadence::should_walk(TableId::StateBaseResources, hour, force_full) {
+                if replay_data::cadence::should_walk(TableId::StateBaseResources, hour, force_full)
+                {
                     reason
                 } else {
-                    replay::cadence::SKIPPED_REASON
+                    replay_data::cadence::SKIPPED_REASON
                 };
             self.fail_construction_rest_capture(reason);
         }
@@ -410,8 +413,8 @@ impl Captured {
 
     pub fn finish_buildings(&mut self, hour: i32, force_full: bool) -> u64 {
         let ticks = self.buildings_ticks.take();
-        if !replay::cadence::should_walk(TableId::StateBuildings, hour, force_full) {
-            self.buildings.fail(replay::cadence::SKIPPED_REASON);
+        if !replay_data::cadence::should_walk(TableId::StateBuildings, hour, force_full) {
+            self.buildings.fail(replay_data::cadence::SKIPPED_REASON);
             return 0;
         }
         match ticks {
@@ -475,8 +478,8 @@ impl Captured {
             self.equipment.reset();
         }
         let mut ticks = [0; N];
-        if !replay::cadence::should_walk(TableId::StateBaseResources, hour, force_full) {
-            self.fail_construction_rest_capture(replay::cadence::SKIPPED_REASON);
+        if !replay_data::cadence::should_walk(TableId::StateBaseResources, hour, force_full) {
+            self.fail_construction_rest_capture(replay_data::cadence::SKIPPED_REASON);
             self.routes.reset();
             self.law_bytes.reset();
             self.equipment.reset();
@@ -491,7 +494,7 @@ impl Captured {
                     memory,
                     base,
                     game_state,
-                    engine::walk::Buffer::for_worker(output, growing),
+                    engine_native::walk::Buffer::for_worker(output, growing),
                 )
             })
         });
@@ -502,15 +505,18 @@ impl Captured {
             base,
             game_state,
             cbuilding_production_line::BuffersBuffer {
-                buildings: engine::walk::Buffer::for_worker(
+                buildings: engine_native::walk::Buffer::for_worker(
                     &mut self.building_construction.rows,
                     growing,
                 ),
-                railways: engine::walk::Buffer::for_worker(
+                railways: engine_native::walk::Buffer::for_worker(
                     &mut self.railway_construction.rows,
                     growing,
                 ),
-                route_provinces: engine::walk::Buffer::for_worker(&mut self.routes.first, growing),
+                route_provinces: engine_native::walk::Buffer::for_worker(
+                    &mut self.routes.first,
+                    growing,
+                ),
             },
         );
         self.building_construction.outcome = queue.buildings;
@@ -525,22 +531,31 @@ impl Captured {
             base,
             game_state,
             ccountry_occupation_status::BuffersBuffer {
-                settings: engine::walk::Buffer::for_worker(&mut self.settings.rows, growing),
-                laws: engine::walk::Buffer::for_worker(&mut self.laws.rows, growing),
-                group_laws: engine::walk::Buffer::for_worker(&mut self.group_laws.rows, growing),
-                garrisons: engine::walk::Buffer::for_worker(&mut self.garrisons.rows, growing),
-                manpower: engine::walk::Buffer::for_worker(
+                settings: engine_native::walk::Buffer::for_worker(&mut self.settings.rows, growing),
+                laws: engine_native::walk::Buffer::for_worker(&mut self.laws.rows, growing),
+                group_laws: engine_native::walk::Buffer::for_worker(
+                    &mut self.group_laws.rows,
+                    growing,
+                ),
+                garrisons: engine_native::walk::Buffer::for_worker(
+                    &mut self.garrisons.rows,
+                    growing,
+                ),
+                manpower: engine_native::walk::Buffer::for_worker(
                     &mut self.assigned_manpower.rows,
                     growing,
                 ),
-                reserve_manpower: engine::walk::Buffer::for_worker(
+                reserve_manpower: engine_native::walk::Buffer::for_worker(
                     &mut self.reserve_manpower.rows,
                     growing,
                 ),
-                names: engine::walk::Buffer::for_worker(&mut self.law_bytes.first, growing),
-                equipment: engine::walk::Buffer::for_worker(&mut self.equipment.first, growing),
+                names: engine_native::walk::Buffer::for_worker(&mut self.law_bytes.first, growing),
+                equipment: engine_native::walk::Buffer::for_worker(
+                    &mut self.equipment.first,
+                    growing,
+                ),
             },
-            engine::walk::Buffer::for_worker(&mut self.occupied.first, growing),
+            engine_native::walk::Buffer::for_worker(&mut self.occupied.first, growing),
         );
         self.settings.outcome = occupation.settings;
         self.laws.outcome = occupation.laws;
@@ -562,7 +577,7 @@ impl Captured {
                 memory,
                 base,
                 game_state,
-                engine::walk::Buffer::for_worker(output, growing),
+                engine_native::walk::Buffer::for_worker(output, growing),
             )
         });
         reads.select(TABLES[11]);
@@ -571,7 +586,7 @@ impl Captured {
                 memory,
                 base,
                 game_state,
-                engine::walk::Buffer::for_worker(output, growing),
+                engine_native::walk::Buffer::for_worker(output, growing),
             )
         });
         ticks

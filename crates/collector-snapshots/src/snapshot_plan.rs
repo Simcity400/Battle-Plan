@@ -1,10 +1,9 @@
 //! Certify an unchanged owned result using its exact ordered read dependencies.
 //! Compilation happens on recycle. A stopped pass supplies its observed prefix
 //! to the ordinary reader, including its failed read; it never retries memory.
-use engine::{
-    Memory,
-    memory::{RecordLayout, RecordSources},
-    read_plan::{Control, Hint, Outcome, PreparedPlan, Read},
+use engine_native::{
+    Memory, memory::RecordLayout, memory::RecordSources, read_plan::Control, read_plan::Hint,
+    read_plan::Outcome, read_plan::PreparedPlan, read_plan::Read,
 };
 use std::{
     cell::{Cell, Ref, RefCell},
@@ -22,7 +21,7 @@ struct Trace {
 
 impl Trace {
     fn record(&mut self, address: usize, bytes: &[u8], ok: bool) {
-        engine::allocation::advisory(|| self.record_hint(address, bytes, ok));
+        engine_allocation::advisory(|| self.record_hint(address, bytes, ok));
     }
     fn record_hint(&mut self, address: usize, bytes: &[u8], ok: bool) {
         if !ok {
@@ -32,8 +31,8 @@ impl Trace {
             return;
         }
         if self.growing
-            && (engine::allocation::reserve(&mut self.reads, 1).is_err()
-                || engine::allocation::reserve(&mut self.bytes, bytes.len()).is_err())
+            && (engine_allocation::reserve(&mut self.reads, 1).is_err()
+                || engine_allocation::reserve(&mut self.bytes, bytes.len()).is_err())
         {
             self.eligible = false;
             return;
@@ -78,11 +77,11 @@ impl SnapshotPlan {
     pub fn new(reads: usize, bytes: usize) -> Self {
         let mut trace = Trace::default();
         let reserve = || -> io::Result<()> {
-            engine::allocation::reserve_exact(&mut trace.reads, reads)?;
-            engine::allocation::reserve_exact(&mut trace.bytes, bytes)?;
-            engine::allocation::reserve_exact(&mut trace.hints, reads)
+            engine_allocation::reserve_exact(&mut trace.reads, reads)?;
+            engine_allocation::reserve_exact(&mut trace.bytes, bytes)?;
+            engine_allocation::reserve_exact(&mut trace.hints, reads)
         };
-        let _ = engine::allocation::advisory(reserve);
+        let _ = engine_allocation::advisory(reserve);
         Self {
             trace: RefCell::new(trace),
             compiled: None,
@@ -198,7 +197,7 @@ impl SnapshotPlan {
     /// addresses or affect their validation. Callers apply these fresh values
     /// through completed_bytes before publishing their retained result.
     pub fn prepare_with_data(&mut self, data_reads: &[usize]) {
-        if engine::allocation::advisory(|| self.try_prepare(data_reads)).is_err() {
+        if engine_allocation::advisory(|| self.try_prepare(data_reads)).is_err() {
             self.compiled = None;
             self.complete = false;
             self.trace.get_mut().eligible = false;
@@ -214,7 +213,7 @@ impl SnapshotPlan {
         let trace = self.trace.get_mut();
         if trace.eligible {
             let mut controls = Vec::new();
-            engine::allocation::reserve_exact(&mut controls, trace.reads.len())?;
+            engine_allocation::reserve_exact(&mut controls, trace.reads.len())?;
             controls.extend(
                 trace
                     .reads
@@ -228,9 +227,9 @@ impl SnapshotPlan {
                         expected_offset: read.destination_offset,
                     }),
             );
-            let reads = engine::allocation::copy_vec(&trace.reads)?;
-            let bytes = engine::allocation::copy_vec(&trace.bytes)?;
-            let hints = engine::allocation::copy_vec(&trace.hints)?;
+            let reads = engine_allocation::copy_vec(&trace.reads)?;
+            let bytes = engine_allocation::copy_vec(&trace.bytes)?;
+            let hints = engine_allocation::copy_vec(&trace.hints)?;
             self.compiled = if let Some(plan) =
                 PreparedPlan::try_new(reads, controls, bytes, trace.bytes.len())?
             {
@@ -239,7 +238,7 @@ impl SnapshotPlan {
                 None
             };
             let additional = trace.bytes.len().saturating_sub(self.destination.len());
-            engine::allocation::reserve(&mut self.destination, additional)?;
+            engine_allocation::reserve(&mut self.destination, additional)?;
             self.destination.resize(trace.bytes.len(), 0);
         }
         self.rebuild = false;
@@ -275,7 +274,7 @@ impl<M: Memory> Memory for Observed<'_, M> {
             && crate::address_range::is_canonical_range(address, len)
         {
             if trace.growing
-                && engine::allocation::advisory(|| engine::allocation::reserve(&mut trace.hints, 1))
+                && engine_allocation::advisory(|| engine_allocation::reserve(&mut trace.hints, 1))
                     .is_err()
             {
                 trace.eligible = false;
@@ -502,7 +501,7 @@ mod tests {
 
     #[test]
     fn destination_preserves_resize_capacity_schedule() {
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0x1000,
             bytes: &[0x11; 16],
         };
@@ -556,14 +555,14 @@ mod tests {
         }
         fn walk(plan: &SnapshotPlan, source: &Source) -> [u8; 3] {
             let view = plan.view(source);
-            let a = engine::read::<u8>(&view, 1).unwrap();
+            let a = engine_native::read::<u8>(&view, 1).unwrap();
             let b = {
                 let _payload = plan.untracked_reads();
                 let mut b = [0];
                 assert_eq!(view.copy_scattered([8], &mut [&mut b]), 1);
                 b[0]
             };
-            let c = engine::read::<u8>(&view, 7).unwrap();
+            let c = engine_native::read::<u8>(&view, 7).unwrap();
             [a, b, c]
         }
         let mut source = Source {
@@ -604,9 +603,9 @@ mod tests {
         }
     }
     fn walk(memory: &impl Memory) -> Option<[u8; 3]> {
-        let a = engine::read::<u8>(memory, 1)?;
-        let b = engine::read::<u8>(memory, usize::from(a))?;
-        let c = engine::read::<u8>(memory, 7)?;
+        let a = engine_native::read::<u8>(memory, 1)?;
+        let b = engine_native::read::<u8>(memory, usize::from(a))?;
+        let c = engine_native::read::<u8>(memory, 7)?;
         Some([a, b, c])
     }
     #[test]
@@ -668,8 +667,8 @@ mod tests {
         let mut plan = SnapshotPlan::new(8, 32);
         assert!(!plan.begin(&source, true));
         let view = plan.view(&source);
-        assert_eq!(engine::read::<u8>(&view, 1), Some(3));
-        assert_eq!(engine::read::<u8>(&view, 1), Some(3));
+        assert_eq!(engine_native::read::<u8>(&view, 1), Some(3));
+        assert_eq!(engine_native::read::<u8>(&view, 1), Some(3));
         plan.finish(true);
         plan.prepare();
         source.calls.borrow_mut().clear();
@@ -681,8 +680,8 @@ mod tests {
             fail: None,
         };
         assert!(!plan.begin(&changed, true));
-        assert_eq!(engine::read::<u8>(&plan.view(&changed), 2), None);
-        assert_eq!(engine::read::<u8>(&plan.view(&changed), 7), None);
+        assert_eq!(engine_native::read::<u8>(&plan.view(&changed), 2), None);
+        assert_eq!(engine_native::read::<u8>(&plan.view(&changed), 7), None);
         assert!(!plan.finish(true));
         assert_eq!(*changed.calls.borrow(), [1]);
     }

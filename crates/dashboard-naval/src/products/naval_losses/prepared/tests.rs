@@ -1,11 +1,10 @@
 use super::*;
 use dashboard_base::prepared::series::tests::Fixture;
-use replay::{
-    frame::TableView,
-    rows::{
-        CountryLinkRow, SunkConvoyRow, SunkShipEntry, SunkShipsRow, TableId, TableRows, tables,
-    },
+use replay_data::{
+    rows::CountryLinkRow, rows::SunkConvoyRow, rows::SunkShipEntry, rows::SunkShipsRow,
+    rows::TableId, rows::TableRows, rows::tables,
 };
+use replay_frame::frame::TableView;
 
 fn sample(reply: &NavalLossesReply, hour: i32) -> BTreeMap<String, (Option<i64>, Option<i64>)> {
     reply
@@ -103,7 +102,7 @@ fn prepared_naval_losses_match_oracle_after_two_commits_resume_append_bridge_and
     let mut history = sinkings::ShipHistory::new(first);
     let mut prepared = Prepared::default();
     for (step, frame) in inputs.iter().enumerate() {
-        history.observe(replay::format::FormatVersion::default(), frame);
+        history.observe(replay_data::format::FormatVersion::default(), frame);
         history.finish(frame.hour);
         let retention = sinkings::Retention {
             ships: true,

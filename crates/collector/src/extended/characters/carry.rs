@@ -8,7 +8,7 @@
 //! this hour's. A character is carried only when its pointer and id equal the held read's and no
 //! hooked writer touched it since that read registered it (same watch epoch and sequence). Every
 //! writer of those fields is a hooked site: the character name setter and Character identity repair
-//! ([`engine::character_role_mutations`]), the character parser, merge and destructor (advisor
+//! ([`engine_mutations::character_role_mutations`]), the character parser, merge and destructor (advisor
 //! family); a character the character definition builder writes is a new object, and an address is
 //! reused only after the hooked destructor ran. A template's identity is a database value for its
 //! pointer ([`super::TemplateCache`]).
@@ -234,9 +234,9 @@ impl Carry {
             self.certified_quiet = None;
         }
         let mut next = Vec::new();
-        let prepared = engine::allocation::advisory(|| {
-            engine::allocation::reserve_exact(&mut self.certified, self.entries.len())?;
-            engine::allocation::reserve_exact(&mut next, self.entries.len())?;
+        let prepared = engine_allocation::advisory(|| {
+            engine_allocation::reserve_exact(&mut self.certified, self.entries.len())?;
+            engine_allocation::reserve_exact(&mut next, self.entries.len())?;
             std::io::Result::Ok(())
         });
         if prepared.is_err() {
@@ -277,7 +277,7 @@ impl Carry {
     /// `memory` and compare each with its held row. A difference poisons
     /// reuse and empties the carried set, so this hour's pass reads every
     /// name afresh. A fresh read that fails compares nothing.
-    pub(super) fn sample(&mut self, memory: &impl engine::Memory, base: usize) {
+    pub(super) fn sample(&mut self, memory: &impl engine_native::Memory, base: usize) {
         let check = self
             .check
             .unwrap_or_else(|| crate::sampled_verify::current_burned_in(false));
@@ -294,8 +294,8 @@ impl Carry {
             let held = &self.bytes[entry.bytes.clone()];
             // A fresh text longer than the held one does not fit, and differs.
             if self.scratch.len() < held.len()
-                && engine::allocation::advisory(|| {
-                    engine::allocation::resize(&mut self.scratch, held.len(), 0)
+                && engine_allocation::advisory(|| {
+                    engine_allocation::resize(&mut self.scratch, held.len(), 0)
                 })
                 .is_err()
             {
@@ -375,7 +375,7 @@ impl Carry {
         }
         let mut next = Vec::new();
         let count = certified(&self.entries, &self.certified).count();
-        if engine::allocation::advisory(|| engine::allocation::reserve_exact(&mut next, count))
+        if engine_allocation::advisory(|| engine_allocation::reserve_exact(&mut next, count))
             .is_err()
         {
             return false;
@@ -447,8 +447,7 @@ impl Carry {
         } else {
             self.changes.sequence(pointer)
         };
-        if engine::allocation::advisory(|| engine::allocation::reserve(&mut self.visits, 1))
-            .is_err()
+        if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.visits, 1)).is_err()
         {
             self.visits_failed = true;
             return;
@@ -553,10 +552,10 @@ impl Carry {
             .iter()
             .map(|row| row.name_len + row.token_len + row.template_file_len)
             .sum();
-        let reserved = engine::allocation::advisory(|| {
-            engine::allocation::reserve_exact(&mut entries, rows.len())?;
-            engine::allocation::reserve_exact(&mut held, text)?;
-            engine::allocation::reserve_exact(&mut order, rows.len())?;
+        let reserved = engine_allocation::advisory(|| {
+            engine_allocation::reserve_exact(&mut entries, rows.len())?;
+            engine_allocation::reserve_exact(&mut held, text)?;
+            engine_allocation::reserve_exact(&mut order, rows.len())?;
             std::io::Result::Ok(())
         });
         if reserved.is_err() {
@@ -607,8 +606,8 @@ impl Carry {
             }
         }
         let mut order_entries = Vec::new();
-        if engine::allocation::advisory(|| {
-            engine::allocation::reserve_exact(&mut order_entries, order.len())
+        if engine_allocation::advisory(|| {
+            engine_allocation::reserve_exact(&mut order_entries, order.len())
         })
         .is_err()
         {

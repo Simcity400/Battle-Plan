@@ -136,9 +136,10 @@ fn an_anchor_lasts_two_keyframe_intervals_and_keeps_its_proven_pass() {
 /// a reinitialization and periodic anchors.
 #[test]
 fn recorded_passes_derive_every_read_hour_on_playback() {
-    use replay::{
-        rows::{ProvinceTemperature, Recorded, WeatherProvinceRow},
-        temperature::{Content, Memo, PERIOD_DEFAULT_DATE, Period, Province, Settings, Simulation},
+    use replay_data::{
+        rows::ProvinceTemperature, rows::Recorded, rows::WeatherProvinceRow, temperature::Content,
+        temperature::Memo, temperature::PERIOD_DEFAULT_DATE, temperature::Period,
+        temperature::Province, temperature::Settings, temperature::Simulation,
     };
     let count = 7_u32;
     let content = Content {
@@ -167,13 +168,13 @@ fn recorded_passes_derive_every_read_hour_on_playback() {
             smoothing: 30_000,
             change_smoothing: 50_000,
             provinces_per_update: 3,
-            terrain: vec![replay::temperature::TerrainModifier {
+            terrain: vec![replay_data::temperature::TerrainModifier {
                 terrain: 1,
                 value: -50_000,
             }],
         },
     };
-    let start = replay::temperature::EPOCH + 1936 * 8_760;
+    let start = replay_data::temperature::EPOCH + 1936 * 8_760;
     let mut game = Simulation::new(
         start,
         0,

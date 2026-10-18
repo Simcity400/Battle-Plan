@@ -1,13 +1,9 @@
 //! land combat marker hover, normal (non-debug) hover.
 use super::content::Content as StaticContent;
-use installed_content::{
-    country_names::CountryNames,
-    localisation::{Argument, Localisation},
-};
-use replay::{
-    frame::DecodedFrame,
-    rows::{LandCombatRow, LandCombatSideRow, tables},
-};
+use installed_content_country_names::country_names::CountryNames;
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use replay_data::{rows::LandCombatRow, rows::LandCombatSideRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, sync::Arc};
 use viewer_foundation::engagement_history::{self, History};
 use viewer_foundation::land_combat_math::conditions as land_combat_math_conditions;
@@ -196,7 +192,7 @@ pub(super) fn intel(
 
 /// The branch, hour, viewing country and combat a tooltip was built for, and
 /// whether the engaged index covered that hour, and the viewer's NATO preference.
-type CacheKey = (replay::BranchId, i32, u32, u64, bool, bool);
+type CacheKey = (replay_data::BranchId, i32, u32, u64, bool, bool);
 
 #[derive(Default)]
 pub struct Cache {

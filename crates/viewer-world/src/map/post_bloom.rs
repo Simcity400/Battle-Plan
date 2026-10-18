@@ -4,7 +4,8 @@ use super::{
     fullscreen::{self, Fullscreen},
 };
 use eframe::wgpu;
-use installed_content::{ResolvedLayers, image::native::Decode, pdxshader::program::Stage};
+use installed_content_core::{ResolvedLayers, pdxshader::program::Stage};
+use installed_content_image::native::Decode;
 use shader_pipeline::{binding, gpu, library::Effect};
 use std::{io, sync::Arc};
 

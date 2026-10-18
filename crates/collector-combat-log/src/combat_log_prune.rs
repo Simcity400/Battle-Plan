@@ -1,12 +1,12 @@
 //! The final values of every Combat Log a daily prune deletes.
 //!
 //! The game deletes a group's Combat Log in its daily prune
-//! ([`engine::ncombat_log_cmanager::PRUNE_RVA`], per country inside
+//! ([`engine_land_inputs::ncombat_log_cmanager::PRUNE_RVA`], per country inside
 //! the daily update) once the group's orders group is gone. Orders
 //! groups can be deleted inside the hourly update that runs the prune, after
 //! the hourly sample, so no sample can see those logs' last changes. A detour
 //! at the prune's entry reads, before the original runs, every log it is
-//! about to delete for that reason ([`engine::ncombat_log_cmanager::deleted_logs`])
+//! about to delete for that reason ([`engine_land_inputs::ncombat_log_cmanager::deleted_logs`])
 //! into a bounded lock-free log; nothing can change those logs any more, so
 //! the rows are their final values. The detour only reads and calls the
 //! original; it never changes game behaviour and calls no game function.
@@ -21,7 +21,7 @@
 //! then says so for the hour (`CombatLogState.prune_observed`).
 //!
 //! Each row carries the load signal (the global
-//! [`engine::cgame_state::PLAY_SESSION_STARTED_AT_RVA`] every load sets) of
+//! [`engine_native::cgame_state::PLAY_SESSION_STARTED_AT_RVA`] every load sets) of
 //! the session whose prune logged it. The drain hands over only the rows of
 //! the sample's own session: rows an earlier session logged after its last
 //! sample describe a branch the player left, and are discarded and counted.
@@ -35,11 +35,11 @@
 //! and `observe_max_ns`; a smaller worker stack needs a smaller batch/row
 //! footprint. Observation stays allocation-free and lock-free.
 use crate::{hook::Hook, opinion_changes::Padded};
-use engine::{
-    Memory,
-    ncombat_log_cmanager::{self as native, PRUNE_RVA, PRUNE_SENTINEL, Row},
-    walk::Outcome,
+use engine_land_inputs::{
+    ncombat_log_cmanager as native, ncombat_log_cmanager::PRUNE_RVA,
+    ncombat_log_cmanager::PRUNE_SENTINEL, ncombat_log_cmanager::Row,
 };
+use engine_native::{Memory, walk::Outcome};
 use std::{
     cell::UnsafeCell,
     ops::Range,
@@ -146,7 +146,7 @@ fn observe(manager: usize) {
     COUNTERS[0].fetch_add(1, Ordering::Relaxed);
     let mut rows = [Row::default(); CALL_ROWS];
     // The prune reads the same objects on this thread; they are alive here.
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let len = match native::deleted_logs(&memory, BASE.load(Ordering::Relaxed), manager, &mut rows)
     {
         Ok((_, Outcome::Rows { len })) => len,
@@ -161,8 +161,8 @@ fn observe(manager: usize) {
     }
     let Some(signal) = BASE
         .load(Ordering::Relaxed)
-        .checked_add(engine::cgame_state::PLAY_SESSION_STARTED_AT_RVA)
-        .and_then(|address| engine::read::<i64>(&memory, address))
+        .checked_add(engine_native::cgame_state::PLAY_SESSION_STARTED_AT_RVA)
+        .and_then(|address| engine_native::read::<i64>(&memory, address))
     else {
         COUNTERS[3].fetch_add(1, Ordering::Relaxed);
         LOST.store(true, Ordering::SeqCst);
@@ -207,7 +207,7 @@ pub fn drain(signal: i64, output: &mut Vec<Row>) -> Result<(), &'static str> {
         .load(Ordering::SeqCst)
         .min(OVERFLOW_AT.load(Ordering::SeqCst))
         .min(LOG);
-    engine::allocation::reserve(output, reserved)
+    engine_allocation::reserve(output, reserved)
         .map_err(|_| "combat log drain allocation failed")?;
     // Element pointers only (see `Slots`).
     let slots = SLOTS.0.get().cast::<Logged>().cast_const();
@@ -298,7 +298,7 @@ impl Hooks {
     }
 
     unsafe fn install(memory: &impl Memory, base: usize) -> Result<Hook, &'static str> {
-        if engine::read::<[u8; 16]>(memory, base + PRUNE_RVA) != Some(PRUNE_SENTINEL) {
+        if engine_native::read::<[u8; 16]>(memory, base + PRUNE_RVA) != Some(PRUNE_SENTINEL) {
             return Err("combat log prune sentinel differs");
         }
         BASE.store(base, Ordering::Relaxed);

@@ -7,13 +7,12 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        ArmyOrderPlanRow, ArmyOrderRow, DivisionMovementRow, DivisionOrderTransportInputs,
-        DivisionRow, OrderExecutionInputs, OrdersGroupRow, Recorded, tables,
-    },
+use replay_data::{
+    rows::ArmyOrderPlanRow, rows::ArmyOrderRow, rows::DivisionMovementRow,
+    rows::DivisionOrderTransportInputs, rows::DivisionRow, rows::OrderExecutionInputs,
+    rows::OrdersGroupRow, rows::Recorded, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 use super::{OrderKey, TYPE_INVASION, TYPE_PARADROP, paradrop_counts, transport_counts};
 

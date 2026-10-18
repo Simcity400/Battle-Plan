@@ -1,8 +1,6 @@
 use super::*;
-use replay::{
-    frame::Metrics,
-    rows::{CountryLinkRow, RaidIntelInputRow, TableRows},
-};
+use replay_data::{rows::CountryLinkRow, rows::RaidIntelInputRow, rows::TableRows};
+use replay_frame::frame::Metrics;
 
 pub(super) fn frame(hour: i32, count: u32, amount: i64, decrypting: u8) -> DecodedFrame {
     let mut tables = std::array::from_fn(|_| TableView::Unavailable {
@@ -11,7 +9,7 @@ pub(super) fn frame(hour: i32, count: u32, amount: i64, decrypting: u8) -> Decod
     tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
         (1..=count)
             .map(|slot| CountryRow {
-                border_land_doctrine_level: replay::rows::Recorded::Value(None),
+                border_land_doctrine_level: replay_data::rows::Recorded::Value(None),
                 id: slot * 2,
                 canonical_slot: slot,
                 tag: format!("Mod tag {slot}|suffix").into_bytes(),
@@ -386,7 +384,7 @@ fn truncated_and_unresolved_rows_are_counted_not_empty_and_restart_bounds() {
 
 #[test]
 fn mod_define_stack_changes_threshold_and_unknown_defines_never_use_defaults() {
-    use installed_content::content::ResolvedLayers;
+    use installed_content_core::content::ResolvedLayers;
     let root = std::env::temp_dir().join(format!("hoi4-decryption-mod-{}", uuid::Uuid::new_v4()));
     let base = root.join("base");
     let modified = root.join("mod");
@@ -396,7 +394,8 @@ fn mod_define_stack_changes_threshold_and_unknown_defines_never_use_defaults() {
     std::fs::write(base.join("common/defines/00_base.lua"), "NDefines = { NOperatives = { CRYPTO_BASE_CRYPTO_LEVEL = 2, CRYPTO_CRYPTO_LEVEL_PER_CRYPTO_UPGRADE = 3 } }").unwrap();
     std::fs::write(modified.join("common/defines/99_mod.lua"), "NDefines.NOperatives.CRYPTO_BASE_CRYPTO_LEVEL = 10.25\nNDefines.NOperatives.CRYPTO_CRYPTO_LEVEL_PER_CRYPTO_UPGRADE = 4.5").unwrap();
     let layers = ResolvedLayers::from_folders(&[(&base, &[]), (&modified, &[])]).unwrap();
-    let defines = cryptology::Defines::read(&installed_content::defines::read(&layers).unwrap()).unwrap();
+    let defines =
+        cryptology::Defines::read(&installed_content_core::defines::read(&layers).unwrap()).unwrap();
     let mut scan = Scan::default();
     scan.frame(&frame(100, 2, 800_000, 1), Ok(defines)).unwrap();
     assert_eq!(

@@ -11,21 +11,18 @@ use crate::{
     table_capture::{Arena, CaptureRows},
     table_conversion::{table, unavailable},
 };
-use engine::allocation::{collect_vec, copy_vec, owned_vec, reserve};
-use engine::{
-    Memory, ccountry_supply_system, supply_node, supply_train_entry,
-    walk::{Buffer, Outcome},
+use engine_allocation::{collect_vec, copy_vec, owned_vec, reserve};
+use engine_native::{
+    Memory, ccountry_supply_system, supply_node, supply_train_entry, walk::Buffer, walk::Outcome,
 };
-use replay::{
-    frame::TableInput,
-    rows::{
-        ByteRun, Recorded, SparseBytes, SupplyNodeRow, TableId, TrainAllocation, TrainInventoryRow,
-        tables,
-    },
+use replay_data::{
+    rows::ByteRun, rows::Recorded, rows::SparseBytes, rows::SupplyNodeRow, rows::TableId,
+    rows::TrainAllocation, rows::TrainInventoryRow, rows::tables,
 };
+use replay_frame::frame::TableInput;
 
 #[cfg(any(test, feature = "test-support"))]
-use replay::frame::TableView;
+use replay_frame::frame::TableView;
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [TableId::SupplyNodes, TableId::TrainInventory];
@@ -806,7 +803,7 @@ mod tests {
                 available: i64::MIN,
                 consumed: i64::MAX,
                 parent: -1,
-                route: engine::supply_route::Row {
+                route: engine_native::supply_route::Row {
                     from: 1,
                     to: u16::MAX,
                     break_after: 255,
@@ -865,12 +862,13 @@ mod tests {
     fn sliced_reads_convert_every_field_whole_in_key_order() {
         let capture = read_fixture();
         let [nodes, trains] = capture.table_inputs();
-        let TableInput::Sampled(TableView::Complete(replay::rows::TableRows::SupplyNodes(nodes))) =
-            nodes
+        let TableInput::Sampled(TableView::Complete(replay_data::rows::TableRows::SupplyNodes(
+            nodes,
+        ))) = nodes
         else {
             panic!("a sliced node read converts whole");
         };
-        let TableInput::Sampled(TableView::Complete(replay::rows::TableRows::TrainInventory(
+        let TableInput::Sampled(TableView::Complete(replay_data::rows::TableRows::TrainInventory(
             trains,
         ))) = trains
         else {
@@ -985,7 +983,7 @@ mod tests {
             hour: 9,
             force_full: false,
         };
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -1028,7 +1026,7 @@ mod tests {
                 ..Default::default()
             };
         }
-        let TableView::Complete(replay::rows::TableRows::TrainInventory(rows)) =
+        let TableView::Complete(replay_data::rows::TableRows::TrainInventory(rows)) =
             capture.tables().into_iter().nth(1).unwrap()
         else {
             panic!("appended scalar faults must retain the inventory");
@@ -1088,7 +1086,7 @@ mod tests {
             country: 1,
             province: 2,
             parent: 3,
-            route: engine::supply_route::Row {
+            route: engine_native::supply_route::Row {
                 from: 3,
                 to: 2,
                 len: 2,
@@ -1108,7 +1106,7 @@ mod tests {
         }
         capture.parts[0].paths.first.copy_from_slice(&[3, 2]);
         capture.parts[0].paths.len = 2;
-        let TableView::Complete(replay::rows::TableRows::SupplyNodes(rows)) =
+        let TableView::Complete(replay_data::rows::TableRows::SupplyNodes(rows)) =
             capture.tables().into_iter().next().unwrap()
         else {
             panic!("authenticated cross-country parent must remain recorded");
@@ -1134,7 +1132,7 @@ mod tests {
             index: supply_node::VERTEX | 5,
             province: 5,
             parent: 2,
-            route: engine::supply_route::Row {
+            route: engine_native::supply_route::Row {
                 from: 2,
                 to: 5,
                 len: 2,
@@ -1154,7 +1152,7 @@ mod tests {
         }
         capture.parts[0].paths.first.copy_from_slice(&[5, 2]);
         capture.parts[0].paths.len = 2;
-        let TableView::Complete(replay::rows::TableRows::SupplyNodes(rows)) =
+        let TableView::Complete(replay_data::rows::TableRows::SupplyNodes(rows)) =
             capture.tables().into_iter().next().unwrap()
         else {
             panic!("vertex rows are ordinary SupplyNodes rows");

@@ -18,15 +18,14 @@ use dashboard_text::{
     metadata::{LinkTags, check_cancel, slot_read},
     scripted_text::stored_text,
 };
-use replay::{
-    container::Replay,
-    frame::DecodedFrame,
-    rows::{
-        DivisionDeletionDisposition as Disposition, DivisionEquipmentDeletionRow, DivisionRow,
-        DivisionStatusRow, DivisionTemplateRow, EquipmentDestructionCause as Cause, NameOperands,
-        Recorded, TableId, tables,
-    },
+use replay::container::Replay;
+use replay_data::{
+    rows::DivisionDeletionDisposition as Disposition, rows::DivisionEquipmentDeletionRow,
+    rows::DivisionRow, rows::DivisionStatusRow, rows::DivisionTemplateRow,
+    rows::EquipmentDestructionCause as Cause, rows::NameOperands, rows::Recorded, rows::TableId,
+    rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -35,7 +34,7 @@ use std::{
 };
 use ts_rs::TS;
 #[cfg(any(test, feature = "test-support"))]
-use {dashboard_text::metadata::validate_campaign, replay::frame::FrameDecoder};
+use {dashboard_text::metadata::validate_campaign, replay_frame::frame::FrameDecoder};
 
 pub mod block;
 mod newest;
@@ -270,7 +269,7 @@ struct Presentations<'a> {
     divisions: &'a [DivisionRow],
     names: &'a [DivisionStatusRow],
     templates: &'a [DivisionTemplateRow],
-    icons: &'a [replay::rows::DivisionTemplateIconRow],
+    icons: &'a [replay_data::rows::DivisionTemplateIconRow],
     template_hour: Option<i32>,
 }
 fn keyed<T>(rows: &[T], key: u64, of: impl Fn(&T) -> u64) -> Option<&T> {
@@ -383,7 +382,7 @@ pub struct Scan {
     /// The recording's format, which dates its daily tables
     /// ([`dashboard_text::metadata::slot_read`]).
     #[serde(skip)]
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
     events: Vec<Event>,
     #[serde(serialize_with = "dashboard_core::map_pairs::ordered_set")]
     seen: HashSet<u64>,
@@ -810,7 +809,7 @@ fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan
     Ok(scan)
 }
 type CachedLegacyNames = (
-    Result<Arc<installed_content::division_names::Database>, String>,
+    Result<Arc<installed_content_division_names::division_names::Database>, String>,
     Vec<String>,
 );
 
@@ -1016,9 +1015,11 @@ fn legacy_names(source: &Source, cat: &Arc<Catalogue>) -> CachedLegacyNames {
         .get_or_insert_with(|| {
             // The global database is reached only by the historical operand path.
             // Cached army-name bytes need no database.
-            match installed_content::division_names::read_directories::<installed_content::Diagnostic>(
+            match installed_content_division_names::division_names::read_directories::<
+                installed_content_core::Diagnostic,
+            >(
                 &cat.content.layers,
-                &installed_content::division_names::DIRECTORIES,
+                &installed_content_division_names::division_names::DIRECTORIES,
             ) {
                 Ok((database, notes)) => (
                     Ok(Arc::new(database)),

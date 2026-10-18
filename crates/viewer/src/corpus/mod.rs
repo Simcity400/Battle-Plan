@@ -123,11 +123,11 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
 
 fn run(args: &[OsString]) -> io::Result<()> {
     let options = parse(args)?;
-    engine::executable_tables::initialize(&options.game_dir)?;
+    engine_executable::executable_tables::initialize(&options.game_dir)?;
     let started = Instant::now();
     let language = stacks::language(&options.user_dir)?;
     // The reading client's texture decode state, which font pages load under.
-    let decode = installed_content::settings::read_keys(&options.user_dir)?.texture_decode();
+    let decode = installed_content_settings::settings::read_keys(&options.user_dir)?.texture_decode();
     let (candidates, refused) = stacks::candidates(&options.user_dir, options.workshop.as_deref())?;
     for unusable in &refused {
         eprintln!(
@@ -232,7 +232,7 @@ fn run(args: &[OsString]) -> io::Result<()> {
 /// Gathers one stack and runs every reader over it.
 fn stack(
     options: &Options,
-    (language, decode): (&str, installed_content::image::native::Decode),
+    (language, decode): (&str, installed_content_image::native::Decode),
     candidates: &[stacks::Candidate],
     plan: &stacks::Plan,
     scratch: &Path,
@@ -248,7 +248,7 @@ fn stack(
     if let Some(candidate) = candidates.iter().find(|candidate| candidate.id == plan.id) {
         report.descriptor_file = Some(candidate.file.clone());
         // The rewritten descriptor has already been checked to parse back identically.
-        if let Ok(descriptor) = installed_content::parser::parse(candidate.descriptor.as_bytes()) {
+        if let Ok(descriptor) = installed_content_core::parser::parse(candidate.descriptor.as_bytes()) {
             let field = |key: &[u8]| {
                 descriptor
                     .get(key)
@@ -264,7 +264,7 @@ fn stack(
     // Each stack keeps its own hash cache: gather rewrites the whole file.
     let gathered = stacks::user_folder(&scratch.join(&plan.id), language, candidates, &plan.mods)
         .and_then(|user_dir| {
-            installed_content::gather(&installed_content::GatherOptions {
+            installed_content_core::gather(&installed_content_core::GatherOptions {
                 game_dir: options.game_dir.clone(),
                 user_dir,
                 cache_dir: cache.join(&plan.id),

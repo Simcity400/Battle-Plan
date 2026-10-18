@@ -16,11 +16,9 @@ use crate::{
     },
 };
 use dashboard_base::prepared::prepass::{Held, HeldBytes};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView, ViewIdentity},
-    rows::{CompletedFocusRow, TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{rows::CompletedFocusRow, rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::TableView, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},

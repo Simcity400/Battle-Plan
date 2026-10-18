@@ -15,8 +15,16 @@ default = ["politics_capture"]
 politics_capture = []
 
 [dependencies]
-engine.workspace = true
-replay.workspace = true
+engine-allocation.workspace = true
+engine-decisions.workspace = true
+engine-events.workspace = true
+engine-focus.workspace = true
+engine-land-inputs.workspace = true
+engine-mutations.workspace = true
+engine-native.workspace = true
+engine-production.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
 serde = { workspace = true, features = ["derive"] }
 collector-extended-support.workspace = true
 collector-hooks.workspace = true
@@ -28,9 +36,9 @@ collector-timing.workspace = true
 windows-sys = { workspace = true, features = ["Win32_System_Diagnostics_Debug", "Win32_System_Memory", "Win32_System_Threading"] }
 
 [dev-dependencies]
+engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-test-support.workspace = true
 serde_json.workspace = true
-engine = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-extended-support = { workspace = true, features = ["test-support"] }
 collector-hooks = { workspace = true, features = ["test-support"] }
 collector-observers = { workspace = true, features = ["default", "test-support"] }

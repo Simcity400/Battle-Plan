@@ -6,7 +6,8 @@ use dashboard_base::products::{CountryParams, Product};
 use dashboard_base::source::Source;
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_core::config::LoadContext;
-use replay::{frame::DecodedFrame, rows::*};
+use replay_data::rows::*;
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 pub use spending::prepared;
 pub use spending::{

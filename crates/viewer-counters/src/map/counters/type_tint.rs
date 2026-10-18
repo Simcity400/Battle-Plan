@@ -7,10 +7,8 @@
 //! wins over hostility. Land units, railway guns and at-sea task forces share this
 //! path, including hidden icons; port items retain their type icon's authored colour.
 //! The same flags select the plate allegiance ([`plate`]).
-use replay::{
-    frame::DecodedFrame,
-    rows::{DivisionRow, SentVolunteerRow, TableId, tables},
-};
+use replay_data::{rows::DivisionRow, rows::SentVolunteerRow, rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
@@ -51,7 +49,7 @@ pub(super) struct Colors {
 }
 
 impl Colors {
-    pub(super) fn read(defines: &installed_content::defines::Defines) -> io::Result<Self> {
+    pub(super) fn read(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
         let color = |name| -> io::Result<[f32; 4]> {
             let values = defines.numbers("NGraphics", name)?;
             let [r, g, b]: [f64; 3] = values.try_into().map_err(|_: Vec<f64>| {

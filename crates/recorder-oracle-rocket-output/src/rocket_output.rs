@@ -1,11 +1,9 @@
 //! Retained rocket output has no historical spending/delivery serializer.
 //! Check the recorded event counters and independent signed totals along a branch.
 use super::{Report, complete, daily_read, invalid};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder},
-    rows::{RocketProductionOutputRow, RowCodec, TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{rows::RocketProductionOutputRow, rows::RowCodec, rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
 use std::{collections::BTreeMap, io};
 
 pub fn compare(replay: &Replay, frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
@@ -210,7 +208,7 @@ mod tests {
         let frame = |hour: i32, read: Option<Vec<RocketProductionOutputRow>>| {
             let mut frame = crate::test_support::frame(
                 read.clone()
-                    .map(replay::rows::TableRows::RocketProductionOutput),
+                    .map(replay_data::rows::TableRows::RocketProductionOutput),
             );
             frame.hour = hour;
             if read.is_some() {

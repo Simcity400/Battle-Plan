@@ -365,7 +365,7 @@ pub const WATCHED_WHOLE: [TableId; 7] = [
 /// watch (`watched`), and anywhere when it watches none of it; any other
 /// table did not change ([`dashboard_text::triggers::inputs::QuietTables`]).
 struct KeptChanges<'a> {
-    rows_changed: &'a [bool; replay::frame::TABLE_COUNT],
+    rows_changed: &'a [bool; replay_data::rows::TABLE_COUNT],
     watched: &'a [replay::container::TableFields],
 }
 impl dashboard_text::triggers::inputs::TableChanges for KeptChanges<'_> {
@@ -594,7 +594,7 @@ impl Prepared {
         kept: Option<&KeptChanges<'_>>,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("projects:observe");
+        let _cpu = ::replay_frame::cpu::scope_phase("projects:observe");
         let reuse = match kept {
             Some(kept) => history::Reuse::Advance(kept),
             None => history::Reuse::Confirm(changes),
@@ -1780,7 +1780,7 @@ fn intervals(
     cancelled: &AtomicBool,
 ) -> io::Result<Vec<Interval>> {
     let mut result = Vec::new();
-    let _cpu = replay::cpu::scope_phase("projects:query_intervals");
+    let _cpu = replay_frame::cpu::scope_phase("projects:query_intervals");
     let mut looks = Looks::default();
     let mut cursor = 0;
     loop {
@@ -1817,7 +1817,7 @@ fn identities(
     key: u64,
     cancelled: &AtomicBool,
 ) -> io::Result<Vec<CountryIdentityRun>> {
-    let _cpu = replay::cpu::scope_phase("projects:query_identities");
+    let _cpu = replay_frame::cpu::scope_phase("projects:query_identities");
     let mut identities = Vec::new();
     let mut cursor = 0;
     loop {
@@ -1996,9 +1996,9 @@ fn complete_reply(
     };
     let mut lexical = None;
     let mut refusals = catalogue::Refusals::default();
-    let cpu = replay::cpu::scope_phase("projects:query_episodes");
+    let cpu = replay_frame::cpu::scope_phase("projects:query_episodes");
     for interval in &selected_intervals {
-        let _cpu = replay::cpu::scope_phase("projects:query_interval");
+        let _cpu = replay_frame::cpu::scope_phase("projects:query_interval");
         dashboard_text::metadata::check_cancel(cancelled)?;
         if !params.selection_tags.is_empty() && !selected.contains(&interval.observation.identity) {
             builder.last = None;
@@ -2058,7 +2058,7 @@ fn complete_reply(
         }
     }
     drop(cpu);
-    let _cpu = replay::cpu::scope_phase("projects:query_reads_finish");
+    let _cpu = replay_frame::cpu::scope_phase("projects:query_reads_finish");
     for span in &builder.available {
         let mut hour = span.first_hour;
         while hour <= span.last_hour {

@@ -1,7 +1,7 @@
 use super::*;
 
 fn fixture(input: &[u8]) -> io::Result<Pack> {
-    parse(&installed_content::parser::parse(input)?.items)
+    parse(&installed_content_core::parser::parse(input)?.items)
 }
 
 #[test]

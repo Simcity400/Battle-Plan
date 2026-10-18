@@ -1,7 +1,5 @@
-use replay::{
-    frame::{DecodedFrame, Metrics, TableView},
-    rows::{TableId, TableRows},
-};
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::TableView};
 
 pub fn frame(rows: impl IntoIterator<Item = TableRows>) -> DecodedFrame {
     let mut tables =
@@ -21,11 +19,12 @@ pub fn frame(rows: impl IntoIterator<Item = TableRows>) -> DecodedFrame {
 pub const ALLOCATION_CAMPAIGN: &[u8; 36] = b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a6";
 
 pub fn allocation_records() -> Vec<replay::spool::Record> {
-    use replay::{
-        branches::{BranchReason, BranchStart, Parentage},
-        identity::{Identity, SampleBoundary, SessionStart, Verification},
-        spool::{ControlRecord, Record},
+    use replay::{spool::ControlRecord, spool::Record};
+    use replay_data::{
+        identity::Identity, identity::SampleBoundary, identity::SessionStart,
+        identity::Verification,
     };
+    use replay_frame::{branches::BranchReason, branches::BranchStart, branches::Parentage};
     let mut records = vec![
         Record::SessionStart(SessionStart {
             id: 7,
@@ -73,11 +72,9 @@ pub fn allocation_records() -> Vec<replay::spool::Record> {
 }
 
 /// One complete keyframe of the synthetic campaign on `branch`, loaded at `load_signal`.
-pub fn allocation_frame(branch: u64, hour: i32, load_signal: i64) -> replay::frame::Frame {
-    use replay::{
-        frame::{Frame, TableUpdate},
-        rows::{CampaignRow, ClockRow},
-    };
+pub fn allocation_frame(branch: u64, hour: i32, load_signal: i64) -> replay_frame::frame::Frame {
+    use replay_data::{rows::CampaignRow, rows::ClockRow};
+    use replay_frame::{frame::Frame, frame::TableUpdate};
     Frame {
         branch,
         hour,
@@ -93,8 +90,8 @@ pub fn allocation_frame(branch: u64, hour: i32, load_signal: i64) -> replay::fra
                 TableId::Campaign => TableRows::Campaign(vec![CampaignRow {
                     id: ALLOCATION_CAMPAIGN.to_vec(),
                 }]),
-                TableId::GameScoreMultipliers => {
-                    TableRows::GameScoreMultipliers(vec![replay::rows::GameScoreMultiplierRow {
+                TableId::GameScoreMultipliers => TableRows::GameScoreMultipliers(vec![
+                    replay_data::rows::GameScoreMultiplierRow {
                         total_raw: Some(0),
                         army_raw: Some(0),
                         navy_raw: Some(0),
@@ -102,19 +99,19 @@ pub fn allocation_frame(branch: u64, hour: i32, load_signal: i64) -> replay::fra
                         industry_raw: Some(0),
                         land_raw: Some(0),
                         ..Default::default()
-                    }])
-                }
+                    },
+                ]),
                 TableId::EventFeedHistory => {
-                    TableRows::EventFeedHistory(vec![replay::rows::EventFeedHistoryRow {
+                    TableRows::EventFeedHistory(vec![replay_data::rows::EventFeedHistoryRow {
                         read_hour: hour,
-                        coverage: replay::event_feed_rows::EventFeedCoverage::Complete,
+                        coverage: replay_data::event_feed_rows::EventFeedCoverage::Complete,
                         counts: Some(Default::default()),
                         ..Default::default()
                     }])
                 }
                 // Each hour's map-event interval runs from the previous hour to
                 // this frame's hour, so consecutive frames continue it.
-                TableId::MapEvents => TableRows::MapEvents(vec![replay::rows::MapEventsRow {
+                TableId::MapEvents => TableRows::MapEvents(vec![replay_data::rows::MapEventsRow {
                     from_hour: hour - 1,
                     to_hour: hour,
                     ..Default::default()
@@ -125,7 +122,7 @@ pub fn allocation_frame(branch: u64, hour: i32, load_signal: i64) -> replay::fra
                 table => TableRows::empty(table),
             };
             // A current spool holds no retired table; decoding names it.
-            match replay::format::FormatVersion::CURRENT.table_refusal(rows.table()) {
+            match replay_data::format::FormatVersion::CURRENT.table_refusal(rows.table()) {
                 Some(reason) => TableUpdate::Unavailable { reason },
                 None => TableUpdate::Snapshot(rows),
             }
@@ -149,10 +146,8 @@ fn push_load(
     hours: std::ops::RangeInclusive<i32>,
     load_signal: i64,
 ) {
-    use replay::{
-        branches::{BranchReason, BranchStart, Parentage},
-        spool::{ControlRecord, Record},
-    };
+    use replay::{spool::ControlRecord, spool::Record};
+    use replay_frame::{branches::BranchReason, branches::BranchStart, branches::Parentage};
     records.pop();
     let last_hour = *hours.end();
     records.push(Record::BranchStart(BranchStart {
@@ -208,8 +203,8 @@ pub fn write_campaign_spool(
     campaign
 }
 
-pub fn allocation_witness(committed_bytes: u64) -> replay::witness::TerminalWitness {
-    replay::witness::TerminalWitness {
+pub fn allocation_witness(committed_bytes: u64) -> replay_data::witness::TerminalWitness {
+    replay_data::witness::TerminalWitness {
         session: 7,
         process_start_time: 13,
         campaign_id: Some(*ALLOCATION_CAMPAIGN),
@@ -244,7 +239,7 @@ pub fn replay(records: Vec<replay::spool::Record>) -> replay::container::Replay 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::frame::TableUpdate;
+    use replay_frame::frame::TableUpdate;
 
     /// Every singleton table in the registry is complete with one row (or names
     /// its retirement), so a newly registered singleton cannot leave the shared

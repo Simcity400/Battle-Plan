@@ -2,9 +2,10 @@
 //! growth, switches and assignments; those remain a reconciled residual rather
 //! than attributing today's modifiers to yesterday's efficiency.
 use super::*;
-use replay::fixed_point::{fixed5_to_q15, q15_to_fixed5};
-use replay::rows::{
-    CountryProductionModifiersRow, ProductionLineModifiersRow, ProductionModifierTree,
+use replay_data::{fixed_point::fixed5_to_q15, fixed_point::q15_to_fixed5};
+use replay_data::{
+    rows::CountryProductionModifiersRow, rows::ProductionLineModifiersRow,
+    rows::ProductionModifierTree,
 };
 
 const FACTORS: &[(&str, &str)] = &[
@@ -34,7 +35,7 @@ pub struct RawModifierRun {
     pub line: ProductionLineModifiersRow,
     pub run: RawRun,
     pub organisation: Option<String>,
-    pub localisation: Option<Arc<installed_content::localisation::Localisation>>,
+    pub localisation: Option<Arc<installed_content_localisation::localisation::Localisation>>,
     pub recorded_language: Arc<str>,
 }
 impl RawModifierRun {
@@ -144,7 +145,7 @@ fn value(country: &CountryProductionModifiersRow, key: u32) -> Option<i64> {
         .then(|| tree.nodes.first().map(|node| node.value))
         .flatten()
 }
-fn subtree_end(nodes: &[replay::rows::ModifierBreakdownNode], start: usize) -> usize {
+fn subtree_end(nodes: &[replay_data::rows::ModifierBreakdownNode], start: usize) -> usize {
     let mut pending = 1_usize;
     let mut end = start;
     while pending != 0 && end < nodes.len() {
@@ -164,7 +165,7 @@ fn sources(
     key: u32,
     depth: i32,
     scale: impl Fn(i64) -> i64,
-    localisation: Option<&installed_content::localisation::Localisation>,
+    localisation: Option<&installed_content_localisation::localisation::Localisation>,
     recorded_language: &str,
     warnings: &mut BTreeSet<String>,
 ) -> Vec<ProductionModifierPart> {
@@ -999,7 +1000,7 @@ mod tests {
     }
     #[test]
     fn military_and_naval_partial_power_remove_the_unpowered_bonus_without_a_residual() {
-        use replay::rows::ModifierBreakdownNode as Node;
+        use replay_data::rows::ModifierBreakdownNode as Node;
         for (naval, base, adjustment, speed) in [
             (false, 300000, -30000, 330000),
             (true, 800000, -80000, 880000),
@@ -1073,7 +1074,7 @@ mod tests {
     }
     #[test]
     fn formatter_depth_omits_zero_rows_keeps_aliases_and_ignores_nonzero_interior_totals() {
-        use replay::rows::ModifierBreakdownNode as Node;
+        use replay_data::rows::ModifierBreakdownNode as Node;
         let node = |children, value, name: &[u8]| Node {
             children,
             value,
@@ -1094,7 +1095,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let mut localisation = installed_content::localisation::Localisation::default();
+        let mut localisation = installed_content_localisation::localisation::Localisation::default();
         localisation.language = "english".into();
         let mut warnings = BTreeSet::new();
         let parts = sources(
@@ -1134,7 +1135,7 @@ mod tests {
     }
     #[test]
     fn five_thousand_zero_sources_add_no_rows_or_warnings_to_output_or_refit() {
-        use replay::rows::ModifierBreakdownNode as Node;
+        use replay_data::rows::ModifierBreakdownNode as Node;
         let zeros = 5_000;
         let tree = |key: u32, named: Option<i64>| {
             let mut nodes = vec![Node {
@@ -1167,7 +1168,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let mut localisation = installed_content::localisation::Localisation::default();
+        let mut localisation = installed_content_localisation::localisation::Localisation::default();
         localisation.language = "english".into();
         let raw = RawModifierRun {
             first_hour: 0,
@@ -1210,7 +1211,7 @@ mod tests {
     }
     #[test]
     fn source_labels_share_the_recorded_text_guard_without_refusing_exact_amounts() {
-        use replay::rows::ModifierBreakdownNode as Node;
+        use replay_data::rows::ModifierBreakdownNode as Node;
         let mut country = CountryProductionModifiersRow {
             trees: vec![ProductionModifierTree {
                 key: 0xa9,
@@ -1223,9 +1224,9 @@ mod tests {
             }],
             ..Default::default()
         };
-        let mut english = installed_content::localisation::Localisation::default();
+        let mut english = installed_content_localisation::localisation::Localisation::default();
         english.language = "english".into();
-        let mut german = installed_content::localisation::Localisation::default();
+        let mut german = installed_content_localisation::localisation::Localisation::default();
         german.language = "german".into();
         let mut warnings = BTreeSet::new();
         let rows = sources(

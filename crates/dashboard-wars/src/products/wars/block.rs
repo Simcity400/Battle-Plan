@@ -42,11 +42,10 @@ use dashboard_base::{
     products::LoadContext,
 };
 use replay::{
-    container::{BlockIndex, QuietHours, Replay, TableFields},
-    format::FormatVersion,
-    frame::{DecodedFrame, SharedView, TableView},
-    rows::TableId,
+    container::BlockIndex, container::QuietHours, container::Replay, container::TableFields,
 };
+use replay_data::{format::FormatVersion, rows::TableId};
+use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView};
 use std::{
     any::Any,
     io,
@@ -545,9 +544,9 @@ fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let facts = {
-        let _cpu = ::replay::cpu::scope("fold facts", None);
+        let _cpu = ::replay_frame::cpu::scope("fold facts", None);
         facts
             .downcast::<BlockFacts>()
             .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -559,7 +558,7 @@ fn fold(
     #[cfg(any(test, feature = "test-support"))]
     OBSERVED.with(|count| count.set(count.get() + 1));
     let result = {
-        let _cpu = ::replay::cpu::scope("fold observe", None);
+        let _cpu = ::replay_frame::cpu::scope("fold observe", None);
         observer
             .observe_changed(&facts.first.frame, &facts.first.changes)
             .and_then(|()| walk(published, observer, hour))
@@ -582,7 +581,7 @@ fn fold(
     check()?;
     let last = facts.last;
     let result = {
-        let _cpu = ::replay::cpu::scope("fold observe", None);
+        let _cpu = ::replay_frame::cpu::scope("fold observe", None);
         carry(observer, published, *facts)
     };
     observed(last, result)?;
@@ -601,7 +600,7 @@ fn observe_block(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let mut tracker = FrameChangeTracker::new();
     let mut reached = None;
     let mut stopped = false;
@@ -610,7 +609,7 @@ fn observe_block(
         index,
         INPUTS,
         |raw, frame| {
-            let _cpu = ::replay::cpu::scope("fold driver", None);
+            let _cpu = ::replay_frame::cpu::scope("fold driver", None);
             let facts = tracker.observe_updates(frame, Arc::new(raw), replay.format);
             if stopped || after.is_some_and(|after| frame.hour <= after) {
                 return Ok(());
@@ -619,7 +618,7 @@ fn observe_block(
             #[cfg(any(test, feature = "test-support"))]
             OBSERVED.with(|count| count.set(count.get() + 1));
             let result = {
-                let _cpu = ::replay::cpu::scope("fold observe", None);
+                let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                 observer
                     .observe_changed(frame, &facts)
                     .and_then(|()| walk(published, observer, frame.hour))
@@ -702,7 +701,7 @@ impl OwnBranch {
         source: &Source,
         context: &LoadContext,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope("fold binds", None);
+        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
         let Some(start) = self.start.take() else {
             return Ok(());
         };

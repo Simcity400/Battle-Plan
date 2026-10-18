@@ -1,6 +1,7 @@
 //! Combat's recorded sprite and flag operands over the shared native GUI resources.
 use super::{Assets, Values, binding::Bindings, gui::CombatResources};
-use installed_content::{gui::native, localisation::Localisation};
+use installed_content_core::gui::native;
+use installed_content_localisation::localisation::Localisation;
 use std::collections::{BTreeMap, BTreeSet};
 use viewer_foundation::map::native_flags::resolved_flag_cell;
 use viewer_foundation::map::native_flags::resolved_text_flag as native_flags_resolved_text_flag;

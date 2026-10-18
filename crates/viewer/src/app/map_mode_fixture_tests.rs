@@ -324,7 +324,7 @@ fn the_states_mode_names_its_live_category_or_refuses_the_line() -> std::io::Res
         panic!("the fixture hour is a gap");
     };
     let province = frame
-        .complete::<replay::rows::tables::Provinces>()
+        .complete::<replay_data::rows::tables::Provinces>()
         .map_err(std::io::Error::other)?
         .iter()
         .find(|province| province.state != 0)
@@ -377,7 +377,7 @@ fn a_scripted_modes_hover_reads_the_viewer_and_the_hovered_state() -> std::io::R
         panic!("the fixture hour is a gap");
     };
     let province = frame
-        .complete::<replay::rows::tables::Provinces>()
+        .complete::<replay_data::rows::tables::Provinces>()
         .map_err(std::io::Error::other)?
         .iter()
         .find(|province| province.state != 0)
@@ -446,7 +446,7 @@ fn a_scripted_modes_hover_reads_the_viewer_and_the_hovered_state() -> std::io::R
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
 fn the_resistance_hover_shows_the_recorded_strengths() -> std::io::Result<()> {
-    use installed_content::localisation::Argument;
+    use installed_content_localisation::localisation::Argument;
     use viewer_counter_products::map::province_tooltips::{Cache, ModeHover};
     let fixture = Fixture::load("viewer-resistance-hover")?;
     let document = &fixture.document;
@@ -454,14 +454,14 @@ fn the_resistance_hover_shows_the_recorded_strengths() -> std::io::Result<()> {
         panic!("the fixture hour is a gap");
     };
     let resistance = frame
-        .complete::<replay::rows::tables::StateResistance>()
+        .complete::<replay_data::rows::tables::StateResistance>()
         .map_err(std::io::Error::other)?
         .iter()
         .find(|row| row.active != 0)
         .expect("an occupied state with resistance")
         .clone();
     let province = frame
-        .complete::<replay::rows::tables::Provinces>()
+        .complete::<replay_data::rows::tables::Provinces>()
         .map_err(std::io::Error::other)?
         .iter()
         .find(|province| province.state == resistance.state)

@@ -40,7 +40,9 @@ use crate::{
     },
 };
 use dashboard_base::prepared::kept::{kept_changes, observe_hours};
-use replay::{container::Replay, format::FormatVersion, frame::DecodedFrame, rows::TableId};
+use replay::container::Replay;
+use replay_data::{format::FormatVersion, rows::TableId};
+use replay_frame::frame::DecodedFrame;
 use std::{any::Any, fmt, io, sync::atomic::AtomicBool};
 
 /// The tables the feed and its identity history read: the history's own
@@ -211,9 +213,9 @@ impl Branch for FeedBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<(Folded, Option<i32>)> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         let facts = {
-            let _cpu = ::replay::cpu::scope("fold facts", None);
+            let _cpu = ::replay_frame::cpu::scope("fold facts", None);
             facts
                 .downcast::<Facts>()
                 .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -222,13 +224,13 @@ impl Branch for FeedBranch {
         dashboard_base::prepared::kept::note_frames(FAMILY.name, facts.hours.len());
         let mut reached = None;
         for (frame, changes) in facts.hours {
-            let _cpu = ::replay::cpu::scope("fold driver", None);
+            let _cpu = ::replay_frame::cpu::scope("fold driver", None);
             check()?;
             reached = Some(frame.hour);
             #[cfg(test)]
             dashboard_base::prepared::kept::note_observed(FAMILY.name);
             let result = {
-                let _cpu = ::replay::cpu::scope("fold observe", None);
+                let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                 self.observe(block.replay, &frame, &changes)
             };
             if !observed(frame.hour, result)? {
@@ -244,7 +246,7 @@ impl Branch for FeedBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         let replay = block.replay;
         observe_hours(
             replay,

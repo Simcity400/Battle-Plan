@@ -1,5 +1,5 @@
 use super::*;
-use engine::fuel_demand::{AirInputs, Modifier};
+use engine_fuel::{fuel_demand::AirInputs, fuel_demand::Modifier};
 
 value_struct!(Modifier { raw: Option<i64>, present: bool, effective: i64 });
 value_struct!(AirInputs { reached: bool, mission_first: u32, mission_selected: u32,
@@ -261,7 +261,7 @@ impl Value for FuelDemandPart {
     }
     const MINIMUM_ENCODED_BYTES: usize = 1;
     fn encoded_bytes(&self) -> io::Result<usize> {
-        engine::allocation::add(
+        engine_allocation::add(
             1,
             match self {
                 Self::Division(unit) | Self::TaskForce(unit) => Value::encoded_bytes(unit)?,
@@ -394,7 +394,7 @@ impl FuelDemandRead {
                 .collect(),
         ];
         let mut rows = Vec::new();
-        engine::allocation::reserve(&mut rows, lists.iter().map(Vec::len).sum())?;
+        engine_allocation::reserve(&mut rows, lists.iter().map(Vec::len).sum())?;
         for list in lists {
             let mut seen: std::collections::BTreeMap<u64, u32> = std::collections::BTreeMap::new();
             for (position, part) in list.into_iter().enumerate() {
@@ -486,7 +486,7 @@ impl FuelDemandRead {
             }
             None => None,
         };
-        engine::fuel_demand::wing_rate_with_context(inputs, sums)
+        engine_fuel::fuel_demand::wing_rate_with_context(inputs, sums)
     }
 
     /// Native cached army/naval sums and recomputed air sum. A family's failure

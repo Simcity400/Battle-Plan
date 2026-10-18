@@ -1,10 +1,10 @@
 //! Synthetic-world tests of the naval mission operands pack.
 use super::*;
-use engine::{
+use engine_native::{
     ccharacter, cfleet, cgame_state, cnaval_mission, cnavy_leader, cprovince, cstrategic_navy,
-    cstrategic_region, ctask_force, cunit,
-    memory::{CountedMemory, LiveMemory, SliceMemory},
-    naval_mission_inputs as native, reference_bucket as bucket, sweather_per_region,
+    cstrategic_region, ctask_force, cunit, memory::CountedMemory, memory::LiveMemory,
+    memory::SliceMemory, naval_mission_inputs as native, reference_bucket as bucket,
+    sweather_per_region,
 };
 
 const GAME_STATE: usize = 0x10000;
@@ -176,7 +176,7 @@ fn build_in(countries: u32, mut bytes: Vec<u8>, hubs: bool) -> World {
         }
         // The physical navy pass authenticates each navy's manager backlink.
         heap.u64(
-            navy + engine::country_naval_movement_inputs::MANAGER,
+            navy + engine_naval_history::country_naval_movement_inputs::MANAGER,
             heap.ptr(manager),
         );
         heap.u32(navy + cstrategic_navy::OWNER, slot);
@@ -639,7 +639,7 @@ fn capture(
     captured.tables()
 }
 
-fn rows<S: replay::rows::TableSchema>(view: &TableView) -> &[S::Row] {
+fn rows<S: replay_data::rows::TableSchema>(view: &TableView) -> &[S::Row] {
     let TableView::Complete(rows) = view else {
         panic!("incomplete {view:?}");
     };
@@ -1245,7 +1245,7 @@ fn ordinary_strict_missions_grow_on_first_and_later_publications() {
     // The navy part alone: the physical pass and the ledgers that borrow it.
     let mut owner = Captured::with_capacities(&Capacities::default());
     let countries =
-        std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+        std::sync::Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
     let mut loan = NavalMissionLoan {
         force_full: true,
         fingerprints: Some(Box::new(SliceFingerprints::new())),

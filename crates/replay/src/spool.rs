@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::{
-    BranchId, FORMAT_VERSION,
+    BranchId,
     branches::{BranchStart, Gap},
     codec::{Decoder, invalid, invalid_static, put_string},
     format::FormatVersion,
@@ -18,15 +18,10 @@ use crate::{
     identity::SessionStart,
     rows::compatibility::RecordKind,
 };
-use engine::allocation::allocation_error;
+use engine_allocation::allocation_error;
 
-pub const RECORD_MAGIC: [u8; 4] = *b"H4SV";
-/// Magic, recording version, payload length and payload CRC, all scalars little-endian.
-pub const RECORD_HEADER_BYTES: usize = 4 + 2 + 4 + 4;
-/// One record carries one frame, and a frame must fit a replay block, so the
-/// block's raw limit is the only bound. A fixed smaller cap refused keyframes
-/// of campaigns with a few thousand countries (~150-240 MB at 1,500).
-pub const MAX_RECORD_BYTES: usize = crate::container::MAX_BLOCK_RAW_BYTES;
+use replay_frame::envelope::seal_record;
+pub use replay_frame::envelope::{MAX_RECORD_BYTES, RECORD_HEADER_BYTES, RECORD_MAGIC};
 const SYNC_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -111,7 +106,7 @@ impl ControlRecord {
             ),
             Self::EventLoss { .. } => (size_of::<BranchId>() + 2 * size_of::<i32>(), None),
         };
-        engine::allocation::add(
+        engine_allocation::add(
             tagged_session + fields + usize::from(reason.is_some()) * size_of::<u32>(),
             reason.map_or(0, String::len),
         )
@@ -129,7 +124,7 @@ impl ControlRecord {
 
     /// These tags are shared by spool payloads and the replay trailer.
     pub fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
-        engine::allocation::reserve(out, self.encoded_bytes()?)?;
+        engine_allocation::reserve(out, self.encoded_bytes()?)?;
         match self {
             Self::EventLoss {
                 session,
@@ -291,7 +286,7 @@ impl ControlRecord {
 impl Record {
     /// Encode a payload; `encode_record` adds its length and checksum envelope.
     pub fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
-        engine::allocation::reserve(out, 1)?;
+        engine_allocation::reserve(out, 1)?;
         match self {
             Self::SessionStart(value) => {
                 out.push(0);
@@ -336,39 +331,23 @@ pub fn encode_record(record: &Record) -> io::Result<Vec<u8>> {
     let payload = match record {
         Record::Control(control) => control.encoded_bytes()?,
         Record::BranchStart(branch) => size_of::<u8>() + branch.encoded_bytes(),
-        Record::Gap(gap) => engine::allocation::add(size_of::<u8>(), gap.encoded_bytes()?)?,
+        Record::Gap(gap) => engine_allocation::add(size_of::<u8>(), gap.encoded_bytes()?)?,
         Record::SessionStart(session) => {
-            engine::allocation::add(size_of::<u8>(), session.encoded_bytes()?)?
+            engine_allocation::add(size_of::<u8>(), session.encoded_bytes()?)?
         }
         Record::Frame(_) => size_of::<u8>(),
     };
     let capacity = RECORD_HEADER_BYTES
         .checked_add(payload)
-        .ok_or_else(engine::allocation::oom)?;
-    let mut out = engine::allocation::vec(capacity)?;
+        .ok_or_else(engine_allocation::oom)?;
+    let mut out = engine_allocation::vec(capacity)?;
     out.resize(RECORD_HEADER_BYTES, 0);
     record.encode(&mut out)?;
     seal_record(out)
 }
 
-fn encode_frame_record(mut frame: EncodedFrame) -> io::Result<Vec<u8>> {
-    frame.bytes[RECORD_HEADER_BYTES] = 2;
-    seal_record(frame.bytes)
-}
-
-fn seal_record(mut out: Vec<u8>) -> io::Result<Vec<u8>> {
-    let length = out.len() - RECORD_HEADER_BYTES;
-    if length > MAX_RECORD_BYTES {
-        return Err(invalid_static(
-            "spool record exceeds the replay block limit",
-        ));
-    }
-    let crc = crc32fast::hash(&out[RECORD_HEADER_BYTES..]);
-    out[..4].copy_from_slice(&RECORD_MAGIC);
-    out[4..6].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
-    out[6..10].copy_from_slice(&(length as u32).to_le_bytes());
-    out[10..14].copy_from_slice(&crc.to_le_bytes());
-    Ok(out)
+fn encode_frame_record(frame: EncodedFrame) -> io::Result<Vec<u8>> {
+    frame.into_spool_record()
 }
 
 /// This checks segment context, not table baselines, which belong to FrameDecoder.
@@ -415,7 +394,7 @@ impl SegmentState {
                 if self.branches.contains(&branch.id) {
                     return Err(invalid_static("repeated branch start inside a segment"));
                 }
-                engine::allocation::reserve(&mut self.branches, 1)?;
+                engine_allocation::reserve(&mut self.branches, 1)?;
                 self.branches.push(branch.id);
                 self.session = Some(branch.session);
                 self.branch = Some(branch.id);
@@ -567,7 +546,7 @@ fn recover_records(
                 return Ok(None);
             };
             let record = retain(record)?;
-            engine::allocation::reserve(&mut result.records, 1)?;
+            engine_allocation::reserve(&mut result.records, 1)?;
             Ok(Some(record))
         })();
         match decoded {
@@ -653,7 +632,7 @@ impl<R: Read> RecordReader<R> {
         if length > remaining - RECORD_HEADER_BYTES {
             return Err(invalid("truncated record payload"));
         }
-        engine::allocation::resize(&mut self.payload, length, 0)?;
+        engine_allocation::resize(&mut self.payload, length, 0)?;
         self.input.read_exact(&mut self.payload)?;
         let expected = u32::from_le_bytes(header[10..14].try_into().unwrap());
         if crc32fast::hash(&self.payload) != expected {
@@ -1071,9 +1050,9 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
     ) -> io::Result<()> {
         self.start_segment_with(
             context,
-            keyframe.branch,
-            keyframe.hour,
-            keyframe.keyframe,
+            keyframe.branch(),
+            keyframe.hour(),
+            keyframe.keyframe(),
             || encode_frame_record(keyframe),
         )
     }
@@ -1098,8 +1077,8 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
         let count = context
             .len()
             .checked_add(1)
-            .ok_or_else(engine::allocation::oom)?;
-        let mut encoded = engine::allocation::vec(count)?;
+            .ok_or_else(engine_allocation::oom)?;
+        let mut encoded = engine_allocation::vec(count)?;
         for record in context {
             if matches!(
                 record,
@@ -1159,7 +1138,7 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
                 "no writable segment; restart with context and a keyframe",
             ));
         }
-        let (branch, hour, keyframe) = (frame.branch, frame.hour, frame.keyframe);
+        let (branch, hour, keyframe) = (frame.branch(), frame.hour(), frame.keyframe());
         let bytes = encode_frame_record(frame)?;
         self.state.accept_frame(branch, hour, keyframe)?;
         self.append_bytes(bytes, false)
@@ -1224,12 +1203,12 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
         if let Some(hook) = self.write_start_hook {
             hook(preceding);
         }
-        if engine::allocation::capture_stopped() {
+        if engine_allocation::capture_stopped() {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
         sink.write_all(bytes)?;
         sink.flush()?;
-        if engine::allocation::capture_stopped() {
+        if engine_allocation::capture_stopped() {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
         self.current_bytes = self.current_bytes.saturating_add(bytes.len() as u64);

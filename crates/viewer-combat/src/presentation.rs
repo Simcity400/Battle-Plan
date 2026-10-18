@@ -3,13 +3,11 @@ use super::{
     Selection, Values, Widget,
     binding::{Bindings, FLAG, SPRITE, country_flag, hide, sprite},
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        CombatCommanderPortraitEntry, CombatCommanderPresentation, LandCombatCommanderTrait,
-        LandCombatSideDetails, tables,
-    },
+use replay_data::{
+    rows::CombatCommanderPortraitEntry, rows::CombatCommanderPresentation,
+    rows::LandCombatCommanderTrait, rows::LandCombatSideDetails, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
 use std::io;
 use {super::content::Content as StaticContent, viewer_foundation::map::tables::rows};
@@ -248,7 +246,7 @@ fn traits(
                 // actual missing-declaration fallback; the
                 // missing sprite is still reported by name. Only the
                 // content's trait names have their sprites loaded
-                // (installed_content::unit_leader::Traits::registered).
+                // (installed_content_core::unit_leader::Traits::registered).
                 let why = if names.contains(&value.token) {
                     not_declared()
                 } else if names.unsupported.is_empty() {

@@ -29,14 +29,12 @@
 //! wings themselves (the joins never read a wing), is unreadable.
 
 use super::*;
-use engine::{
+use engine_map_air::{map_air_base_reference::BaseReference, map_air_base_reference::Host};
+use engine_native::{
     cgame_state as gs, creference_registry as registry, cship, cstrategic_air, cstrategic_navy,
-    ctask_force, cunit,
-    map_air_base_reference::{BaseReference, Host},
-    memory::{RecordLayout, RecordSources},
-    reference_bucket as bucket,
+    ctask_force, cunit, memory::RecordLayout, memory::RecordSources, reference_bucket as bucket,
 };
-use replay::rows::{AirReferenceWitnessRow, TableSchema};
+use replay_data::{rows::AirReferenceWitnessRow, rows::TableSchema};
 use std::{
     cell::Cell,
     collections::{BTreeMap, BTreeSet},
@@ -412,7 +410,7 @@ impl Scale {
         for country in &registered {
             let object = air[&country.slot];
             let last = country.regions.last().unwrap().0;
-            let outer = world.alloc((last as usize + 1) * engine::cpdx_array::STRIDE);
+            let outer = world.alloc((last as usize + 1) * engine_native::cpdx_array::STRIDE);
             let ids = world.alloc(country.regions.len() * 4);
             let mut all = 0;
             for (index, (region, wings)) in country.regions.iter().enumerate() {
@@ -423,7 +421,7 @@ impl Scale {
                     world.u64(vector + ordinal * 8, mission as u64);
                 }
                 world.array(
-                    outer + *region as usize * engine::cpdx_array::STRIDE,
+                    outer + *region as usize * engine_native::cpdx_array::STRIDE,
                     vector,
                     wings.len() as u32,
                 );
@@ -473,7 +471,7 @@ impl Scale {
         .into_iter()
         .enumerate()
         {
-            let stride = engine::cpdx_array::STRIDE;
+            let stride = engine_native::cpdx_array::STRIDE;
             let states = world.alloc((STATES as usize + 1) * stride);
             world.array(manager + lists, states, STATES as u32 + 1);
             for id in 1..=STATES as u32 {
@@ -1108,8 +1106,8 @@ fn without_the_mission_job_late_meets_shared_reads_in_their_old_order() {
         Some(&mut Default::default()),
     );
     let reads = ordered.reads.into_inner();
-    let manager =
-        engine::read::<u64>(&scale.world, game_state + gs::STRATEGIC_AIR_MANAGER).unwrap() as usize;
+    let manager = engine_native::read::<u64>(&scale.world, game_state + gs::STRATEGIC_AIR_MANAGER)
+        .unwrap() as usize;
     let bases = reads
         .iter()
         .position(|&at| at == manager + cstrategic_air_manager::STATE_AIR_BASES)
@@ -1144,11 +1142,16 @@ fn without_the_mission_job_late_meets_shared_reads_in_their_old_order() {
 fn the_mission_joins_take_country_bytes_from_the_hours_snapshot() {
     let scale = Scale::new();
     let game_state = scale.world.game_state;
-    let mut storage =
-        std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(1 << 18).unwrap());
-    let snapshot =
-        engine::country_memory::Cache::prepare_shared(&mut storage, &scale.world, BASE, game_state)
-            .unwrap();
+    let mut storage = std::sync::Arc::new(
+        engine_native::country_memory::Cache::try_with_capacity(1 << 18).unwrap(),
+    );
+    let snapshot = engine_native::country_memory::Cache::prepare_shared(
+        &mut storage,
+        &scale.world,
+        BASE,
+        game_state,
+    )
+    .unwrap();
     let mut native = mission_pack(&scale, &scale.world);
     let counted = Counted::new(&scale.world);
     native.join_missions(&counted, BASE, game_state);
@@ -1642,7 +1645,7 @@ fn carried_registrations_at_5000_countries_reread_only_notified_countries() {
         .find(|country| country.regions.len() > 64)
         .unwrap();
     let mut address = None;
-    engine::cstrategic_air::visit(&scale.world, BASE, scale.world.game_state, |root| {
+    engine_native::cstrategic_air::visit(&scale.world, BASE, scale.world.game_state, |root| {
         if root.canonical_slot == heavy.slot {
             address = Some(root.address);
         }

@@ -4,14 +4,12 @@ use crate::{
     prepared::series::{LateIndex, Reader, tests::Fixture},
     products::country_history::HistoryScan,
 };
-use replay::{
-    event_feed_rows::{
-        EventFeedCountry, EventFeedCounts as NativeCounts, EventFeedCoverage, EventFeedEvent,
-        EventFeedHistoryRow, EventFeedSource,
-    },
-    frame::TableView,
-    rows::*,
+use replay_data::{
+    event_feed_rows::EventFeedCountry, event_feed_rows::EventFeedCounts as NativeCounts,
+    event_feed_rows::EventFeedCoverage, event_feed_rows::EventFeedEvent,
+    event_feed_rows::EventFeedHistoryRow, event_feed_rows::EventFeedSource, rows::*,
 };
+use replay_frame::frame::TableView;
 
 #[derive(Serialize, Deserialize)]
 struct Sources {
@@ -291,7 +289,7 @@ pub(crate) fn frame(hour: i32, count: u32) -> DecodedFrame {
             target: actor(1),
             // The current writer records the cause packet even when no route
             // or optional operand was observed.
-            cause: Recorded::Value(replay::event_feed_rows::EventFeedCause::default()),
+            cause: Recorded::Value(replay_data::event_feed_rows::EventFeedCause::default()),
         }]
     } else {
         Vec::new()
@@ -333,8 +331,8 @@ fn quiet_frame(hour: i32, count: u32) -> DecodedFrame {
 
 #[test]
 fn prepared_feed_fixture_nested_causes_round_trip_through_current_recording_codec() {
-    let mut encoder = replay::frame::FrameEncoder::new();
-    let mut decoder = replay::frame::FrameDecoder::new();
+    let mut encoder = replay_frame::frame::FrameEncoder::new();
+    let mut decoder = replay_frame::frame::FrameDecoder::new();
     for hour in 100..=107 {
         let expected = frame(hour, 3);
         let wire = encoder.encode(expected.clone(), false).unwrap();
@@ -348,7 +346,7 @@ fn prepared_feed_fixture_nested_causes_round_trip_through_current_recording_code
             assert_eq!(events.len(), 1);
             assert_eq!(
                 events[0].cause,
-                Recorded::Value(replay::event_feed_rows::EventFeedCause::default())
+                Recorded::Value(replay_data::event_feed_rows::EventFeedCause::default())
             );
         }
     }
@@ -1240,7 +1238,7 @@ fn prepared_feed_strike_only_campaign_keeps_recorded_types_and_stockpile_refusal
         };
         *frame.tables[TableId::LexicalTokens.index()] =
             TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
-                token: engine::raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN,
+                token: engine_native::raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN,
                 literal: b"mod_thermonuclear_bomb".to_vec(),
             }]));
         frame.metrics.table_ns[TableId::Nukes.index()] = 1;

@@ -2,11 +2,11 @@
 use super::CountryKeys;
 use crate::metadata::link_slots;
 use crate::products::country_groups::{HourSpan, record_hour};
-use replay::{
-    event_feed_rows::EventFeedCountry,
-    frame::{DecodedFrame, ViewIdentity},
-    rows::{CountryExperienceGainRow, CountryRow, TableId, tables},
+use replay_data::{
+    event_feed_rows::EventFeedCountry, rows::CountryExperienceGainRow, rows::CountryRow,
+    rows::TableId, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -372,10 +372,8 @@ impl Names {
 mod tests {
     use super::*;
     use crate::test_fixtures::scale_frame;
-    use replay::{
-        frame::TableView,
-        rows::{CountryLinkRow, TableRows},
-    };
+    use replay_data::{rows::CountryLinkRow, rows::TableRows};
+    use replay_frame::frame::TableView;
 
     fn frame(hour: i32, count: u32) -> DecodedFrame {
         let mut frame = scale_frame(1, hour, count);
@@ -409,7 +407,7 @@ mod tests {
     #[test]
     fn native_witness_country_and_instance_changes_retain_the_link_allocation() {
         use crate::prepared::frame_changes::FrameChangeTracker;
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let mut sample = frame(100, 3);
         let mut history = History::default();
         let mut tracker = FrameChangeTracker::new();

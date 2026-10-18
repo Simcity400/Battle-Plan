@@ -1,8 +1,8 @@
 //! Shared checks over real observer callbacks, not replacement scans/replies.
 use super::frame_changes::{FrameChangeTracker, FrameChanges};
 use super::series::tests::{Fixture, assert_payloads_equal};
-use replay::format::FormatVersion;
-use replay::frame::DecodedFrame;
+use replay_data::format::FormatVersion;
+use replay_frame::frame::DecodedFrame;
 use serde::Serialize;
 use std::io;
 

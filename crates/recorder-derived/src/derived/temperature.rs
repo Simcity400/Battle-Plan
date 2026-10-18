@@ -1,12 +1,12 @@
-//! Province temperatures against the hourly pass ([`replay::temperature`]).
+//! Province temperatures against the hourly pass ([`replay_data::temperature`]).
 //! Each hour must reproduce its read checksum. An anchor whose preceding
 //! frame proves its pass must match the derived words and cursor.
 
-use replay::{
-    frame::DecodedFrame,
-    rows::{Recorded, TemperatureRecord, WeatherProvinceRow, tables},
-    temperature::{Content, Memo, Simulation},
+use replay_data::{
+    rows::Recorded, rows::TemperatureRecord, rows::WeatherProvinceRow, rows::tables,
+    temperature::Content, temperature::Memo, temperature::Simulation,
 };
+use replay_frame::frame::DecodedFrame;
 
 /// Mismatches listed by name; all of them are counted.
 const LISTED: usize = 40;

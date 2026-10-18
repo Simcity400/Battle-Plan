@@ -1,5 +1,7 @@
 use super::*;
-use replay::rows::{ControllerAreaNode, CountryWarRow, OrderedEnemyInputs, ProvinceRow};
+use replay_data::{
+    rows::ControllerAreaNode, rows::CountryWarRow, rows::OrderedEnemyInputs, rows::ProvinceRow,
+};
 
 fn fixture() -> (DecodedFrame, Save) {
     let (frame, saved, _, _) = super::super::fixtures::fixture();
@@ -16,7 +18,7 @@ fn ordered_enemies_accept_reserved_zero_repeats_and_native_order_without_save_cr
                 enemies_read: 0,
                 enemies: vec![],
                 ordered: Some(OrderedEnemyInputs {
-                    sample_hour: replay::rows::PacketHour::Host,
+                    sample_hour: replay_data::rows::PacketHour::Host,
                     entries: vec![77, 0, 77, 9],
                 })
                 .into(),
@@ -27,7 +29,7 @@ fn ordered_enemies_accept_reserved_zero_repeats_and_native_order_without_save_cr
                 enemies_read: 1,
                 enemies: vec![77, 0, 9, 77],
                 ordered: Some(OrderedEnemyInputs {
-                    sample_hour: replay::rows::PacketHour::Host,
+                    sample_hour: replay_data::rows::PacketHour::Host,
                     entries: vec![77, 0, 9, 77],
                 })
                 .into(),
@@ -66,7 +68,7 @@ fn ordered_enemy_absence_refusal_and_empty_current_packet_are_distinct() {
         (Recorded::Value(None), 1, false),
         (
             Some(OrderedEnemyInputs {
-                sample_hour: replay::rows::PacketHour::Host,
+                sample_hour: replay_data::rows::PacketHour::Host,
                 entries: vec![],
             })
             .into(),
@@ -171,7 +173,7 @@ fn consistent() -> Vec<ProvinceRow> {
 }
 
 fn check(rows: Vec<ProvinceRow>) -> Report {
-    let geometry = installed_content::province_geometry::ProvinceGeometry {
+    let geometry = installed_content_core::province_geometry::ProvinceGeometry {
         nonsea_indices: (1..=3).map(|id| (id, id as i32)).collect(),
         ..Default::default()
     };
@@ -249,7 +251,7 @@ fn recorded_areas_are_checked_for_smallest_member_labels_roots_nodes_and_contact
 
 #[test]
 fn division_exile_compares_with_the_saved_truth() {
-    use replay::rows::DivisionStatusRow;
+    use replay_data::rows::DivisionStatusRow;
     let (mut frame, mut saved, _, _) = super::super::fixtures::division_fixture();
     let id = *saved.divisions.keys().next().unwrap();
     let status = |division: u64, exiled: bool| DivisionStatusRow {

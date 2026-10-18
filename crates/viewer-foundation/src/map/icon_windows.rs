@@ -7,7 +7,7 @@ use crate::map::native_windows::NativeWindows;
 use std::collections::BTreeSet;
 use std::collections::{BTreeMap, HashMap};
 
-use installed_content::gui::native;
+use installed_content_core::gui::native;
 
 use super::{
     native_gui::{
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn combat_handles_keep_their_high_bits_in_pool_ownership() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = fixture();
         let windows = windows(GUI);
@@ -451,7 +451,7 @@ mod tests {
 
     #[test]
     fn replacement_keeps_the_clock_and_membership_and_cannot_create_a_first_frame() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = fixture();
         let windows = windows(GUI);
@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn registry_identity_rebuilds_even_when_the_template_bytes_match() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = fixture();
         let first = windows(GUI);
@@ -502,7 +502,7 @@ mod tests {
 
     #[test]
     fn native_draws_nothing_diagnostics_keep_the_part_and_reason() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut resources = fixture();
         let mut sprite = resources.sprite(b"GFX_even").unwrap();
@@ -526,7 +526,7 @@ mod tests {
 
     #[test]
     fn shared_region_linger_retains_slot_then_final_sweep_stops_requests_and_running() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use super::super::province_schedule::Schedule;
         for selected in [false, true] {

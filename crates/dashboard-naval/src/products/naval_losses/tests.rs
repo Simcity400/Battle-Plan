@@ -1,6 +1,6 @@
 use super::*;
 use crate::products::sinkings::{ConvoyEvent, CountryIdentitySpan, HistoryLoss, ShipEvent};
-use replay::rows::SunkShipEntry;
+use replay_data::rows::SunkShipEntry;
 
 #[test]
 fn naval_losses_manual_alias_projection_keeps_all_root_holders_and_signed_corrections() {

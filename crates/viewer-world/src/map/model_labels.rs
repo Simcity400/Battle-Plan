@@ -19,12 +19,9 @@
 //! language defines it, else `<key>`. Localisation follows the game's
 //! localiser, which copies a missing key's own bytes.
 
-use installed_content::localisation::Localisation;
-use replay::{
-    country_flags,
-    frame::DecodedFrame,
-    rows::{VariantDefinitionRow, tables},
-};
+use installed_content_localisation::localisation::Localisation;
+use replay_data::{country_flags, rows::VariantDefinitionRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, BTreeSet};
 use viewer_foundation::table_access::{Available, rows};
 
@@ -267,10 +264,11 @@ pub fn second_row(default: &[u8], rows: &[&Label]) -> Result<Option<usize>, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{CountryAppearanceRow, CountryRow, Recorded, TableId, TableRows},
+    use replay_data::{
+        rows::CountryAppearanceRow, rows::CountryRow, rows::Recorded, rows::TableId,
+        rows::TableRows,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     fn label(text: &str) -> Label {
         Ok(text.as_bytes().to_vec())

@@ -1,6 +1,7 @@
 //! Hourly pointer-free Event feed handoff; the spool encodes and acknowledges it.
-use engine::{Memory, walk::Outcome};
-use replay::{frame::TableView, rows::TableId};
+use engine_native::{Memory, walk::Outcome};
+use replay_data::rows::TableId;
+use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::EventFeedHistory];

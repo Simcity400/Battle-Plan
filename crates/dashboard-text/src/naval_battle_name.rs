@@ -1,9 +1,9 @@
 //! Shared naval title geography. Consumers supply recorded
 //! victory points and content map positions; province naming stays with their
 //! existing native name ladder.
-use installed_content::{
-    province_geometry::native_fixed_sqrt, regions::StrategicRegion, states::StateDefinition,
-};
+use installed_content_core::province_geometry::native_fixed_sqrt;
+use installed_content_regions::regions::StrategicRegion;
+use installed_content_states::states::StateDefinition;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Every strategic region's candidate provinces in the game's order.

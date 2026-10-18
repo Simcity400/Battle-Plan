@@ -1,6 +1,6 @@
 //! Shared loss semantics for the two air ledgers. Only the game thread touches
 //! the store. The spool thread publishes an empty spare through a separate slot.
-type Clock = engine::cgame_state::Clock<u64>;
+type Clock = engine_native::cgame_state::Clock<u64>;
 use std::sync::{
     Mutex,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -189,7 +189,7 @@ impl<T: Event> EventLedger<T> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     pub fn prepare(&self, demand: usize) {
-        engine::allocation::advisory(|| self.prepare_storage(demand));
+        engine_allocation::advisory(|| self.prepare_storage(demand));
     }
 
     fn prepare_storage(&self, demand: usize) {
@@ -201,7 +201,7 @@ impl<T: Event> EventLedger<T> {
             return;
         }
         let mut spare = Vec::new();
-        if engine::allocation::reserve_exact(&mut spare, demand).is_err() {
+        if engine_allocation::reserve_exact(&mut spare, demand).is_err() {
             self.refuse_preparation("event ledger preparation allocation failed");
             return;
         }
@@ -464,7 +464,7 @@ impl<T: Event> EventLedger<T> {
         }
         output.clear();
         if growing {
-            engine::allocation::reserve_exact(output, store.entries.len())
+            engine_allocation::reserve_exact(output, store.entries.len())
                 .map_err(|_| "event ledger drain allocation failed")?;
         }
         if output.capacity() < store.entries.len() {

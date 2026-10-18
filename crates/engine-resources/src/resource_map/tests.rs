@@ -128,7 +128,7 @@ fn world() -> Fixture {
     for (table, data) in [(MARKET_SELLERS, 0x63000), (MARKET_BUYERS, 0x64000)] {
         f.array(0x60000 + table, data, 3);
         for slot in 0..3 {
-            f.array(data as usize + slot * MARKET_COUNTRY_STRIDE, 0, 0);
+            f.array(data + slot * MARKET_COUNTRY_STRIDE, 0, 0);
         }
     }
     f.array(0x63000 + MARKET_COUNTRY_STRIDE, 0x65000, 1);

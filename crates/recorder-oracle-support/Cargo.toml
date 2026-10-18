@@ -10,10 +10,12 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["dep:engine", "installed-content/test-support"]
+test-support = ["dep:engine-executable", "installed-content-core/test-support"]
 
 [dependencies]
-installed-content.workspace = true
-installed-content-save.workspace = true
 replay.workspace = true
-engine = { workspace = true, optional = true }
+engine-executable = { workspace = true, optional = true }
+installed-content-core.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
+installed-content-save.workspace = true

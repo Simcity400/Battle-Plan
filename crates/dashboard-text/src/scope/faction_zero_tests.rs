@@ -1,5 +1,5 @@
 use super::*;
-use replay::rows::{Recorded, ReservedCountryNamingRow, TableId, TableRows};
+use replay_data::{rows::Recorded, rows::ReservedCountryNamingRow, rows::TableId, rows::TableRows};
 
 fn frame(faction: Recorded<Option<u64>>) -> DecodedFrame {
     let mut frame = super::tests::positive_frame();

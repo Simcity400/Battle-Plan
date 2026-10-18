@@ -38,16 +38,16 @@ pub struct RailwayAdjacency {
 }
 
 impl RailwayAdjacency {
-    pub fn read(layers: &installed_content::ResolvedLayers) -> io::Result<Self> {
-        let files = installed_content::terrain::read_default_map(layers)?;
+    pub fn read(layers: &installed_content_core::ResolvedLayers) -> io::Result<Self> {
+        let files = installed_content_core::terrain::read_default_map(layers)?;
         let definitions = layers.read(&files.file("definitions")?)?;
         let bitmap = layers.read(&files.file("provinces")?)?;
-        let authored = installed_content::movement::adjacency::read_authored(layers, &files)?;
+        let authored = installed_content_core::movement::adjacency::read_authored(layers, &files)?;
         Self::parse(&definitions, &bitmap, authored.as_deref())
     }
 
     pub fn parse(definitions: &[u8], bitmap: &[u8], authored: Option<&[u8]>) -> io::Result<Self> {
-        let definitions = installed_content::map::read_definitions(definitions)?;
+        let definitions = installed_content_core::map::read_definitions(definitions)?;
         // The engine's template roster uses record positions and its colour
         // lookup the records' u16 IDs; this reading needs them to agree.
         if (definitions.record_ids.iter().enumerate())
@@ -57,7 +57,7 @@ impl RailwayAdjacency {
                 "rail adjacency requires definition IDs to equal their record positions, starting at zero",
             ));
         }
-        let image = installed_content::map::decode_provinces_bmp(bitmap, &definitions)?;
+        let image = installed_content_core::map::decode_provinces_bmp(bitmap, &definitions)?;
         Self::derive(
             &image,
             definitions.record_ids.len(),
@@ -74,11 +74,11 @@ impl RailwayAdjacency {
 
     /// The game's ordered neighbours, shared with the movement map.
     fn derive(
-        image: &installed_content::map::ProvinceImage,
+        image: &installed_content_core::map::ProvinceImage,
         count: usize,
         authored: &[u8],
     ) -> io::Result<Self> {
-        use installed_content::movement::adjacency;
+        use installed_content_core::movement::adjacency;
         let width = image.width as usize;
         // The adjacency scan walks stored file rows, bottom first.
         let ids: Vec<u32> = image

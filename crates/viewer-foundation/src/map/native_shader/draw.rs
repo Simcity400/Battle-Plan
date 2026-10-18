@@ -55,7 +55,7 @@ pub const SPRITE_ANIMATION_TIME: u32 = 100;
 
 /// The GUI viewport for a target of `size` device pixels at `ui_scale` device pixels per
 /// GUI pixel, truncating each scaled extent. The settings' `min_gui` clamp is already in
-/// `ui_scale`, resolved through `installed_content::settings::Display::interface_to_frame`, so it
+/// `ui_scale`, resolved through `installed_content_settings::settings::Display::interface_to_frame`, so it
 /// applies once. Fonts and callers' GUI layouts use this same viewport.
 pub fn gui_viewport(size: [u32; 2], ui_scale: f32) -> [u32; 2] {
     let inverse = 1.0 / ui_scale;

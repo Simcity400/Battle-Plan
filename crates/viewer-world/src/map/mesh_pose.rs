@@ -1,5 +1,5 @@
 //! Ordered animation palettes and quaternion matrices.
-use installed_content::mesh::{Animation, JointPose, NativeJoint};
+use installed_content_core::{mesh::Animation, mesh::JointPose, mesh::NativeJoint};
 use std::io;
 use std::sync::Arc;
 
@@ -50,7 +50,7 @@ pub struct Source {
     pub mesh_scale: f32,
     pub entity_scale: f32,
     pub frozen: Option<Arc<Animation>>,
-    pub game_data: Option<Result<installed_content::mesh::EntityGameData, String>>,
+    pub game_data: Option<Result<installed_content_core::mesh::EntityGameData, String>>,
 }
 
 pub struct Locals {
@@ -420,7 +420,7 @@ mod tests {
         let mut animation = Animation::default();
         animation.fps = 1.;
         animation.samples = 1;
-        animation.joints.push(installed_content::mesh::AnimationJoint {
+        animation.joints.push(installed_content_core::mesh::AnimationJoint {
             name: "source ordinal, not a skeleton lookup".into(),
             rotation: [0., 0., 0., 2.],
             translation: [3., 5., 7.],

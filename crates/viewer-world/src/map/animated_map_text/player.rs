@@ -22,7 +22,7 @@ use viewer_foundation::map::{
 pub struct Popup {
     pub sequence: u64,
     /// The recorded event's family, which a viewer can hide.
-    pub family: replay::rows::MapEventFamily,
+    pub family: replay_data::rows::MapEventFamily,
     pub province: u32,
     pub style: Style,
     pub text: Vec<u8>,
@@ -414,7 +414,7 @@ impl Player {
         camera: Camera,
         matrix: &[[f32; 4]; 4],
         native_scissor: Option<[u32; 4]>,
-        shown: &dyn Fn(replay::rows::MapEventFamily) -> bool,
+        shown: &dyn Fn(replay_data::rows::MapEventFamily) -> bool,
         ground: Option<&free_icons::Ground<'_>>,
     ) -> bool {
         let cutoff = self.cutoff.as_ref().copied().unwrap_or(f32::INFINITY);
@@ -509,7 +509,7 @@ impl Player {
                 retained.stream.forget_program();
                 retained.stream.forget_texture(
                     0,
-                    installed_content::pdxshader::program::Stage::Pixel,
+                    installed_content_core::pdxshader::program::Stage::Pixel,
                     None,
                 );
             }
@@ -556,8 +556,10 @@ fn free_look(
 /// index clamped, the raw byte scaled by .1 and clamped to sea level. It is
 /// not the route sampler.
 fn popup_height(heights: HeightField<'_>, x: f32, z: f32) -> f32 {
-    let column = installed_content::crt::truncate_f32(x + 0.5).clamp(0, heights.width as i32 - 1) as usize;
-    let bottom = installed_content::crt::truncate_f32(z + 0.5).clamp(0, heights.height as i32 - 1) as usize;
+    let column =
+        installed_content_core::crt::truncate_f32(x + 0.5).clamp(0, heights.width as i32 - 1) as usize;
+    let bottom =
+        installed_content_core::crt::truncate_f32(z + 0.5).clamp(0, heights.height as i32 - 1) as usize;
     let row = heights.height as usize - 1 - bottom;
     (f32::from(heights.values[row * heights.width as usize + column]) * 0.1)
         .max(viewer_foundation::map::camera::WATER_HEIGHT)

@@ -1,6 +1,7 @@
 use super::*;
-use replay::rows::{
-    ControllerAreaNode, CountryWarRow, DivisionStatusRow, OrderedEnemyInputs, ProvinceRow,
+use replay_data::{
+    rows::ControllerAreaNode, rows::CountryWarRow, rows::DivisionStatusRow,
+    rows::OrderedEnemyInputs, rows::ProvinceRow,
 };
 
 fn apply<T>(frame: &DecodedFrame, query: impl FnOnce(&Moves<'_, '_>) -> T) -> T {
@@ -98,7 +99,7 @@ fn selected_areas_read_the_recorded_labels_and_the_node_on_the_label_province() 
 }
 #[test]
 fn a_selected_army_reads_exile_from_its_status_and_retreat_bans_from_the_hour() {
-    use replay::rows::{DivisionRetreatBanRow, DivisionRow};
+    use replay_data::{rows::DivisionRetreatBanRow, rows::DivisionRow};
     let mut frame = strait_frame();
     put::<tables::Divisions>(
         &mut frame,
@@ -148,7 +149,7 @@ fn a_selected_army_reads_exile_from_its_status_and_retreat_bans_from_the_hour() 
 }
 #[test]
 fn the_move_fallback_names_a_target_without_a_naval_base_and_refuses_past_it() {
-    use replay::rows::NavalBaseRow;
+    use replay_data::rows::NavalBaseRow;
     let mut frame = strait_frame();
     put::<tables::NavalBases>(
         &mut frame,
@@ -210,8 +211,8 @@ fn selected_army_route_takes_the_owner_area_early_accept_before_later_operands()
     }
     let mut assets = assets();
     assets.geometry.land.extend([1, 2, 3]);
-    assets.moves = Ok(installed_content::unit_path::MoveGraph::new(
-        &installed_content::province_graph::ProvinceGraph::default(),
+    assets.moves = Ok(installed_content_unit_path::unit_path::MoveGraph::new(
+        &installed_content_core::province_graph::ProvinceGraph::default(),
         &assets.geometry,
     ));
     let world = World::read(&frame, assets.trigger_content.facts());
@@ -222,7 +223,7 @@ fn selected_army_route_takes_the_owner_area_early_accept_before_later_operands()
         location: 1,
         ..Default::default()
     };
-    let mover = installed_content::unit_path::Mover {
+    let mover = installed_content_unit_path::unit_path::Mover {
         graph: assets.moves.as_ref().unwrap(),
         world: &moves,
     };
@@ -243,7 +244,7 @@ fn selected_army_route_takes_the_owner_area_early_accept_before_later_operands()
 fn selected_enemy_occurrences_keep_order_zero_and_repeats_and_refuse_carried_or_legacy_sets() {
     let mut frame = strait_frame();
     let packet = OrderedEnemyInputs {
-        sample_hour: replay::rows::PacketHour::Stamped(12),
+        sample_hour: replay_data::rows::PacketHour::Stamped(12),
         entries: vec![40, 0, 40, 99],
     };
     put::<tables::CountryWars>(
@@ -264,7 +265,7 @@ fn selected_enemy_occurrences_keep_order_zero_and_repeats_and_refuse_carried_or_
         Recorded::NotRecorded,
         Recorded::Value(None),
         Some(OrderedEnemyInputs {
-            sample_hour: replay::rows::PacketHour::Stamped(11),
+            sample_hour: replay_data::rows::PacketHour::Stamped(11),
             ..packet.clone()
         })
         .into(),
@@ -278,9 +279,10 @@ fn selected_enemy_occurrences_keep_order_zero_and_repeats_and_refuse_carried_or_
 
 #[test]
 fn railway_country_access_uses_direct_veto_exile_law_and_zero_cell_military_pointer() {
-    use replay::rows::{
-        RelationLinkRow, ReservedCountryNamingRow, ReservedReverseVisibilityInputs,
-        ReverseZeroVisibilityInputs, ZeroSubjectInputs,
+    use replay_data::{
+        rows::RelationLinkRow, rows::ReservedCountryNamingRow,
+        rows::ReservedReverseVisibilityInputs, rows::ReverseZeroVisibilityInputs,
+        rows::ZeroSubjectInputs,
     };
     let mut frame = strait_frame();
     let mut rows = frame
@@ -290,7 +292,7 @@ fn railway_country_access_uses_direct_veto_exile_law_and_zero_cell_military_poin
     rows.push(CountryCounterInputRow {
         country: 99,
         directed_wars: Some(DirectedWars {
-            sample_hour: replay::rows::PacketHour::Stamped(12),
+            sample_hour: replay_data::rows::PacketHour::Stamped(12),
             receiver_raw_id: 99,
             receiver_slot: 1,
             matrix_count: 4,
@@ -348,7 +350,7 @@ fn railway_country_access_uses_direct_veto_exile_law_and_zero_cell_military_poin
         &mut frame,
         vec![ReservedCountryNamingRow {
             reverse_visibility: Some(ReservedReverseVisibilityInputs {
-                sample_hour: replay::rows::PacketHour::Stamped(12),
+                sample_hour: replay_data::rows::PacketHour::Stamped(12),
                 cells: vec![
                     None,
                     None,

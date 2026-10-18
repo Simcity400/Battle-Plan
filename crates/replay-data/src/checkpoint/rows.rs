@@ -3,7 +3,7 @@ use crate::{
     codec::{Decoder, invalid_static as invalid},
     rows::RowCodec,
 };
-use engine::allocation;
+use engine_allocation as allocation;
 use std::io;
 
 pub(crate) trait Row: RowCodec {

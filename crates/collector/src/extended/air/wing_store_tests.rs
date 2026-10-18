@@ -8,11 +8,11 @@ use crate::{
     sampled_verify::{Check, ROTATION},
     wing_changes::{Counts, Watches},
 };
-use engine::{
-    air_wing_equipment_mutations::{MUTATIONS, Receiver, pools},
-    cequipment_variant, cequipment_variant_pool,
-    memory::SliceMemory,
+use engine_mutations::{
+    air_wing_equipment_mutations::MUTATIONS, air_wing_equipment_mutations::Receiver,
+    air_wing_equipment_mutations::pools,
 };
+use engine_native::{cequipment_variant, cequipment_variant_pool, memory::SliceMemory};
 use std::cell::RefCell;
 
 /// Each wing's objects lie in its own 0x800-byte region: the wing first, then its entries and its
@@ -159,7 +159,7 @@ fn settle(
             &memory,
             0,
             &source,
-            engine::walk::Buffer::Growing(&mut rows),
+            engine_native::walk::Buffer::Growing(&mut rows),
             start,
             Some(&mut reuse),
         );
@@ -399,7 +399,7 @@ fn an_hourly_slice_verifies_only_its_wings_and_carries_the_rest() {
 #[test]
 fn the_registered_pool_is_the_wings_equipment_pool() {
     assert_eq!(
-        engine::air_wing_equipment_mutations::POOL,
+        engine_mutations::air_wing_equipment_mutations::POOL,
         cair_wing::EQUIPMENT_POOL
     );
 }
@@ -411,7 +411,7 @@ fn every_wing_writer_but_kill_airplanes_is_a_wing_site() {
     assert!(
         MUTATIONS
             .iter()
-            .all(|(site, _)| site.rva != engine::equipment_destruction::AIR.rva)
+            .all(|(site, _)| site.rva != engine_events::equipment_destruction::AIR.rva)
     );
     let [pool, _] = pools(Receiver::Wing, wing(1), 0);
     let watches = Watches::enabled(16);

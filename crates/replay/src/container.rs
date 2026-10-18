@@ -41,7 +41,7 @@ pub use watched::{BlockWatch, Keep, Watched, Watching};
 // writers must close smaller independently decodable blocks before this bound.
 // A grouped block keeps each table's plain updates, its plain frame headers
 // and its stored sections within it; an interleaved block its plain frames.
-pub const MAX_BLOCK_RAW_BYTES: usize = 1 << 30;
+pub const MAX_BLOCK_RAW_BYTES: usize = replay_frame::envelope::MAX_RECORD_BYTES;
 
 type FrameObserver<'a> =
     dyn FnMut(&Frame, &DecodedFrame, [usize; TABLE_COUNT]) -> io::Result<()> + 'a;
@@ -380,11 +380,11 @@ impl Replay {
         if start < 6 || start.checked_add(trailer_length) != Some(length - FOOTER_SIZE as u64) {
             return Err(invalid("invalid trailer extent"));
         }
-        let mut bytes = engine::allocation::vec(to_usize(trailer_length)?)?;
+        let mut bytes = engine_allocation::vec(to_usize(trailer_length)?)?;
         file.seek(SeekFrom::Start(start))?;
         file.take(trailer_length)
             .read_to_end(&mut bytes)
-            .map_err(engine::allocation::allocation_error)?;
+            .map_err(engine_allocation::allocation_error)?;
         if bytes.len() as u64 != trailer_length {
             return Err(invalid("truncated replay trailer"));
         }
@@ -752,7 +752,7 @@ impl Replay {
             {
                 *old = tail;
             } else {
-                engine::allocation::reserve(&mut tails, 1)?;
+                engine_allocation::reserve(&mut tails, 1)?;
                 tails.push((history.start.session, tail));
             }
         }
@@ -800,7 +800,7 @@ impl Replay {
             .ok_or_else(|| invalid("trailer outside replay"))?;
         let mut warnings = Vec::new();
         if crc32fast::hash(trailer_bytes) != trailer_crc {
-            engine::allocation::reserve(&mut warnings, 1)?;
+            engine_allocation::reserve(&mut warnings, 1)?;
             warnings.push("trailer CRC mismatch".into());
         }
         let mut replay = Self::open_metadata(
@@ -864,7 +864,7 @@ impl Replay {
             &mut damaged_parts,
         )?;
         let count = trailer.count(40)?;
-        let mut index = engine::allocation::vec(count)?;
+        let mut index = engine_allocation::vec(count)?;
         for _ in 0..count {
             index.push(BlockIndex {
                 branch: trailer.u64()?,
@@ -876,7 +876,7 @@ impl Replay {
             });
         }
         if trailer.remaining() != 0 {
-            engine::allocation::reserve(&mut warnings, 1)?;
+            engine_allocation::reserve(&mut warnings, 1)?;
             warnings.push("trailing bytes in replay trailer".into());
         }
         let mut damaged_range = None;
@@ -893,7 +893,7 @@ impl Replay {
             }
         });
         if let Err(error) = control_check {
-            engine::allocation::reserve(&mut warnings, 1)?;
+            engine_allocation::reserve(&mut warnings, 1)?;
             warnings.push(crate::codec::try_format(format_args!(
                 "Unreadable controls: {error}"
             ))?);
@@ -918,7 +918,7 @@ impl Replay {
         let partial_control = controls
             .iter()
             .position(|control| matches!(control, ControlRecord::Partial { .. }));
-        let mut verified = engine::allocation::vec(index.len())?;
+        let mut verified = engine_allocation::vec(index.len())?;
         for _ in &index {
             verified.push(AtomicBool::new(false));
         }
@@ -1002,9 +1002,8 @@ impl Replay {
         let selected = tables
             .map(|tables| -> io::Result<_> {
                 let include_campaign = !tables.contains(&TableId::Campaign);
-                let capacity =
-                    engine::allocation::add(tables.len(), usize::from(include_campaign))?;
-                let mut selected = engine::allocation::vec(capacity)?;
+                let capacity = engine_allocation::add(tables.len(), usize::from(include_campaign))?;
+                let mut selected = engine_allocation::vec(capacity)?;
                 selected.extend_from_slice(tables);
                 if include_campaign {
                     selected.push(TableId::Campaign);
@@ -1039,13 +1038,13 @@ impl Replay {
                         }
                     };
                     if let Err(error) = validate_campaign(decoded, &self.campaign_id) {
-                        found = Some(gap(engine::allocation::string(
+                        found = Some(gap(engine_allocation::string(
                             crate::codec::diagnostic_text(&error.to_string()),
                         )?));
                         return Ok(false);
                     }
                     if frame.hour == hour {
-                        found = Some(SeekResult::Frame(engine::allocation::boxed(
+                        found = Some(SeekResult::Frame(engine_allocation::boxed(
                             decoded.clone(),
                         )?));
                         return Ok(false);
@@ -1086,12 +1085,12 @@ impl Replay {
                 continue;
             }
             let separator = if reason.is_empty() { "" } else { "; " };
-            engine::allocation::reserve_string(&mut reason, separator.len() + text.len())?;
+            engine_allocation::reserve_string(&mut reason, separator.len() + text.len())?;
             reason.push_str(separator);
             reason.push_str(text);
         }
         if reason.is_empty() {
-            engine::allocation::string("hour was not recorded")
+            engine_allocation::string("hour was not recorded")
         } else {
             Ok(reason)
         }
@@ -1144,7 +1143,7 @@ impl Replay {
     ) -> io::Result<Vec<Frame>> {
         let mut frames = Vec::new();
         self.visit_block_inner(index, Some(tables), parallel, |frame| {
-            engine::allocation::reserve(&mut frames, 1)?;
+            engine_allocation::reserve(&mut frames, 1)?;
             frames.push(frame);
             Ok(true)
         })?;
@@ -1165,19 +1164,19 @@ impl Replay {
         if self.file.is_some() {
             let mut frames = Vec::new();
             self.visit_file_block(index, None, |frame| {
-                engine::allocation::reserve(&mut frames, 1)?;
+                engine_allocation::reserve(&mut frames, 1)?;
                 frames.push(frame);
                 Ok(true)
             })?;
             return Ok(frames);
         }
         let mut inflated = self.inflate(index)?;
-        let mut raw = engine::allocation::vec(to_usize(index.raw_length)?)?;
+        let mut raw = engine_allocation::vec(to_usize(index.raw_length)?)?;
         inflated
             .by_ref()
             .take(index.raw_length)
             .read_to_end(&mut raw)
-            .map_err(engine::allocation::allocation_error)?;
+            .map_err(engine_allocation::allocation_error)?;
         if raw.len() as u64 != index.raw_length || inflated.read(&mut [0])? != 0 {
             return Err(invalid("block raw length mismatch"));
         }
@@ -1190,7 +1189,7 @@ impl Replay {
         // The payload boundaries first, then the payloads decoded (in parallel
         // when asked), then every check in position order: the first error
         // reported is the one a frame-by-frame reader would have met first.
-        let mut payloads = engine::allocation::vec(count)?;
+        let mut payloads = engine_allocation::vec(count)?;
         let mut boundary_error = None;
         for _ in 0..count {
             let payload = decoder
@@ -1205,7 +1204,7 @@ impl Replay {
             }
         }
         let decoded = decode_payloads(&payloads, parallel, self.format)?;
-        let mut frames = engine::allocation::vec(count)?;
+        let mut frames = engine_allocation::vec(count)?;
         let mut order = BlockOrder::new(index);
         for frame in decoded {
             let frame = frame?;
@@ -1273,7 +1272,7 @@ impl Replay {
         let result = self.visit_inflated(&mut raw, index, selected, visit);
         // A whole read checks the length first, so a block of the wrong length says so.
         result.map_err(|error| {
-            if engine::allocation::is_allocation_error(&error)
+            if engine_allocation::is_allocation_error(&error)
                 || error.kind() == io::ErrorKind::Interrupted
             {
                 return error;
@@ -1322,7 +1321,7 @@ impl Replay {
                 .ok_or_else(|| invalid_static("truncated field"))?;
             let length = to_usize(length)?;
             let additional = length.saturating_sub(payload.len());
-            engine::allocation::reserve(&mut payload, additional)?;
+            engine_allocation::reserve(&mut payload, additional)?;
             payload.resize(length, 0);
             raw.fill(&mut payload)?;
             let frame = decode_payload(&payload, selected, self.format)?;
@@ -1714,7 +1713,7 @@ fn to_usize(value: u64) -> io::Result<usize> {
     usize::try_from(value).map_err(|_| invalid("file extent exceeds platform address space"))
 }
 fn put_count(out: &mut Vec<u8>, count: usize) -> io::Result<()> {
-    engine::allocation::reserve(out, 4)?;
+    engine_allocation::reserve(out, 4)?;
     out.extend_from_slice(
         &u32::try_from(count)
             .map_err(|_| invalid_static("too many metadata entries"))?
@@ -1740,7 +1739,7 @@ fn decode_list<T>(
     decode: impl Fn(&mut Decoder<'_>) -> io::Result<T>,
 ) -> io::Result<Vec<T>> {
     let count = decoder.count(4)?;
-    let mut values = engine::allocation::vec(count)?;
+    let mut values = engine_allocation::vec(count)?;
     for _ in 0..count {
         let payload = decoder.bytes()?;
         let mut item = Decoder::new(&payload);
@@ -1758,7 +1757,7 @@ fn decode_list_recovering<T>(
     damaged_parts: &mut usize,
 ) -> io::Result<Vec<T>> {
     let count = decoder.count(4)?;
-    let mut values = engine::allocation::vec(count)?;
+    let mut values = engine_allocation::vec(count)?;
     for _ in 0..count {
         // The outer length must be readable; errors within that boundary can
         // withhold this record without losing subsequent trailer lists/index.
@@ -1770,13 +1769,13 @@ fn decode_list_recovering<T>(
         }) {
             Ok(value) => values.push(value),
             Err(error)
-                if engine::allocation::is_allocation_error(&error)
+                if engine_allocation::is_allocation_error(&error)
                     || crate::format::is_layout_refusal(&error) =>
             {
                 return Err(error);
             }
             Err(error) => {
-                engine::allocation::reserve(warnings, 1)?;
+                engine_allocation::reserve(warnings, 1)?;
                 warnings.push(crate::codec::try_format(format_args!(
                     "Unreadable {name} record: {}",
                     crate::codec::diagnostic_text(&error.to_string())
@@ -1793,9 +1792,9 @@ fn append_blocks(
     index: &mut Vec<BlockIndex>,
     blocks: &[CompressedBlock],
 ) -> io::Result<()> {
-    engine::allocation::reserve(index, blocks.len())?;
+    engine_allocation::reserve(index, blocks.len())?;
     for block in blocks {
-        engine::allocation::reserve(bytes, block.bytes.len())?;
+        engine_allocation::reserve(bytes, block.bytes.len())?;
         index.push(BlockIndex {
             branch: block.branch,
             first_hour: block.first_hour,
@@ -2126,12 +2125,12 @@ fn write_blocks(
 }
 
 fn block_keyframe(decoded: &DecodedFrame) -> io::Result<Frame> {
-    let mut tables = engine::allocation::vec(TABLE_COUNT)?;
+    let mut tables = engine_allocation::vec(TABLE_COUNT)?;
     for table in TableId::ALL {
         tables.push(match &*decoded.tables[table.index()] {
             TableView::Complete(rows) => crate::frame::TableUpdate::Snapshot(rows.try_clone()?),
             TableView::Unavailable { reason } => crate::frame::TableUpdate::Unavailable {
-                reason: engine::allocation::string(reason)?,
+                reason: engine_allocation::string(reason)?,
             },
             TableView::Truncated { rows, missing } => {
                 return Err(invalid(format!(
@@ -2170,16 +2169,16 @@ fn validate_metadata(
         return Err(invalid("replay has no sessions"));
     }
     let mut session_ids = HashSet::new();
-    engine::allocation::reserve_set(&mut session_ids, sessions.len())?;
+    engine_allocation::reserve_set(&mut session_ids, sessions.len())?;
     for session in sessions {
         if !session_ids.insert(session.id) || !session.identity.same_content(identity) {
             return Err(invalid("duplicate session or conflicting content"));
         }
     }
     let mut branch_ids = HashMap::new();
-    engine::allocation::reserve_map(&mut branch_ids, branches.len())?;
+    engine_allocation::reserve_map(&mut branch_ids, branches.len())?;
     let mut sessions_with_start_branch = HashSet::new();
-    engine::allocation::reserve_set(&mut sessions_with_start_branch, sessions.len())?;
+    engine_allocation::reserve_set(&mut sessions_with_start_branch, sessions.len())?;
     for branch in branches {
         branch.validate()?;
         if !session_ids.contains(&branch.session) || branch_ids.contains_key(&branch.id) {
@@ -2195,7 +2194,7 @@ fn validate_metadata(
         branch_ids.insert(branch.id, branch.session);
     }
     if gaps.iter().any(|gap| !branch_ids.contains_key(&gap.branch)) {
-        engine::allocation::reserve(warnings, 1)?;
+        engine_allocation::reserve(warnings, 1)?;
         warnings.push("Unreadable gap metadata: gap refers to an unknown branch".into());
         *damaged_parts += 1;
         gaps.retain(|gap| branch_ids.contains_key(&gap.branch));
@@ -2219,9 +2218,9 @@ fn validate_metadata(
     validate_partial_controls(controls)?;
     let mut expected_offset = header_end as u64;
     let mut last_hours = HashMap::new();
-    engine::allocation::reserve_map(&mut last_hours, branches.len())?;
+    engine_allocation::reserve_map(&mut last_hours, branches.len())?;
     let mut closed_sessions = HashSet::new();
-    engine::allocation::reserve_set(&mut closed_sessions, sessions.len())?;
+    engine_allocation::reserve_set(&mut closed_sessions, sessions.len())?;
     let mut previous_branch = None;
     let mut previous_session = None;
     let mut kept = 0;
@@ -2253,11 +2252,11 @@ fn validate_metadata(
                 "Skipped block {} at byte {}: {reason}",
                 block.branch, block.offset
             ))?;
-            engine::allocation::reserve(warnings, 1)?;
+            engine_allocation::reserve(warnings, 1)?;
             warnings.push(reason.clone());
             *damaged_parts += 1;
             if known_branch && valid_hours {
-                engine::allocation::reserve(gaps, 1)?;
+                engine_allocation::reserve(gaps, 1)?;
                 gaps.push(Gap {
                     branch: block.branch,
                     first_hour: block.first_hour,
@@ -2270,12 +2269,12 @@ fn validate_metadata(
             continue;
         }
         if block.offset != expected_offset {
-            engine::allocation::reserve(warnings, 1)?;
+            engine_allocation::reserve(warnings, 1)?;
             warnings.push("unindexed bytes between replay blocks".into());
             *damaged_parts += 1;
         }
         if previous_branch != Some(block.branch) && last_hours.contains_key(&block.branch) {
-            engine::allocation::reserve(warnings, 1)?;
+            engine_allocation::reserve(warnings, 1)?;
             warnings.push("branch blocks are not contiguous".into());
         }
         let session = branch_ids[&block.branch];
@@ -2284,7 +2283,7 @@ fn validate_metadata(
                 closed_sessions.insert(previous);
             }
             if closed_sessions.contains(&session) {
-                engine::allocation::reserve(warnings, 1)?;
+                engine_allocation::reserve(warnings, 1)?;
                 warnings.push("session blocks are not contiguous".into());
             }
         }
@@ -2295,13 +2294,13 @@ fn validate_metadata(
         if kept != position {
             index[kept] = block.clone();
         }
-        engine::allocation::reserve(ordinals, 1)?;
+        engine_allocation::reserve(ordinals, 1)?;
         ordinals.push(position);
         kept += 1;
     }
     index.truncate(kept);
     if expected_offset != trailer_start as u64 {
-        engine::allocation::reserve(warnings, 1)?;
+        engine_allocation::reserve(warnings, 1)?;
         warnings.push("unindexed bytes before replay trailer".into());
         *damaged_parts += 1;
     }
@@ -2359,7 +2358,7 @@ fn decode_payloads(
     let decode = |payload: &&[u8]| decode_payload(payload, None, format);
     match parallel {
         Some(parallel) => parallel_map(payloads, parallel, decode),
-        None => engine::allocation::collect_vec(payloads.iter().map(decode)),
+        None => engine_allocation::collect_vec(payloads.iter().map(decode)),
     }
 }
 
@@ -2406,10 +2405,10 @@ struct BlockOrder<'a> {
 /// Compressed input is memory-backed: decoder failures are recording damage,
 /// except resource exhaustion and caller cancellation.
 fn zstd_error(error: io::Error) -> io::Error {
-    if engine::allocation::is_allocation_error(&error)
+    if engine_allocation::is_allocation_error(&error)
         || error.to_string().contains("Allocation error")
     {
-        engine::allocation::oom()
+        engine_allocation::oom()
     } else if error.kind() == io::ErrorKind::Interrupted {
         error
     } else {
@@ -2482,7 +2481,7 @@ fn parallel_map<T: Sync, R: Send>(
         .min(items.len().div_ceil(PARALLEL_FRAMES))
         .max(1);
     if workers <= 1 {
-        return engine::allocation::collect_vec(items.iter().map(&work));
+        return engine_allocation::collect_vec(items.iter().map(&work));
     }
     let run = items.len().div_ceil(workers);
     let work = &work;
@@ -2490,8 +2489,8 @@ fn parallel_map<T: Sync, R: Send>(
     // Measurement only: the workers' CPU is the caller's family's.
     let cpu_family = crate::cpu::family();
     std::thread::scope(|scope| {
-        let mut handles = engine::allocation::vec(workers)?;
-        let mut out = engine::allocation::vec(items.len())?;
+        let mut handles = engine_allocation::vec(workers)?;
+        let mut out = engine_allocation::vec(items.len())?;
         for chunk in items.chunks(run) {
             let priority = job_priority::JobPriority::current();
             let spawned = std::thread::Builder::new()
@@ -2500,7 +2499,7 @@ fn parallel_map<T: Sync, R: Send>(
                     priority.enter(job_priority::Level::Normal);
                     on_worker();
                     let _cpu = crate::cpu::scope("decode", cpu_family);
-                    engine::allocation::collect_vec(chunk.iter().map(work))
+                    engine_allocation::collect_vec(chunk.iter().map(work))
                 });
             handles.push((chunk, spawned.ok()));
         }

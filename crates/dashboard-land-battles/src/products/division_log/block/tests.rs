@@ -10,14 +10,13 @@ use dashboard_base::{
     prepared::{prepass::extract_alone, series::tests::Fixture},
     test_fixtures::{CAMPAIGN, continuation_records, records},
 };
-use replay::{
-    frame::TableView,
-    rows::{
-        CountryLinkRow, CountryRow, DestroyedDivisionsRow, DivisionEquipmentDeletionRow,
-        DivisionRow, DivisionStatusRow, DivisionTemplateRow, LandEventCoverageRow, NameOperands,
-        Recorded, TableRows,
-    },
+use replay_data::{
+    rows::CountryLinkRow, rows::CountryRow, rows::DestroyedDivisionsRow,
+    rows::DivisionEquipmentDeletionRow, rows::DivisionRow, rows::DivisionStatusRow,
+    rows::DivisionTemplateRow, rows::LandEventCoverageRow, rows::NameOperands, rows::Recorded,
+    rows::TableRows,
 };
+use replay_frame::frame::TableView;
 use std::io::Read;
 
 fn handle(id: u32) -> u64 {
@@ -35,9 +34,9 @@ fn set(frame: &mut DecodedFrame, rows: TableRows) {
 
 /// Whether `hour` reads the template table, by its recorded cadence.
 fn template_read(hour: i32) -> bool {
-    replay::cadence::cadence_in(
+    replay_data::cadence::cadence_in(
         TableId::DivisionTemplates,
-        replay::format::FormatVersion::CURRENT,
+        replay_data::format::FormatVersion::CURRENT,
     )
     .is_refresh(hour)
 }
@@ -385,7 +384,7 @@ fn division_block_folds_publish_and_save_what_hourly_observation_does() {
     assert_eq!(replay.index.len(), blocks.len());
     assert_eq!(
         replay.format.version(),
-        replay::format::FormatVersion::CURRENT.version(),
+        replay_data::format::FormatVersion::CURRENT.version(),
         "template reads were found for the recording's format"
     );
     let reference = Fixture::new();

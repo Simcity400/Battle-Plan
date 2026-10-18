@@ -6,12 +6,14 @@ use crate::{
     table_capture::{Arena, CaptureRows},
     table_conversion::{table, unavailable},
 };
-use engine::allocation::{copy_vec, owned_vec, resize_default};
-use engine::{Memory, cprovince, naval_combat_transfers as transfers, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{NavalCombatTransferRow, NavalProvinceCombatRow, NavalTransferUnitRow, TableId, tables},
+use engine_allocation::{copy_vec, owned_vec, resize_default};
+use engine_native::{Memory, cprovince, walk::Outcome};
+use engine_naval_history::naval_combat_transfers as transfers;
+use replay_data::{
+    rows::NavalCombatTransferRow, rows::NavalProvinceCombatRow, rows::NavalTransferUnitRow,
+    rows::TableId, rows::tables,
 };
+use replay_frame::frame::TableView;
 
 // The collector copies the engine's entry classes into the row unchanged.
 const _: () = assert!(
@@ -254,7 +256,7 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
 
     #[test]
     fn cold_source_storage_waits_for_original_headers() {

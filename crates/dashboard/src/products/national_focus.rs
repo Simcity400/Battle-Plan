@@ -4,11 +4,9 @@ use crate::{
     Artwork, FocusEntry, FocusHistory, FocusOrder, FocusProgress, FocusSegment, Source,
     metadata::{CountryKeys, validate_campaign},
 };
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder, ViewIdentity},
-    rows::{TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::FrameDecoder, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -182,7 +180,11 @@ impl HeldFocusRead {
         TableId::CompletedFocuses,
     ];
 
-    fn can_extend(&self, frame: &DecodedFrame, countries: &[replay::rows::CountryRow]) -> bool {
+    fn can_extend(
+        &self,
+        frame: &DecodedFrame,
+        countries: &[replay_data::rows::CountryRow],
+    ) -> bool {
         let Some([country_view, views @ ..]) = &self.views else {
             return false;
         };
@@ -196,7 +198,7 @@ impl HeldFocusRead {
                 || self.keys.same(countries))
     }
 
-    fn begin(&mut self, frame: &DecodedFrame, countries: &[replay::rows::CountryRow]) {
+    fn begin(&mut self, frame: &DecodedFrame, countries: &[replay_data::rows::CountryRow]) {
         self.views = Some(Self::TABLES.map(|table| frame.tables[table.index()].identity()));
         self.keys = CountryKeys::read(countries);
         self.hour = Some(frame.hour);
@@ -288,11 +290,11 @@ fn focus_branch_observing(
         ));
     }
     let selected = [
-        replay::rows::TableId::Campaign,
-        replay::rows::TableId::Countries,
-        replay::rows::TableId::CountryLinks,
-        replay::rows::TableId::Focus,
-        replay::rows::TableId::CompletedFocuses,
+        replay_data::rows::TableId::Campaign,
+        replay_data::rows::TableId::Countries,
+        replay_data::rows::TableId::CountryLinks,
+        replay_data::rows::TableId::Focus,
+        replay_data::rows::TableId::CompletedFocuses,
     ];
     let mut result = FocusBranch {
         countries: BTreeMap::new(),
@@ -550,7 +552,7 @@ pub(crate) struct FocusCompletion {
 /// Whether a country's completed focuses are whole and in order. Any number is
 /// valid: a modded tree may complete more focuses than any base game tree has.
 pub(crate) fn valid_order<'a>(
-    rows: impl ExactSizeIterator<Item = &'a replay::rows::CompletedFocusRow>,
+    rows: impl ExactSizeIterator<Item = &'a replay_data::rows::CompletedFocusRow>,
     count: i32,
 ) -> bool {
     count >= 0
@@ -562,9 +564,9 @@ pub(crate) fn valid_order<'a>(
 
 /// Borrow one raw owner's range from a complete, key-validated decoded table.
 pub(crate) fn completed_for_owner(
-    rows: &[replay::rows::CompletedFocusRow],
+    rows: &[replay_data::rows::CompletedFocusRow],
     owner: u32,
-) -> &[replay::rows::CompletedFocusRow] {
+) -> &[replay_data::rows::CompletedFocusRow] {
     let first = rows.partition_point(|row| completed_owner_key(row) < owner);
     let remaining = &rows[first..];
     let end = remaining.partition_point(|row| completed_owner_key(row) <= owner);
@@ -576,14 +578,17 @@ std::thread_local! {
     static COMPLETED_OWNER_INSPECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-fn completed_owner_key(row: &replay::rows::CompletedFocusRow) -> u32 {
+fn completed_owner_key(row: &replay_data::rows::CompletedFocusRow) -> u32 {
     #[cfg(test)]
     COMPLETED_OWNER_INSPECTIONS.with(|count| count.set(count.get() + 1));
     row.country
 }
 
 #[cfg(test)]
-fn ordered(rows: &[&replay::rows::CompletedFocusRow], count: i32) -> io::Result<Vec<FocusEntry>> {
+fn ordered(
+    rows: &[&replay_data::rows::CompletedFocusRow],
+    count: i32,
+) -> io::Result<Vec<FocusEntry>> {
     if count < 0 || count as usize != rows.len() {
         return Err(io::Error::other("Completed focus order is incomplete"));
     }

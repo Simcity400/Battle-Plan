@@ -90,13 +90,14 @@ use crate::{
     catalogue::{self, Catalogue},
     metadata::{TaggedCountry, link_slot, slot_reads, tagged_country, validate_campaign},
 };
-use replay::{
-    container::{BlockIndex, Replay},
-    frame::{DecodedFrame, FrameDecoder, FrameSource, SharedView, TableUpdate, ViewIdentity},
-    rows::{
-        IndustrialOrganisationRow, LexicalTokenRow, ProductionLineOutputRow, ProductionLineRow,
-        TableId, VariantDefinitionRow, tables,
-    },
+use replay::{container::BlockIndex, container::Replay};
+use replay_data::{
+    rows::IndustrialOrganisationRow, rows::LexicalTokenRow, rows::ProductionLineOutputRow,
+    rows::ProductionLineRow, rows::TableId, rows::VariantDefinitionRow, rows::tables,
+};
+use replay_frame::{
+    frame::DecodedFrame, frame::FrameDecoder, frame::FrameSource, frame::SharedView,
+    frame::TableUpdate, frame::ViewIdentity,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -150,10 +151,10 @@ pub enum LineKind {
 impl LineKind {
     fn of(kind: u8) -> Option<Self> {
         match kind {
-            engine::cequipment_production_line::KIND_MILITARY => Some(Self::Military),
-            engine::cequipment_production_line::KIND_NAVAL => Some(Self::Naval),
-            engine::cequipment_production_line::KIND_SHIP_REFIT => Some(Self::ShipRefit),
-            engine::cequipment_production_line::KIND_RAILWAY_GUN => Some(Self::RailwayGun),
+            engine_native::cequipment_production_line::KIND_MILITARY => Some(Self::Military),
+            engine_native::cequipment_production_line::KIND_NAVAL => Some(Self::Naval),
+            engine_native::cequipment_production_line::KIND_SHIP_REFIT => Some(Self::ShipRefit),
+            engine_native::cequipment_production_line::KIND_RAILWAY_GUN => Some(Self::RailwayGun),
             _ => None,
         }
     }
@@ -793,7 +794,7 @@ fn select_country(
     tag: &str,
     holder: Option<(u32, u32)>,
 ) -> Option<Country> {
-    let _phase = replay::cpu::scope_phase("production-lines:country");
+    let _phase = replay_frame::cpu::scope_phase("production-lines:country");
     crate::prepared::prepass::note("production-lines.country_lookup");
     decoded
         .complete::<tables::Countries>()
@@ -891,7 +892,7 @@ fn extract_block(
 ) -> io::Result<Extracted> {
     let frames = replay.read_block_recorded_selected(block, selected)?;
     let mut decoder = FrameDecoder::for_tables(selected);
-    let _phase = replay::cpu::scope_phase("production-lines:extract");
+    let _phase = replay_frame::cpu::scope_phase("production-lines:extract");
     let mut hours: Vec<ScanHour> = Vec::new();
     let mut country = CountryRead::default();
     let mut lost_from = None;
@@ -918,7 +919,7 @@ fn extract_block(
         {
             previous.last_hour = next.last_hour;
         } else {
-            engine::allocation::reserve(&mut hours, 1)?;
+            engine_allocation::reserve(&mut hours, 1)?;
             hours.push(next);
         }
     }
@@ -928,7 +929,7 @@ fn extract_block(
 /// What the scan reads of `decoded`, the frame of `hour`.
 #[cfg(test)]
 fn scan_hour(
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
     hour: i32,
     decoded: &DecodedFrame,
     tag: &str,
@@ -938,7 +939,7 @@ fn scan_hour(
 }
 
 fn scan_hour_selected(
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
     hour: i32,
     decoded: &DecodedFrame,
     country: Option<Country>,
@@ -1069,7 +1070,8 @@ fn scan_blocks_mode(
     let mut pending: BTreeSet<u64> = BTreeSet::new();
     // The last hour an output read was due, read or not.
     let mut last_output_due: Option<i32> = None;
-    let mut last_modifier_country: Option<Arc<replay::rows::CountryProductionModifiersRow>> = None;
+    let mut last_modifier_country: Option<Arc<replay_data::rows::CountryProductionModifiersRow>> =
+        None;
     // The variant table's view at the last read whose rows were stored.
     let mut last_definitions: Option<SharedView> = None;
     let mut variant_reads = VariantReads::default();
@@ -1281,7 +1283,7 @@ fn scan_blocks_mode(
                     if !scan_hour.lines_read {
                         // Carried: the last read still holds, but only after a read of this identity.
                         if carried {
-                            let _phase = replay::cpu::scope_phase("production-lines:carry");
+                            let _phase = replay_frame::cpu::scope_phase("production-lines:carry");
                             mark_span(&mut result.line_hours, hour, through);
                             // Output is carried only while its table stays readable: once a
                             // tick went unobserved it is unavailable for the rest of the branch.
@@ -1346,17 +1348,18 @@ fn scan_blocks_mode(
                                 .zip(decoded.complete::<tables::ProductionLineModifiers>().ok())
                         })
                         .flatten();
-                    let modifier_inputs =
-                        modifier_inputs.filter(|_| match replay::fixed_layout::validate_recording(
+                    let modifier_inputs = modifier_inputs.filter(|_| {
+                        match replay_derive::fixed_layout::validate_recording(
                             decoded,
-                            replay::fixed_layout::PRODUCTION_MODIFIERS,
+                            replay_derive::fixed_layout::PRODUCTION_MODIFIERS,
                         ) {
                             Ok(()) => true,
                             Err(reason) => {
                                 *result.modifier_layout_refusals.entry(reason).or_default() += 1;
                                 false
                             }
-                        });
+                        }
+                    });
                     let naming_organisations =
                         decoded.complete::<tables::IndustrialOrganisations>().ok();
                     let modifier_country = modifier_inputs
@@ -1913,8 +1916,11 @@ fn icon_image(catalogue: &Catalogue, icon: &Icon) -> io::Result<String> {
 /// recorded variant or organisation. Their runtime operands stay explicit.
 pub fn check_content(
     catalogue: Arc<Catalogue>,
-    equipment: Arc<installed_content::equipment::Database>,
-) -> io::Result<(Vec<crate::findings::Finding>, Vec<installed_content::Diagnostic>)> {
+    equipment: Arc<installed_content_core::equipment::Database>,
+) -> io::Result<(
+    Vec<crate::findings::Finding>,
+    Vec<installed_content_core::Diagnostic>,
+)> {
     use crate::findings::{Finding, Kind};
     let content = IconContent::with_equipment(Arc::clone(&catalogue), Some(equipment))?;
     let diagnostics = content.preparation_warnings();
@@ -2259,7 +2265,7 @@ pub fn saved_scan(
             .as_ref()
             .map(|icons| icons.file_probes())
             .unwrap_or_default(),
-        executable: engine::executable_tables::is_initialized(),
+        executable: engine_executable::executable_tables::is_initialized(),
         last_block: last_block(source.replay_ref(), branch),
         scan: SavedLines::save(&scanned, cancelled)?,
     })
@@ -2272,7 +2278,7 @@ pub fn saved_scan(
 pub fn hold_saved(source: &Source, context: &LoadContext, saved: SavedScan) -> bool {
     let replay = source.replay();
     if last_block(&replay, saved.branch) != saved.last_block
-        || engine::executable_tables::is_initialized() != saved.executable
+        || engine_executable::executable_tables::is_initialized() != saved.executable
     {
         return false;
     }
@@ -2547,7 +2553,7 @@ pub fn saved_current(
         return Ok(false);
     };
     if meta.last_block != last_block(source.replay_ref(), branch)
-        || meta.executable != engine::executable_tables::is_initialized()
+        || meta.executable != engine_executable::executable_tables::is_initialized()
     {
         return Ok(false);
     }

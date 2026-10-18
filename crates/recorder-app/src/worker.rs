@@ -256,7 +256,7 @@ impl Recorder {
             return Ok(Arc::clone(content));
         }
         let identity = controller::session_identity(session).map_err(std::io::Error::other)?;
-        let options = installed_content::ResolveOptions {
+        let options = installed_content_core::ResolveOptions {
             game_dir,
             user_dir,
             cache_dir: replay::recorder_settings::directory(),

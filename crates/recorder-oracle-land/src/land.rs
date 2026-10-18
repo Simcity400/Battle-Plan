@@ -1,8 +1,8 @@
 //! Saved combat history and division manpower comparisons.
 //! No inferred deletion causes.
 use super::*;
-use installed_content::parser::{Item, Value};
-use replay::frame::FrameDecoder;
+use installed_content_core::{parser::Item, parser::Value};
+use replay_frame::frame::FrameDecoder;
 
 fn equal<T: std::fmt::Debug + PartialEq>(
     report: &mut Report,
@@ -31,7 +31,7 @@ struct Division {
 pub struct Saved {
     history: Vec<History>,
     divisions: BTreeMap<u64, Division>,
-    losses: BTreeMap<u64, [replay::rows::LandSideLosses; 2]>,
+    losses: BTreeMap<u64, [replay_data::rows::LandSideLosses; 2]>,
     allow_zero: BTreeMap<u64, [Option<bool>; 2]>,
 }
 fn field<'a>(items: &'a [Item], key: &[u8]) -> io::Result<Option<&'a Value>> {
@@ -93,7 +93,7 @@ fn division_handle(items: &[Item]) -> io::Result<u64> {
 // Combat sides contain a `log` with `combat_side_data`, including
 // `manpower_lost` and `equipment_lost`.
 // The pool writer writes equipment{id,amount}, omitting zero unless allow_zero_entries.
-fn saved_losses(side: &[Item]) -> io::Result<(replay::rows::LandSideLosses, Option<bool>)> {
+fn saved_losses(side: &[Item]) -> io::Result<(replay_data::rows::LandSideLosses, Option<bool>)> {
     let log = block(required(side, b"log")?)?;
     let stats = block(required(log, b"combat_side_data")?)?;
     let manpower = field(stats, b"manpower_lost")?
@@ -117,14 +117,14 @@ fn saved_losses(side: &[Item]) -> io::Result<(replay::rows::LandSideLosses, Opti
             .filter(|i| i.key.as_deref() == Some(b"equipment"))
         {
             let entry = block(&entry.value)?;
-            equipment.push(replay::rows::LandEquipmentLoss {
+            equipment.push(replay_data::rows::LandEquipmentLoss {
                 variant: handle(required(entry, b"id")?)?,
                 amount_raw: Decimal::parse(scalar(required(entry, b"amount")?)?)?.raw,
             });
         }
     }
     Ok((
-        replay::rows::LandSideLosses {
+        replay_data::rows::LandSideLosses {
             manpower,
             equipment,
         },
@@ -404,7 +404,8 @@ fn multiset(values: impl IntoIterator<Item = History>) -> BTreeMap<History, usiz
     out
 }
 fn retained_span_count(spans: &[(i32, i32)], manager_hour: i32) -> usize {
-    let oldest = i64::from(manager_hour) - i64::from(engine::ccombat_history::RETENTION_HOURS);
+    let oldest =
+        i64::from(manager_hour) - i64::from(engine_land_inputs::ccombat_history::RETENTION_HOURS);
     spans
         .iter()
         .filter(|&&(from, to)| {
@@ -435,7 +436,8 @@ fn compare_certified_history(
     // and future head entries. The hourly update advances the clock before that call:
     // for a settled fresh save at H, last manager update H_u = H, NOT H - 1.
     // The inclusive lower bound is H - 168; event coverage remains (from,to].
-    let oldest = i64::from(manager_hour) - i64::from(engine::ccombat_history::RETENTION_HOURS);
+    let oldest =
+        i64::from(manager_hour) - i64::from(engine_land_inputs::ccombat_history::RETENTION_HOURS);
     let retained = |e: &History| i64::from(e.hour) >= oldest;
     let outside = captured.iter().filter(|e| !retained(e)).count();
     if outside != 0 {
@@ -544,7 +546,10 @@ pub fn compare_events(
 mod tests {
     use super::*;
     fn read(bytes: &[u8]) -> io::Result<Saved> {
-        super::read(&installed_content::parser::parse(bytes)?.items, Comparison::All)
+        super::read(
+            &installed_content_core::parser::parse(bytes)?.items,
+            Comparison::All,
+        )
     }
     #[test]
     fn land_save_comparisons_refuse_only_their_own_missing_fields() {
@@ -552,7 +557,7 @@ mod tests {
             history={history={{location=9 attacker=A defender=B end_date=1936.1.2.1 type=1}}}}
             countries={A={units={division={id={id=9 type=4713} max_supply=2
                 army_current_supply_ratio=1 army_manpower={army_manpower_value={}}}}}}"#;
-        let doc = installed_content::parser::parse(bytes).unwrap();
+        let doc = installed_content_core::parser::parse(bytes).unwrap();
         assert_eq!(
             super::read(&doc.items, Comparison::Divisions)
                 .unwrap()
@@ -577,7 +582,7 @@ mod tests {
         let bytes = br#"combat={land_combat={id={id=7 type=62}
             attacker={log={combat_side_data={}}} defender={log={combat_side_data={}}}}}
             countries={A={units={division={id={id=9 type=4713}}}}}"#;
-        let doc = installed_content::parser::parse(bytes).unwrap();
+        let doc = installed_content_core::parser::parse(bytes).unwrap();
         assert!(
             super::read(&doc.items, Comparison::Divisions)
                 .err()
@@ -598,12 +603,12 @@ mod tests {
                 .history
                 .is_empty()
         );
-        let doc = installed_content::parser::parse(b"countries={}").unwrap();
+        let doc = installed_content_core::parser::parse(b"countries={}").unwrap();
         assert!(super::read(&doc.items, Comparison::Divisions).is_ok());
         assert!(super::read(&doc.items, Comparison::History).is_err());
         assert!(super::read(&doc.items, Comparison::Losses).is_err());
     }
-    fn loss_frame(row: Option<replay::rows::LandCombatProgressRow>) -> DecodedFrame {
+    fn loss_frame(row: Option<replay_data::rows::LandCombatProgressRow>) -> DecodedFrame {
         let mut tables = std::array::from_fn(|_| {
             TableView::Unavailable {
                 reason: "fixture omitted".into(),
@@ -626,21 +631,21 @@ mod tests {
             defender={log={combat_side_data={equipment_lost={equipment={id={id=10 type=70} amount=0} allow_zero_entries=yes}}}}
         }}"#;
         let saved = read(bytes).unwrap();
-        let mut row = replay::rows::LandCombatProgressRow {
+        let mut row = replay_data::rows::LandCombatProgressRow {
             combat: 7 << 32 | 62,
             attacker_manpower_loss: 83.into(),
             attacker_equipment_losses: vec![
-                replay::rows::LandEquipmentLoss {
+                replay_data::rows::LandEquipmentLoss {
                     variant: 9 << 32 | 70,
                     amount_raw: 123_456,
                 },
-                replay::rows::LandEquipmentLoss {
+                replay_data::rows::LandEquipmentLoss {
                     variant: 10 << 32 | 70,
                     amount_raw: 0,
                 },
             ]
             .into(),
-            defender_equipment_losses: vec![replay::rows::LandEquipmentLoss {
+            defender_equipment_losses: vec![replay_data::rows::LandEquipmentLoss {
                 variant: 10 << 32 | 70,
                 amount_raw: 0,
             }]
@@ -665,7 +670,7 @@ mod tests {
     }
     #[test]
     fn casualty_save_oracle_keeps_not_recorded_fields_separate_from_zero() {
-        use replay::rows::{LandCombatProgressRow, Recorded};
+        use replay_data::{rows::LandCombatProgressRow, rows::Recorded};
         let saved = read(b"combat={land_combat={id={id=7 type=62} attacker={log={combat_side_data={manpower_lost=83}}} defender={log={combat_side_data={}}}}}").unwrap();
         let mut row = LandCombatProgressRow {
             combat: 7 << 32 | 62,
@@ -698,10 +703,10 @@ mod tests {
     #[test]
     fn casualty_save_omissions_and_ended_history_are_explicit_limitations() {
         let saved = read(b"combat={border_war_combat={id={id=7 type=62} attacker={log={combat_side_data={}}} defender={log={combat_side_data={}}}}}").unwrap();
-        let row = replay::rows::LandCombatProgressRow {
+        let row = replay_data::rows::LandCombatProgressRow {
             combat: 7 << 32 | 62,
             attacker_manpower_loss: (-7).into(),
-            attacker_equipment_losses: vec![replay::rows::LandEquipmentLoss {
+            attacker_equipment_losses: vec![replay_data::rows::LandEquipmentLoss {
                 variant: 9 << 32 | 70,
                 amount_raw: 123_456,
             }]
@@ -941,18 +946,18 @@ mod tests {
     fn division_projection_keeps_positive_order_and_reports_manpower_difference() {
         let (mut frame, _, _, _) = super::super::fixtures::fixture();
         let id = 9 << 32 | 4713;
-        let row = replay::rows::DivisionLandInputsRow {
+        let row = replay_data::rows::DivisionLandInputsRow {
             division: id,
             manpower: vec![
-                replay::rows::DivisionManpowerContributor {
+                replay_data::rows::DivisionManpowerContributor {
                     country: 101,
                     amount: 2,
                 },
-                replay::rows::DivisionManpowerContributor {
+                replay_data::rows::DivisionManpowerContributor {
                     country: 102,
                     amount: -7,
                 },
-                replay::rows::DivisionManpowerContributor {
+                replay_data::rows::DivisionManpowerContributor {
                     country: 101,
                     amount: 9,
                 },
@@ -990,14 +995,14 @@ mod tests {
     fn manpower_alias_spellings_are_limits_but_ordered_amounts_still_compare() {
         let (mut frame, _, _, _) = super::super::fixtures::fixture();
         let id = 9 << 32 | 4713;
-        let mut row = replay::rows::DivisionLandInputsRow {
+        let mut row = replay_data::rows::DivisionLandInputsRow {
             division: id,
             manpower: vec![
-                replay::rows::DivisionManpowerContributor {
+                replay_data::rows::DivisionManpowerContributor {
                     country: 102,
                     amount: 7,
                 },
-                replay::rows::DivisionManpowerContributor {
+                replay_data::rows::DivisionManpowerContributor {
                     country: 0,
                     amount: 9,
                 },

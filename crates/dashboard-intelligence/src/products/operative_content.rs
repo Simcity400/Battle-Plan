@@ -10,11 +10,9 @@ use dashboard_base::{
 };
 use dashboard_core::config::LoadContext;
 use dashboard_text::catalogue::{Catalogue, View};
-use installed_content::{
-    localisation::Argument,
-    unit_leader::{Leaders, Skills},
-};
-use replay::rows::{CharacterPortraitRow, OperativeMembershipRow, PORTRAIT_LARGE};
+use installed_content_core::{unit_leader::Leaders, unit_leader::Skills};
+use installed_content_localisation::localisation::Argument;
+use replay_data::{rows::CharacterPortraitRow, rows::OperativeMembershipRow, rows::PORTRAIT_LARGE};
 use std::{io, sync::Arc};
 
 type IconCache = catalogue::KeyedResults<(bool, String, u32), String>;
@@ -41,7 +39,7 @@ pub struct OperativeContent {
     pub catalogue: Arc<Catalogue>,
     politics: Arc<politics_content::PoliticsContent>,
     skills: Skills,
-    operations: Arc<installed_content::intelligence::Intelligence>,
+    operations: Arc<installed_content_core::intelligence::Intelligence>,
     capture_duration_days: Result<i32, String>,
     pub warnings: Vec<String>,
     preparation_findings: Vec<dashboard_core::findings::Finding>,
@@ -74,9 +72,9 @@ pub struct CapturedStatus {
     pub missing: Option<String>,
 }
 
-fn capture_duration_days(layers: &installed_content::ResolvedLayers) -> Result<i32, String> {
+fn capture_duration_days(layers: &installed_content_core::ResolvedLayers) -> Result<i32, String> {
     // Remaining capture days uses this Int32 define.
-    installed_content::defines::read(layers)
+    installed_content_core::defines::read(layers)
         .and_then(|defines| defines.int32("NOperatives", "OPERATIVE_CAPTURE_DURATION_IN_DAYS"))
         .map_err(|error| {
             format!(
@@ -223,7 +221,7 @@ impl OperativeContent {
             missing: assignment.missing,
             ..CapturedStatus::default()
         };
-        let duration = if captured_hour == engine::cgame_date::NULL_RAW_HOUR {
+        let duration = if captured_hour == engine_native::cgame_date::NULL_RAW_HOUR {
             Err("Captured duration and progress have no recorded capture date.".to_owned())
         } else {
             self.capture_duration_days.clone()
@@ -507,8 +505,8 @@ fn named(name: Result<String, String>) -> Assignment {
 /// and elapsed+remaining to one, then divide as f32.
 /// Subtraction/addition are signed dword wrapping operations.
 fn capture_progress(captured_hour: i32, now: i32, duration: i32) -> (i32, f32) {
-    let captured_day = captured_hour.wrapping_sub(engine::cdate::HOUR_EPOCH) / 24;
-    let now_day = now.wrapping_sub(engine::cdate::HOUR_EPOCH) / 24;
+    let captured_day = captured_hour.wrapping_sub(engine_native::cdate::HOUR_EPOCH) / 24;
+    let now_day = now.wrapping_sub(engine_native::cdate::HOUR_EPOCH) / 24;
     let remaining = captured_day.wrapping_sub(now_day).wrapping_add(duration);
     let elapsed = now_day.wrapping_sub(captured_day).max(0);
     let denominator = elapsed.wrapping_add(remaining).max(1);
@@ -520,13 +518,13 @@ pub(super) fn cooldown_remaining(kind: u32, end: i32, now: i32) -> i32 {
     if kind == 0 {
         return 0;
     }
-    let end = end.wrapping_sub(engine::cdate::HOUR_EPOCH);
-    let now = now.wrapping_sub(engine::cdate::HOUR_EPOCH);
+    let end = end.wrapping_sub(engine_native::cdate::HOUR_EPOCH);
+    let now = now.wrapping_sub(engine_native::cdate::HOUR_EPOCH);
     end.wrapping_add(23_i32.wrapping_sub(now)) / 24
 }
 fn cooldown_progress(kind: u32, start: i32, end: i32, now: i32) -> (i32, f32) {
-    let start_day = start.wrapping_sub(engine::cdate::HOUR_EPOCH) / 24;
-    let end_day = end.wrapping_sub(engine::cdate::HOUR_EPOCH) / 24;
+    let start_day = start.wrapping_sub(engine_native::cdate::HOUR_EPOCH) / 24;
+    let end_day = end.wrapping_sub(engine_native::cdate::HOUR_EPOCH) / 24;
     let duration = end_day.wrapping_sub(start_day).max(1);
     let remaining = cooldown_remaining(kind, end, now);
     let elapsed = duration.wrapping_sub(remaining).clamp(0, duration);
@@ -564,7 +562,7 @@ fn native_progress(raw: i64, cost: i32) -> i64 {
 }
 
 fn experience(
-    localisation: &installed_content::localisation::Localisation,
+    localisation: &installed_content_localisation::localisation::Localisation,
     skills: &Skills,
     skill: Option<i32>,
     raw: i64,
@@ -673,7 +671,7 @@ mod tests {
 
     #[test]
     fn intel_shared_driver_keyed_assignments_keep_exact_named_refusals() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for metadata tables");
         let (content, _folder) = test_content(&[]);
         let first = content.operation("mod/absent_operation");
@@ -715,9 +713,9 @@ mod tests {
 
     #[test]
     fn operations_reuse_native_metadata_variables_and_nested_reached_forms() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let (operations, _) = installed_content::intelligence::parse_operations(
+        let (operations, _) = installed_content_core::intelligence::parse_operations(
             br#"@name = MOD_OPERATION_NAME
             operation_test = {
               name = @name map_icon = MOD_SPRITE
@@ -726,7 +724,7 @@ mod tests {
               selection_target = { targets = { ROOT FROM } }
               outcome_execute = { set_country_flag = synthetic_flag }
             }"#,
-            &installed_content::key_names::KeyNames::default(),
+            &installed_content_core::key_names::KeyNames::default(),
             &Default::default(),
         )
         .unwrap();
@@ -737,7 +735,7 @@ mod tests {
 
     #[test]
     fn operations_keep_named_refusals_for_unsupported_targets_and_bad_text() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         for (bytes, reason) in [
             (
@@ -747,9 +745,9 @@ mod tests {
             ),
             (b"operation_test = { name = \xfe }".as_slice(), "UTF-8"),
         ] {
-            let refusal = installed_content::intelligence::parse_operations(
+            let refusal = installed_content_core::intelligence::parse_operations(
                 bytes,
-                &installed_content::key_names::KeyNames::default(),
+                &installed_content_core::key_names::KeyNames::default(),
                 &Default::default(),
             )
             .unwrap_err();
@@ -759,7 +757,7 @@ mod tests {
 
     #[test]
     fn duplicate_native_operation_definitions_keep_first_and_unrelated_names() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (content, _folder) = test_content(&[
             (
@@ -792,7 +790,7 @@ mod tests {
 
     #[test]
     fn native_capture_day_rounding_remaining_argument_and_unclamped_progress() {
-        let epoch = engine::cdate::HOUR_EPOCH;
+        let epoch = engine_native::cdate::HOUR_EPOCH;
         // The capture happened late in a day; the next hour changes the day.
         assert_eq!(
             capture_progress(epoch + 23, epoch + 24, 17),
@@ -823,7 +821,7 @@ mod tests {
             "common/defines/zz_override.lua",
             "NDefines.NOperatives.OPERATIVE_CAPTURE_DURATION_IN_DAYS = 11 * 3",
         )]);
-        let layers = installed_content::ResolvedLayers::from_folders(&[
+        let layers = installed_content_core::ResolvedLayers::from_folders(&[
             (&base.0, &[]),
             (&replacement.0, &[]),
             (&last.0, &[]),
@@ -834,7 +832,7 @@ mod tests {
 
     #[test]
     fn captured_status_uses_content_define_and_separate_native_strings() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (content, _folder) = test_content(&[
             (
@@ -846,7 +844,7 @@ mod tests {
                 "\u{feff}l_english:\n OPERATIVE_CAPTURED_BY:0 \"Held by $CAPTURER$\"\n DURATION_DAYS:0 \"$NUM|.0$ authored days\"\n",
             ),
         ]);
-        let epoch = engine::cdate::HOUR_EPOCH;
+        let epoch = engine_native::cdate::HOUR_EPOCH;
         let status = content.captured_status(epoch + 23, epoch + 24, Some("Current name"));
         assert_eq!(status.name.as_deref(), Some("Held by Current name"));
         assert_eq!(status.duration.as_deref(), Some("16 authored days"));
@@ -857,8 +855,11 @@ mod tests {
         assert_eq!(unknown_name.duration, status.duration);
         assert_eq!(unknown_name.progress, status.progress);
         assert!(unknown_name.missing.unwrap().contains("capturer's name"));
-        let null_date =
-            content.captured_status(engine::cgame_date::NULL_RAW_HOUR, epoch, Some("Name"));
+        let null_date = content.captured_status(
+            engine_native::cgame_date::NULL_RAW_HOUR,
+            epoch,
+            Some("Name"),
+        );
         assert!(null_date.duration.is_none());
         assert!(null_date.progress.is_none());
         assert!(null_date.missing.unwrap().contains("recorded capture date"));
@@ -866,7 +867,7 @@ mod tests {
 
     #[test]
     fn captured_status_names_an_unavailable_define_and_keeps_empty_assignment_text() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (content, _folder) = test_content(&[
             (
@@ -875,7 +876,7 @@ mod tests {
             ),
             ("common/operations/fixture.txt", "operation_unnamed = { }"),
         ]);
-        let epoch = engine::cdate::HOUR_EPOCH;
+        let epoch = engine_native::cdate::HOUR_EPOCH;
         let status = content.captured_status(epoch, epoch, Some("Name"));
         assert_eq!(status.name.as_deref(), Some(""));
         assert!(status.duration.is_none());
@@ -931,7 +932,7 @@ mod tests {
 
     #[test]
     fn assignment_uses_native_keys_and_refuses_details_the_recording_lacks() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (content, _folder) = test_content(&[
             (
@@ -972,13 +973,13 @@ mod tests {
     }
     #[test]
     fn cooldown_status_uses_remaining_hours_native_clamping_and_modded_text() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (content, _folder) = test_content(&[(
             "localisation/english/fixture_l_english.yml",
             "\u{feff}l_english:\n OPERATIVE_HARMED_IN_MISSION:0 \"Authored injury\"\n OPERATIVE_FORCED_INTO_HIDING:0 \"Authored hiding\"\n DURATION_DAYS:0 \"$NUM|.0$ authored days\"\n",
         )]);
-        let e = engine::cdate::HOUR_EPOCH;
+        let e = engine_native::cdate::HOUR_EPOCH;
         let before = content.cooldown_status(3, e + 2, e + 50, e + 1);
         assert_eq!(before.name.as_deref(), Some("Authored hiding"));
         assert_eq!(before.duration.as_deref(), Some("3 authored days"));

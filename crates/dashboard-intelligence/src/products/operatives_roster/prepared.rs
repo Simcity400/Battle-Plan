@@ -76,7 +76,7 @@ impl Prepared {
         &mut self,
         source: &Source,
         context: &LoadContext,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
     ) -> io::Result<()> {
         let changes = self
             .test_changes
@@ -110,7 +110,7 @@ impl Prepared {
 
     pub fn observe_bound(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         changes: &FrameChanges,
         countries: &super::super::operative_rows::CountryInputs,
         content: &Result<
@@ -118,7 +118,7 @@ impl Prepared {
             String,
         >,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("intelligence:roster");
+        let _cpu = ::replay_frame::cpu::scope_phase("intelligence:roster");
         let bound = content.as_ref().ok().and_then(|content| content.as_deref());
         if self.scan.is_none() {
             self.scan = Some(Scan::new(
@@ -392,8 +392,11 @@ impl Prepared {
                             .filter_map(|offset| frame.hour.checked_add(offset))
                             .find(|&hour| {
                                 (held.value.captured == Some(true)
-                                    && hour.wrapping_sub(engine::cdate::HOUR_EPOCH) / 24
-                                        != frame.hour.wrapping_sub(engine::cdate::HOUR_EPOCH) / 24)
+                                    && hour.wrapping_sub(engine_native::cdate::HOUR_EPOCH) / 24
+                                        != frame
+                                            .hour
+                                            .wrapping_sub(engine_native::cdate::HOUR_EPOCH)
+                                            / 24)
                                     || held.cooldown.is_some_and(|(kind, _, end)| {
                                         super::super::operative_content::cooldown_remaining(
                                             kind, end, hour,

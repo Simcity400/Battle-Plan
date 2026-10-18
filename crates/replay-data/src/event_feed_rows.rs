@@ -7,7 +7,7 @@ use crate::{
     rows::Recorded,
     value::{Value, value_struct},
 };
-use engine::allocation;
+use engine_allocation as allocation;
 use std::io;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,7 +109,7 @@ macro_rules! routes {
         /// The native operation an event happened in, named by the call that
         /// reached it: a value is one call site of the pinned executable,
         /// whose return address the collector matches exactly
-        /// ([`engine::event_feed_sites::provenance`] names each by this
+        /// ([`engine_events::event_feed_sites::provenance`] names each by this
         /// variant's name), except a conference's application and the
         /// politics scopes (90 to 94), which name the operation whichever
         /// call reached it. One operation's routes share a value range.

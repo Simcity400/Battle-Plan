@@ -215,7 +215,7 @@ impl FrameClock {
         }
         self.frame = Some(if self.elapsed < duration {
             // Truncate the frame number using the f32 integer conversion.
-            installed_content::crt::truncate_f32(self.elapsed / duration * frame_count + 1.0)
+            installed_content_core::crt::truncate_f32(self.elapsed / duration * frame_count + 1.0)
         } else {
             1
         });

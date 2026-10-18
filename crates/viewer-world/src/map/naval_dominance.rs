@@ -2,16 +2,12 @@
 use std::{collections::BTreeMap, sync::OnceLock};
 use viewer_foundation::naval_math::dominance_value;
 
-use installed_content::{
-    defines::Defines,
-    map::{MapData, ProvinceKind},
-    regions::StrategicRegion,
-    terrain::TerrainDefinitions,
+use installed_content_core::{
+    defines::Defines, map::MapData, map::ProvinceKind, terrain::TerrainDefinitions,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{NavalSupremacyRow, tables},
-};
+use installed_content_regions::regions::StrategicRegion;
+use replay_data::{rows::NavalSupremacyRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use {
     super::gradient::Attributes,
@@ -143,7 +139,7 @@ impl Content {
                 }
                 cache_epoch(
                     frame.hour,
-                    frame.tables[replay::rows::TableId::NavalSupremacy.index()].sampled_at(),
+                    frame.tables[replay_data::rows::TableId::NavalSupremacy.index()].sampled_at(),
                 )?;
                 let groups = grouped.as_ref().map_err(|reason| (*reason).clone())?;
                 let values = groups.get(&id).map(Vec::as_slice).unwrap_or_default();
@@ -277,7 +273,7 @@ fn zero_subject(
         let subject = cell.subject.as_ref().ok_or(
             "Country0 naval family cached subject pointer not recorded at the reached branch",
         )?;
-        return replay::transport_subject_access::matches(
+        return replay_derive::transport_subject_access::matches(
             subject,
             cell.target
                 .ok_or_else(|| "Country0 naval family target refused".into()),
@@ -308,7 +304,7 @@ fn zero_subject(
         .subject
         .as_ref()
         .ok_or("naval family cached subject pointer not recorded at the reached branch")?;
-    replay::transport_subject_access::matches(
+    replay_derive::transport_subject_access::matches(
         subject,
         packet
             .target
@@ -317,7 +313,7 @@ fn zero_subject(
     )
 }
 
-fn cache_epoch(hour: replay::Hour, sampled: Option<replay::Hour>) -> Fact<()> {
+fn cache_epoch(hour: replay_data::Hour, sampled: Option<replay_data::Hour>) -> Fact<()> {
     // The sorted supremacy cache rebuilds at midnight. Daily acquisition can straddle that boundary;
     // retain certified values within their cache epoch, without interpolating updates.
     match sampled {
@@ -442,7 +438,7 @@ mod tests {
             hour: 7,
             metrics: Default::default(),
             tables: std::array::from_fn(|_| {
-                replay::frame::TableView::Unavailable {
+                replay_frame::frame::TableView::Unavailable {
                     reason: "unreached".into(),
                 }
                 .into()
@@ -451,10 +447,8 @@ mod tests {
     }
     #[test]
     fn same_country_and_faction_do_not_demand_subject_or_war_capture() {
-        use replay::{
-            frame::TableView,
-            rows::{FactionMemberRow, TableId, TableRows},
-        };
+        use replay_data::{rows::FactionMemberRow, rows::TableId, rows::TableRows};
+        use replay_frame::frame::TableView;
         let mut frame = frame();
         let links = [(11, 1), (22, 2)].into_iter().collect();
         assert_eq!(
@@ -482,13 +476,12 @@ mod tests {
     }
     #[test]
     fn country_zero_subject_uses_recorded_pointer_and_preserves_refusal() {
-        use replay::{
-            frame::TableView,
-            rows::{
-                Recorded, ReservedCountryNamingRow, ReservedReverseVisibilityInputs,
-                ReverseZeroVisibilityInputs, TableId, TableRows, ZeroSubjectInputs,
-            },
+        use replay_data::{
+            rows::Recorded, rows::ReservedCountryNamingRow, rows::ReservedReverseVisibilityInputs,
+            rows::ReverseZeroVisibilityInputs, rows::TableId, rows::TableRows,
+            rows::ZeroSubjectInputs,
         };
+        use replay_frame::frame::TableView;
         let mut frame = frame();
         let links = [(11, 1)].into_iter().collect();
         frame.tables[TableId::FactionMembers.index()] =
@@ -497,7 +490,7 @@ mod tests {
             TableView::Complete(TableRows::ReservedCountryNaming(vec![
                 ReservedCountryNamingRow {
                     reverse_visibility: Recorded::Value(Some(ReservedReverseVisibilityInputs {
-                        sample_hour: replay::rows::PacketHour::Stamped(7),
+                        sample_hour: replay_data::rows::PacketHour::Stamped(7),
                         cells: vec![
                             None,
                             Some(ReverseZeroVisibilityInputs {
@@ -536,14 +529,12 @@ mod tests {
 
     #[test]
     fn country_zero_target_uses_cached_faction_without_requiring_own_membership() {
-        use replay::{
-            frame::TableView,
-            rows::{
-                FactionMemberRow, Recorded, ReservedCountryNamingRow,
-                ReservedReverseVisibilityInputs, ReverseZeroVisibilityInputs, TableId, TableRows,
-                ZeroSubjectInputs,
-            },
+        use replay_data::{
+            rows::FactionMemberRow, rows::Recorded, rows::ReservedCountryNamingRow,
+            rows::ReservedReverseVisibilityInputs, rows::ReverseZeroVisibilityInputs,
+            rows::TableId, rows::TableRows, rows::ZeroSubjectInputs,
         };
+        use replay_frame::frame::TableView;
         let mut frame = frame();
         let links = [(11, 1)].into_iter().collect();
         let naming = |faction| {
@@ -551,7 +542,7 @@ mod tests {
                 ReservedCountryNamingRow {
                     faction,
                     reverse_visibility: Recorded::Value(Some(ReservedReverseVisibilityInputs {
-                        sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+                        sample_hour: replay_data::rows::PacketHour::Stamped(frame.hour),
                         cells: vec![Some(ReverseZeroVisibilityInputs {
                             target: Some(0),
                             subject: Some(ZeroSubjectInputs::default()),
@@ -587,13 +578,12 @@ mod tests {
 
     #[test]
     fn country_zero_null_faction_skips_unavailable_roster() {
-        use replay::{
-            frame::TableView,
-            rows::{
-                CountryCounterInputRow, CountryRow, Recorded, ReservedCountryNamingRow,
-                ReverseZeroVisibilityInputs, TableId, TableRows, ZeroSubjectInputs,
-            },
+        use replay_data::{
+            rows::CountryCounterInputRow, rows::CountryRow, rows::Recorded,
+            rows::ReservedCountryNamingRow, rows::ReverseZeroVisibilityInputs, rows::TableId,
+            rows::TableRows, rows::ZeroSubjectInputs,
         };
+        use replay_frame::frame::TableView;
         let mut frame = frame();
         let links = [(11, 1)].into_iter().collect();
         frame.tables[TableId::ReservedCountryNaming.index()] =
@@ -635,14 +625,12 @@ mod tests {
 
     #[test]
     fn country_zero_forward_subject_uses_packet_beyond_positive_target_certificate() {
-        use replay::{
-            frame::TableView,
-            rows::{
-                CountryCounterInputRow, CountryRow, Recorded, RelationLinkRow,
-                ReservedCountryNamingRow, ReverseZeroVisibilityInputs, TableId, TableRows,
-                TransportSubjectAccess, ZeroSubjectInputs,
-            },
+        use replay_data::{
+            rows::CountryCounterInputRow, rows::CountryRow, rows::Recorded, rows::RelationLinkRow,
+            rows::ReservedCountryNamingRow, rows::ReverseZeroVisibilityInputs, rows::TableId,
+            rows::TableRows, rows::TransportSubjectAccess, rows::ZeroSubjectInputs,
         };
+        use replay_frame::frame::TableView;
         let mut frame = frame();
         let links = [(11, 1)].into_iter().collect();
         frame.tables[TableId::FactionMembers.index()] =
@@ -667,7 +655,7 @@ mod tests {
                 country: 11,
                 target_index: 1,
                 transport_subject: Recorded::Value(Some(TransportSubjectAccess {
-                    sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+                    sample_hour: replay_data::rows::PacketHour::Stamped(frame.hour),
                     complete_owner: true,
                     ..Default::default()
                 })),
@@ -688,7 +676,7 @@ mod tests {
             packets(Recorded::Value(Some(ReverseZeroVisibilityInputs {
                 target: Some(0),
                 subject: Some(ZeroSubjectInputs {
-                    relation_type: Some(engine::csubject_relation::TYPE_VALUE),
+                    relation_type: Some(engine_native::csubject_relation::TYPE_VALUE),
                     parties: Some([Some(11), Some(0)]),
                 }),
                 ..Default::default()
@@ -759,10 +747,10 @@ mod tests {
     }
     #[test]
     fn five_thousand_countries_use_lazy_native_family_admission() {
-        use replay::{
-            frame::{FrameDecoder, FrameEncoder, TableView},
-            rows::{CountryLinkRow, FactionMemberRow, TableId, TableRows},
+        use replay_data::{
+            rows::CountryLinkRow, rows::FactionMemberRow, rows::TableId, rows::TableRows,
         };
+        use replay_frame::{frame::FrameDecoder, frame::FrameEncoder, frame::TableView};
         let mut source = frame();
         let countries = 1..=5_000;
         source.tables[TableId::CountryLinks.index()] =
@@ -869,11 +857,11 @@ mod tests {
     fn the_scheduled_read_certifies_every_hour_of_its_day() {
         // The sorted cache is rebuilt inside the update entered at hour 23,
         // so the latest scheduled read must belong to the hour's own day.
-        use replay::rows::TableId;
+        use replay_data::rows::TableId;
         for hour in 24..24 * 4 {
             let sampled = (0..=hour)
                 .rev()
-                .find(|&h| replay::cadence::is_refresh(TableId::NavalSupremacy, h));
+                .find(|&h| replay_data::cadence::is_refresh(TableId::NavalSupremacy, h));
             assert!(
                 cache_epoch(hour, sampled).is_ok(),
                 "hour {hour} holds the read of hour {sampled:?}"
@@ -883,9 +871,9 @@ mod tests {
 
     #[test]
     fn mod_terrain_and_control_ratio_supply_the_minimum() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let terrain = installed_content::terrain::parse_definitions(b"categories={ ocean={minimum_seazone_dominance=9} crystal_sea={minimum_seazone_dominance=17} }").unwrap();
+        let terrain = installed_content_core::terrain::parse_definitions(b"categories={ ocean={minimum_seazone_dominance=9} crystal_sea={minimum_seazone_dominance=17} }").unwrap();
         let defines = Defines::new().unwrap();
         defines
             .load(
@@ -907,7 +895,7 @@ mod tests {
                 .map(|id| {
                     (
                         id,
-                        installed_content::map::ProvinceDefinition {
+                        installed_content_core::map::ProvinceDefinition {
                             id,
                             rgb: [0; 3],
                             kind: ProvinceKind::Sea,

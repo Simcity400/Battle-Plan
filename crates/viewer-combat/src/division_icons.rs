@@ -17,7 +17,7 @@
 //! entry reports the suffix it omitted ([`Omitted`]), the exile frames 14 and
 //! 15 included.
 use super::defines::LandDefines;
-use replay::rows::{LandCombatDetailsRow, LandCombatDivisionRow};
+use replay_data::{rows::LandCombatDetailsRow, rows::LandCombatDivisionRow};
 use std::collections::BTreeMap;
 
 const SCALE: i64 = 100_000;
@@ -231,7 +231,7 @@ pub(super) fn frames(
     if fuel_ratio([fuel, capacity, content.fuel_penalty_start_ratio]) < SCALE {
         out.push(16);
     }
-    match engine::csub_unit_definition::movement_air_defense_value(
+    match engine_native::csub_unit_definition::movement_air_defense_value(
         unit.air_attack,
         content.air_superiority[0],
         content.air_superiority[1],
@@ -404,7 +404,7 @@ mod tests {
             ),
             (vec![12], None)
         );
-        madison.fuel_inputs = [100_000, 1_000_000].map(replay::rows::Recorded::Value);
+        madison.fuel_inputs = [100_000, 1_000_000].map(replay_data::rows::Recorded::Value);
         assert_eq!(
             icons(
                 &[27, 3],

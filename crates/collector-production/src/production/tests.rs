@@ -4,7 +4,7 @@ use super::*;
 fn production_daily_groups_skip_native_reads_outside_their_slots() {
     use production_rest_test_kit as kit;
     let bytes = kit::fixture();
-    let memory = engine::memory::CountedMemory::new(engine::memory::SliceMemory {
+    let memory = engine_native::memory::CountedMemory::new(engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     });
@@ -17,7 +17,7 @@ fn production_daily_groups_skip_native_reads_outside_their_slots() {
     let mut captured = Captured::with_capacities(&kit::capacities());
     assert!(captured.division_details_active());
     let skipped = Outcome::Unavailable {
-        reason: replay::cadence::SKIPPED_REASON,
+        reason: replay_data::cadence::SKIPPED_REASON,
     };
     for (hour, force_full) in (-24_i32..24).map(|hour| (hour, false)).chain([(0, true)]) {
         let rest_active = force_full || hour.rem_euclid(24) == 8;
@@ -50,7 +50,7 @@ fn production_daily_groups_skip_native_reads_outside_their_slots() {
                     assert_eq!(ticks[index], 0);
                     assert_eq!(
                         counts[TABLES[index].index()],
-                        engine::memory::ReadCounts::ZERO
+                        engine_native::memory::ReadCounts::ZERO
                     );
                 }
             }
@@ -64,14 +64,14 @@ fn production_daily_groups_skip_native_reads_outside_their_slots() {
 fn variant_definitions_read_hourly_while_details_wait_for_their_slot() {
     use production_rest_test_kit as kit;
     let bytes = kit::fixture();
-    let memory = engine::memory::CountedMemory::new(engine::memory::SliceMemory {
+    let memory = engine_native::memory::CountedMemory::new(engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     });
     let registry = [cequipment_variant::RegistryRow::read(&memory.0, 0, kit::VARIANT).unwrap()];
     let mut captured = Captured::with_capacities(&kit::capacities());
     let skipped = Outcome::Unavailable {
-        reason: replay::cadence::SKIPPED_REASON,
+        reason: replay_data::cadence::SKIPPED_REASON,
     };
     for (hour, force_full) in (-24_i32..24).map(|hour| (hour, false)).chain([(0, true)]) {
         let details_active = force_full || hour.rem_euclid(24) == 22;
@@ -96,7 +96,10 @@ fn variant_definitions_read_hourly_while_details_wait_for_their_slot() {
             } else {
                 assert_eq!(captured.outcomes()[index], skipped);
                 assert_eq!(ticks[index], 0);
-                assert_eq!(counts[table.index()], engine::memory::ReadCounts::ZERO);
+                assert_eq!(
+                    counts[table.index()],
+                    engine_native::memory::ReadCounts::ZERO
+                );
             }
         }
     }
@@ -152,7 +155,7 @@ fn production_rest_job_capacity_accounting_tracks_all_vectors_through_growth_cle
 }
 
 use cequipment_variant::{TextOutcome, TextSpan};
-use replay::rows::TableSchema;
+use replay_data::rows::TableSchema;
 
 fn capacities() -> Capacities {
     Capacities {
@@ -254,7 +257,7 @@ fn conversion_preserves_native_precision_full_keys_and_raw_control_bytes() {
     );
     assert_eq!(
         (line.cost_raw, line.speed_raw, line.produced_raw),
-        (i64::MIN, -100_001, replay::rows::RetiredI64::default())
+        (i64::MIN, -100_001, replay_data::rows::RetiredI64::default())
     );
     assert_eq!(
         (
@@ -318,14 +321,14 @@ fn conversion_preserves_native_precision_full_keys_and_raw_control_bytes() {
     for (id, view) in TABLES.into_iter().zip(views) {
         baseline[id.index()] = view;
     }
-    let mut encoder = replay::frame::FrameEncoder::new();
+    let mut encoder = replay_frame::frame::FrameEncoder::new();
     encoder
         .encode(
-            replay::frame::DecodedFrame {
+            replay_frame::frame::DecodedFrame {
                 branch: 1,
                 hour: 0,
                 tables: baseline.map(Into::into),
-                metrics: replay::frame::Metrics::default(),
+                metrics: replay_frame::frame::Metrics::default(),
             },
             false,
         )
@@ -869,10 +872,10 @@ fn variant_loan_retains_buffers_and_adopts_worker_observations() {
         assert_eq!(
             captured.outcomes()[index],
             Outcome::Unavailable {
-                reason: if replay::cadence::should_walk(*table, 0, false) {
+                reason: if replay_data::cadence::should_walk(*table, 0, false) {
                     "variant worker stopped"
                 } else {
-                    replay::cadence::SKIPPED_REASON
+                    replay_data::cadence::SKIPPED_REASON
                 }
             }
         );
@@ -883,7 +886,7 @@ fn variant_loan_retains_buffers_and_adopts_worker_observations() {
 fn production_rest_split_copy_matches_direct_walk() {
     use super::production_rest_test_kit as kit;
     let bytes = kit::fixture();
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -914,7 +917,7 @@ impl Memory for DefinedMemory<'_> {
             destination.copy_from_slice(&(index as i32 + 3).to_le_bytes());
             return true;
         }
-        engine::memory::SliceMemory {
+        engine_native::memory::SliceMemory {
             base: production_rest_test_kit::BASE,
             bytes: self.0,
         }
@@ -943,7 +946,7 @@ fn production_rest_split_copy_stages_line_maximums_defines_and_efficiencies() {
         (150, (40..52).sum::<i64>() * 32_768 / 12)
     );
     // Without the type's optional the military define (index 0) applies.
-    let flag = at(kit::EQUIPMENT_TYPE + engine::cequipment_type::MAX_MIL_FACTORIES + 4);
+    let flag = at(kit::EQUIPMENT_TYPE + engine_native::cequipment_type::MAX_MIL_FACTORIES + 4);
     bytes[flag] = 0;
     let (_, line) = row(&bytes);
     assert_eq!(line.max_factories, 3);
@@ -951,7 +954,7 @@ fn production_rest_split_copy_stages_line_maximums_defines_and_efficiencies() {
     // A naval line with the capital-ship bit takes that define (index 4).
     let vtable = at(kit::PLINE);
     bytes[vtable..vtable + 8]
-        .copy_from_slice(&(engine::cnaval_production_line::VTABLE_RVA as u64).to_le_bytes());
+        .copy_from_slice(&(engine_native::cnaval_production_line::VTABLE_RVA as u64).to_le_bytes());
     let flags = at(kit::VARIANT + cequipment_variant::CLASSIFIER_FLAGS);
     bytes[flags..flags + 8]
         .copy_from_slice(&cequipment_variant::CAPITAL_SHIP_CLASSIFIER_MASK.to_le_bytes());
@@ -984,7 +987,7 @@ impl Memory for PlanFixtureMemory<'_> {
             }
             return false;
         }
-        engine::memory::SliceMemory {
+        engine_native::memory::SliceMemory {
             base: production_rest_test_kit::BASE,
             bytes: self.bytes,
         }
@@ -1004,7 +1007,7 @@ fn production_plan_copies_changed_payload_without_rebuilding_discovery() {
     use super::production_rest_test_kit as kit;
     let mut bytes = kit::fixture();
     let mut job = production_rest_test_kit::job();
-    let initial = engine::memory::SliceMemory {
+    let initial = engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -1013,7 +1016,7 @@ fn production_plan_copies_changed_payload_without_rebuilding_discovery() {
     job.log.prepare_read_plan();
     let cost = kit::PLINE + cproduction_line::COST - kit::BASE;
     bytes[cost..cost + 8].copy_from_slice(&999_i64.to_le_bytes());
-    let memory = engine::memory::CountedMemory::new(PlanFixtureMemory {
+    let memory = engine_native::memory::CountedMemory::new(PlanFixtureMemory {
         bytes: &bytes,
         calls: Default::default(),
         fail: None,
@@ -1029,11 +1032,11 @@ fn production_plan_copies_changed_payload_without_rebuilding_discovery() {
     );
     let planned_calls = memory.0.calls.take();
     let mut expected_counts = read_accounting::ZERO;
-    expected_counts[TABLES[0].index()] = engine::memory::ReadCounts {
+    expected_counts[TABLES[0].index()] = engine_native::memory::ReadCounts {
         plan_calls: 1,
         spans: planned_calls.iter().filter(|&&(_, len)| len != 0).count() as u64,
         bytes: planned_calls.iter().map(|&(_, len)| len as u64).sum(),
-        ..engine::memory::ReadCounts::ZERO
+        ..engine_native::memory::ReadCounts::ZERO
     };
     assert!(expected_counts[TABLES[0].index()].spans > 0);
     assert_eq!(planned_counts, expected_counts);
@@ -1071,7 +1074,7 @@ fn production_plan_rebuilds_changed_pointer_and_preserves_a_later_fault_once() {
     use super::production_rest_test_kit as kit;
     let mut bytes = kit::fixture();
     let mut job = production_rest_test_kit::job();
-    let initial = engine::memory::SliceMemory {
+    let initial = engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -1125,7 +1128,7 @@ fn production_rest_truncation_matrix_matches_direct_with_same_caps() {
     // walk's own saturating arithmetic.
     use super::production_rest_test_kit as kit;
     let bytes = kit::fixture();
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -1162,7 +1165,7 @@ fn production_rest_truncation_matrix_matches_direct_with_same_caps() {
 fn production_rest_split_copy_matches_direct_walk_under_truncation() {
     use super::production_rest_test_kit as kit;
     let bytes = kit::fixture();
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -1200,7 +1203,7 @@ fn production_rest_split_copy_matches_direct_walk_under_truncation() {
 fn production_rest_staging_overflow_falls_back_to_typed_walk() {
     use super::production_rest_test_kit as kit;
     let bytes = kit::fixture();
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -1271,10 +1274,11 @@ fn cold_production_owned_buffers_keep_mod_sized_original_occurrences_and_later_g
             8,
             &0x5000u64.to_le_bytes(),
         );
-        let memory = engine::memory::CountedMemory::new(engine::memory::SliceMemory {
-            base: kit::BASE,
-            bytes: &bytes,
-        });
+        let memory =
+            engine_native::memory::CountedMemory::new(engine_native::memory::SliceMemory {
+                base: kit::BASE,
+                bytes: &bytes,
+            });
         let native = read_accounting::Capture::new();
         let report = copy_production_rest_refresh_growing(
             &memory,

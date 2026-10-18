@@ -63,15 +63,15 @@ impl Pass {
     fn read(
         memory: &impl Memory,
         manager: usize,
-        array: engine::cpdx_array::Array,
+        array: engine_native::cpdx_array::Array,
         cursor: usize,
         budget: usize,
     ) -> Option<Self> {
         Some(Self {
             data: array.data,
             count: array.count,
-            cursor: engine::read::<i32>(memory, manager.checked_add(cursor)?)?,
-            budget: engine::read::<i32>(memory, manager.checked_add(budget)?)?,
+            cursor: engine_native::read::<i32>(memory, manager.checked_add(cursor)?)?,
+            budget: engine_native::read::<i32>(memory, manager.checked_add(budget)?)?,
         })
     }
 
@@ -207,8 +207,8 @@ fn advanced(first: u32, visits: u32, count: u32) -> u32 {
 pub fn read_words(
     memory: &impl Memory,
     manager: usize,
-    provinces: Option<engine::cpdx_array::Array>,
-    regions: Option<engine::cpdx_array::Array>,
+    provinces: Option<engine_native::cpdx_array::Array>,
+    regions: Option<engine_native::cpdx_array::Array>,
 ) -> Option<Words> {
     Some(Words {
         manager,
@@ -226,7 +226,7 @@ pub fn read_words(
             cweather_manager::REGION_CURSOR,
             cweather_manager::REGIONS_PER_UPDATE,
         )?,
-        flags: engine::read::<[u8; 3]>(
+        flags: engine_native::read::<[u8; 3]>(
             memory,
             manager.checked_add(cweather_manager::INITIAL_MODE)?,
         )?,
@@ -270,8 +270,8 @@ impl WeatherCarry {
         &mut self,
         memory: &impl Memory,
         manager: usize,
-        provinces: Option<engine::cpdx_array::Array>,
-        regions: Option<engine::cpdx_array::Array>,
+        provinces: Option<engine_native::cpdx_array::Array>,
+        regions: Option<engine_native::cpdx_array::Array>,
     ) {
         self.now = read_words(memory, manager, provinces, regions);
         self.windows = self.now.and_then(|now| self.windows_of(now));
@@ -348,7 +348,7 @@ fn in_window(slot: u32, (first, visits): (u32, u32), count: u32) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn gather(
     memory: &impl Memory,
-    array: engine::cpdx_array::Array,
+    array: engine_native::cpdx_array::Array,
     stride: usize,
     layout: &RecordLayout<'_>,
     first: u32,
@@ -466,9 +466,7 @@ fn capture(
         .map(|array| array.count as usize * record_bytes);
     let held = carry.held_bytes(part);
     match total {
-        Some(total)
-            if held.len() >= total || engine::allocation::resize(held, total, 0).is_ok() =>
-        {
+        Some(total) if held.len() >= total || engine_allocation::resize(held, total, 0).is_ok() => {
             held[..total].copy_from_slice(&payload.bytes[..total]);
         }
         _ => carry.complete = false,
@@ -480,7 +478,7 @@ fn capture(
 /// record).
 fn follow(
     memory: &impl Memory,
-    array: engine::cpdx_array::Array,
+    array: engine_native::cpdx_array::Array,
     stride: usize,
     layout: &RecordLayout<'_>,
     carry: &mut WeatherCarry,
@@ -499,7 +497,7 @@ fn follow(
         let compared = (count - start).div_ceil(step);
         let needed = compared as usize * record_bytes;
         if carry.scratch.len() < needed
-            && engine::allocation::resize(&mut carry.scratch, needed, 0).is_err()
+            && engine_allocation::resize(&mut carry.scratch, needed, 0).is_err()
         {
             return false;
         }
@@ -568,15 +566,16 @@ fn follow(
 /// One region's combat modifier entries.
 fn region_combat(
     memory: &impl Memory,
-    array: engine::cpdx_array::Array,
+    array: engine_native::cpdx_array::Array,
     slot: u32,
 ) -> Option<RegionModifiers> {
     array
         .element(slot, sweather_per_region::STRIDE)
         .and_then(|record| record.checked_add(sweather_per_region::MODIFIERS))
         .and_then(|accumulator| {
-            let mut values = [engine::modifier_accumulator::Value::default(); COMBAT_KEYS.len()];
-            engine::modifier_accumulator::lookup_many_at(
+            let mut values =
+                [engine_native::modifier_accumulator::Value::default(); COMBAT_KEYS.len()];
+            engine_native::modifier_accumulator::lookup_many_at(
                 memory,
                 accumulator,
                 &COMBAT_KEYS,
@@ -597,8 +596,8 @@ pub(super) fn capture_combat(memory: &impl Memory, job: &mut WeatherJob) {
     };
     let count = array.count as usize;
     if job.worker_growth && job.combat.capacity() < count {
-        let _ = engine::allocation::reserve_exact(&mut job.combat, count)
-            .map_err(crate::allocation::io);
+        let _ =
+            engine_allocation::reserve_exact(&mut job.combat, count).map_err(crate::allocation::io);
     }
     let room = count.min(job.combat.capacity());
     if let Some(carry) = job.carry.as_deref_mut()
@@ -618,7 +617,7 @@ pub(super) fn capture_combat(memory: &impl Memory, job: &mut WeatherJob) {
         if room == count
             && job.combat.iter().all(Option::is_some)
             && (carry.combat.capacity() >= count
-                || engine::allocation::reserve_exact(&mut carry.combat, count).is_ok())
+                || engine_allocation::reserve_exact(&mut carry.combat, count).is_ok())
         {
             carry.combat.clear();
             carry.combat.extend_from_slice(&job.combat[..count]);
@@ -633,7 +632,7 @@ pub(super) fn capture_combat(memory: &impl Memory, job: &mut WeatherJob) {
 /// hour's carried slots; false on a difference or a refused read.
 fn follow_combat(
     memory: &impl Memory,
-    array: engine::cpdx_array::Array,
+    array: engine_native::cpdx_array::Array,
     carry: &mut WeatherCarry,
     (first, visits): (u32, u32),
 ) -> bool {
@@ -670,7 +669,7 @@ fn follow_combat(
 /// Reads one province's accumulator into `out`, counting the lookup; false refuses it.
 fn read_province(
     memory: &impl Memory,
-    array: engine::cpdx_array::Array,
+    array: engine_native::cpdx_array::Array,
     slot: u32,
     out: &mut Vec<super::entries::Entry>,
     grow: bool,
@@ -718,10 +717,7 @@ fn capture_province_modifiers_timed(memory: &impl Memory, job: &mut WeatherJob) 
     } else {
         MODIFIER_FULL_HOURS.fetch_add(1, Relaxed);
     }
-    let carried = job
-        .carry
-        .as_deref()
-        .map(|carry| &carry.province_modifiers);
+    let carried = job.carry.as_deref().map(|carry| &carry.province_modifiers);
     for slot in 0..count {
         let entries = match (window, carried) {
             (Some(window), Some(carried)) if !in_window(slot, window, count) => {
@@ -740,8 +736,8 @@ fn capture_province_modifiers_timed(memory: &impl Memory, job: &mut WeatherJob) 
     }
     job.province_scratch = scratch;
     if let Some(carry) = job.carry.as_deref_mut() {
-        let whole = job.province_modifiers.len() == count as usize
-            && job.province_modifiers.complete();
+        let whole =
+            job.province_modifiers.len() == count as usize && job.province_modifiers.complete();
         if !(whole && carry.province_modifiers.copy_from(&job.province_modifiers)) {
             carry.province_modifiers.clear();
         }
@@ -752,7 +748,7 @@ fn capture_province_modifiers_timed(memory: &impl Memory, job: &mut WeatherJob) 
 /// accumulators; false on a difference or a refusal.
 fn follow_province_modifiers(
     memory: &impl Memory,
-    array: engine::cpdx_array::Array,
+    array: engine_native::cpdx_array::Array,
     carry: &mut WeatherCarry,
     window: (u32, u32),
     scratch: &mut Vec<super::entries::Entry>,

@@ -11,11 +11,11 @@ static FAILURES: AtomicUsize = AtomicUsize::new(0);
 #[test]
 fn world_invalidation_mov_spans_preserve_the_native_stack_and_operands() {
     assert_eq!(
-        instruction_span(&engine::world_lifetime_sites::RESET.sentinel),
+        instruction_span(&engine_mutations::world_lifetime_sites::RESET.sentinel),
         Ok(7)
     );
     assert_eq!(
-        instruction_span(&engine::world_lifetime_sites::CONSTRUCT.sentinel),
+        instruction_span(&engine_mutations::world_lifetime_sites::CONSTRUCT.sentinel),
         Ok(7)
     );
 }

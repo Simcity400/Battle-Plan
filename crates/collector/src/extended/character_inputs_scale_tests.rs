@@ -8,12 +8,13 @@
 
 use super::{Capacities, Captured, Demand, NamingWork};
 use crate::extended::hired_advisors;
-use engine::{
+use engine_characters::cscientist;
+use engine_native::{
     Memory, cadvisor, ccharacter, ccharacter_manager, ccountry, ccountry_characters,
     ccountry_leader, cgame_state as gs, character_advisor_node, character_leader_node,
-    creference_registry, cscientist, cunit_leader, msvc_tree_node as node, walk::Outcome,
+    creference_registry, cunit_leader, msvc_tree_node as node, walk::Outcome,
 };
-use replay::frame::TableView;
+use replay_frame::frame::TableView;
 use std::collections::BTreeMap;
 
 pub(super) const BASE: usize = 0x1_0000_0000;
@@ -209,7 +210,9 @@ fn rows(table: &TableView) -> usize {
 /// reference the registry resolves to its own operative leader object (with
 /// a name and a codename); the world and each country's leader object.
 pub(super) fn resolved_operatives(countries: usize) -> (Populated, Vec<usize>) {
-    use engine::{cname_group_member as naming, coperative_leader, reference_bucket as bucket};
+    use engine_native::{
+        cname_group_member as naming, coperative_leader, reference_bucket as bucket,
+    };
     let mut world = Populated::new(countries);
     let first = world.data.len();
     let registry = first + countries * 0x1100;
@@ -295,7 +298,7 @@ pub(super) fn resolved_operatives(countries: usize) -> (Populated, Vec<usize>) {
 
 #[test]
 fn resolved_operative_names_size_from_live_demand_at_five_thousand_countries() {
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
     for countries in [1500_usize, 5000] {
         let (world, _) = resolved_operatives(countries);
         let demand = Demand::observe(&world, BASE, STATE).unwrap();

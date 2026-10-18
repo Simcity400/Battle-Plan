@@ -1,5 +1,5 @@
 //! Allocation-free notifications from the native writers of everything a state air base's
-//! AirBaseRegistrations subtree reads ([`engine::air_base_mutations`]). A detour only notifies the
+//! AirBaseRegistrations subtree reads ([`engine_mutations::air_base_mutations`]). A detour only notifies the
 //! shared watch registry ([`WatchRegistry`]) for the base handle its first argument names (a base's
 //! handle, a pool's base handle), counts its site and calls the original; it never changes game
 //! behaviour. A receiver whose handle does not read revokes every certificate. A pool site names an
@@ -17,10 +17,8 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{
-    Memory,
-    air_base_mutations::{MUTATIONS, Receiver},
-};
+use engine_mutations::{air_base_mutations::MUTATIONS, air_base_mutations::Receiver};
+use engine_native::Memory;
 use registration::Difference;
 use std::{
     ops::Range,
@@ -236,10 +234,10 @@ impl Watches {
 /// The base handle `receiver` holds in RCX's object `first`; `None` when it
 /// does not read.
 fn handle(receiver: Receiver, first: usize) -> Option<u64> {
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     first
         .checked_add(receiver.handle())
-        .and_then(|address| engine::read::<u64>(&memory, address))
+        .and_then(|address| engine_native::read::<u64>(&memory, address))
 }
 
 /// What a capture sees of the notifications.
@@ -411,7 +409,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "air_base_carry_changes")
             && MUTATIONS.iter().all(|(site, _)| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [

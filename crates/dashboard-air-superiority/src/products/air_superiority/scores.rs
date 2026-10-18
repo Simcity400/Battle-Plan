@@ -1,15 +1,13 @@
 //! Shared regional score views and the recording oracle's keyed delta reader.
 
-use replay::rows::RaidAirScoreRow;
+use replay_data::rows::RaidAirScoreRow;
+#[cfg(test)]
+use replay_data::{rows::TableId, rows::TableRows};
+#[cfg(test)]
+use replay_frame::frame::TableUpdate;
 use std::collections::HashMap;
 #[cfg(test)]
-use {
-    replay::{
-        frame::TableUpdate,
-        rows::{TableId, TableRows},
-    },
-    std::{collections::HashSet, io},
-};
+use std::{collections::HashSet, io};
 
 pub(super) type OwnerIndex = HashMap<u32, HashMap<u32, usize>>;
 
@@ -48,7 +46,7 @@ impl ScoreRead {
     // mutation may contribute regions or lend a baseline to the following hour.
     pub fn observe(
         &mut self,
-        frame: &(impl replay::frame::FrameSource + ?Sized),
+        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
         regions: &mut HashSet<u32>,
     ) -> usize {
         match self.update(frame, regions) {
@@ -69,7 +67,7 @@ impl ScoreRead {
 
     fn update(
         &mut self,
-        frame: &(impl replay::frame::FrameSource + ?Sized),
+        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
         regions: &HashSet<u32>,
     ) -> io::Result<(HashSet<u32>, usize)> {
         let update = frame.update(TableId::RaidAirScores.index());
@@ -180,7 +178,7 @@ impl ScoreRead {
 
     fn check_baseline(
         &self,
-        frame: &(impl replay::frame::FrameSource + ?Sized),
+        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
         baseline: i32,
     ) -> io::Result<()> {
         if self.baseline == Some((frame.branch(), baseline)) && baseline < frame.hour() {
@@ -225,8 +223,8 @@ fn update_activity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::frame::{FrameDecoder, FrameEncoder, TableView};
-    use replay::rows::{DeltaRow, RowCodec, tables};
+    use replay_data::{rows::DeltaRow, rows::RowCodec, rows::tables};
+    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder, frame::TableView};
 
     #[test]
     fn air_superiority_score_index_matches_decoder_and_visits_only_changed_pairs() {
@@ -351,7 +349,7 @@ mod tests {
             }
             // A failed field decode clears the entire table and its baseline.
             let changed = vec![DeltaRow {
-                format: replay::FORMAT_VERSION,
+                format: replay_data::FORMAT_VERSION,
                 key: initial[0].key(),
                 mask: 1,
                 recorded_fields: 2,

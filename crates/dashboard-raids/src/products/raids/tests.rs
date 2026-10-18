@@ -1,9 +1,10 @@
 use super::*;
 use dashboard_core::test_fixtures::{CAMPAIGN, records, scale_frame, source};
-use replay::{
-    frame::TableView,
-    rows::{CountryAppearanceRow, LexicalTokenRow, RaidCountryRow, RaidTargetRow, TableRows},
+use replay_data::{
+    rows::CountryAppearanceRow, rows::LexicalTokenRow, rows::RaidCountryRow, rows::RaidTargetRow,
+    rows::TableRows,
 };
+use replay_frame::frame::TableView;
 
 #[test]
 fn raids_tally_counts_follow_native_holder_through_renames_and_reused_tags() {
@@ -25,7 +26,7 @@ fn raids_tally_counts_follow_native_holder_through_renames_and_reused_tags() {
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *reused.tables[TableId::Countries.index()]
     {
-        rows.push(replay::rows::CountryRow {
+        rows.push(replay_data::rows::CountryRow {
             id: 22,
             canonical_slot: 8,
             tag: b"GER".to_vec(),
@@ -36,7 +37,7 @@ fn raids_tally_counts_follow_native_holder_through_renames_and_reused_tags() {
     if let TableView::Complete(TableRows::CountryLinks(rows)) =
         &mut *reused.tables[TableId::CountryLinks.index()]
     {
-        rows.push(replay::rows::CountryLinkRow {
+        rows.push(replay_data::rows::CountryLinkRow {
             id: 22,
             canonical_slot: 8,
         });
@@ -148,7 +149,7 @@ pub(super) fn frame(hour: i32, raids: Vec<RaidRow>) -> DecodedFrame {
             literal: b"mod_raid".to_vec(),
         }]));
     *frame.tables[TableId::States.index()] =
-        TableView::Complete(TableRows::States(vec![replay::rows::StateRow {
+        TableView::Complete(TableRows::States(vec![replay_data::rows::StateRow {
             id: 41,
             owner: 11,
             controller: 11,
@@ -156,7 +157,7 @@ pub(super) fn frame(hour: i32, raids: Vec<RaidRow>) -> DecodedFrame {
             ..Default::default()
         }]));
     *frame.tables[TableId::Provinces.index()] =
-        TableView::Complete(TableRows::Provinces(vec![replay::rows::ProvinceRow {
+        TableView::Complete(TableRows::Provinces(vec![replay_data::rows::ProvinceRow {
             id: 101,
             state: 41,
             owner: 11,
@@ -656,7 +657,8 @@ fn mod_content() -> (Scratch, Content) {
     let base = scratch.0.join("base");
     let added = scratch.0.join("mod");
     let layers =
-        installed_content::ResolvedLayers::from_folders(&[(&base, &[][..]), (&added, &[][..])]).unwrap();
+        installed_content_core::ResolvedLayers::from_folders(&[(&base, &[][..]), (&added, &[][..])])
+            .unwrap();
     let content = read_content(Arc::new(Catalogue::of_layers(layers, "english").unwrap())).unwrap();
     (scratch, content)
 }
@@ -664,7 +666,7 @@ fn mod_content() -> (Scratch, Content) {
 #[test]
 fn raids_shared_driver_binds_success_and_failure_before_observation() {
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for raid content metadata");
     for complete_content in [false, true] {
         let measured = observer_tests::scaled_work(8, |hours| {
@@ -728,7 +730,7 @@ fn raids_shared_driver_binds_success_and_failure_before_observation() {
 
 #[test]
 fn raids_offline_fallbacks_only_cover_absent_localisation_and_omit_reader_notes() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use dashboard_core::findings::Kind;
     let scratch = Scratch::new();
@@ -757,8 +759,8 @@ fn raids_offline_fallbacks_only_cover_absent_localisation_and_omit_reader_notes(
         localisation.push_str(&format!(" {key}:0 \"{text}\"\n"));
     }
     scratch.write("localisation/types_l_english.yml", &localisation);
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&scratch.0, &[][..])]).unwrap();
-    let raids = installed_content::raids::read(&layers).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&scratch.0, &[][..])]).unwrap();
+    let raids = installed_content_raids::raids::read(&layers).unwrap();
     assert!(!raids.misreads.is_empty(), "{raids:?}");
     assert_eq!(raids.uncertain.len(), 2);
     let cat = Catalogue::of_layers_for_check(layers, "english").unwrap();
@@ -814,7 +816,7 @@ fn raids_offline_fallbacks_only_cover_absent_localisation_and_omit_reader_notes(
 
 #[test]
 fn raids_live_reply_warns_only_for_unproven_state_reading() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::spool::Record;
     let scratch = Scratch::new();
@@ -887,11 +889,13 @@ fn raids_live_reply_warns_only_for_unproven_state_reading() {
             .iter()
             .any(|note| note.message.contains("state 41 is defined by both"))
     );
-    state_content.warnings.push(installed_content::states::Diagnostic {
-        kind: installed_content::DiagnosticKind::Unsupported,
-        message: "fixture state form is unsupported".into(),
-        cause: None,
-    });
+    state_content
+        .warnings
+        .push(installed_content_states::states::Diagnostic {
+            kind: installed_content_core::DiagnosticKind::Unsupported,
+            message: "fixture state form is unsupported".into(),
+            cause: None,
+        });
     assert!(catalogue.state_content.set(Ok(state_content)).is_ok());
     let state_content = catalogue.cached_states().unwrap();
     let proven: Vec<_> = state_content
@@ -944,7 +948,7 @@ fn raids_live_reply_warns_only_for_unproven_state_reading() {
     for note in state_content
         .warnings
         .iter()
-        .filter(|note| note.cause.is_none() && note.kind != installed_content::DiagnosticKind::Warning)
+        .filter(|note| note.cause.is_none() && note.kind != installed_content_core::DiagnosticKind::Warning)
     {
         assert!(
             reply.warnings.contains(&note.message),
@@ -968,7 +972,7 @@ fn raids_live_reply_warns_only_for_unproven_state_reading() {
 
 #[test]
 fn raids_modded_types_use_content_names_and_refused_forms_are_named_and_counted() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_scratch, content) = mod_content();
     assert_eq!(
@@ -1018,7 +1022,7 @@ fn raids_modded_types_use_content_names_and_refused_forms_are_named_and_counted(
 
 #[test]
 fn raids_native_icon_empty_override_and_target_building_specialisation_use_shared_reader() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_scratch, content) = mod_content();
     let empty = RaidType {
@@ -1051,7 +1055,7 @@ fn raids_native_icon_empty_override_and_target_building_specialisation_use_share
 
 #[test]
 fn raids_renamed_country_and_target_are_resolved_at_the_hour_without_baking_country_names() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_scratch, content) = mod_content();
     let mut before = frame(100, vec![raid(1, 4, 0)]);
@@ -1061,7 +1065,7 @@ fn raids_renamed_country_and_target_are_resolved_at_the_hour_without_baking_coun
             ..Default::default()
         }]));
     *before.tables[TableId::Politics.index()] =
-        TableView::Complete(TableRows::Politics(vec![replay::rows::PoliticsRow {
+        TableView::Complete(TableRows::Politics(vec![replay_data::rows::PoliticsRow {
             country: 9001,
             ruling_party: None,
             ..Default::default()
@@ -1118,7 +1122,7 @@ fn raids_renamed_country_and_target_are_resolved_at_the_hour_without_baking_coun
 
 #[test]
 fn raids_unsupported_native_enums_are_unknown_with_named_counted_refusal() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_scratch, content) = mod_content();
     let mut scan = Scan::new();
@@ -1427,7 +1431,7 @@ fn changed_controller(mut observed: DecodedFrame, controller: u32) -> DecodedFra
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *observed.tables[TableId::Countries.index()]
     {
-        rows.push(replay::rows::CountryRow {
+        rows.push(replay_data::rows::CountryRow {
             id: 9002,
             canonical_slot: 8,
             tag: b"MOD".to_vec(),
@@ -1438,11 +1442,11 @@ fn changed_controller(mut observed: DecodedFrame, controller: u32) -> DecodedFra
         &mut *observed.tables[TableId::CountryLinks.index()]
     {
         rows.extend([
-            replay::rows::CountryLinkRow {
+            replay_data::rows::CountryLinkRow {
                 id: 22,
                 canonical_slot: 8,
             },
-            replay::rows::CountryLinkRow {
+            replay_data::rows::CountryLinkRow {
                 id: 9002,
                 canonical_slot: 8,
             },
@@ -1628,7 +1632,7 @@ fn raids_ended_victim_freezes_at_first_phase_five_read_including_unknown() {
 
 #[test]
 fn raids_log_artwork_is_lazy_unique_and_limited_to_used_episode_keys() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_scratch, content) = mod_content();
     assert!(content.icons.lock().unwrap().is_empty());
@@ -1717,9 +1721,9 @@ fn raids_selection_sizes_from_the_recording_and_reply_refuses_the_transport_budg
 
 #[test]
 fn raids_target_names_use_original_tags_and_empty_qualified_names_mask_bare_keys() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{Recorded, ReservedCountryNamingRow};
+    use replay_data::{rows::Recorded, rows::ReservedCountryNamingRow};
     let (_scratch, mut content) = mod_content();
     let cat = Arc::get_mut(&mut content.catalogue).unwrap();
     let mut entries: Vec<_> = cat
@@ -1738,7 +1742,8 @@ fn raids_target_names_use_original_tags_and_empty_qualified_names_mask_bare_keys
         ("VICTORY_POINTS_101".into(), "Wrong bare retry".into()),
         ("_VICTORY_POINTS_101".into(), "".into()),
     ]);
-    let mut localisation: installed_content::localisation::Localisation = entries.into_iter().collect();
+    let mut localisation: installed_content_localisation::localisation::Localisation =
+        entries.into_iter().collect();
     localisation.language = "english".into();
     cat.localisation = Arc::new(localisation);
     let mut observed = frame(100, vec![raid(1, 2, 0)]);

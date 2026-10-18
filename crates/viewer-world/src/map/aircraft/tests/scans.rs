@@ -1,12 +1,11 @@
 use super::*;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{
-        CountryRow, DivisionRow, NavalBaseRow, NavalCombatDetailsRow, NavalCombatRow,
-        NavalCombatShipRow, NavalMineLevelRow, ProvinceRow, ProvinceUnitOrderRow, StateRow,
-        TableId, TableRows, TableSchema, TaskForceRow, WarRelationRow,
-    },
+use replay_data::{
+    rows::CountryRow, rows::DivisionRow, rows::NavalBaseRow, rows::NavalCombatDetailsRow,
+    rows::NavalCombatRow, rows::NavalCombatShipRow, rows::NavalMineLevelRow, rows::ProvinceRow,
+    rows::ProvinceUnitOrderRow, rows::StateRow, rows::TableId, rows::TableRows, rows::TableSchema,
+    rows::TaskForceRow, rows::WarRelationRow,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 use std::time::Instant;
 
 const LAND: RegionFractions = RegionFractions {

@@ -5,6 +5,11 @@ workspace builds need neither nightly nor libFuzzer. Inputs and generated seeds
 are synthetic; the generator reads no game installation. Corpus, crash artifacts,
 coverage and build output stay ignored.
 
+`cargo check --manifest-path fuzz/Cargo.toml --all-targets` checks the harnesses
+without a fuzzing campaign. This workspace shares the app's fast development
+settings so compatible dependency artifacts can be reused. Frame consumers name
+`replay-frame` directly; compressed recording readers remain in `replay`.
+
 | Target | Public reader paths |
 |---|---|
 | `open_recording` | Header, footer, trailer CRC, metadata and block index admission. |

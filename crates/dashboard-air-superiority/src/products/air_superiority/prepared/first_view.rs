@@ -8,7 +8,7 @@ use dashboard_base::prepared::{
     query::keyframes,
 };
 use dashboard_base::products::country_groups::Scan as Groups;
-use replay::frame::FrameDecoder;
+use replay_frame::frame::FrameDecoder;
 
 #[derive(Clone)]
 struct Sample {

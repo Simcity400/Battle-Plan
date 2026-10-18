@@ -666,7 +666,7 @@ pub fn progressive_query(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let _cpu = replay::cpu::scope_phase("autonomy:query_identities_finish");
+    let _cpu = replay_frame::cpu::scope_phase("autonomy:query_identities_finish");
     let history = progressive::histories(
         store,
         key,

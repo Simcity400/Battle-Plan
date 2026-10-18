@@ -1,5 +1,5 @@
 //! Script variables over the recorded hour: parse operand text
-//! ([`installed_content::scoped_variable`]), evaluate its value,
+//! ([`installed_content_core::scoped_variable`]), evaluate its value,
 //! select its store and build its key.
 //!
 //! The persistent stores (global, country, state and character) are the
@@ -9,16 +9,15 @@
 //! clears the store when no context is active. A read the thread-local store
 //! may answer otherwise (an unsupported writer's results,
 //! or any temp outside a context) is refused by
-//! name, as are unreproduced built-in game variables ([`installed_content::variable_builtins`],
+//! name, as are unreproduced built-in game variables ([`installed_content_core::variable_builtins`],
 //! looked up before the stored keys), and other runtime-only
 //! forms. Saved targets select stores through the caller's event graph when
 //! present, then the recorded global registry; flat callers retain explicit
 //! refusals for event-chain links they cannot describe.
 
-use installed_content::{
-    parser::{Item, Operator},
-    scope::{Keyword as ScopeKeyword, Names},
-    scoped_variable::{self, Constant, Link, ScopedVariable},
+use installed_content_core::{
+    parser::Item, parser::Operator, scope::Keyword as ScopeKeyword, scope::Names, scoped_variable,
+    scoped_variable::Constant, scoped_variable::Link, scoped_variable::ScopedVariable,
     variable_builtins,
 };
 
@@ -194,7 +193,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         }
         // Decode the already evaluated value; a repeated authored read could
         // consume random/alias/temp state a second time.
-        let constant = installed_content::fixed5::fixed5_to_string(value, 5);
+        let constant = installed_content_core::fixed5::fixed5_to_string(value, 5);
         let Some(country) = self.scoped_country(constant.as_bytes(), scopes)? else {
             return Err(Self::NULL_IDEOLOGY.into());
         };
@@ -254,9 +253,10 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             }
             _ => return Ok(()),
         };
-        let active =
-            super::world::table::<replay::rows::tables::CountryCharacters>(self.world().frame())?;
-        let retired = super::world::table::<replay::rows::tables::CountryRetiredCharacters>(
+        let active = super::world::table::<replay_data::rows::tables::CountryCharacters>(
+            self.world().frame(),
+        )?;
+        let retired = super::world::table::<replay_data::rows::tables::CountryRetiredCharacters>(
             self.world().frame(),
         )?;
         for record in active.iter().chain(retired) {
@@ -272,14 +272,14 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             }
             // The roster bounds this lookup. Unrelated truncated manager or
             // dictionary rows cannot shadow this country's parsed operand.
-            let characters = self.localisation_rows::<replay::rows::tables::Characters>()?;
+            let characters = self.localisation_rows::<replay_data::rows::tables::Characters>()?;
             let character = &characters[characters.binary_search_by_key(&id, |row| row.id).map_err(|_| {
                 format!("{candidate}: rostered character {id} is unread in Characters, so its token could shadow the numeric operand")
             })?];
             let Ok(token) = u32::try_from(character.name_token_id) else {
                 continue;
             };
-            let tokens = self.localisation_rows::<replay::rows::tables::LexicalTokens>()?;
+            let tokens = self.localisation_rows::<replay_data::rows::tables::LexicalTokens>()?;
             let spelling = &tokens[tokens.binary_search_by_key(&token, |row| row.token).map_err(|_| {
                 format!("{candidate}: rostered character {id}'s name token {token} is unread in LexicalTokens")
             })?].literal;
@@ -294,13 +294,13 @@ impl<'e, 'a> Evaluator<'e, 'a> {
 
     /// Parse-time lookup is bounded by complete native country rosters, so
     /// a present demanded row remains usable in a truncated manager table.
-    fn localisation_rows<T: replay::rows::TableSchema>(&self) -> Result<&[T::Row], String> {
+    fn localisation_rows<T: replay_data::rows::TableSchema>(&self) -> Result<&[T::Row], String> {
         match &*self.world().frame().tables[T::ID.index()] {
-            replay::frame::TableView::Complete(rows)
-            | replay::frame::TableView::Truncated { rows, .. } => rows
+            replay_frame::frame::TableView::Complete(rows)
+            | replay_frame::frame::TableView::Truncated { rows, .. } => rows
                 .rows::<T>()
                 .ok_or_else(|| format!("{:?} contains another table's rows", T::ID)),
-            replay::frame::TableView::Unavailable { .. } => self
+            replay_frame::frame::TableView::Unavailable { .. } => self
                 .world()
                 .frame()
                 .complete::<T>()
@@ -310,7 +310,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
 
     fn localisation_character_candidates(&self, name: &str) -> Result<Vec<u32>, String> {
         let characters =
-            super::world::table::<replay::rows::tables::Characters>(self.world().frame())?;
+            super::world::table::<replay_data::rows::tables::Characters>(self.world().frame())?;
         if characters
             .iter()
             .all(|character| character.name_token_id < 0)
@@ -318,7 +318,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             return Ok(Vec::new());
         }
         let tokens =
-            super::world::table::<replay::rows::tables::LexicalTokens>(self.world().frame())?;
+            super::world::table::<replay_data::rows::tables::LexicalTokens>(self.world().frame())?;
         let mut matches = Vec::new();
         for character in characters {
             let Ok(token) = u32::try_from(character.name_token_id) else {
@@ -1147,13 +1147,15 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             }
             0xffff_ffff_8000_0000 => return object("a unit leader"),
             0x1000_0000 => {
-                return self.decoded_carrier(engine::nproject_cproject::REFERENCE_TYPE, low);
+                return self
+                    .decoded_carrier(engine_projects::nproject_cproject::REFERENCE_TYPE, low);
             }
             0x3000_0000 => return object("a faction"),
             0x6000_0000 => return self.decoded_carrier(79, low),
             0xffff_ffff_a000_0000 => return object("a purchase contract"),
             0xffff_ffff_e000_0000 => {
-                return self.decoded_carrier(engine::craid_instance::REFERENCE_TYPE_VALUE, low);
+                return self
+                    .decoded_carrier(engine_native::craid_instance::REFERENCE_TYPE_VALUE, low);
             }
             _ => {}
         }

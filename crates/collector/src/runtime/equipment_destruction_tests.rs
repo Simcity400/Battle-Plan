@@ -298,7 +298,7 @@ fn equipment_destruction_capture_admission_drains_reads_and_refuses_later_captur
 
 #[test]
 fn equipment_destruction_pinned_status_preserves_closed_spool_metadata_and_unlocks_before_done() {
-    use replay::spool::{ControlRecord, Record, recover_prefix};
+    use replay::{spool::ControlRecord, spool::Record, spool::recover_prefix};
     struct BusyObserver;
     impl Drop for BusyObserver {
         fn drop(&mut self) {

@@ -10,11 +10,10 @@
 //! each field changed. `--levels` compresses every rewritten section again at
 //! other zstd levels.
 
-use replay::{
-    container::{Replay, Section},
-    frame::{DecodedFrame, FrameDecoder, TABLE_COUNT, TableUpdate},
-    rows::TableId,
-};
+use replay::{container::Replay, container::Section};
+use replay_data::rows::TABLE_COUNT;
+use replay_data::rows::TableId;
+use replay_frame::{frame::DecodedFrame, frame::FrameDecoder, frame::TableUpdate};
 use serde_json::{Value, json};
 use std::{ffi::OsString, fs, io, path::Path};
 
@@ -174,7 +173,7 @@ pub(crate) fn measure(replay: &Replay) -> io::Result<(Sizes, Replay)> {
         let present = TableId::ALL
             .into_iter()
             .filter(|table| {
-                replay::format::FormatVersion::CURRENT
+                replay_data::format::FormatVersion::CURRENT
                     .table_refusal(*table)
                     .is_none()
             })
@@ -220,7 +219,7 @@ struct Hours<'a> {
     replay: &'a Replay,
     blocks: std::slice::Iter<'a, replay::container::BlockIndex>,
     decoder: FrameDecoder,
-    frames: std::vec::IntoIter<replay::frame::Frame>,
+    frames: std::vec::IntoIter<replay_frame::frame::Frame>,
 }
 
 impl<'a> Hours<'a> {
@@ -583,7 +582,8 @@ fn print_text(report: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{frame::Frame, spool::Record};
+    use replay::spool::Record;
+    use replay_frame::frame::Frame;
 
     fn replay() -> Replay {
         open(crate::test_support::allocation_records())
@@ -601,8 +601,8 @@ mod tests {
     /// The allocation campaign as a writer encodes it: its first hour a
     /// keyframe, the later ones deltas of the rows whose hour moved.
     fn delta_replay() -> Replay {
-        let mut decoder = replay::frame::FrameDecoder::new();
-        let mut encoder = replay::frame::FrameEncoder::new();
+        let mut decoder = replay_frame::frame::FrameDecoder::new();
+        let mut encoder = replay_frame::frame::FrameEncoder::new();
         let mut first = true;
         open(
             crate::test_support::allocation_records()

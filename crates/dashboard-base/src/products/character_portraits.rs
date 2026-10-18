@@ -14,7 +14,7 @@ pub enum RecordedPortrait {
 /// Select the requested portrait role/size, else the first entry of that size.
 /// Unset entries require runtime generation.
 pub fn recorded_portrait(
-    holders: Option<&[replay::rows::CharacterPortraitRow]>,
+    holders: Option<&[replay_data::rows::CharacterPortraitRow]>,
     id: u32,
     role: u32,
     size: u32,
@@ -27,7 +27,7 @@ pub fn recorded_portrait(
     let Some(holder) = holder else {
         return RecordedPortrait::Unrecorded;
     };
-    match replay::rows::portrait_entry(&holder.portraits, role, size) {
+    match replay_data::rows::portrait_entry(&holder.portraits, role, size) {
         Some(entry) if entry.is_set != 0 => RecordedPortrait::Entry {
             kind: entry.kind,
             identity: entry.identity.clone(),
@@ -52,7 +52,7 @@ pub fn portrait_png(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{CharacterPortrait, CharacterPortraitRow, PORTRAIT_LARGE};
+    use replay_data::{rows::CharacterPortrait, rows::CharacterPortraitRow, rows::PORTRAIT_LARGE};
     #[test]
     fn distinct_roles_and_missing_role_size_fallback() {
         let holder = CharacterPortraitRow {

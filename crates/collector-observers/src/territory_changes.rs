@@ -1,5 +1,5 @@
 //! Allocation-free notifications from the native writers of every States and
-//! Provinces row ([`engine::territory_mutations`]). A detour only marks the
+//! Provinces row ([`engine_mutations::territory_mutations`]). A detour only marks the
 //! ids its receiver names in the family's [`DirtySet`]s, counts its site and
 //! calls the original; it never changes game behaviour.
 //!
@@ -27,10 +27,8 @@ use crate::{
     dirty_set::{Dirty, DirtySet},
     hook::Hook,
 };
-use engine::{
-    Memory,
-    territory_mutations::{MUTATIONS, Receiver},
-};
+use engine_mutations::{territory_mutations::MUTATIONS, territory_mutations::Receiver};
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -126,9 +124,9 @@ impl Domain {
     }
 
     /// A building writer of the status with `flags` and `location`
-    /// ([`engine::cbuilding_status::FLAGS`], [`engine::cbuilding_status::ID`]).
+    /// ([`engine_native::cbuilding_status::FLAGS`], [`engine_native::cbuilding_status::ID`]).
     pub fn building(&self, flags: u32, location: u32) -> Marks<'_> {
-        use engine::cbuilding_status::{PROVINCE_FLAG, STATE_FLAG};
+        use engine_native::{cbuilding_status::PROVINCE_FLAG, cbuilding_status::STATE_FLAG};
         self.buildings[0].fetch_add(1, Ordering::Relaxed);
         let id = (location != 0).then_some(location as usize);
         Marks([
@@ -258,10 +256,10 @@ pub enum Target {
 /// has, names none.
 fn object_id(object: usize, offset: usize) -> Option<usize> {
     // SAFETY: a guarded read of live memory on the calling thread.
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     object
         .checked_add(offset)
-        .and_then(|address| engine::read::<u32>(&memory, address))
+        .and_then(|address| engine_native::read::<u32>(&memory, address))
         .filter(|&id| id != 0)
         .map(|id| id as usize)
 }
@@ -269,9 +267,9 @@ fn object_id(object: usize, offset: usize) -> Option<usize> {
 /// What `receiver` names given a site's first argument.
 pub fn target(receiver: Receiver, first: usize) -> Target {
     match receiver {
-        Receiver::Province => Target::Province(object_id(first, engine::cprovince::ID)),
+        Receiver::Province => Target::Province(object_id(first, engine_native::cprovince::ID)),
         Receiver::State(rows) => Target::State {
-            id: object_id(first, engine::cstate::ID),
+            id: object_id(first, engine_native::cstate::ID),
             state: rows.state,
             provinces: rows.provinces,
         },
@@ -436,7 +434,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "territory_changes")
             && MUTATIONS.iter().all(|(site, _)| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [
@@ -599,7 +597,7 @@ callback!(state_name_effect, 11);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::territory_mutations::StateRows;
+    use engine_mutations::territory_mutations::StateRows;
 
     fn take_states(domain: &Domain) -> (Option<u64>, Vec<usize>) {
         let mut ids = Vec::new();
@@ -619,8 +617,8 @@ mod tests {
     fn receivers_name_their_ids_through_the_live_object() {
         let mut province = vec![0_u8; 0x200];
         let mut state = vec![0_u8; 0x200];
-        province[engine::cprovince::ID..][..4].copy_from_slice(&517_u32.to_le_bytes());
-        state[engine::cstate::ID..][..4].copy_from_slice(&42_u32.to_le_bytes());
+        province[engine_native::cprovince::ID..][..4].copy_from_slice(&517_u32.to_le_bytes());
+        state[engine_native::cstate::ID..][..4].copy_from_slice(&42_u32.to_le_bytes());
         let rows = StateRows {
             state: true,
             provinces: false,
@@ -739,7 +737,7 @@ mod tests {
     /// locates; one naming no status revokes both tables.
     #[test]
     fn building_writes_mark_their_location() {
-        use engine::cbuilding_status::{PROVINCE_FLAG, STATE_FLAG};
+        use engine_native::{cbuilding_status::PROVINCE_FLAG, cbuilding_status::STATE_FLAG};
         let domain = Domain::enabled(64, 1024);
         let states = take_states(&domain).0.unwrap();
         let provinces = take_provinces(&domain).0.unwrap();

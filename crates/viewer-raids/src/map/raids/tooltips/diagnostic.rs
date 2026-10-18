@@ -2,8 +2,11 @@
 //! Run every diagnostic step even after a failure.
 use super::super::rules::Lines;
 use super::*;
-use engine::raid_tooltip_operands::{ADDITIONAL_ORDER, ESSENTIAL_ORDER, definition_key};
-use installed_content::parser::Item;
+use engine_native::{
+    raid_tooltip_operands::ADDITIONAL_ORDER, raid_tooltip_operands::ESSENTIAL_ORDER,
+    raid_tooltip_operands::definition_key,
+};
+use installed_content_core::parser::Item;
 use std::collections::BTreeMap;
 use viewer_foundation::tooltip_text::country_localised;
 
@@ -32,7 +35,8 @@ impl Context<'_, '_> {
                 let mut active = rows
                     .iter()
                     .filter(|r| {
-                        r.raid == 0 && r.kind == engine::raid_tooltip_operands::SUBUNIT_ACTIVE
+                        r.raid == 0
+                            && r.kind == engine_native::raid_tooltip_operands::SUBUNIT_ACTIVE
                     })
                     .collect::<Vec<_>>();
                 active.sort_unstable_by_key(|r| r.ordinal);
@@ -344,9 +348,9 @@ impl Context<'_, '_> {
             kind.nukes
         };
         let nuke_key = if kind.thermonuclear {
-            engine::raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN
+            engine_native::raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN
         } else {
-            engine::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN
+            engine_native::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN
         };
         let name = || {
             self.world
@@ -582,9 +586,9 @@ impl Context<'_, '_> {
 mod tests {
     use super::*;
     use crate::map::raids::test_support::{assets, positive_frame as base_frame, put};
-    use replay::rows::{
-        CountryAppearanceRow, LexicalTokenRow, PoliticsRow, RaidCooldownRow, RaidCountryRow,
-        RaidTooltipOperandRow,
+    use replay_data::{
+        rows::CountryAppearanceRow, rows::LexicalTokenRow, rows::PoliticsRow,
+        rows::RaidCooldownRow, rows::RaidCountryRow, rows::RaidTooltipOperandRow,
     };
 
     fn frame() -> DecodedFrame {
@@ -613,7 +617,9 @@ mod tests {
     }
 
     fn parse(text: &str) -> Vec<Item> {
-        installed_content::parser::parse(text.as_bytes()).unwrap().items
+        installed_content_core::parser::parse(text.as_bytes())
+            .unwrap()
+            .items
     }
 
     fn with_context(assets: &RaidAssets, frame: &DecodedFrame, run: impl FnOnce(&Context<'_, '_>)) {
@@ -643,7 +649,7 @@ mod tests {
             scripted_content: &Err("no scripted content in this test".into()),
             ours: 2,
             nato: false,
-            countries: installed_content::country_names::CountryNames::read(frame, &loc),
+            countries: installed_content_country_names::country_names::CountryNames::read(frame, &loc),
             flag_exists: &|_| true,
             scripted: Default::default(),
         });
@@ -655,7 +661,7 @@ mod tests {
         let mut frame = frame();
         let mut tokens = frame.complete::<tables::LexicalTokens>().unwrap().to_vec();
         tokens.push(LexicalTokenRow {
-            token: engine::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN,
+            token: engine_native::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN,
             literal: b"nuclear_bomb".to_vec(),
         });
         tokens.sort_by_key(|r| r.token);
@@ -718,7 +724,7 @@ mod tests {
 
     #[test]
     fn failed_condition_chain_keeps_order_first_cooldown_and_source_country_title() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = assets();
         let mut frame = frame();
@@ -810,7 +816,7 @@ mod tests {
 
     #[test]
     fn passing_conditions_emit_nothing_and_category_denial_has_no_text() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut assets = assets();
         let frame = frame();

@@ -107,26 +107,21 @@ use viewer_foundation::map::aircraft_model;
 use viewer_foundation::map::camera::Camera;
 use viewer_foundation::table_access::{TokenKeys, TokenNames};
 
-use engine::air_kamikaze::window_sum;
+use engine_air_history::air_kamikaze::window_sum;
 mod launches;
 mod scenarios;
-use installed_content::image::native::Decode;
-use installed_content::{
-    ResolvedLayers,
-    defines::Defines,
-    equipment_graphics::aircraft as aircraft_catalogue,
-    map::{MapData, ProvinceKind},
-    mesh::{self, Transform},
-    regions::StrategicRegion,
+use installed_content_core::{
+    ResolvedLayers, defines::Defines, map::MapData, map::ProvinceKind, mesh, mesh::Transform,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        AIR_MISSION_LAY_MINES, AIR_MISSION_NAVAL_PATROL, AIR_MISSION_TRAINING,
-        AIR_MISSION_ZERO_PLANE_FLAGS, AirBaseRow, AirCountryRelationRow, AirMissionInputRow,
-        AirWingRow, ShipRow, TaskForceRow, tables,
-    },
+use installed_content_equipment_graphics::equipment_graphics::aircraft as aircraft_catalogue;
+use installed_content_image::native::Decode;
+use installed_content_regions::regions::StrategicRegion;
+use replay_data::{
+    rows::AIR_MISSION_LAY_MINES, rows::AIR_MISSION_NAVAL_PATROL, rows::AIR_MISSION_TRAINING,
+    rows::AIR_MISSION_ZERO_PLANE_FLAGS, rows::AirBaseRow, rows::AirCountryRelationRow,
+    rows::AirMissionInputRow, rows::AirWingRow, rows::ShipRow, rows::TaskForceRow, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use scenarios::{RegionGroups, ScenarioWing};
 
 use {
@@ -579,7 +574,7 @@ pub struct AircraftAssets {
     /// with the reason.
     unusable: Mutex<BTreeMap<String, String>>,
     /// Asset-load diagnostics from successful or refused lazy bakes.
-    lazy_diagnostics: Mutex<Vec<installed_content::Diagnostic>>,
+    lazy_diagnostics: Mutex<Vec<installed_content_core::Diagnostic>>,
     /// Equipment names by the lexer's token identity.
     keys: TokenKeys,
     rigs: BTreeMap<String, Rig>,
@@ -683,7 +678,7 @@ fn plane_library<'a>(
     decode: Decode,
     roster: &mesh::Roster,
     declared: impl IntoIterator<Item = &'a String>,
-    warnings: &mut Vec<installed_content::Diagnostic>,
+    warnings: &mut Vec<installed_content_core::Diagnostic>,
 ) -> io::Result<(ModelLibrary, BTreeMap<String, String>)> {
     let mut unusable = BTreeMap::new();
     let mut names = Vec::new();
@@ -696,7 +691,7 @@ fn plane_library<'a>(
         }
     }
     if !unusable.is_empty() {
-        warnings.push((installed_content::DiagnosticKind::Refused, format!(
+        warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
             "Aircraft entities are refused, and wings whose aircraft resolves to one are not drawn: {}",
             unusable
                 .iter()
@@ -865,7 +860,9 @@ fn scenario_refusal(roster: &mesh::Roster, entity: &str, state: &str) -> Option<
         .animations
         .iter()
         .find(|(declared, _)| *declared == state.animation)?;
-    roster.unreadable(animation).map(|flaw| format!("its animation {animation} {flaw}"))
+    roster
+        .unreadable(animation)
+        .map(|flaw| format!("its animation {animation} {flaw}"))
 }
 
 /// The scenario outcomes the game plays: 0 `default`,
@@ -1140,11 +1137,11 @@ fn scenario_flown(
     (kind, outcome): (u8, u8),
     bones: &[(u8, String)],
     defines: (&Result<f32, &'static str>, &Result<Band, &'static str>),
-    warnings: &mut Vec<installed_content::Diagnostic>,
+    warnings: &mut Vec<installed_content_core::Diagnostic>,
 ) -> Option<Rig> {
     let mut refuse = |reason: String| {
         warnings.push((
-            installed_content::DiagnosticKind::Refused,
+            installed_content_core::DiagnosticKind::Refused,
             format!("Aircraft scenario {entity} is refused and not flown: {reason}"),
         ));
     };
@@ -1209,8 +1206,8 @@ fn shown_or_recorded<T>(
     layers: &ResolvedLayers,
     entity: &str,
     below: bool,
-    mut fly: impl FnMut(bool, &mut Vec<installed_content::Diagnostic>) -> Option<T>,
-    warnings: &mut Vec<installed_content::Diagnostic>,
+    mut fly: impl FnMut(bool, &mut Vec<installed_content_core::Diagnostic>) -> Option<T>,
+    warnings: &mut Vec<installed_content_core::Diagnostic>,
 ) -> Option<T> {
     let mut notes = Vec::new();
     if let Some(flown) = fly(false, &mut notes) {
@@ -1223,7 +1220,7 @@ fn shown_or_recorded<T>(
             let why = notes
                 .iter()
                 .rev()
-                .find(|(kind, _)| *kind == installed_content::DiagnosticKind::Refused)
+                .find(|(kind, _)| *kind == installed_content_core::DiagnosticKind::Refused)
                 .map_or("not flown", |(_, why)| why.as_str());
             layers.note_overlay_refusal(format!("aircraft scenario {entity} ({why})"));
             warnings.extend(recorded);
@@ -1249,11 +1246,11 @@ fn scenario_rig(
     speed: f32,
     events: Vec<mesh::EntityEvent>,
     (rocket_speed, band): (&Result<f32, &'static str>, &Result<Band, &'static str>),
-    warnings: &mut Vec<installed_content::Diagnostic>,
+    warnings: &mut Vec<installed_content_core::Diagnostic>,
 ) -> Option<Rig> {
     let mut refuse = |reason: String| {
         warnings.push((
-            installed_content::DiagnosticKind::Refused,
+            installed_content_core::DiagnosticKind::Refused,
             format!("Aircraft scenario {entity} is refused and not flown: {reason}"),
         ));
         None
@@ -1297,7 +1294,7 @@ fn scenario_rig(
     for ((_, bone), absent) in bones.iter().zip(absent) {
         if absent {
             warnings.push((
-                installed_content::DiagnosticKind::Logged,
+                installed_content_core::DiagnosticKind::Logged,
                 format!(
                     "Aircraft scenario {entity} has no attachment node {bone}: the game logs it and that actor rides the scenario entity's root"
                 ),
@@ -1320,7 +1317,7 @@ fn scenario_rig(
 }
 
 impl AircraftAssets {
-    pub fn lazy_diagnostics(&self) -> Vec<installed_content::Diagnostic> {
+    pub fn lazy_diagnostics(&self) -> Vec<installed_content_core::Diagnostic> {
         self.lazy_diagnostics
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1356,7 +1353,7 @@ impl AircraftAssets {
         refusals.extend(
             self.lazy_diagnostics()
                 .into_iter()
-                .filter(|(kind, _)| *kind == installed_content::DiagnosticKind::Refused)
+                .filter(|(kind, _)| *kind == installed_content_core::DiagnosticKind::Refused)
                 .map(|(_, reason)| reason),
         );
         refusals
@@ -1371,16 +1368,16 @@ impl AircraftAssets {
         map: &MapData,
         (defines, graphics): (&Defines, &Defines),
         regions: &BTreeMap<u32, StrategicRegion>,
-        warnings: &mut Vec<installed_content::Diagnostic>,
+        warnings: &mut Vec<installed_content_core::Diagnostic>,
     ) -> io::Result<Self> {
         // The content's equipment database, `duplicate_archetypes` copies
         // included: the archetype is resolved as the definitions are read
         // (a `parent` passes its archetype on), and an `archetype` read
         // copies the archetype's sprite while the type's own is empty
         // A duplicate's own sprite replaces its copies'
-        let database = installed_content::equipment::Database::load_complete(layers)?;
+        let database = installed_content_core::equipment::Database::load_complete(layers)?;
         let text = |bytes: &[u8], what: &str| {
-            installed_content::parser::text(bytes)
+            installed_content_core::parser::text(bytes)
                 .map(str::to_owned)
                 .map_err(|refused| invalid_data(format!("equipment {what}: {refused}")))
         };
@@ -2292,7 +2289,7 @@ fn flight_requests(
 fn region_membership(
     regions: impl Iterator<Item = (u32, Vec<u32>)>,
     kinds: &BTreeMap<u32, ProvinceKind>,
-    warnings: &mut Vec<installed_content::Diagnostic>,
+    warnings: &mut Vec<installed_content_core::Diagnostic>,
 ) -> RegionMembership {
     let (mut members, mut fractions) = (BTreeMap::new(), BTreeMap::new());
     let mut skipped = 0_usize;
@@ -2318,7 +2315,7 @@ fn region_membership(
         members.insert(region, provinces);
     }
     if skipped != 0 {
-        warnings.push((installed_content::DiagnosticKind::Warning, format!(
+        warnings.push((installed_content_core::DiagnosticKind::Warning, format!(
             "strategic regions list {skipped} provinces missing from the map definitions; the game skips them"
         )));
     }
@@ -2575,7 +2572,7 @@ struct Visit<'a> {
 /// registration order. A country in both arrays is visited twice, as natively.
 fn visit_order<'a>(
     wings: &'a [AirWingRow],
-    registrations: &[replay::rows::AirRegionalMissionRow],
+    registrations: &[replay_data::rows::AirRegionalMissionRow],
     links: &BTreeMap<u32, u32>,
     ours: u32,
     participants: &AirParticipants,
@@ -2966,7 +2963,7 @@ impl ScenarioHistory {
             .collect();
         if !records.iter().any(|row| {
             row.is_availability_witness()
-                && row.scenario_channels == replay::rows::Recorded::Value(Some([0; 7]))
+                && row.scenario_channels == replay_data::rows::Recorded::Value(Some([0; 7]))
                 && row.enemy_ships_sunk_raw == 0
                 && row.our_fighters_lost_raw == 0
         }) {
@@ -2981,14 +2978,14 @@ impl ScenarioHistory {
                 continue;
             }
             let [a, b, c, d, e, f, g] = match row.scenario_channels {
-                replay::rows::Recorded::Value(Some(values)) => values,
-                replay::rows::Recorded::Value(None) => {
+                replay_data::rows::Recorded::Value(Some(values)) => values,
+                replay_data::rows::Recorded::Value(None) => {
                     unavailable
                         .entry(row.region)
                         .or_insert("first-window aircraft scenario channels unavailable");
                     continue;
                 }
-                replay::rows::Recorded::NotRecorded => {
+                replay_data::rows::Recorded::NotRecorded => {
                     unavailable
                         .entry(row.region)
                         .or_insert("first-window aircraft scenario channels were not recorded");
@@ -3965,8 +3962,11 @@ impl AircraftPlan {
                     } => {
                         // Once it has read the delay it is hidden and stays done.
                         let read = hidden
-                            || GroundContact::from(band)
-                                .exploded(played((flight.mesh, index as u32, run.cycle)));
+                            || GroundContact::from(band).exploded(played((
+                                flight.mesh,
+                                index as u32,
+                                run.cycle,
+                            )));
                         *ground = Ground::Exploding {
                             pose,
                             entry,

@@ -2,11 +2,10 @@
 //! and the character-input consumer of the same stopped-world callback so
 //! they need not walk the roster again.
 
-use engine::allocation::{default_vec, owned_vec, reserve_exact, vec};
-use engine::{
-    Memory, ccharacter,
-    ccharacter_manager::PortraitIdentity,
-    memory::{RecordField, RecordLayout, RecordSources},
+use engine_allocation::{default_vec, owned_vec, reserve_exact, vec};
+use engine_native::{
+    Memory, ccharacter, ccharacter_manager::PortraitIdentity, memory::RecordField,
+    memory::RecordLayout, memory::RecordSources,
 };
 
 /// One occurrence: character id, then the exact bytes at `COUNTRY` and at
@@ -110,7 +109,7 @@ impl History {
         self.generation = 0;
         self.pointers.clear();
         self.rows.clear();
-        let held = engine::allocation::advisory(|| {
+        let held = engine_allocation::advisory(|| {
             reserve_exact(&mut self.pointers, pointers.len())?;
             reserve_exact(&mut self.rows, rows.len())
         });
@@ -432,8 +431,8 @@ impl Occurrence {
     }
 
     /// The role fields the character-input walk reads from.
-    pub fn occupant(&self) -> engine::character_inputs::Occupant {
-        engine::character_inputs::Occupant {
+    pub fn occupant(&self) -> engine_characters::character_inputs::Occupant {
+        engine_characters::character_inputs::Occupant {
             pointer: self.pointer,
             character: self.id(),
             leaders: self.leaders(),
@@ -640,7 +639,7 @@ impl CensusCarry {
         };
         self.slice.clear();
         let covered = held.covered(check).count();
-        if engine::allocation::advisory(|| engine::allocation::reserve(&mut self.slice, covered))
+        if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.slice, covered))
             .is_err()
         {
             return false;
@@ -649,9 +648,9 @@ impl CensusCarry {
             .extend(held.covered(check).map(|index| index as u32));
         let len = self.slice.len();
         self.pointers.clear();
-        let stored = engine::allocation::advisory(|| {
-            engine::allocation::reserve(&mut self.pointers, len)?;
-            engine::allocation::resize_default(&mut self.rows, len * ROW)
+        let stored = engine_allocation::advisory(|| {
+            engine_allocation::reserve(&mut self.pointers, len)?;
+            engine_allocation::resize_default(&mut self.rows, len * ROW)
         });
         if stored.is_err() {
             return false;

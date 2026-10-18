@@ -1,5 +1,5 @@
 //! Static pixel centroids, directed borders and nearest-owned centers.
-use installed_content::map::MapData;
+use installed_content_core::map::MapData;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Static province quantities read from the content province bitmap: the

@@ -19,10 +19,7 @@ use windows_sys::Win32::{
         MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
     },
     System::LibraryLoader::GetModuleHandleW,
-    UI::{
-        Input::KeyboardAndMouse::SetFocus,
-        WindowsAndMessaging::*,
-    },
+    UI::{Input::KeyboardAndMouse::SetFocus, WindowsAndMessaging::*},
 };
 
 /// What the window tells its owner, on the window's own thread.
@@ -255,7 +252,9 @@ fn run(
             if !adopted.load(Ordering::Acquire) {
                 drop(Box::from_raw(state));
             }
-            let _ = ready.send(Err(format!("Cannot create the pop-out map window: {error}")));
+            let _ = ready.send(Err(format!(
+                "Cannot create the pop-out map window: {error}"
+            )));
             return;
         }
         hwnd_out.store(hwnd as usize, Ordering::Release);

@@ -1,5 +1,5 @@
 use super::*;
-use replay::frame::{Metrics, TableView};
+use replay_frame::{frame::Metrics, frame::TableView};
 use viewer_foundation::engaged::Ambiguity;
 use viewer_foundation::engagement_history::Provenance;
 
@@ -144,13 +144,13 @@ fn detail(attackers: &[u32], defenders: &[u32]) -> NavalCombatDetailsRow {
 /// outside those groups (`group_index` `u32::MAX`) does not count.
 #[test]
 fn the_hq_frame_counts_only_forward_group_members_of_the_viewers_side() {
-    let force = replay::rows::TaskForceRow {
+    let force = replay_data::rows::TaskForceRow {
         id: 30,
         roster_owner: 1,
         ..Default::default()
     };
     // Task force 31 is the viewer's too, without an attached HQ.
-    let bare = replay::rows::TaskForceRow {
+    let bare = replay_data::rows::TaskForceRow {
         id: 31,
         ..force.clone()
     };
@@ -419,14 +419,12 @@ fn the_progress_size_counts_engaged_land_and_naval_entries_alike() {
 /// other sea provinces and a retained result the viewer (1) fought on side 0. With `combats`
 /// 0 the hour holds no naval combat.
 fn scale_frame(ships: u64, divisions: u64, combats: u64) -> DecodedFrame {
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{
-            DivisionRow, NavalCombatRow, NavalCombatTransferRow, NavalResultCountryRow,
-            NavalResultMemberRow, NavalTransferUnitRow, ShipRow, TableRows,
-            TaskForceCounterInputRow, TaskForceRow,
-        },
+    use replay_data::{
+        rows::DivisionRow, rows::NavalCombatRow, rows::NavalCombatTransferRow,
+        rows::NavalResultCountryRow, rows::NavalResultMemberRow, rows::NavalTransferUnitRow,
+        rows::ShipRow, rows::TableRows, rows::TaskForceCounterInputRow, rows::TaskForceRow,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
     let mut frame = DecodedFrame {
         branch: 0,
         hour: 1,
@@ -611,7 +609,7 @@ fn scale_anchor(province: u32) -> Option<[f32; 3]> {
 /// only looks the decisions up. An hour without naval combat decides nothing.
 #[test]
 fn unit_scale_hours_decide_the_naval_icons_once() {
-    use replay::rows::{TableRows, TaskForceCounterInputRow};
+    use replay_data::{rows::TableRows, rows::TaskForceCounterInputRow};
     use std::time::Instant;
     let vision = Vision::sharing(1, []);
     let owner = |raw: u32| (raw < 100).then_some(raw);
@@ -622,8 +620,8 @@ fn unit_scale_hours_decide_the_naval_icons_once() {
     for (ships, divisions, combats) in [(20_000, 50_000, 1_500), (40_000, 100_000, 3_000)] {
         let mut frame = scale_frame(ships, divisions, combats);
         // The viewer's task force 0 (ship 0, combat 1's side 0) carries a naval HQ.
-        *frame.tables[replay::rows::TableId::TaskForceCounterInputs.index()] =
-            replay::frame::TableView::Complete(TableRows::TaskForceCounterInputs(
+        *frame.tables[replay_data::rows::TableId::TaskForceCounterInputs.index()] =
+            replay_frame::frame::TableView::Complete(TableRows::TaskForceCounterInputs(
                 (0..ships / 2)
                     .map(|force| TaskForceCounterInputRow {
                         task_force: force,
@@ -744,16 +742,16 @@ fn unit_scale_hours_decide_the_naval_icons_once() {
              {:.3} ms",
             decided.as_secs_f64() * 1e3
         );
-        *quiet.tables[replay::rows::TableId::NavalProvinceCombats.index()] =
-            replay::frame::TableView::Complete(TableRows::NavalProvinceCombats(vec![
+        *quiet.tables[replay_data::rows::TableId::NavalProvinceCombats.index()] =
+            replay_frame::frame::TableView::Complete(TableRows::NavalProvinceCombats(vec![
                 NavalProvinceCombatRow {
                     province: 1_000,
                     combats: vec![1],
                     kinds: vec![NavalProvinceCombatRow::NAVAL],
                 },
             ]));
-        *quiet.tables[replay::rows::TableId::NavalCombatDetails.index()] =
-            replay::frame::TableView::Complete(TableRows::NavalCombatDetails(vec![{
+        *quiet.tables[replay_data::rows::TableId::NavalCombatDetails.index()] =
+            replay_frame::frame::TableView::Complete(TableRows::NavalCombatDetails(vec![{
                 let mut row = detail(&[1], &[2]);
                 row.combat = 1;
                 row
@@ -788,7 +786,8 @@ fn unit_scale_hours_decide_the_naval_icons_once() {
 /// and the dump print, and each omitted icon is counted.
 #[test]
 fn every_omitted_naval_icon_reaches_the_diagnostics_by_cause_and_combat() {
-    use replay::{frame::TableView, rows::TableId};
+    use replay_data::rows::TableId;
+    use replay_frame::frame::TableView;
     let vision = Vision::sharing(1, []);
     let owner = |raw: u32| (raw < 100).then_some(raw);
     let viewer = Viewer {
@@ -893,8 +892,9 @@ fn every_omitted_naval_icon_reaches_the_diagnostics_by_cause_and_combat() {
     );
     let transfers = rows::<tables::NavalCombatTransfers>(&frame).unwrap().rows()[..1].to_vec();
     let mut direct_only = frame.clone();
-    *direct_only.tables[TableId::NavalCombatTransfers.index()] =
-        TableView::Complete(replay::rows::TableRows::NavalCombatTransfers(transfers));
+    *direct_only.tables[TableId::NavalCombatTransfers.index()] = TableView::Complete(
+        replay_data::rows::TableRows::NavalCombatTransfers(transfers),
+    );
     assert!(
         lines(&direct_only, &unknown, None).0.contains(
             &"Naval combat icons: 1 undecided: icon omitted: the combat's engaged flag for the \
@@ -908,7 +908,7 @@ fn every_omitted_naval_icon_reaches_the_diagnostics_by_cause_and_combat() {
         .rows()
         .to_vec();
     *frame.tables[TableId::NavalCombatShips.index()] = TableView::Truncated {
-        rows: replay::rows::TableRows::NavalCombatShips(members),
+        rows: replay_data::rows::TableRows::NavalCombatShips(members),
         missing: 3,
     };
     assert!(
@@ -923,7 +923,7 @@ fn every_omitted_naval_icon_reaches_the_diagnostics_by_cause_and_combat() {
     // being its own province's.
     let details = rows::<tables::NavalCombatDetails>(&frame).unwrap().rows()[..1].to_vec();
     *frame.tables[TableId::NavalCombatDetails.index()] =
-        TableView::Complete(replay::rows::TableRows::NavalCombatDetails(details));
+        TableView::Complete(replay_data::rows::TableRows::NavalCombatDetails(details));
     assert!(
         lines(&frame, &flags, None).0.contains(
             &"Naval combat icons: 1 undecided: icon omitted: its side countries are unknown: the \

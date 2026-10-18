@@ -23,17 +23,15 @@ use std::collections::HashSet;
 use std::collections::{BTreeMap, BTreeSet};
 use viewer_foundation::table_access::TokenNames;
 
-use replay::{
-    frame::DecodedFrame,
-    rows::{DivisionTemplateIconRow, VariantDefinitionRow, tables},
-};
+use replay_data::{rows::DivisionTemplateIconRow, rows::VariantDefinitionRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use {
     super::equipment_graphics, super::equipment_graphics::Candidate,
     super::equipment_graphics::bridge, super::equipment_graphics::context,
     super::equipment_graphics::legacy, super::model_labels, super::model_labels::Label,
     super::model_selection, super::model_selection::Group, super::model_selection::Template,
-    installed_content::equipment_graphics::countries::ModelCountry,
+    installed_content_equipment_graphics::equipment_graphics::countries::ModelCountry,
     viewer_foundation::map::perspective::Vision,
 };
 

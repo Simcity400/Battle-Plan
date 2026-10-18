@@ -1,9 +1,6 @@
 //! Retained combat windows and code-added entries through the native GUI walk.
 use super::{Drawn, ScrollTarget, Selection, TooltipHit, Values, binding::Bindings};
-use installed_content::{
-    crt::truncate_f32,
-    gui::native::{Element, Kind},
-};
+use installed_content_core::{crt::truncate_f32, gui::native::Element, gui::native::Kind};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,

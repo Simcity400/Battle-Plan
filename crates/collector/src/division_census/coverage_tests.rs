@@ -1,15 +1,15 @@
 use super::*;
 use crate::sampling::divisions_test_kit as kit;
-use replay::rows::DivisionCensusRow;
+use replay_data::rows::DivisionCensusRow;
 
 #[test]
 fn all_countries_and_raw_aliases_follow_the_native_writer_without_extra_reads() {
     let mut bytes = kit::fixture();
-    bytes[kit::A3 + engine::cunit::EXPEDITIONARY_OWNER
-        ..kit::A3 + engine::cunit::EXPEDITIONARY_OWNER + 4]
+    bytes[kit::A3 + engine_native::cunit::EXPEDITIONARY_OWNER
+        ..kit::A3 + engine_native::cunit::EXPEDITIONARY_OWNER + 4]
         .copy_from_slice(&3_u32.to_le_bytes());
-    bytes[kit::A1 + engine::cunit::EXPEDITIONARY_OWNER
-        ..kit::A1 + engine::cunit::EXPEDITIONARY_OWNER + 4]
+    bytes[kit::A1 + engine_native::cunit::EXPEDITIONARY_OWNER
+        ..kit::A1 + engine_native::cunit::EXPEDITIONARY_OWNER + 4]
         .copy_from_slice(&u32::MAX.to_le_bytes());
     let mut census = Census::new();
     census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);

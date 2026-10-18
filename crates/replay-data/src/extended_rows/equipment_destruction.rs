@@ -192,9 +192,9 @@ impl NativeValue for EquipmentDestructionCause {
     }
 }
 
-impl From<engine::equipment_destruction::Cause> for EquipmentDestructionCause {
-    fn from(cause: engine::equipment_destruction::Cause) -> Self {
-        use engine::equipment_destruction::Cause;
+impl From<engine_events::equipment_destruction::Cause> for EquipmentDestructionCause {
+    fn from(cause: engine_events::equipment_destruction::Cause) -> Self {
+        use engine_events::equipment_destruction::Cause;
         match cause {
             Cause::Unknown => Self::Unknown,
             Cause::LandCombat => Self::LandCombat,
@@ -268,7 +268,7 @@ impl NativeValue for EquipmentDestructionCoverage {
 /// Consumers must read the marker even when there are no amount rows: net
 /// removals are incomplete because deletion, paradrop, merge, exile, volunteer-return,
 /// capitulation-escape and scripted division/stockpile causes are unavailable.
-/// `cause` is a stable value; engine::equipment_destruction owns the executable
+/// `cause` is a stable value; engine_events::equipment_destruction owns the executable
 /// caller map and evidence. An unrecognized caller records Unknown, counted in
 /// collector status, without guessing a known cause or discarding its removals.
 /// This table is not the Combat Log and does not cover unhooked convoy-pool or
@@ -278,9 +278,9 @@ impl NativeValue for EquipmentDestructionCoverage {
 /// Variant identity is the same full handle as VariantDefinitions.id.
 /// ScriptedStockpileFraction has no fixed domain and is not a land cause.
 /// Resolve its variant's equipment_token through recorded LexicalTokens and
-/// installed_content::equipment::Database from the recorded content stack, then classify
+/// installed_content_core::equipment::Database from the recorded content stack, then classify
 /// that equipment type's effective category with
-/// engine::cequipment_type::{PLANE_MASK, SHIP_MASK}: air first, naval next,
+/// engine_native::cequipment_type::{PLANE_MASK, SHIP_MASK}: air first, naval next,
 /// otherwise land. Convoy (bit 0) is naval; train and railway gun are land.
 /// Unresolved tokens/content leave the domain unknown.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

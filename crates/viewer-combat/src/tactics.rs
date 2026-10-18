@@ -10,19 +10,16 @@
 use dashboard_text::triggers::{
     Combat, Eval, Evaluator, Scope, Scopes, World, compare, shown, trigger_boolean,
 };
-use installed_content::{
-    combat_tactics::effect_slot,
-    leader_traits::LeaderTraits,
-    localisation::{Argument, Localisation},
-    parser::{Item, Operator, c_string},
-    scripted_triggers::ScriptedTriggers,
-    trigger_keys::{CountTriggerNames, TriggerNames},
-    unit_leader::{SubUnits, Traits},
+use installed_content_core::{
+    combat_tactics::effect_slot, leader_traits::LeaderTraits, parser::Item, parser::Operator,
+    parser::c_string, scripted_triggers::ScriptedTriggers, trigger_keys::CountTriggerNames,
+    trigger_keys::TriggerNames, unit_leader::SubUnits, unit_leader::Traits,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{LandCombatDetailsRow, LandCombatDivisionRow, LexicalTokenRow, tables},
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use replay_data::{
+    rows::LandCombatDetailsRow, rows::LandCombatDivisionRow, rows::LexicalTokenRow, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -57,7 +54,7 @@ struct Definition {
     attacker: bool,
     items: Vec<Item>,
     /// The resolved `phase` and `display_phase` IDs
-    /// (installed_content::combat_tactics).
+    /// (installed_content_core::combat_tactics).
     phase: i32,
     display_phase: i32,
     /// The six effects in [`effect_slot`] order as the content was read.
@@ -114,13 +111,13 @@ pub struct Content {
     phases: Vec<Vec<u8>>,
     registry: Vec<RegistryEntry>,
     /// The one trait-name inventory (trait registration,
-    /// installed_content::unit_leader::Traits::registered).
+    /// installed_content_core::unit_leader::Traits::registered).
     leader_traits: Traits,
-    /// The country-leader trait database (installed_content::leader_traits), which
+    /// The country-leader trait database (installed_content_core::leader_traits), which
     /// a character's `has_trait` searches by name after the
     /// unit-leader traits; `None` until loaded.
     country_leader_traits: Option<Result<Arc<LeaderTraits>, String>>,
-    /// The one sub-unit database read (installed_content::unit_leader::sub_units):
+    /// The one sub-unit database read (installed_content_core::unit_leader::sub_units):
     /// a definition is found without case, as the recorded
     /// sub-unit token is interned.
     sub_units: SubUnits,
@@ -130,7 +127,7 @@ pub struct Content {
     /// the last one read is known.
     registry_unsettled: Option<String>,
     /// The names a key reaches after the trigger registry misses: scripted
-    /// triggers and content count triggers (installed_content::trigger_keys), the one
+    /// triggers and content count triggers (installed_content_core::trigger_keys), the one
     /// read every trigger consumer shares.
     names: TriggerNames,
     warnings: Vec<String>,
@@ -165,9 +162,9 @@ impl Content {
     }
 
     /// `database` is the one read of the tactic file
-    /// (installed_content::combat_tactics); pictures, weights and hovers all read it.
-    pub(super) fn from_database(database: installed_content::combat_tactics::Database) -> Self {
-        let installed_content::combat_tactics::Database {
+    /// (installed_content_core::combat_tactics); pictures, weights and hovers all read it.
+    pub(super) fn from_database(database: installed_content_core::combat_tactics::Database) -> Self {
+        let installed_content_core::combat_tactics::Database {
             phases,
             tactics,
             unsupported,
@@ -206,7 +203,7 @@ impl Content {
     }
 
     /// The country-leader trait database, or why the content cannot give
-    /// it (installed_content::leader_traits::read).
+    /// it (installed_content_core::leader_traits::read).
     pub(super) fn with_country_leader_traits(
         mut self,
         traits: Result<Arc<LeaderTraits>, String>,
@@ -243,7 +240,7 @@ impl Content {
     ) -> Self {
         for template in scripted.templates.values_mut() {
             if let Ok(body) = &mut template.body {
-                installed_content::combat_tactics::resolve_phase_triggers(&self.phases, body);
+                installed_content_core::combat_tactics::resolve_phase_triggers(&self.phases, body);
             }
         }
         self.warnings.extend(
@@ -376,7 +373,7 @@ pub const NULL_PICTURE: &str = PICTURE_PREFIX;
 
 /// A tactic's definition as the game reads it, or why the viewer cannot.
 fn definition(
-    tactic: &installed_content::combat_tactics::Tactic,
+    tactic: &installed_content_core::combat_tactics::Tactic,
     warnings: &mut Vec<String>,
 ) -> Result<Definition, String> {
     let name = String::from_utf8_lossy(&tactic.token);
@@ -417,7 +414,7 @@ fn definition(
 /// Read yes/no field occurrences in order. Accept exactly `yes` or `no`
 /// through the first NUL; report other values and retain the previous value.
 /// The loader continues after those errors. A block value marks the tactic
-/// unproven in installed_content::combat_tactics before it can reach this reader.
+/// unproven in installed_content_core::combat_tactics before it can reach this reader.
 fn field_boolean(
     tactic: &str,
     items: &[Item],
@@ -427,7 +424,7 @@ fn field_boolean(
 ) -> bool {
     let mut state = default;
     for item in items.iter().filter(|item| item.keyword_is(key)) {
-        match item.value.scalar().and_then(installed_content::parser::read_bool) {
+        match item.value.scalar().and_then(installed_content_core::parser::read_bool) {
             Some(value) => state = value,
             _ => warnings.push(format!(
                 "Combat tactics: tactic {tactic}'s {key} = {} is not exactly yes or no; the game logs an error and keeps {}.",
@@ -736,7 +733,7 @@ impl Context<'_> {
                 .map_err(|why| fail(&why))?;
             Ok(compare(actual, required, comparison, fixed))
         };
-        let skill = |side: &replay::rows::LandCombatSideDetails| {
+        let skill = |side: &replay_data::rows::LandCombatSideDetails| {
             if side.commander == 0 {
                 0
             } else {
@@ -1703,7 +1700,7 @@ fn entry_values(
     // The popup shows the display phase when its ID is not
     // negative, else the start phase, and hides the widget when both are
     // negative (unknown, or the `no` sentinel); IDs were resolved as the
-    // content was read (installed_content::combat_tactics) against the phases read
+    // content was read (installed_content_core::combat_tactics) against the phases read
     // before the tactic, so a non-negative ID names one of them.
     let shown = [
         (definition.display_phase, "PHASE_DISPLAY"),
@@ -1768,7 +1765,7 @@ fn entry_values(
             Some(true) => "TACTIC_LIST_VALUE_GOOD",
             Some(false) => "TACTIC_LIST_VALUE_BAD",
         };
-        // Read as the content was read (installed_content::combat_tactics), each
+        // Read as the content was read (installed_content_core::combat_tactics), each
         // field through its native reader.
         let slot =
             effect_slot(source.as_bytes()).expect("every popup value is one of the six effects");
@@ -1792,7 +1789,7 @@ fn entry_values(
 /// variants that replace it with their chance arguments.
 fn preferred_description(
     values: &mut Values,
-    popup: &installed_content::gui::native::Element,
+    popup: &installed_content_core::gui::native::Element,
     icons: &dyn TextIcons,
     loc: &Localisation,
     unavailable: &mut BTreeSet<String>,
@@ -2056,19 +2053,17 @@ fn repair_heap<T: Clone, F: Fn(&T, &T) -> bool>(
 mod tests {
     use super::*;
     use dashboard_text::triggers::ContentFacts;
-    use installed_content::fixed5::{decimal_fixed5, script_fixed5};
-    use installed_content::key_names::KeyNames;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{
-            BuildingRow, CountryResourceRow, PoliticalPartyRow, ProvinceRow, ResourceDefinitionRow,
-            StateRow, TableId, TableRows,
-        },
+    use installed_content_core::key_names::KeyNames;
+    use installed_content_core::{fixed5::decimal_fixed5, fixed5::script_fixed5};
+    use replay_data::{
+        rows::BuildingRow, rows::CountryResourceRow, rows::PoliticalPartyRow, rows::ProvinceRow,
+        rows::ResourceDefinitionRow, rows::StateRow, rows::TableId, rows::TableRows,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     #[test]
     fn tactic_scripted_caller_keeps_viewer_nato_through_nested_effect_unit_icons() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_tactic_nato_{}_{:?}",
             std::process::id(),
@@ -2094,9 +2089,9 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, contents).unwrap();
         }
-        let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
         let content = Ok(dashboard_text::scripted_text::ScriptedContent::read(
-            Arc::new(installed_content::content::ResolvedContent {
+            Arc::new(installed_content_core::content::ResolvedContent {
                 layers,
                 stats: Default::default(),
             }),
@@ -2112,7 +2107,7 @@ mod tests {
             metrics: Metrics::default(),
         };
         *frame.tables[TableId::Countries.index()] =
-            TableView::Complete(TableRows::Countries(vec![replay::rows::CountryRow {
+            TableView::Complete(TableRows::Countries(vec![replay_data::rows::CountryRow {
                 id: 10,
                 canonical_slot: 2,
                 tag: b"SYN".to_vec(),
@@ -2120,14 +2115,14 @@ mod tests {
             }]));
         *frame.tables[TableId::CountryLinks.index()] =
             TableView::Complete(TableRows::CountryLinks(vec![
-                replay::rows::CountryLinkRow {
+                replay_data::rows::CountryLinkRow {
                     id: 10,
                     canonical_slot: 2,
                 },
             ]));
         *frame.tables[TableId::PowerBalances.index()] =
             TableView::Complete(TableRows::PowerBalances(vec![
-                replay::rows::PowerBalanceRow {
+                replay_data::rows::PowerBalanceRow {
                     balance: b"balance".to_vec(),
                     active_range: b"active".to_vec(),
                     ..Default::default()
@@ -2135,7 +2130,7 @@ mod tests {
             ]));
         *frame.tables[TableId::PowerBalanceMembers.index()] =
             TableView::Complete(TableRows::PowerBalanceMembers(vec![
-                replay::rows::PowerBalanceMemberRow {
+                replay_data::rows::PowerBalanceMemberRow {
                     country: 10,
                     ..Default::default()
                 },
@@ -2173,18 +2168,18 @@ mod tests {
             active,
             attacker,
             items: Vec::new(),
-            phase: installed_content::combat_tactics::UNKNOWN_PHASE,
-            display_phase: installed_content::combat_tactics::UNKNOWN_PHASE,
+            phase: installed_content_core::combat_tactics::UNKNOWN_PHASE,
+            display_phase: installed_content_core::combat_tactics::UNKNOWN_PHASE,
             effects: no_effects(),
             picture: Err("tactic t has no picture field".into()),
         }
     }
 
     /// A trigger block read through the real tactic loader
-    /// (installed_content::combat_tactics): definitions consumed, comparisons
+    /// (installed_content_core::combat_tactics): definitions consumed, comparisons
     /// normalised and operands resolved with their token kinds.
     fn trigger(text: &str) -> Vec<Item> {
-        let database = installed_content::combat_tactics::parse(
+        let database = installed_content_core::combat_tactics::parse(
             format!("t = {{ trigger = {{ {text} }} }}").as_bytes(),
             &names(&ScriptedTriggers::default()),
         );
@@ -2256,7 +2251,7 @@ mod tests {
                         "GER_lost_agent",
                         "GER_miscounted",
                     ]
-                    .map(|tag| installed_content::characters::LeaderTemplate {
+                    .map(|tag| installed_content_core::characters::LeaderTemplate {
                         path: "common/characters/GER.txt".into(),
                         tag: tag.into(),
                         line: None,
@@ -2378,7 +2373,7 @@ mod tests {
     /// Content names used by the test triggers: tags, character tokens and
     /// scripted trigger bodies.
     fn names(scripted: &ScriptedTriggers) -> KeyNames {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         KeyNames {
             scripted: scripted.templates.keys().cloned().collect(),
             countries: [&b"GER"[..], b"SOV", b"ENG"].map(<[u8]>::to_vec).into(),
@@ -2404,8 +2399,8 @@ mod tests {
 
     /// [`parsed`] against `names`.
     fn parsed_with(text: &[u8], names: &KeyNames) -> Content {
-        engine::executable_tables::initialize_for_tests().unwrap();
-        Content::from_database(installed_content::combat_tactics::parse(text, names))
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        Content::from_database(installed_content_core::combat_tactics::parse(text, names))
     }
 
     /// Boolean values accept only the exact texts; another value keeps
@@ -2562,8 +2557,8 @@ mod tests {
     /// chance; unsupported explanation text leaves the phase label available.
     #[test]
     fn popup_preferred_description_retains_authored_text_without_selector_arguments() {
-        engine::executable_tables::initialize_for_tests().unwrap();
-        let gui = installed_content::gui::native::read(
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let gui = installed_content_core::gui::native::read(
             br#"guiTypes = { containerWindowType = {
                 name = tactics_list_view
                 instantTextboxType = {
@@ -2606,7 +2601,7 @@ mod tests {
             ])
         );
 
-        let scoped = installed_content::gui::native::read(
+        let scoped = installed_content_core::gui::native::read(
             br#"guiTypes = { containerWindowType = {
                 name = tactics_list_view instantTextboxType = {
                     name = preferred_tactic_desc_text text = MOD_PREFERRED_DESC
@@ -2637,7 +2632,7 @@ mod tests {
     /// back to the start phase, and neither resolving hides the widget.
     #[test]
     fn popup_phase_follows_native_resolution() {
-        let loc: installed_content::localisation::Localisation = [
+        let loc: installed_content_localisation::localisation::Localisation = [
             ("opening", "Opening"),
             ("PHASE_DISPLAY", "Shown in $NAME$"),
             ("PHASE_START", "Starts in $NAME$"),
@@ -2646,7 +2641,7 @@ mod tests {
         .map(|(k, v)| (k.to_owned(), v.to_owned()))
         .collect();
         let phases = [b"opening".to_vec()];
-        use installed_content::combat_tactics::{NO_PHASE, UNKNOWN_PHASE};
+        use installed_content_core::{combat_tactics::NO_PHASE, combat_tactics::UNKNOWN_PHASE};
         let run = |(display_phase, phase): (i32, i32)| {
             let definition = Definition {
                 phase,
@@ -2814,7 +2809,7 @@ mod tests {
     fn numeric_fields_use_their_native_readers() {
         assert_eq!(script_fixed5(b"010"), Some(800_000));
         assert_eq!(decimal_fixed5(b"010"), 1_000_000);
-        let loc: installed_content::localisation::Localisation = [
+        let loc: installed_content_localisation::localisation::Localisation = [
             ("TACTIC_LIST_VALUE_GOOD", "$VAL$"),
             ("TACTIC_LIST_VALUE_BAD", "$VAL$"),
             ("TACTIC_LIST_VALUE_NEUTRAL", "$VAL$"),
@@ -2843,7 +2838,7 @@ mod tests {
 
     #[test]
     fn popup_entry_refusals_name_the_tactic_and_key() {
-        let loc: installed_content::localisation::Localisation = [
+        let loc: installed_content_localisation::localisation::Localisation = [
             ("tactic_a", "Tactic A"),
             ("HEADER", "$KEY$"),
             ("TACTIC_LIST_VALUE_GOOD", "+$VAL$"),
@@ -2977,7 +2972,7 @@ mod tests {
         assert_eq!(chance(2_147_483_648_000), "-2147483648%");
     }
 
-    /// Mixed-case keywords parse (installed_content::combat_tactics) and evaluate
+    /// Mixed-case keywords parse (installed_content_core::combat_tactics) and evaluate
     /// exactly as their lowercase spelling: trigger names, logical groups,
     /// `tooltip`, `base`, `modifier`, `factor` and `add`. A `FACTOR` inside
     /// a modifier is its factor, not an unknown trigger.
@@ -3151,9 +3146,9 @@ mod tests {
     /// matched as has_unit_type matches them: both without case.
     #[test]
     fn terrain_and_sub_unit_names_match_without_case() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        // The sub-unit database as installed_content::unit_leader::sub_units reads
+        // The sub-unit database as installed_content_core::unit_leader::sub_units reads
         // it: uppercase `YES` is not a boolean value, so `odd` keeps `no`.
         let mut units = SubUnits::default();
         units.read(
@@ -3171,17 +3166,17 @@ mod tests {
         detail.sides[0].committed = vec![1];
         let division = LandCombatDivisionRow {
             division: 1,
-            context: replay::rows::LandDivisionContext {
+            context: replay_data::rows::LandDivisionContext {
                 template: 9,
                 ..Default::default()
             },
             width_terms: vec![
-                replay::rows::LandDivisionWidthTerm {
+                replay_data::rows::LandDivisionWidthTerm {
                     subunit: 5,
                     count: 1,
                     width: 0,
                 },
-                replay::rows::LandDivisionWidthTerm {
+                replay_data::rows::LandDivisionWidthTerm {
                     subunit: 6,
                     count: 3,
                     width: 0,
@@ -3277,7 +3272,7 @@ mod tests {
         assert_eq!(context.check(&plain), Ok(false));
     }
 
-    /// A tactic's weight through the real load (installed_content::combat_tactics)
+    /// A tactic's weight through the real load (installed_content_core::combat_tactics)
     /// and evaluation paths: the attacker's side, country slot 1, and a
     /// tactic ID no side prefers. `file` is the whole tactic file; its first
     /// tactic is weighed.
@@ -3406,15 +3401,15 @@ mod tests {
     /// the same rule and take precedence over equipment category names.
     #[test]
     fn blocks_under_one_value_names_are_read_as_one_value() {
-        let mut buildings = installed_content::buildings::Buildings::default();
+        let mut buildings = installed_content_core::buildings::Buildings::default();
         buildings.types.insert(
             "arms_factory".into(),
-            installed_content::buildings::BuildingType::default(),
+            installed_content_core::buildings::BuildingType::default(),
         );
         let mut names = names(&ScriptedTriggers::default());
         names.counts = CountTriggerNames::new(
             &buildings,
-            &installed_content::ideologies::Ideologies::default(),
+            &installed_content_core::ideologies::Ideologies::default(),
             &[],
         );
         let content = parsed_with(
@@ -3633,14 +3628,16 @@ mod tests {
         vec![
             (
                 TableId::CountryLinks,
-                TableRows::from_rows::<tables::CountryLinks>(vec![replay::rows::CountryLinkRow {
-                    id: 10,
-                    canonical_slot: 1,
-                }]),
+                TableRows::from_rows::<tables::CountryLinks>(vec![
+                    replay_data::rows::CountryLinkRow {
+                        id: 10,
+                        canonical_slot: 1,
+                    },
+                ]),
             ),
             (
                 TableId::Countries,
-                TableRows::from_rows::<tables::Countries>(vec![replay::rows::CountryRow {
+                TableRows::from_rows::<tables::Countries>(vec![replay_data::rows::CountryRow {
                     id: 10,
                     canonical_slot: 1,
                     tag: b"TST".to_vec(),
@@ -3775,7 +3772,7 @@ mod tests {
     }
 
     /// Scripted triggers read through the real content stack
-    /// (installed_content::scripted_triggers::read): a mod layer's file replaces the
+    /// (installed_content_core::scripted_triggers::read): a mod layer's file replaces the
     /// vanilla file of the same path; the name is found without case and
     /// whatever its quoting; `= no` negates; the
     /// body's variables and phase resolve; a cycle, which the game does not
@@ -3783,7 +3780,7 @@ mod tests {
     /// this version: its value reader takes one yes/no token.
     #[test]
     fn scripted_triggers_evaluate_their_body_in_the_current_scope() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_scripted_triggers_{}_{:?}",
             std::process::id(),
@@ -3810,12 +3807,12 @@ mod tests {
             "common/scripted_triggers/cycles.txt",
             "cycle_a = { CYCLE_B = yes }\ncycle_b = { cycle_a = yes }",
         );
-        let layers = installed_content::ResolvedLayers::from_folders(&[
+        let layers = installed_content_core::ResolvedLayers::from_folders(&[
             (&root.join("vanilla"), &[][..]),
             (&root.join("mod"), &[][..]),
         ])
         .unwrap();
-        let scripted = installed_content::scripted_triggers::read(&layers).unwrap();
+        let scripted = installed_content_core::scripted_triggers::read(&layers).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
         // `in_opening` is no token: a bare key the dictionary lacks reaches
         // the scripted triggers by its text.
@@ -3854,7 +3851,7 @@ mod tests {
     /// groups in a body produce empty groups.
     #[test]
     fn content_blocks_follow_load_keys_order_in_every_body_read() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_scripted_order_{}_{:?}",
             std::process::id(),
@@ -3877,8 +3874,9 @@ mod tests {
              tooltip = { is_attacker = no }\nnot_tooltip = { is_attacker = no }",
         );
         let layers =
-            installed_content::ResolvedLayers::from_folders(&[(&root.join("vanilla"), &[][..])]).unwrap();
-        let scripted = installed_content::scripted_triggers::read(&layers).unwrap();
+            installed_content_core::ResolvedLayers::from_folders(&[(&root.join("vanilla"), &[][..])])
+                .unwrap();
+        let scripted = installed_content_core::scripted_triggers::read(&layers).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
         let weigh = |trigger: &str| {
             weigh_with(
@@ -3926,14 +3924,13 @@ mod tests {
     /// UnitLeaders or CharacterOperatives, retired-character records and role traits.
     #[test]
     fn character_scopes_read_the_recorded_character() {
-        engine::executable_tables::initialize_for_tests().unwrap();
-        use replay::{
-            frame::{Metrics, TableView},
-            rows::{
-                CharacterOperativeRow, CharacterRoleTraitRow, CharacterRow, CountryCharacterRow,
-                CountryLinkRow, CountryRow, TableId, TableRows, UnitLeaderRow, UnitLeaderTraitRow,
-            },
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        use replay_data::{
+            rows::CharacterOperativeRow, rows::CharacterRoleTraitRow, rows::CharacterRow,
+            rows::CountryCharacterRow, rows::CountryLinkRow, rows::CountryRow, rows::TableId,
+            rows::TableRows, rows::UnitLeaderRow, rows::UnitLeaderTraitRow,
         };
+        use replay_frame::{frame::Metrics, frame::TableView};
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_character_scope_{}_{:?}",
             std::process::id(),
@@ -3954,9 +3951,10 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, text).unwrap();
         }
-        let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
         let traits = Traits::registered(&layers).unwrap();
-        let country_leader_traits = Arc::new(installed_content::leader_traits::read(&layers).unwrap().0);
+        let country_leader_traits =
+            Arc::new(installed_content_core::leader_traits::read(&layers).unwrap().0);
         std::fs::remove_dir_all(&root).unwrap();
 
         let mut frame = DecodedFrame {
@@ -4102,8 +4100,8 @@ mod tests {
                     owner: 100,
                     skill_level: Some(2),
                     trait_definitions: vec![2],
-                    codename: replay::rows::Recorded::Value(None),
-                    name: replay::rows::Recorded::Value(Some(Vec::new())),
+                    codename: replay_data::rows::Recorded::Value(None),
+                    name: replay_data::rows::Recorded::Value(Some(Vec::new())),
                 },
                 CharacterOperativeRow {
                     character: 7,
@@ -4132,7 +4130,7 @@ mod tests {
         presentation.character_role_leader = (50 << 32) | 7;
         presentation.role_traits = [(1, b"brilliant_strategist".as_slice()), (3, b"Trickster")]
             .map(
-                |(definition_ordinal, token)| replay::rows::LandCombatCommanderTrait {
+                |(definition_ordinal, token)| replay_data::rows::LandCombatCommanderTrait {
                     definition_ordinal,
                     token: token.to_vec(),
                     ..Default::default()
@@ -4248,20 +4246,18 @@ mod tests {
         assert_eq!(weigh("GER_lost_agent = { skill = 0 }"), Ok(100_000));
     }
 
-    /// Scope keys parse through installed_content::scope::parse and resolve over the
+    /// Scope keys parse through installed_content_core::scope::parse and resolve over the
     /// recorded hour through dashboard_text::scope, then check their block there.
     /// ROOT, FROM and PREV initially mean the tactic scope, including its combat;
     /// a country target has no combat. Tags for countries without states use
     /// recorded original-tag buckets; missing buckets cause a named refusal.
     #[test]
     fn scope_keys_check_their_block_in_the_resolved_scope() {
-        use replay::{
-            frame::{Metrics, TableView},
-            rows::{
-                CountryCounterInputRow, CountryLinkRow, CountryRow, Recorded,
-                ReservedCountryNamingRow, TableId, TableRows,
-            },
+        use replay_data::{
+            rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryRow, rows::Recorded,
+            rows::ReservedCountryNamingRow, rows::TableId, rows::TableRows,
         };
+        use replay_frame::{frame::Metrics, frame::TableView};
         let mut frame = DecodedFrame {
             branch: 1,
             hour: 1,
@@ -4303,7 +4299,7 @@ mod tests {
                 countries
                     .map(
                         |(country, _, _, owned_state_count)| CountryCounterInputRow {
-                            forward_visibility: replay::rows::Recorded::NotRecorded,
+                            forward_visibility: replay_data::rows::Recorded::NotRecorded,
                             country,
                             owned_state_count,
                             ..Default::default()
@@ -4318,19 +4314,21 @@ mod tests {
             TableRows::ScriptVariables(
                 std::iter::once((0, 0))
                     .chain(countries.map(|(country, ..)| (1, country)))
-                    .map(|(scope_kind, scope_id)| replay::rows::ScriptVariablesRow {
-                        scope_kind,
-                        scope_id,
-                        seed: replay::rows::Recorded::Value(None),
-                        entries: if scope_id == 100 {
-                            vec![replay::rows::ScriptVariableEntry {
-                                name: b"x".to_vec(),
-                                value_raw: 0x4052_4547,
-                            }]
-                        } else {
-                            Vec::new()
+                    .map(
+                        |(scope_kind, scope_id)| replay_data::rows::ScriptVariablesRow {
+                            scope_kind,
+                            scope_id,
+                            seed: replay_data::rows::Recorded::Value(None),
+                            entries: if scope_id == 100 {
+                                vec![replay_data::rows::ScriptVariableEntry {
+                                    name: b"x".to_vec(),
+                                    value_raw: 0x4052_4547,
+                                }]
+                            } else {
+                                Vec::new()
+                            },
                         },
-                    })
+                    )
                     .collect(),
             ),
         );
@@ -4445,14 +4443,13 @@ mod tests {
     /// Check the trigger's scope mask first; an inadmissible scope returns false.
     #[test]
     fn count_triggers_read_the_recorded_hour_in_the_scope_they_accept() {
-        engine::executable_tables::initialize_for_tests().unwrap();
-        use replay::{
-            frame::{Metrics, TableView},
-            rows::{
-                CountryBuildingResourceRow, CountryCounterInputRow, CountryLinkRow, CountryRow,
-                StateBaseResourceRow, StateResourceInputRow, StateResourceRow, TableId, TableRows,
-            },
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        use replay_data::{
+            rows::CountryBuildingResourceRow, rows::CountryCounterInputRow, rows::CountryLinkRow,
+            rows::CountryRow, rows::StateBaseResourceRow, rows::StateResourceInputRow,
+            rows::StateResourceRow, rows::TableId, rows::TableRows,
         };
+        use replay_frame::{frame::Metrics, frame::TableView};
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_count_triggers_{}_{:?}",
             std::process::id(),
@@ -4491,15 +4488,15 @@ mod tests {
             "common/ideologies/mod_ideologies.txt",
             "ideologies = { Technocracy = { types = { planners = { } } } }",
         );
-        let layers = installed_content::ResolvedLayers::from_folders(&[
+        let layers = installed_content_core::ResolvedLayers::from_folders(&[
             (&root.join("vanilla"), &[][..]),
             (&root.join("mod"), &[][..]),
         ])
         .unwrap();
-        let buildings = installed_content::buildings::read(&layers).unwrap();
-        let (ideologies, _) = installed_content::ideologies::read(&layers).unwrap();
+        let buildings = installed_content_core::buildings::read(&layers).unwrap();
+        let (ideologies, _) = installed_content_core::ideologies::read(&layers).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
-        let armor = installed_content::trigger_keys::EQUIPMENT_CATEGORIES[0].0;
+        let armor = installed_content_core::trigger_keys::EQUIPMENT_CATEGORIES[0].0;
         let tokens: &[(&[u8], u32)] = &[
             (b"GER", 0x7001),
             (b"mod_mill", 0x7101),
@@ -4511,7 +4508,7 @@ mod tests {
             (b"nothing", 0x7106),
         ];
         for (name, _) in &tokens[..tokens.len() - 1] {
-            assert_eq!(installed_content::trigger_keys::registered_trigger(name), None);
+            assert_eq!(installed_content_core::trigger_keys::registered_trigger(name), None);
         }
 
         // GER (raw link 100) owns states 64 and 65 and provinces 1 and 3;
@@ -4576,7 +4573,7 @@ mod tests {
                     countries
                         .map(
                             |(country, _, _, owned_state_count)| CountryCounterInputRow {
-                                forward_visibility: replay::rows::Recorded::NotRecorded,
+                                forward_visibility: replay_data::rows::Recorded::NotRecorded,
                                 country,
                                 owned_state_count,
                                 ..Default::default()
@@ -4737,7 +4734,10 @@ mod tests {
         let aliases = BTreeMap::from([(100, 1), (200, 2)]);
         // The attacking side's four units: two of the category, one of
         // another, one of none (LandCombatDivisions.categories).
-        let (armor_mask, other) = (installed_content::trigger_keys::EQUIPMENT_CATEGORIES[0].1, 0x20);
+        let (armor_mask, other) = (
+            installed_content_core::trigger_keys::EQUIPMENT_CATEGORIES[0].1,
+            0x20,
+        );
         let units = [(1, armor_mask), (2, armor_mask | other), (3, other), (4, 0)].map(
             |(division, categories)| LandCombatDivisionRow {
                 division,
@@ -4906,7 +4906,7 @@ mod tests {
     /// not skipped: the trigger reads
     /// `{` (no yes, so `no`), the block's contents are read as the
     /// enclosing trigger's conditions and its `}` ends that trigger
-    /// (installed_content::combat_tactics). Later tactics are read as the game reads
+    /// (installed_content_core::combat_tactics). Later tactics are read as the game reads
     /// them.
     #[test]
     fn a_block_under_a_single_value_trigger_refuses_the_rest_of_the_file() {

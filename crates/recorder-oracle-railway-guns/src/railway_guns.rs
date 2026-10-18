@@ -230,16 +230,16 @@ fn compare_saved(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
             continue;
         };
         match &row.name {
-            replay::rows::Recorded::NotRecorded => report.limitation(
+            replay_data::rows::Recorded::NotRecorded => report.limitation(
                 "stored railway gun name not recorded by this format",
                 format!("{label}.name"),
             ),
-            replay::rows::Recorded::Value(None) => report.difference(
+            replay_data::rows::Recorded::Value(None) => report.difference(
                 format!("{label}.name: guarded read or name arena refusal"),
                 "unavailable",
                 &saved.name,
             ),
-            replay::rows::Recorded::Value(Some(name)) => {
+            replay_data::rows::Recorded::Value(Some(name)) => {
                 // The railway-gun writer delegates to the unit writer,
                 // which gates the name on stored length.
                 let label = format!("{label}.name");
@@ -373,7 +373,9 @@ fn compare_saved(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{LexicalTokenRow, ProvinceUnitOrderRow, RailwayGunCounterInputRow};
+    use replay_data::{
+        rows::LexicalTokenRow, rows::ProvinceUnitOrderRow, rows::RailwayGunCounterInputRow,
+    };
 
     const GUN: u64 = (7_u64 << 32) | 74;
 
@@ -389,8 +391,8 @@ mod tests {
             logical_owner: 101,
             province: 2,
             subunit_token: 1,
-            name: replay::rows::Recorded::Value(Some(Vec::new())),
-            withdrawal: replay::rows::Recorded::Value(Some(0)),
+            name: replay_data::rows::Recorded::Value(Some(Vec::new())),
+            withdrawal: replay_data::rows::Recorded::Value(Some(0)),
             // Native route cells are raw; nothing here requires known provinces.
             alternate_path: vec![u32::MAX],
             ..Default::default()
@@ -448,7 +450,7 @@ mod tests {
 
     #[test]
     fn owner_transport_rows_cover_exactly_the_guns_logical_owners() {
-        use replay::rows::OwnerTransportSpeedRow;
+        use replay_data::rows::OwnerTransportSpeedRow;
         let speeds = |rows: &[(u32, u32)]| {
             TableRows::OwnerTransportSpeeds(
                 rows.iter()
@@ -600,7 +602,7 @@ mod tests {
 
     #[test]
     fn saved_withdrawal_compares_truth_and_does_not_hide_prefix_differences() {
-        use replay::rows::Recorded::{NotRecorded, Value};
+        use replay_data::{rows::Recorded::NotRecorded, rows::Recorded::Value};
         for (value, expected, differences) in [
             (Value(Some(0)), false, 0),
             (Value(Some(255)), true, 0),
@@ -689,7 +691,7 @@ mod tests {
             compare_saved(&frame, &save, &mut report).unwrap();
             report
         };
-        use replay::rows::Recorded::{NotRecorded, Value};
+        use replay_data::{rows::Recorded::NotRecorded, rows::Recorded::Value};
         let name = vec![0xff, b'\\', b'"', b'G'];
         assert!(
             run(Value(Some(name.clone())), Some(name))
@@ -701,7 +703,7 @@ mod tests {
         for name in [b"G\0!".as_slice(), b"\0!".as_slice()] {
             let report = run(
                 Value(Some(name.to_vec())),
-                Some(installed_content::parser::c_string(name).to_vec()),
+                Some(installed_content_core::parser::c_string(name).to_vec()),
             );
             assert!(report.differences.is_empty(), "{:?}", report.differences);
             assert_eq!(
@@ -729,10 +731,10 @@ mod tests {
 
     #[test]
     fn fresh_railway_packets_preserve_transfer_gates_and_prefix_differences() {
-        use replay::rows::{FreshRailwayCounterEta, Recorded};
+        use replay_data::{rows::FreshRailwayCounterEta, rows::Recorded};
         let mut frame = fixture();
         let packet = FreshRailwayCounterEta {
-            sample_hour: replay::rows::PacketHour::Host,
+            sample_hour: replay_data::rows::PacketHour::Host,
             maximum_speed: Some(i64::MIN),
             land_supply_factor: Some(i64::MAX),
             orders_group: Some(0),

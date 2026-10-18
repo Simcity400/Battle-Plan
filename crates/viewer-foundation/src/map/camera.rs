@@ -144,7 +144,7 @@ pub struct MapDefines {
 
 impl MapDefines {
     /// `camera_tilt` is the configured user folder's `settings.txt` value.
-    pub fn load(defines: &installed_content::defines::Defines, camera_tilt: f32) -> io::Result<Self> {
+    pub fn load(defines: &installed_content_core::defines::Defines, camera_tilt: f32) -> io::Result<Self> {
         let define = |section: &str, key: &str| -> io::Result<f32> {
             let value = defines.number(section, key)? as f32;
             if value.is_finite() {
@@ -300,7 +300,7 @@ pub struct MapSize {
 }
 
 impl MapSize {
-    pub fn of(map: &installed_content::map::MapData) -> Self {
+    pub fn of(map: &installed_content_core::map::MapData) -> Self {
         Self {
             width: map.width,
             height: map.height,

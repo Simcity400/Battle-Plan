@@ -89,7 +89,7 @@ fn supremacy_pool_u64(log: &RawLog<SUPREMACY_N>, start: usize) -> u64 {
 /// nothing because the typed walk fails locally without reads.
 fn sspan(
     log: &mut RawLog<SUPREMACY_N>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     addr: Option<usize>,
     len: usize,
     mask: u32,
@@ -103,7 +103,7 @@ fn sspan(
 #[cfg(test)]
 fn copy_supremacy_pass(
     job: &mut SupremacyJob,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
     ticks: &mut [u64; SUPREMACY_N],
@@ -113,7 +113,7 @@ fn copy_supremacy_pass(
 
 fn copy_supremacy_pass_growing(
     job: &mut SupremacyJob,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
     ticks: &mut [u64; SUPREMACY_N],
@@ -123,7 +123,7 @@ fn copy_supremacy_pass_growing(
 
 fn copy_supremacy_pass_mode(
     job: &mut SupremacyJob,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
     ticks: &mut [u64; SUPREMACY_N],
@@ -146,7 +146,7 @@ fn copy_supremacy_pass_mode(
 
 fn copy_supremacy_tables(
     job: &mut SupremacyJob,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
 ) {
@@ -325,7 +325,7 @@ pub(crate) fn copy_supremacy_refresh_growing(
     ctx: SupremacyCopyContext,
     job: &mut SupremacyJob,
 ) -> SupremacyCopyReport {
-    if !replay::cadence::should_walk(TableId::NavalSupremacy, ctx.hour, ctx.force_full) {
+    if !replay_data::cadence::should_walk(TableId::NavalSupremacy, ctx.hour, ctx.force_full) {
         job.clear();
         return SupremacyCopyReport::default();
     }
@@ -344,7 +344,7 @@ pub(crate) fn copy_supremacy_refresh(
     ctx: SupremacyCopyContext,
     job: &mut SupremacyJob,
 ) -> SupremacyCopyReport {
-    if !replay::cadence::should_walk(TableId::NavalSupremacy, ctx.hour, ctx.force_full) {
+    if !replay_data::cadence::should_walk(TableId::NavalSupremacy, ctx.hour, ctx.force_full) {
         job.clear();
         return SupremacyCopyReport::default();
     }
@@ -376,7 +376,7 @@ impl Captured {
     ) {
         self.active[0] = job.active;
         if !job.active {
-            self.fail_supremacy_capture(replay::cadence::SKIPPED_REASON);
+            self.fail_supremacy_capture(replay_data::cadence::SKIPPED_REASON);
             return;
         }
         let recorded = crate::raw::Recorded::build(&job.log);

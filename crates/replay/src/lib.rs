@@ -1,34 +1,15 @@
-//! The shared spool and replay recording contract.
+//! Compressed recording containers, spool I/O and durable publication.
 
-pub mod air_region_derive;
-pub mod attack_derive;
-pub mod branches;
 pub mod container;
-pub mod cpu;
-pub mod directed_war_derive;
-pub mod eta_derive;
-pub mod fixed_layout;
-pub mod frame;
-mod fuel_demand;
-pub mod modifier_registry;
-pub mod naval_mission_derive;
-pub mod power_balance_derive;
 #[cfg(windows)]
 pub mod publication;
 pub mod recorder_settings;
-pub mod rows;
 pub mod spool;
-pub mod transport_subject_access;
-pub mod witness;
 
-pub(crate) use replay_data::value;
-pub use replay_data::{BranchId, FORMAT_VERSION, Hour, SessionId};
-pub use replay_data::{
-    cadence, codec, country_flags, day_night, display, event_feed_rows, fixed_point, format,
-    identity, naval_trees, sliced, temperature,
-};
-
-pub const KEYFRAME_INTERVAL: u32 = 720;
+use replay_data::{BranchId, FORMAT_VERSION, Hour, SessionId, codec, format, identity};
+#[cfg(test)]
+use replay_data::{cadence, event_feed_rows, value};
+use replay_frame::{KEYFRAME_INTERVAL, branches, cpu, frame, rows};
 
 #[cfg(test)]
 mod acceptance;

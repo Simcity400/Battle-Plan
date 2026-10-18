@@ -9,12 +9,10 @@ use crate::{
     table_conversion::{table, unavailable},
     world_input_changes::{self as changes, Changes, Domain, Held, Plan},
 };
-use engine::allocation::{copy_vec, owned_vec};
-use engine::{Memory, cprovince, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{ProvinceNameRow, TableId, tables},
-};
+use engine_allocation::{copy_vec, owned_vec};
+use engine_native::{Memory, cprovince, walk::Outcome};
+use replay_data::{rows::ProvinceNameRow, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 use std::sync::Mutex;
 
 pub const N: usize = 1;
@@ -114,9 +112,9 @@ impl Captured {
     ) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         self.reset();
-        if !replay::cadence::should_walk(TABLES[0], hour, force_full) {
+        if !replay_data::cadence::should_walk(TABLES[0], hour, force_full) {
             self.names.outcome = Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON,
+                reason: replay_data::cadence::SKIPPED_REASON,
             };
             return [0];
         }
@@ -130,8 +128,8 @@ impl Captured {
         {
             let (rows, bytes) = held.carried(Domain::ProvinceNames);
             let ensured = (
-                engine::walk::Buffer::Growing(&mut self.names.rows).ensure(rows.len()),
-                engine::walk::Buffer::Growing(&mut self.bytes.first).ensure(bytes.len()),
+                engine_native::walk::Buffer::Growing(&mut self.names.rows).ensure(rows.len()),
+                engine_native::walk::Buffer::Growing(&mut self.bytes.first).ensure(bytes.len()),
             );
             self.names.outcome = match ensured {
                 (Ok(_), Ok(_)) => {
@@ -249,7 +247,7 @@ mod tests {
             assert!(actual_capacity == grown);
         }
     }
-    use engine::memory::{CountedMemory, SliceMemory};
+    use engine_native::{memory::CountedMemory, memory::SliceMemory};
 
     #[test]
     fn names_are_read_every_hour_and_preserve_native_failure() {
@@ -265,7 +263,7 @@ mod tests {
                 panic!("unreadable names must fail at hour {hour}");
             };
             assert!(reads.finish()[TABLES[0].index()].spans > 0, "hour {hour}");
-            assert_ne!(reason, replay::cadence::SKIPPED_REASON);
+            assert_ne!(reason, replay_data::cadence::SKIPPED_REASON);
             assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
         }
     }
@@ -291,7 +289,7 @@ mod tests {
     /// One province census of a single province, id 1.
     fn census() -> Vec<u8> {
         let mut bytes = vec![0; 0x2000];
-        let root = BASE + engine::cgame_state::PROVINCES;
+        let root = BASE + engine_native::cgame_state::PROVINCES;
         put(&mut bytes, root, &(POINTERS as u64).to_le_bytes());
         put(&mut bytes, root + 8, &2_u32.to_le_bytes());
         put(&mut bytes, root + 12, &2_u32.to_le_bytes());
@@ -306,7 +304,7 @@ mod tests {
     }
 
     fn rows(expected: &[u8]) -> TableView {
-        TableView::Complete(replay::rows::TableRows::ProvinceNames(
+        TableView::Complete(replay_data::rows::TableRows::ProvinceNames(
             if expected.is_empty() {
                 vec![]
             } else {
@@ -409,7 +407,7 @@ mod tests {
         };
         assert_eq!(
             rows,
-            replay::rows::TableRows::ProvinceNames(vec![ProvinceNameRow {
+            replay_data::rows::TableRows::ProvinceNames(vec![ProvinceNameRow {
                 province: 85,
                 name: vec![b'A', 0, 255],
             }])

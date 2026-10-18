@@ -8,7 +8,7 @@
 
 use super::*;
 use crate::{air_base_carry_changes::Watches, extended::fog, sampled_verify::Check};
-use engine::{
+use engine_native::{
     cair_base, cair_wing, cair_wing_pool, ccountry, ccountry_air_container, cgame_state, cprovince,
     cstate, cstrategic_air_manager,
 };

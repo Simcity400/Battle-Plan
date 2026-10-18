@@ -3,7 +3,7 @@
 //! finds a ship stops preparation rather than title it from that frame.
 use super::*;
 use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-use replay::rows::{SunkShipEntry, SunkShipsRow};
+use replay_data::{rows::SunkShipEntry, rows::SunkShipsRow};
 
 /// Hour `hour` of the fixture with one sunk ship retained since hour 100.
 fn sunk_frame(hour: i32) -> DecodedFrame {

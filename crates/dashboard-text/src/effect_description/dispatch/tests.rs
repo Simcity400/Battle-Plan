@@ -4,7 +4,7 @@ use crate::scripted_text::{EventObject, EventScope};
 
 #[test]
 fn aliases_share_one_class_dispatch() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let text = ScriptedText::new(
@@ -29,10 +29,11 @@ fn aliases_share_one_class_dispatch() {
         out: Description::default(),
         scripted_stack: Vec::new(),
     };
-    let items =
-        installed_content::parser::parse(b"set_unit_leader_flag=x set_character_flag=x if={} else_if={}")
-            .unwrap()
-            .items;
+    let items = installed_content_core::parser::parse(
+        b"set_unit_leader_flag=x set_character_flag=x if={} else_if={}",
+    )
+    .unwrap()
+    .items;
     // The aliases share a class and empty own text.
     assert!(renderer.effect_class(&items[0]).is_some());
     assert_eq!(
@@ -59,7 +60,7 @@ fn aliases_share_one_class_dispatch() {
 
 #[test]
 fn unknown_keys_and_unported_classes_are_named_and_counted() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);

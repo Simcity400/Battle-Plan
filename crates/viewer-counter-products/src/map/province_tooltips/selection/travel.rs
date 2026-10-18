@@ -2,7 +2,8 @@
 
 use super::{Arg, Class, Context, Localisation, Tooltip, Unit, line, localise, refuse};
 use crate::map::division_eta::{CounterPreview, CounterQueries, CounterUnit};
-use replay::{frame::DecodedFrame, rows::tables};
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 
 pub(super) struct SelectionTravel {
     pub(super) hours: Result<i32, String>,
@@ -90,7 +91,7 @@ fn selection_travel(
                 result.route = Ok(preview.route);
                 result.hours = preview
                     .duration
-                    .map(|duration| engine::cunit::eta_hours(duration) as i32);
+                    .map(|duration| engine_native::cunit::eta_hours(duration) as i32);
             }
             Err(reason) => {
                 result.route = Err(reason.clone());
@@ -131,7 +132,7 @@ fn fallback_hours(
         occupied += 1;
         match query(unit)
             .and_then(|preview| preview.duration)
-            .map(|duration| engine::cunit::eta_hours(duration) as i32)
+            .map(|duration| engine_native::cunit::eta_hours(duration) as i32)
         {
             // Admission is already certain; no positive i32 contributor can
             // improve one. Earlier duration failures also cannot improve it.
@@ -226,7 +227,9 @@ pub(super) fn append(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{DivisionRow, RailwayGunCounterInputRow, TableRows, TaskForceRow};
+    use replay_data::{
+        rows::DivisionRow, rows::RailwayGunCounterInputRow, rows::TableRows, rows::TaskForceRow,
+    };
     use viewer_foundation::map::test_support::{test_frame, test_put as put};
 
     fn preview(duration: Result<i64, String>, route: &[u32]) -> Result<CounterPreview, String> {

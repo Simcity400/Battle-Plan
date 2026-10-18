@@ -1,5 +1,5 @@
 //! DivisionStatus.attack_stats and movement_stats: each division's stat-block attack
-//! and movement operands (`engine::csub_unit_definition::capture_attack_stats`, one
+//! and movement operands (`engine_native::csub_unit_definition::capture_attack_stats`, one
 //! read of the same block), carried while no
 //! hooked update active stats touched the army since the
 //! read they came from ([`crate::army_stat_changes`]), and the off-by-default
@@ -29,19 +29,17 @@
 //!
 //! The store also holds each division's name member span and cached-name lookup cache
 //! text under the same marks, on the member's address
-//! (`engine::army_stat_mutations`); the naming pass carries and rebuilds them
+//! (`engine_mutations::army_stat_mutations`); the naming pass carries and rebuilds them
 //! ([`super::division_presentation`]), and they are held with the attack
 //! pass's operands.
 use crate::army_stat_changes::{self, Changes, Counts};
-use engine::{
-    Memory,
-    carmy::DivisionSeed,
-    csub_unit_definition::{self as stats, DivisionMaxima},
-    walk::Outcome,
+use engine_native::{
+    Memory, carmy::DivisionSeed, csub_unit_definition as stats,
+    csub_unit_definition::DivisionMaxima, walk::Outcome,
 };
-use replay::rows::{
-    AttackStats, AttackTerrain, DivisionAttackInputs, DivisionAttackStats, DivisionMovementStats,
-    PacketHour,
+use replay_data::{
+    rows::AttackStats, rows::AttackTerrain, rows::DivisionAttackInputs, rows::DivisionAttackStats,
+    rows::DivisionMovementStats, rows::PacketHour,
 };
 
 /// A stat block's scalars.
@@ -99,7 +97,7 @@ struct Held {
 pub struct HeldName {
     division: u64,
     pub member: usize,
-    pub span: [u8; engine::cname_group_member::INPUT_SPAN],
+    pub span: [u8; engine_native::cname_group_member::INPUT_SPAN],
     text: (usize, usize),
 }
 
@@ -126,8 +124,8 @@ impl Locator {
             return Some(guess);
         }
         if self.order.is_empty() {
-            engine::allocation::advisory(|| {
-                engine::allocation::reserve(&mut self.order, divisions.len())
+            engine_allocation::advisory(|| {
+                engine_allocation::reserve(&mut self.order, divisions.len())
             })
             .ok()?;
             self.order.extend(
@@ -267,7 +265,7 @@ impl ArmyStatStore {
         &mut self,
         division: u64,
         member: usize,
-        span: &[u8; engine::cname_group_member::INPUT_SPAN],
+        span: &[u8; engine_native::cname_group_member::INPUT_SPAN],
         text: &[u8],
     ) {
         let start = self.next_name_bytes.len();
@@ -310,9 +308,9 @@ impl ArmyStatStore {
         self.name_divisions.clear();
         self.locator.clear();
         self.name_locator.clear();
-        let indexed = engine::allocation::advisory(|| {
-            engine::allocation::reserve(&mut self.divisions, self.held.len())?;
-            engine::allocation::reserve(&mut self.name_divisions, self.names.len())
+        let indexed = engine_allocation::advisory(|| {
+            engine_allocation::reserve(&mut self.divisions, self.held.len())?;
+            engine_allocation::reserve(&mut self.name_divisions, self.names.len())
         });
         if indexed.is_err() {
             self.forget();
@@ -427,7 +425,7 @@ impl Captured {
         let touched = &mut self.touched;
         let mut kept = true;
         self.epoch = changes.take(&mut |receiver| {
-            if engine::allocation::advisory(|| engine::allocation::reserve(touched, 1)).is_ok() {
+            if engine_allocation::advisory(|| engine_allocation::reserve(touched, 1)).is_ok() {
                 touched.push(receiver);
             } else {
                 kept = false;
@@ -513,7 +511,8 @@ impl Captured {
                 .any(|seed| witnessed(hour, seed.division >> 32))
         {
             self.terrains.clear();
-            if engine::cterrain_database::terrain_attacks(memory, base, &mut self.terrains).is_err()
+            if engine_native::cterrain_database::terrain_attacks(memory, base, &mut self.terrains)
+                .is_err()
             {
                 self.terrains.clear();
             }
@@ -654,7 +653,7 @@ impl Captured {
         let row = self.row(division)?;
         let scalars = row.scalars?;
         Some(DivisionAttackStats {
-            terrain: engine::allocation::owned_vec(engine::allocation::copy_vec(
+            terrain: engine_allocation::owned_vec(engine_allocation::copy_vec(
                 self.terrain.get(row.start..row.start + row.len)?,
             )),
             river: scalars.river,
@@ -670,7 +669,7 @@ impl Captured {
         let row = self.row(division)?;
         let scalars = row.scalars?;
         Some(DivisionMovementStats {
-            terrain: engine::allocation::owned_vec(engine::allocation::copy_vec(
+            terrain: engine_allocation::owned_vec(engine_allocation::copy_vec(
                 self.movement.get(row.start..row.start + row.len)?,
             )),
             scalars: scalars.movement,
@@ -683,9 +682,9 @@ impl Captured {
     pub fn same_movement(
         &self,
         division: u64,
-        previous: &replay::rows::Recorded<Option<DivisionMovementStats>>,
+        previous: &replay_data::rows::Recorded<Option<DivisionMovementStats>>,
     ) -> bool {
-        let replay::rows::Recorded::Value(previous) = previous else {
+        let replay_data::rows::Recorded::Value(previous) = previous else {
             return false;
         };
         let current = self.row(division).and_then(|row| {
@@ -710,9 +709,9 @@ impl Captured {
     pub fn same(
         &self,
         division: u64,
-        previous: &replay::rows::Recorded<Option<DivisionAttackStats>>,
+        previous: &replay_data::rows::Recorded<Option<DivisionAttackStats>>,
     ) -> bool {
-        let replay::rows::Recorded::Value(previous) = previous else {
+        let replay_data::rows::Recorded::Value(previous) = previous else {
             return false;
         };
         let current = self.row(division).and_then(|row| {
@@ -865,15 +864,15 @@ mod tests {
             (stats.river, stats.fort, stats.snow, stats.night),
             ([1, 2], [3, 4], 5, 6)
         );
-        assert!(captured.same(3, &replay::rows::Recorded::Value(Some(stats.clone()))));
+        assert!(captured.same(3, &replay_data::rows::Recorded::Value(Some(stats.clone()))));
         let mut changed = stats;
         changed.terrain[1] = 1;
-        assert!(!captured.same(3, &replay::rows::Recorded::Value(Some(changed))));
+        assert!(!captured.same(3, &replay_data::rows::Recorded::Value(Some(changed))));
         // A refused read publishes None, as does a division never reached.
         assert_eq!(captured.stats(9), None);
-        assert!(captured.same(9, &replay::rows::Recorded::Value(None)));
-        assert!(captured.same(4, &replay::rows::Recorded::Value(None)));
-        assert!(!captured.same(3, &replay::rows::Recorded::NotRecorded));
+        assert!(captured.same(9, &replay_data::rows::Recorded::Value(None)));
+        assert!(captured.same(4, &replay_data::rows::Recorded::Value(None)));
+        assert!(!captured.same(3, &replay_data::rows::Recorded::NotRecorded));
         // The movement operands are published from the same held read.
         let movement = captured.movement(3).unwrap();
         assert_eq!(
@@ -885,7 +884,10 @@ mod tests {
                 air_defense: 50,
             }
         );
-        assert!(captured.same_movement(3, &replay::rows::Recorded::Value(Some(movement.clone()))));
+        assert!(captured.same_movement(
+            3,
+            &replay_data::rows::Recorded::Value(Some(movement.clone()))
+        ));
         for changed in [
             DivisionMovementStats {
                 fuel_rate: 41,
@@ -900,10 +902,10 @@ mod tests {
                 ..movement.clone()
             },
         ] {
-            assert!(!captured.same_movement(3, &replay::rows::Recorded::Value(Some(changed))));
+            assert!(!captured.same_movement(3, &replay_data::rows::Recorded::Value(Some(changed))));
         }
         assert_eq!(captured.movement(9), None);
-        assert!(captured.same_movement(9, &replay::rows::Recorded::Value(None)));
+        assert!(captured.same_movement(9, &replay_data::rows::Recorded::Value(None)));
     }
 
     #[test]

@@ -95,7 +95,7 @@ impl Prepared {
     pub fn observe(
         &mut self,
         frame: &DecodedFrame,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         cancelled: &AtomicBool,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
@@ -115,7 +115,7 @@ impl Prepared {
     fn observe_frame(
         &mut self,
         frame: &DecodedFrame,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
     ) -> io::Result<()> {
         self.own(|state| state.observe_own_frame(frame, format, changes))
@@ -124,10 +124,10 @@ impl Prepared {
     fn observe_own_frame(
         &mut self,
         frame: &DecodedFrame,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("occupation:observe");
+        let _cpu = ::replay_frame::cpu::scope_phase("occupation:observe");
         for values in &mut self.values {
             values.advance(frame.hour)?;
         }
@@ -596,7 +596,7 @@ fn observe_window(
                 // Before the window's first hour: a read held, or a drop seen.
                 anchored |= target && (prepared.scan.holds_read() || prepared.scan.resets > 0);
                 let resets = prepared.scan.resets;
-                let mut decoder = replay::frame::FrameDecoder::for_tables(&tables);
+                let mut decoder = replay_frame::frame::FrameDecoder::for_tables(&tables);
                 for (index, frame) in frames.iter().enumerate() {
                     check_cancel(cancelled)?;
                     let Ok(decoded) = decoder.advance(frame) else {
@@ -1276,7 +1276,7 @@ mod tests {
 
     #[test]
     fn equal_occupation_fact_markers_carry_without_materializing_each_key() {
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let mut input = frame(100, 64);
         let mut prepared = Prepared::default();
         prepared.observe_frame(&input, format, None).unwrap();
@@ -1296,7 +1296,9 @@ mod tests {
     }
     use dashboard_base::prepared::series::tests::Fixture;
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    use replay::rows::{CountryLinkRow, CountryRow, StateGarrisonRow, TableRows};
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::StateGarrisonRow, rows::TableRows,
+    };
 
     #[test]
     fn look_back_reads_only_a_worker_bounded_number_of_blocks_ahead() {
@@ -1370,7 +1372,7 @@ mod tests {
 
     #[test]
     fn occupation_configuration_binds_content_success_and_refusals_before_any_observation() {
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let flag = AtomicBool::new(false);
         let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[(
             "common/occupation_laws/mod.txt",
@@ -1441,7 +1443,7 @@ mod tests {
 
     #[test]
     fn occupation_shared_driver_defers_held_summaries_and_keeps_window_endpoints_exact() {
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let work = observer_tests::scaled_work(1, |hours| {
             let mut prepared = Prepared::default();
             let mut read = frame(100, 64);
@@ -1485,7 +1487,7 @@ mod tests {
 
     #[test]
     fn occupation_shared_driver_skips_closed_alias_history_and_bounds_one_owner_change() {
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let work = observer_tests::scaled_work(10, |history| {
             let mut prepared = Prepared::default();
             let mut tracker = FrameChangeTracker::new();
@@ -1550,7 +1552,7 @@ mod tests {
     #[test]
     #[cfg(feature = "slow-tests")]
     fn occupation_shared_driver_holds_all_5000_occupiers_without_hourly_work() {
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let mut prepared = Prepared::default();
         let mut read = frame(100, 5_000);
         let mut tracker = FrameChangeTracker::new();
@@ -1593,7 +1595,7 @@ mod tests {
         let mut prepared = Prepared::default();
         let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
         let mut reference = scan::Scan::new(None);
-        reference.format = replay::format::FormatVersion::CURRENT;
+        reference.format = replay_data::format::FormatVersion::CURRENT;
         for (window, hours) in [vec![100, 101], vec![102, 104], vec![105, 106]]
             .into_iter()
             .enumerate()
@@ -1612,12 +1614,12 @@ mod tests {
                     rows[0].tag = b"renamed occupier".to_vec();
                     rows.sort_by_key(|row| row.id);
                 }
-                let changes = tracker.observe(&frame, replay::format::FormatVersion::CURRENT);
+                let changes = tracker.observe(&frame, replay_data::format::FormatVersion::CURRENT);
                 reference.push(&frame, hour, None).unwrap();
                 prepared
                     .observe_frame(
                         &frame,
-                        replay::format::FormatVersion::CURRENT,
+                        replay_data::format::FormatVersion::CURRENT,
                         Some(&changes),
                     )
                     .unwrap();
@@ -1768,7 +1770,7 @@ mod tests {
             prepared
                 .observe_frame(
                     &frame(hour, 5000),
-                    replay::format::FormatVersion::CURRENT,
+                    replay_data::format::FormatVersion::CURRENT,
                     None,
                 )
                 .unwrap();

@@ -3,7 +3,7 @@
 use crate::allocation::{self, Code, Context, Phase};
 use crate::test_support::with_allocations_denied;
 use crate::test_support::{ATTEMPTS, DENIALS, NullGuard, REACHED, TARGET_PHASE};
-use replay::rows::RowCodec;
+use replay_data::rows::RowCodec;
 use std::{
     cell::Cell,
     fs::{self, File, OpenOptions},
@@ -220,7 +220,7 @@ fn checked_allocation_sweep_stops_once_and_preserves_prefix() {
 #[test]
 #[ignore = "launched only by allocation-failure parent tests"]
 fn allocation_safety_child() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mode = std::env::var("BATTLE_PLAN_COLLECTOR_ALLOCATION_TEST").or_else(|_| std::env::var("HOI4_COLLECTOR_ALLOCATION_TEST")).unwrap();
     let phase = Phase::parse(&std::env::var("BATTLE_PLAN_COLLECTOR_ALLOCATION_PHASE").or_else(|_| std::env::var("HOI4_COLLECTOR_ALLOCATION_PHASE")).unwrap()).unwrap();
@@ -271,13 +271,13 @@ fn deferred_failure() -> io::Result<()> {
         .write(true)
         .create(true)
         .truncate(true)
-        .open(root.join(replay::witness::WITNESS_FILE_NAME))?;
+        .open(root.join(replay_data::witness::WITNESS_FILE_NAME))?;
     allocation::prepare(&witness_file, 1, 1000);
     allocation::inject_after(Phase::Encode, 1, 3);
     let _scope = allocation::enter(Phase::Encode);
     for hour in 19..=21 {
         context(Some(hour));
-        engine::allocation::vec::<u8>(64)?;
+        engine_allocation::vec::<u8>(64)?;
         assert!(!allocation::failed());
         assert_eq!(allocation::allocation_count(), 0);
         allocation::committed(0, (hour as u64) * 100);
@@ -285,7 +285,7 @@ fn deferred_failure() -> io::Result<()> {
     }
     context(Some(22));
     assert_eq!(
-        engine::allocation::vec::<u8>(64).unwrap_err().kind(),
+        engine_allocation::vec::<u8>(64).unwrap_err().kind(),
         io::ErrorKind::OutOfMemory
     );
     assert_eq!(allocation::allocation_count(), 1);
@@ -303,7 +303,7 @@ fn raw_advisory_and_details() -> io::Result<()> {
     allocation::install_hooks();
     let root = case_root(Phase::Raw, 1, false).join("raw-details");
     fs::create_dir_all(&root)?;
-    let witness_file = File::create(root.join(replay::witness::WITNESS_FILE_NAME))?;
+    let witness_file = File::create(root.join(replay_data::witness::WITNESS_FILE_NAME))?;
     allocation::prepare(&witness_file, 1, 1000);
     let _details = allocation::prepare_details(&root).unwrap();
     context(Some(21));
@@ -338,7 +338,7 @@ fn raw_advisory_and_details() -> io::Result<()> {
 }
 
 fn prepared_buffers_null(phase: Phase, ordinal: usize) -> io::Result<()> {
-    use replay::rows::{StateCoreRow, TableRows};
+    use replay_data::{rows::StateCoreRow, rows::TableRows};
     allocation::reset();
     allocation::install_hooks();
     match phase {
@@ -374,8 +374,12 @@ fn prepared_buffers_null(phase: Phase, ordinal: usize) -> io::Result<()> {
                 ..Default::default()
             }]);
             prepared_null(phase, ordinal, || {
-                let merged =
-                    replay::sliced::merge_slice(&previous, fresh, |state| state == 129, |_| true)?;
+                let merged = replay_data::sliced::merge_slice(
+                    &previous,
+                    fresh,
+                    |state| state == 129,
+                    |_| true,
+                )?;
                 verdict(merged.len() == 129)
             })
         }
@@ -418,7 +422,7 @@ fn prepared_null(
         .write(true)
         .create(true)
         .truncate(true)
-        .open(root.join(replay::witness::WITNESS_FILE_NAME))?;
+        .open(root.join(replay_data::witness::WITNESS_FILE_NAME))?;
     allocation::prepare(&witness_file, 1, 1000);
     context((phase != Phase::Status).then_some(21));
     #[cfg(feature = "alloc-fault-injection")]
@@ -430,7 +434,7 @@ fn prepared_null(
     let denials = DENIALS.load(Ordering::Relaxed);
     let attempts = ATTEMPTS.load(Ordering::Relaxed);
     if first.is_some() {
-        let _ = engine::allocation::vec::<u8>(1);
+        let _ = engine_allocation::vec::<u8>(1);
         allocation::fail(Phase::Teardown, Code::Thread);
     }
     let unchanged = first == allocation::failure();
@@ -456,9 +460,9 @@ fn prepared_null(
 }
 
 fn prepared_encoder_null(ordinal: usize) -> io::Result<()> {
-    use replay::{
-        frame::{FrameEncoder, FrameInput, Metrics, TableInput, TableView},
-        rows::{FrontRow, TableId, TableRows, tables},
+    use replay_data::{rows::FrontRow, rows::TableId, rows::TableRows, rows::tables};
+    use replay_frame::{
+        frame::FrameEncoder, frame::FrameInput, frame::Metrics, frame::TableInput, frame::TableView,
     };
     fn source(hour: i32) -> FrameInput {
         let mut tables = std::array::from_fn(|_| {
@@ -504,8 +508,8 @@ fn prepared_encoder_null(ordinal: usize) -> io::Result<()> {
 }
 
 struct Exercise {
-    witness: Option<replay::witness::TerminalWitness>,
-    disk_witness: Option<replay::witness::TerminalWitness>,
+    witness: Option<replay_data::witness::TerminalWitness>,
+    disk_witness: Option<replay_data::witness::TerminalWitness>,
     phase: Phase,
     #[cfg(feature = "alloc-fault-injection")]
     checked: u64,
@@ -542,11 +546,11 @@ fn context(hour: Option<i32>) {
     });
 }
 
-fn read_witness(file: &File) -> io::Result<Option<replay::witness::TerminalWitness>> {
+fn read_witness(file: &File) -> io::Result<Option<replay_data::witness::TerminalWitness>> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = file;
     file.seek(SeekFrom::Start(0))?;
-    let mut bytes = [0; replay::witness::WITNESS_BYTES];
+    let mut bytes = [0; replay_data::witness::WITNESS_BYTES];
     let mut len = 0;
     while len < bytes.len() {
         let read = file.read(&mut bytes[len..])?;
@@ -558,10 +562,10 @@ fn read_witness(file: &File) -> io::Result<Option<replay::witness::TerminalWitne
     if len == 0 {
         return Ok(None);
     }
-    if replay::witness::TerminalWitness::decode_prepared(&bytes[..len]).is_ok() {
+    if replay_data::witness::TerminalWitness::decode_prepared(&bytes[..len]).is_ok() {
         return Ok(None);
     }
-    replay::witness::TerminalWitness::decode(&bytes[..len]).map(Some)
+    replay_data::witness::TerminalWitness::decode(&bytes[..len]).map(Some)
 }
 
 fn validate(outcome: &Exercise, failed: bool) {
@@ -638,7 +642,7 @@ fn exercise_pipeline(
         .write(true)
         .create(true)
         .truncate(true)
-        .open(root.join(replay::witness::WITNESS_FILE_NAME))?;
+        .open(root.join(replay_data::witness::WITNESS_FILE_NAME))?;
     let shared = crate::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing())?;
     let mut processor = crate::spooling::spool_failure_fixture(&root)?;
     let mut frame = crate::spooling::allocation_failure_frame(19);
@@ -683,7 +687,7 @@ fn exercise_pipeline(
     } else {
         None
     };
-    let front = replay::rows::FrontRow {
+    let front = replay_data::rows::FrontRow {
         front: 1,
         section_ids: vec![7, 8],
         section_ends: vec![2, 4],
@@ -896,7 +900,7 @@ fn exercise_pipeline(
             frame
                 .clock
                 .as_ref()
-                .map(engine::cgame_state::Clock::borrowed)
+                .map(engine_native::cgame_state::Clock::borrowed)
                 .map(|mut clock| {
                     clock.hour = last_attempted_hour + 1;
                     clock
@@ -917,7 +921,7 @@ fn exercise_pipeline(
         let _scope = allocation::enter(Phase::Teardown);
         // Teardown refuses checked growth after failure, and a competing
         // terminal reason cannot replace the already published witness.
-        let _ = engine::allocation::vec::<u8>(1);
+        let _ = engine_allocation::vec::<u8>(1);
         allocation::fail(Phase::Teardown, Code::Thread);
     }
     {
@@ -996,7 +1000,7 @@ fn finalize_with_recorder(root: &Path) -> io::Result<()> {
 fn recovered_hours(
     root: &Path,
     attempted_hour: i32,
-    witness: Option<&replay::witness::TerminalWitness>,
+    witness: Option<&replay_data::witness::TerminalWitness>,
 ) -> io::Result<(usize, bool)> {
     let campaign = root.join(std::str::from_utf8(CAMPAIGN).unwrap());
     let mut hours = 0;

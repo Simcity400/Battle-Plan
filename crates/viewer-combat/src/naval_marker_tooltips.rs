@@ -1,16 +1,12 @@
 //! naval combat marker hover, normal map hover.
 use super::content::Content as StaticContent;
-use installed_content::{
-    country_names::CountryNames,
-    localisation::{Argument, Localisation},
+use installed_content_country_names::country_names::CountryNames;
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use replay_data::{
+    rows::NavalCombatDetailsRow, rows::NavalCombatShipRow, rows::ShipRow, rows::TableSchema,
+    rows::TaskForceCounterInputRow, rows::TaskForceRow, rows::tables,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        NavalCombatDetailsRow, NavalCombatShipRow, ShipRow, TableSchema, TaskForceCounterInputRow,
-        TaskForceRow, tables,
-    },
-};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -172,7 +168,7 @@ fn seen(
     Ok(text)
 }
 
-type CacheKey = (replay::BranchId, i32, u32, u64, bool);
+type CacheKey = (replay_data::BranchId, i32, u32, u64, bool);
 
 #[derive(Default)]
 pub struct Cache {

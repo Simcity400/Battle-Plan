@@ -1,5 +1,5 @@
 //! The controller and owner areas of the Provinces rows
-//! ([`engine::controller_areas`]), held between hours and read again only
+//! ([`engine_native::controller_areas`]), held between hours and read again only
 //! where a native writer may have changed them.
 //!
 //! The Provinces job gathers every province's two area pointers with its
@@ -28,7 +28,7 @@
 //! `area_verify`, on by default during the family's burn-in, reads every area
 //! every hour and compares it with what the carry would publish.
 use crate::sampled_verify::{Check, Sampled};
-use engine::{cprovince::Capture, walk::Outcome};
+use engine_native::{cprovince::Capture, walk::Outcome};
 use std::sync::{
     Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -55,7 +55,7 @@ static SAMPLED: Sampled =
 pub fn capture(
     capture: &mut Capture,
     outcome: Outcome,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     take: Option<[u64; 2]>,
 ) -> Outcome {
@@ -72,7 +72,7 @@ pub fn capture(
     let check = crate::sampled_verify::current_burned_in(VERIFY);
     let quiet = store.carries_quietly(take, len, VERIFY);
     // A marked hour compares only the provinces a controller change can
-    // re-point ([`engine::controller_areas::Store::repointable`]), besides
+    // re-point ([`engine_native::controller_areas::Store::repointable`]), besides
     // the slice; anything it cannot bound compares every province.
     let mut scope = std::mem::take(&mut store.scope);
     let bounded = !quiet
@@ -125,12 +125,12 @@ pub fn capture(
 
 fn run(
     capture: &mut Capture,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     len: usize,
     take: Option<[u64; 2]>,
     check: Check,
-) -> Result<engine::controller_areas::Counts, &'static str> {
+) -> Result<engine_native::controller_areas::Counts, &'static str> {
     let Capture {
         rows,
         areas,
@@ -162,7 +162,7 @@ fn fail(capture: &mut Capture, reason: &'static str) -> Outcome {
     if let Some(store) = capture.province_store.as_mut() {
         store.forget();
     }
-    capture.conflict_walk = engine::cprovince::ConflictWalk {
+    capture.conflict_walk = engine_native::cprovince::ConflictWalk {
         outcome: Outcome::Unavailable { reason },
         groups_len: 0,
         required_groups: capture.conflict_walk.required_groups,
@@ -171,7 +171,7 @@ fn fail(capture: &mut Capture, reason: &'static str) -> Outcome {
     Outcome::Unavailable { reason }
 }
 
-fn record(counts: engine::controller_areas::Counts) {
+fn record(counts: engine_native::controller_areas::Counts) {
     let hour = if counts.full {
         0
     } else if counts.quiet {
@@ -232,11 +232,9 @@ pub fn status() -> impl serde::Serialize {
 
 #[cfg(test)]
 mod tests {
-    use engine::{
-        controller_areas::{Node, Pointers, Store},
-        cprovince::{Capture, Row},
-        memory::SliceMemory,
-        walk::Outcome,
+    use engine_native::{
+        controller_areas::Node, controller_areas::Pointers, controller_areas::Store,
+        cprovince::Capture, cprovince::Row, memory::SliceMemory, walk::Outcome,
     };
 
     fn walked(store: bool) -> Capture {

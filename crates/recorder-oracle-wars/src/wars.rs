@@ -7,10 +7,8 @@ use std::{
 };
 
 use installed_content_save::{Save, war_goals::WarGoal};
-use replay::{
-    frame::DecodedFrame,
-    rows::{WarRelationGoalRow, tables},
-};
+use replay_data::{rows::WarRelationGoalRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::{CountryContext, Report, TokenNames, complete, invalid, required_country_tag};
 

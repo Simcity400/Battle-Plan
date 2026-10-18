@@ -5,8 +5,8 @@ use super::war_casualties::{
     scanned_branch,
     test_fixtures::{casualty_frame, chosen, opened, research_replay},
 };
-use replay::frame::TableView;
-use replay::rows::{TableId, TableRows};
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::frame::TableView;
 use std::sync::{Arc, atomic::AtomicBool};
 
 #[test]
@@ -27,7 +27,7 @@ fn casualty_routes_share_exact_lifetimes_with_the_current_scoreboard_run_cache()
         rows[0].second_country = 1;
         rows[0].first_casualties = -2;
         rows[0].second_casualties = i64::MAX - 1;
-        rows.push(replay::rows::WarRelationRow {
+        rows.push(replay_data::rows::WarRelationRow {
             first_country: 1,
             second_country: 2,
             start_hour: 91,

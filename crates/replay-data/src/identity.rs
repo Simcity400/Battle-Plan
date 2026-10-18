@@ -4,7 +4,7 @@
 use std::io;
 
 use crate::codec::{Decoder, invalid_static as invalid, put_string};
-use engine::allocation;
+use engine_allocation as allocation;
 pub use replay_identity::*;
 
 /// The identity types as the recording writes and reads them.

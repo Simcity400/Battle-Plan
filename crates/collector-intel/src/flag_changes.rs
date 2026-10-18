@@ -1,5 +1,5 @@
 //! Allocation-free notifications from the native writers of every scripted
-//! flag manager ([`engine::script_flag_mutations`]). A detour only notifies
+//! flag manager ([`engine_mutations::script_flag_mutations`]). A detour only notifies
 //! the shared watch registry ([`WatchRegistry`]) for the manager its first
 //! argument names, counts its site and calls the original; it never changes
 //! game behaviour. Receivers are the `CFlagManager` addresses a ScriptFlags
@@ -10,10 +10,8 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{
-    Memory,
-    script_flag_mutations::{MUTATIONS, manager},
-};
+use engine_mutations::{script_flag_mutations::MUTATIONS, script_flag_mutations::manager};
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -326,7 +324,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "flag_changes")
             && MUTATIONS.iter().all(|(site, _)| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [
@@ -390,7 +388,7 @@ impl Drop for Hooks {
 
 // Each site takes at most four integer or pointer arguments (RCX..R9) and
 // returns RAX unchanged from its original; the first names the manager as
-// its [`engine::script_flag_mutations::Receiver`] says. The notification
+// its [`engine_mutations::script_flag_mutations::Receiver`] says. The notification
 // covers the original in flight.
 macro_rules! callback {
     ($name:ident, $site:expr, ($first:ident $(, $arg:ident)*)) => {
@@ -411,12 +409,12 @@ callback!(set_playthrough_flag, 1, (manager_, token, value, duration));
 callback!(read_flags, 2, (manager_, reader));
 // Daily flags (manager): every scope's daily update calls it, but it writes only
 // a manager holding a positive remaining duration
-// ([`engine::cflag_manager::daily_expiry_writes`]), so only such a call
+// ([`engine_scripts::cflag_manager::daily_expiry_writes`]), so only such a call
 // notifies; the others leave the quiet token standing.
 unsafe extern "system" fn daily_flags(manager_: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::FlagChanges);
-    let memory = unsafe { engine::memory::LiveMemory::new() };
-    let _notification = engine::cflag_manager::daily_expiry_writes(&memory, manager_)
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let _notification = engine_scripts::cflag_manager::daily_expiry_writes(&memory, manager_)
         .then(|| WATCHES.notify(manager(MUTATIONS[3].1, manager_), 3));
     let original: unsafe extern "system" fn(usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[3].load(Ordering::Acquire)) };

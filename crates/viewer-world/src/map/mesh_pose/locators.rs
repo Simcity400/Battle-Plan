@@ -9,7 +9,7 @@
 
 use std::io;
 
-use installed_content::mesh::{self, JointPose, NativeJoint};
+use installed_content_core::{mesh, mesh::JointPose, mesh::NativeJoint};
 
 use super::{Matrix, Source, local, multiply};
 
@@ -89,7 +89,7 @@ fn latin1_equals_bytes(stored: &str, query: &[u8]) -> bool {
 }
 
 fn script_parent(skeleton: &[NativeJoint], name: &str) -> Option<usize> {
-    let query = installed_content::parser::c_string(name.as_bytes());
+    let query = installed_content_core::parser::c_string(name.as_bytes());
     skeleton
         .iter()
         .position(|joint| latin1_equals_bytes(&joint.name, query))

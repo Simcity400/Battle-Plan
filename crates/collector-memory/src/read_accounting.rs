@@ -11,8 +11,9 @@
 //! The outer callback Capture includes the sole hook-entry clock and diagnostic
 //! scalar reads under Clock, and the once-only player roster under Players.
 
-use engine::memory::ReadCounts;
-use replay::{frame::TABLE_COUNT, rows::TableId};
+use engine_native::memory::ReadCounts;
+use replay_data::rows::TABLE_COUNT;
+use replay_data::rows::TableId;
 use std::{cell::RefCell, marker::PhantomData, mem::MaybeUninit, rc::Rc};
 
 pub type TableCounts = [ReadCounts; TABLE_COUNT];
@@ -197,10 +198,7 @@ pub fn snapshot_into(tables: &mut TableCounts) {
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures {
     use super::ReadCounts;
-    use engine::{
-        Memory,
-        memory::{CountedMemory, SliceMemory},
-    };
+    use engine_native::{Memory, memory::CountedMemory, memory::SliceMemory};
 
     pub fn read(len: usize) {
         let source = [7; 32];

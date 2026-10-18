@@ -4,11 +4,10 @@
 //! baseline reintroduces an unchecked value, and they never request a refresh.
 
 use crate::status::{self, DebugValue, DisplayValue};
-use engine::fixed_layout::Report;
-use replay::{
-    fixed_layout::{FAMILIES, Family},
-    frame::{TABLE_COUNT, TableInput, TableView},
-};
+use engine_fixed_layout::fixed_layout::Report;
+use replay_data::rows::TABLE_COUNT;
+use replay_derive::{fixed_layout::FAMILIES, fixed_layout::Family};
+use replay_frame::{frame::TableInput, frame::TableView};
 use serde::Serialize;
 use std::{fmt, io};
 
@@ -22,7 +21,7 @@ pub fn task_force_eta_guard(layout: Option<&Layout>) -> Result<(), &'static str>
     let Some(Ok(report)) = layout else {
         return Err("fresh task-force modifier layout unverified");
     };
-    let family = replay::fixed_layout::TASK_FORCE_COUNTER_ETA;
+    let family = replay_derive::fixed_layout::TASK_FORCE_COUNTER_ETA;
     if report.failure(family.keys, family.tokens).is_some() {
         Err("fresh task-force modifier layout mismatch")
     } else {
@@ -32,7 +31,7 @@ pub fn task_force_eta_guard(layout: Option<&Layout>) -> Result<(), &'static str>
 
 #[derive(Clone, Copy)]
 enum Refusal {
-    Failure(engine::fixed_layout::Failure),
+    Failure(engine_fixed_layout::fixed_layout::Failure),
     Unverified(&'static str),
 }
 impl fmt::Display for Refusal {
@@ -65,7 +64,7 @@ pub fn apply(tables: &mut [TableInput; TABLE_COUNT], layout: &Layout) -> io::Res
     if layout.is_ok_and(|report| report.is_verified()) {
         return Ok(());
     }
-    for table in replay::rows::TableId::ALL {
+    for table in replay_data::rows::TableId::ALL {
         let mut reason = String::new();
         for family in FAMILIES
             .iter()
@@ -91,7 +90,7 @@ pub fn status(report: Option<&Report>) -> impl Serialize + '_ {
         "state": if report.is_verified() { "verified" } else { "refused" },
         "static_token_maximum": report.static_token_maximum,
         "modifier_keys_checked": report.modifiers.len(),
-        "static_tokens_checked": engine::fixed_layout::TOKEN_IDS.len(),
+        "static_tokens_checked": engine_fixed_layout::fixed_layout::TOKEN_IDS.len(),
         "layout_failures": status::sequence(report.failures().map(DisplayValue)),
         "refusals": status::sequence(FAMILIES.iter().copied().filter_map(move |family| {
             refusal(&Ok(*report), family).map(|reason| status::status!({
@@ -104,8 +103,10 @@ pub fn status(report: Option<&Report>) -> impl Serialize + '_ {
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn allocation_failure_exercise() -> io::Result<()> {
-    let mut tables = replay::rows::TableId::ALL.map(|table| {
-        TableInput::Sampled(TableView::Complete(replay::rows::TableRows::empty(table)))
+    let mut tables = replay_data::rows::TableId::ALL.map(|table| {
+        TableInput::Sampled(TableView::Complete(replay_data::rows::TableRows::empty(
+            table,
+        )))
     });
     apply(&mut tables, &Err("synthetic native layout changed"))
 }
@@ -113,19 +114,19 @@ pub fn allocation_failure_exercise() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{
-        cpdx_lexer, cresearch_slot,
-        fixed_layout::{GAP, TOKEN_IDS},
-        modifier_keys,
-    };
-    use replay::{
-        fixed_layout::RESEARCH_IDLE,
-        frame::{DecodedFrame, FrameDecoder, FrameEncoder, FrameInput, Metrics},
-        rows::{TableId, TableRows},
+    use engine_executable::modifier_keys;
+    use engine_fixed_layout::{fixed_layout::GAP, fixed_layout::TOKEN_IDS};
+    use engine_native::cpdx_lexer;
+    use engine_research::cresearch_slot;
+    use replay_data::{rows::TableId, rows::TableRows};
+    use replay_derive::fixed_layout::RESEARCH_IDLE;
+    use replay_frame::{
+        frame::DecodedFrame, frame::FrameDecoder, frame::FrameEncoder, frame::FrameInput,
+        frame::Metrics,
     };
 
     fn valid() -> Report {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
         Report {
             static_token_maximum: 0x6000,
@@ -145,7 +146,7 @@ mod tests {
                 })
             } else if table == TableId::ReservedCountryNaming {
                 TableInput::SharedComplete(std::sync::Arc::new(TableRows::ReservedCountryNaming(
-                    vec![replay::rows::ReservedCountryNamingRow::default()],
+                    vec![replay_data::rows::ReservedCountryNamingRow::default()],
                 )))
             } else {
                 TableInput::SharedComplete(std::sync::Arc::new(TableRows::empty(table)))
@@ -178,7 +179,7 @@ mod tests {
             Err("fresh task-force modifier layout unverified"),
         );
         assert_eq!(task_force_eta_guard(Some(&Ok(valid()))), Ok(()));
-        for &key in replay::fixed_layout::TASK_FORCE_COUNTER_ETA.keys {
+        for &key in replay_derive::fixed_layout::TASK_FORCE_COUNTER_ETA.keys {
             let layout = Ok(mismatched(key as usize));
             assert_eq!(
                 task_force_eta_guard(Some(&layout)),
@@ -220,7 +221,11 @@ mod tests {
         .unwrap();
         assert!(untouched(&input, TableId::DivisionMovement));
         assert!(untouched(&input, TableId::Divisions));
-        assert!(replay::fixed_layout::STRATEGIC_ACTION.tables.is_empty());
+        assert!(
+            replay_derive::fixed_layout::STRATEGIC_ACTION
+                .tables
+                .is_empty()
+        );
     }
 
     /// Every singleton table in the registry is outside the fixture or filled
@@ -291,7 +296,7 @@ mod tests {
     /// patch moves or renames it, every fixed key is refused by its name.
     #[test]
     fn an_unused_builtin_mismatch_refuses_every_key_family_by_name() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
         for index in [0, GAP as usize - 1] {
             assert!(
@@ -336,7 +341,7 @@ mod tests {
     #[test]
     fn token_mismatch_refuses_its_consumers_by_name() {
         let mut report = valid();
-        report.tokens[engine::fixed_layout::tokens()
+        report.tokens[engine_fixed_layout::fixed_layout::tokens()
             .position(|token| token.id == cresearch_slot::IDLE_HANDLE)
             .unwrap()] = Err("token spells a different name");
         let mut input = inputs();
@@ -352,7 +357,7 @@ mod tests {
 
         // The save oracle alone consumes the fixed15 token: named, nothing refused.
         let mut report = valid();
-        report.tokens[engine::fixed_layout::tokens()
+        report.tokens[engine_fixed_layout::fixed_layout::tokens()
             .position(|token| token.id == cpdx_lexer::FIXED15_TOKEN)
             .unwrap()] = Err("exceeds the static token maximum");
         let mut input = inputs();

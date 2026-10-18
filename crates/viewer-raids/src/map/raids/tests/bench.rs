@@ -18,12 +18,16 @@
 use std::time::{Duration, Instant};
 
 use super::*;
-use installed_content::raids::{BattalionRequirement, EquipmentRequirement, SourceKind, StartingPoint};
-use replay::rows::{
-    AirBaseRow, AirWingRow, DivisionMovementRow, DivisionRow, DivisionStatusRow,
-    DivisionTemplateIconRow, NavalBaseRow, NukeRow, RaidAirSiteRow, RaidCountryInputRow,
-    RaidPathDistanceRow, StockpileArchetypeRow, StockpileRow, TemplateSubunit,
-    VariantDefinitionRow, VariantStatsRow, WingEquipmentRow,
+use installed_content_raids::{
+    raids::BattalionRequirement, raids::EquipmentRequirement, raids::SourceKind,
+    raids::StartingPoint,
+};
+use replay_data::{
+    rows::AirBaseRow, rows::AirWingRow, rows::DivisionMovementRow, rows::DivisionRow,
+    rows::DivisionStatusRow, rows::DivisionTemplateIconRow, rows::NavalBaseRow, rows::NukeRow,
+    rows::RaidAirSiteRow, rows::RaidCountryInputRow, rows::RaidPathDistanceRow,
+    rows::StockpileArchetypeRow, rows::StockpileRow, rows::TemplateSubunit,
+    rows::VariantDefinitionRow, rows::VariantStatsRow, rows::WingEquipmentRow,
 };
 
 const LAND: u32 = 6;
@@ -59,18 +63,20 @@ fn kinds() -> Vec<RaidType> {
         name: name.into(),
         category: Some("army".into()),
         show_target: parse("NOT = { is_in_faction_with = FROM }"),
-        target_types: vec![TargetType::Building(installed_content::raids::BuildingSelector {
-            types: vec![target.into()],
-            minimum_level: Some(1),
-            ..Default::default()
-        })],
+        target_types: vec![TargetType::Building(
+            installed_content_raids::raids::BuildingSelector {
+                types: vec![target.into()],
+                minimum_level: Some(1),
+                ..Default::default()
+            },
+        )],
         command_power_raw: 10 * 100_000,
         // Near targets only: the others ask every source.
         max_distance_raw: Some(400 * 100_000),
         ..Default::default()
     };
     let battalions = |name: &str| {
-        vec![installed_content::raids::UnitRequirement {
+        vec![installed_content_raids::raids::UnitRequirement {
             battalions: vec![BattalionRequirement {
                 name: name.into(),
                 min: Some(2),
@@ -102,7 +108,7 @@ fn kinds() -> Vec<RaidType> {
                 types: vec![SourceKind::AirBase],
                 ..Default::default()
             },
-            unit_requirements: vec![installed_content::raids::UnitRequirement {
+            unit_requirements: vec![installed_content_raids::raids::UnitRequirement {
                 equipment: vec![EquipmentRequirement {
                     types: vec!["strategic_bomber".into()],
                     min: Some(10),
@@ -132,7 +138,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
         height: (COLUMN * 4) as i32,
         ..Default::default()
     };
-    let mut graph = installed_content::province_graph::ProvinceGraph::default();
+    let mut graph = installed_content_core::province_graph::ProvinceGraph::default();
     for country in 0..countries {
         for row in 0..COLUMN {
             let id = province(country, row);
@@ -177,7 +183,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
         types: kinds(),
         ..Default::default()
     };
-    assets.trigger_content.buildings = installed_content::buildings::Buildings {
+    assets.trigger_content.buildings = installed_content_core::buildings::Buildings {
         types: ["naval_base", "air_base"]
             .map(|name| {
                 (
@@ -193,7 +199,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
         ..Default::default()
     };
     super::set_counts(&mut assets);
-    assets.equipment = installed_content::equipment::fixture::load(&[(
+    assets.equipment = installed_content_core::equipment::fixture::load(&[(
         "common/units/equipment/a.txt",
         "equipments = { large_plane_airframe = { is_archetype = yes type = strategic_bomber } transport_plane = { is_archetype = yes type = air_transport } }",
     )])

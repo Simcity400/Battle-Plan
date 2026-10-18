@@ -2,7 +2,8 @@
 //! [`dashboard_core::test_fixtures`].
 
 pub use dashboard_core::test_fixtures::*;
-use replay::{frame::DecodedFrame, spool::Record};
+use replay::spool::Record;
+use replay_frame::frame::DecodedFrame;
 
 /// A real read-only recording binding for native query tests, with scratch outside Git.
 pub fn file_source(replay: replay::container::Replay) -> (crate::Source, std::path::PathBuf) {
@@ -26,9 +27,12 @@ pub fn file_source(replay: replay::container::Replay) -> (crate::Source, std::pa
 /// Gather a synthetic content root whose executable contains `test`.
 pub fn content_identity(
     root: &std::path::Path,
-) -> (crate::products::ContentOptions, replay::identity::Identity) {
+) -> (
+    crate::products::ContentOptions,
+    replay_data::identity::Identity,
+) {
     let options = crate::products::ContentOptions {
-        options: installed_content::ResolveOptions {
+        options: installed_content_core::ResolveOptions {
             game_dir: root.to_owned(),
             user_dir: root.join("user"),
             cache_dir: root.join("cache"),
@@ -36,7 +40,7 @@ pub fn content_identity(
         allow_unverified: true,
     };
     std::fs::create_dir_all(root.join("dlc")).unwrap();
-    let gathered = installed_content::gather(&installed_content::GatherOptions {
+    let gathered = installed_content_core::gather(&installed_content_core::GatherOptions {
         game_dir: options.options.game_dir.clone(),
         user_dir: options.options.user_dir.clone(),
         cache_dir: options.options.cache_dir.clone(),

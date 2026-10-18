@@ -3,8 +3,8 @@
 //! definition categories only when a branch reaches them; registration order
 //! and repeated slots are retained.
 
-use installed_content::province_geometry::{Bounds, ProvinceGeometry};
-use replay::rows::{AirWingRow, ArmyOrderPlanRow};
+use installed_content_core::{province_geometry::Bounds, province_geometry::ProvinceGeometry};
+use replay_data::{rows::AirWingRow, rows::ArmyOrderPlanRow};
 
 /// Allocated convoys are already stored on the invasion order.
 pub(super) fn invasion(plan: &ArmyOrderPlanRow) -> Result<i32, String> {
@@ -88,7 +88,7 @@ pub(super) fn distance(map: &ProvinceGeometry, source: u32, destination: u32) ->
             [0; 2]
         }
     };
-    installed_content::province_geometry::native_fixed_sqrt(province_squared(
+    installed_content_core::province_geometry::native_fixed_sqrt(province_squared(
         point(source),
         point(destination),
         map.width,

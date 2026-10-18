@@ -1,8 +1,9 @@
 //! Stored naval mission operands joined during hour preparation.
 //! Camera rebuilds reuse the finished decisions.
 use super::{naval_missions::MissionIcons, *};
-use engine::modifier_keys as keys;
-use replay::{naval_mission_derive as derive, rows::*};
+use engine_executable::modifier_keys as keys;
+use replay_data::rows::*;
+use replay_derive::naval_mission_derive as derive;
 use std::{
     collections::HashMap,
     sync::{Mutex, OnceLock},
@@ -14,12 +15,12 @@ type Fact<T> = Result<T, String>;
 pub(super) const UNKNOWN: &str = "naval mission operands are undecided (see named input gaps)";
 
 type RegionTopology = (
-    BTreeMap<u32, Vec<installed_content::naval_path::RegionEdge>>,
+    BTreeMap<u32, Vec<installed_content_naval_path::naval_path::RegionEdge>>,
     BTreeSet<u32>,
 );
 
 pub(super) struct Content {
-    terrain: installed_content::terrain::TerrainDefinitions,
+    terrain: installed_content_core::terrain::TerrainDefinitions,
     naval_terrain: BTreeMap<u32, Vec<u8>>,
     efficiencies: derive::Defines,
     fuel_factor: i64,
@@ -27,14 +28,14 @@ pub(super) struct Content {
     distance_factor: i64,
     edges: OnceLock<RegionTopology>,
     /// Native sea-distance matrix is built at load, never per hour.
-    distances: OnceLock<Mutex<installed_content::naval_path::Distances>>,
+    distances: OnceLock<Mutex<installed_content_naval_path::naval_path::Distances>>,
 }
 
 impl Content {
     pub(super) fn read(
-        terrain: installed_content::terrain::TerrainDefinitions,
-        regions: &BTreeMap<u32, installed_content::regions::StrategicRegion>,
-        defines: &installed_content::defines::Defines,
+        terrain: installed_content_core::terrain::TerrainDefinitions,
+        regions: &BTreeMap<u32, installed_content_regions::regions::StrategicRegion>,
+        defines: &installed_content_core::defines::Defines,
     ) -> io::Result<Self> {
         Ok(Self {
             terrain,
@@ -57,7 +58,7 @@ impl Content {
         })
     }
 
-    fn terrain(&self, region: Option<u32>) -> Fact<&installed_content::terrain::TerrainCategory> {
+    fn terrain(&self, region: Option<u32>) -> Fact<&installed_content_core::terrain::TerrainCategory> {
         // invalid/absent region terrain uses the native literal "ocean".
         let at = region
             .and_then(|id| self.naval_terrain.get(&id))
@@ -73,8 +74,8 @@ fn data<T: TableSchema>(frame: &DecodedFrame) -> Fact<&[T::Row]> {
 }
 
 type Topology<'a> = Fact<(
-    &'a installed_content::province_graph::ProvinceGraph,
-    &'a installed_content::province_geometry::ProvinceGeometry,
+    &'a installed_content_core::province_graph::ProvinceGraph,
+    &'a installed_content_core::province_geometry::ProvinceGeometry,
 )>;
 
 /// The operands and admission context prepared once for one replay hour.
@@ -214,7 +215,7 @@ impl<'a> Hour<'a> {
         if reference == 0 {
             return Ok(0);
         }
-        if replay::sliced::read_hour(
+        if replay_data::sliced::read_hour(
             data::<tables::SliceReads>(self.frame)?,
             TableId::NavalMissionCommanders,
             country,
@@ -280,7 +281,7 @@ impl<'a> Hour<'a> {
         let key_name = names
             .name(definition.token)
             .map_err(|error| error.to_string())?;
-        let raw = |block: &installed_content::modifiers::Modifiers| -> Fact<Option<i64>> {
+        let raw = |block: &installed_content_core::modifiers::Modifiers| -> Fact<Option<i64>> {
             if let Some(reason) = block.unheld.cause() {
                 return Err(format!(
                     "terrain {} modifier {key_name}: {reason}",
@@ -524,7 +525,7 @@ impl<'a> Hour<'a> {
 
     fn admits(&self, name: &str, owner: u32, submarine: bool) -> Fact<bool> {
         let (graph, _) = self.topology.as_ref().map_err(Clone::clone)?;
-        let rule = installed_content::adjacency_rules::find(&graph.rules, name)
+        let rule = installed_content_core::adjacency_rules::find(&graph.rules, name)
             .ok_or_else(|| format!("naval adjacency rule {name} is undefined"))?;
         self.moves
             .as_ref()
@@ -623,7 +624,7 @@ impl<'a> Hour<'a> {
         }
         let (edges, sea_regions) = self.content.edges.get_or_init(|| {
             (
-                installed_content::naval_path::region_edges(
+                installed_content_naval_path::naval_path::region_edges(
                     graph,
                     geometry,
                     &self.anchors.region_provinces,
@@ -641,9 +642,13 @@ impl<'a> Hour<'a> {
                     .collect(),
             )
         });
-        if !installed_content::naval_path::region_reaches(edges, sea_regions, from, region, |name| {
-            self.admits(name, row.mission_owner, all_flag_seven)
-        })? {
+        if !installed_content_naval_path::naval_path::region_reaches(
+            edges,
+            sea_regions,
+            from,
+            region,
+            |name| self.admits(name, row.mission_owner, all_flag_seven),
+        )? {
             return Ok(false);
         }
         if force.fleet == 0 {
@@ -665,7 +670,11 @@ impl<'a> Hour<'a> {
             .distances
             // Port sea provinces come from the resolved map definition. Fixed recorded
             // content retains those load-time values; no map-authoring update is replayed.
-            .get_or_init(|| Mutex::new(installed_content::naval_path::Distances::new(geometry, ports)))
+            .get_or_init(|| {
+                Mutex::new(installed_content_naval_path::naval_path::Distances::new(
+                    geometry, ports,
+                ))
+            })
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         for province in sea {

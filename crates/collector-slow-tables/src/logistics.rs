@@ -3,12 +3,13 @@
 //! each country the game computes them for. Daily, in the first slot after
 //! the daily update that writes them.
 use crate::{clock::qpc, table_capture::CaptureRows, table_conversion::table};
-use engine::{Memory, clogistics_status as native, walk::Outcome};
-use replay::{
-    cadence::{SKIPPED_REASON, should_walk},
-    frame::TableView,
-    rows::{LogisticsEquipmentRow, TableId, tables},
+use engine_land_inputs::clogistics_status as native;
+use engine_native::{Memory, walk::Outcome};
+use replay_data::{
+    cadence::SKIPPED_REASON, cadence::should_walk, rows::LogisticsEquipmentRow, rows::TableId,
+    rows::tables,
 };
+use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::LogisticsEquipment];
@@ -98,7 +99,7 @@ impl Captured {
                 token: row.token,
                 balance_raw: row.balance_raw,
                 stock_raw: row.stock_raw,
-                available_raw: replay::rows::Recorded::Value(row.available_raw),
+                available_raw: replay_data::rows::Recorded::Value(row.available_raw),
             },
         )]
     }
@@ -107,11 +108,11 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
 
     #[test]
     fn walks_only_on_the_first_slot_after_the_daily_update_or_a_full_hour() {
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -169,7 +170,7 @@ mod tests {
                     token: 0x5001,
                     balance_raw: i64::MIN,
                     stock_raw: 14_507_500_000,
-                    available_raw: replay::rows::Recorded::Value(Some(300_000)),
+                    available_raw: replay_data::rows::Recorded::Value(Some(300_000)),
                 },
                 LogisticsEquipmentRow {
                     country: 4,
@@ -177,7 +178,7 @@ mod tests {
                     token: 0x5002,
                     balance_raw: -11_200_000,
                     stock_raw: 0,
-                    available_raw: replay::rows::Recorded::Value(Some(0)),
+                    available_raw: replay_data::rows::Recorded::Value(Some(0)),
                 },
             ]
         );

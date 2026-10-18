@@ -1,17 +1,13 @@
 //! Combatant and reserve hover builders, rebuilt from simulation rows.
 //! Division hover dispatch, stat composition, reserve reinforcement chance
 //! and division commander text.
-use installed_content::{
-    localisation::{Argument, Localisation},
-    map::ProvinceKind,
+use installed_content_core::map::ProvinceKind;
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use replay_data::{
+    rows::LandCombatDetailsRow, rows::LandCombatDivisionModifierRow, rows::LandCombatDivisionRow,
+    rows::LandCombatSideRow, rows::Recorded, rows::tables,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        LandCombatDetailsRow, LandCombatDivisionModifierRow, LandCombatDivisionRow,
-        LandCombatSideRow, Recorded, tables,
-    },
-};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -61,7 +57,7 @@ fn combat_strength(strength: i64, maximum: i64, factor: i64) -> Option<i64> {
 // truncated, a negative value near zero keeping its sign, and the whole
 // part through the signed i32 formatter.
 fn one_decimal(value: i64) -> String {
-    installed_content::fixed5::fixed5_to_string(value, 1)
+    installed_content_core::fixed5::fixed5_to_string(value, 1)
 }
 
 fn tactic_effects(
@@ -197,7 +193,7 @@ fn combat_stat(
 // fixed5 localisation. The piercing table is authored in NMilitary, and its
 // final "less than" label uses the preceding threshold.
 fn fixed_decimal(value: i64) -> String {
-    installed_content::fixed5::fixed5_to_string(value, -1)
+    installed_content_core::fixed5::fixed5_to_string(value, -1)
 }
 
 /// The game frame 8/9: the two authored dice sizes are signed integers;
@@ -431,7 +427,7 @@ impl Wars {
         for relation in relations
             .rows()
             .iter()
-            .filter(|row| row.type_id == engine::cwar_relation::TYPE && row.retired == 0)
+            .filter(|row| row.type_id == engine_native::cwar_relation::TYPE && row.retired == 0)
         {
             match (
                 slots.get(&relation.first_country),
@@ -730,7 +726,7 @@ fn modifier_icon_tooltip(
     }
     if frame == 13 {
         let defines = defines?;
-        let amount = engine::csub_unit_definition::movement_air_defense_value(
+        let amount = engine_native::csub_unit_definition::movement_air_defense_value(
             unit.air_attack,
             defines.air_superiority[0],
             defines.air_superiority[1],
@@ -923,8 +919,8 @@ struct ReserveSources {
 /// breakdown does; labels show as stored in the recording's language and are recovered
 /// through their keys in another ([`super::naval_labels`]).
 fn reserve_tree(
-    nodes: &[replay::rows::ModifierBreakdownNode],
-    definition: &replay::rows::ModifierDefinitionRow,
+    nodes: &[replay_data::rows::ModifierBreakdownNode],
+    definition: &replay_data::rows::ModifierDefinitionRow,
     labels: &super::naval_labels::RecordedLabels,
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -962,7 +958,7 @@ fn reserve_sources(
         let definition = definitions
             .rows()
             .iter()
-            .find(|r| r.index == engine::modifier_keys::LAND_REINFORCE_RATE)
+            .find(|r| r.index == engine_executable::modifier_keys::LAND_REINFORCE_RATE)
             .ok_or("the land_reinforce_rate modifier definition is missing")?;
         Ok((trees, truncated, definition))
     })();
@@ -1054,7 +1050,7 @@ fn reinforcement(
         }
     }
     // The speed share, which the collector composes with the live
-    // SLOWEST_SPEED (replay::rows::LandCombatDivisionRow::reinforcement_speed).
+    // SLOWEST_SPEED (replay_data::rows::LandCombatDivisionRow::reinforcement_speed).
     let share = match row.reinforcement_speed {
         Recorded::NotRecorded => return Ok(Reinforcement::Unrecorded(RESERVE_SPEED_UNRECORDED)),
         Recorded::Value(None) => return Ok(Reinforcement::Unrecorded(RESERVE_SPEED_REFUSED)),

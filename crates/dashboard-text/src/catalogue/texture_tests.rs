@@ -35,7 +35,7 @@ pub fn texture_catalogue(
     }
     let layers =
         ResolvedLayers::from_folders(&[(&base.0, &[][..]), (&modification.0, &[][..])]).unwrap();
-    catalogue.sprites = installed_content::gfx::read(&layers).unwrap();
+    catalogue.sprites = installed_content_gfx::gfx::read(&layers).unwrap();
     catalogue.guis = OnceLock::new();
     catalogue.content = Arc::new(ResolvedContent {
         layers,
@@ -85,7 +85,7 @@ fn strip() -> Rgba8Image {
 #[test]
 #[ignore = "requires DXC and a GPU; synthetic content only"]
 fn rendered_sprite_frames_are_shared_across_callers_and_new_stacks_read_fresh() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, folders) = texture_catalogue(
         &[(
@@ -126,7 +126,7 @@ fn rendered_sprite_frames_are_shared_across_callers_and_new_stacks_read_fresh() 
 #[test]
 #[ignore = "requires DXC and a GPU; synthetic content only"]
 fn requested_sprite_batches_match_single_images_and_share_the_session() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, folders) = texture_catalogue(
         &[(
@@ -164,7 +164,7 @@ fn requested_sprite_batches_match_single_images_and_share_the_session() {
 /// frame pitch, including when the resulting width does not divide by the frame count.
 #[test]
 fn a_mod_png_uses_native_frames_with_and_without_padding() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let image = strip();
     let (catalogue, _folders) = texture_catalogue(
@@ -318,7 +318,7 @@ pub fn refusal_textures() -> Vec<(&'static str, Vec<u8>, &'static str)> {
 
 #[test]
 fn dds_and_engine_targa_still_decode_and_resolver_candidates_win() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let image = strip();
     let (catalogue, _folders) = texture_catalogue(
@@ -347,7 +347,7 @@ fn dds_and_engine_targa_still_decode_and_resolver_candidates_win() {
 
 #[test]
 fn padding_and_edges_above_2048_decode() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let wide = Rgba8Image {
         width: 4097,
@@ -374,7 +374,7 @@ fn padding_and_edges_above_2048_decode() {
 
 #[test]
 fn native_failures_keep_their_distinct_reasons() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let refusals = refusal_textures();
     let files: Vec<_> = refusals
@@ -421,7 +421,7 @@ fn native_failures_keep_their_distinct_reasons() {
 
 #[test]
 fn texture_frames_keep_fractional_padded_pixels_in_both_directions() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folders) = texture_catalogue(
         &[(
@@ -477,7 +477,7 @@ fn texture_frames_keep_fractional_padded_pixels_in_both_directions() {
 
 #[test]
 fn plain_sprite_refuses_a_missing_resolved_default_program_by_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, folder) = folder_catalogue(&[(
         "interface/art.gfx",
@@ -521,7 +521,7 @@ fn transposed(image: &Rgba8Image) -> Rgba8Image {
 #[test]
 #[ignore = "requires DXC and a GPU; synthetic content only"]
 fn frame_animated_sprites_render_native_strip_frames() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folders) = texture_catalogue(
         &[("interface/art.gfx", "spriteTypes = {
@@ -737,7 +737,7 @@ fn sprite_shaders_execute_stack_effects_masks_and_animation_at_rest() {
 
 #[test]
 fn artwork_shader_source_warnings_survive_lazy_reads() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folders) = texture_catalogue(
         &[
@@ -752,7 +752,7 @@ fn artwork_shader_source_warnings_survive_lazy_reads() {
     let layers = &catalogue.content.layers;
     let reads = layers.report_uncovered_reads();
     let program =
-        installed_content::pdxshader::program::read_reported(layers, b"outside/test.lua").unwrap();
+        installed_content_core::pdxshader::program::read_reported(layers, b"outside/test.lua").unwrap();
     let warnings = catalogue.reader_warning_lines();
     assert!(warnings.contains(&reads.warning().unwrap()));
     for warning in program

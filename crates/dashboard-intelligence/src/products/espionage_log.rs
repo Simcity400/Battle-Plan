@@ -19,11 +19,9 @@ use dashboard_base::{
 };
 use dashboard_core::config::LoadContext;
 use dashboard_text::metadata::branch_bounds;
-use replay::{
-    container::Replay,
-    frame::DecodedFrame,
-    rows::{OperationRow, TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{rows::OperationRow, rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -35,7 +33,7 @@ use ts_rs::TS;
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::validate_campaign;
 #[cfg(any(test, feature = "test-support"))]
-use replay::frame::FrameDecoder;
+use replay_frame::frame::FrameDecoder;
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::{Arc, atomic::Ordering};
 
@@ -291,7 +289,7 @@ impl Builder {
             .language
             .strip_prefix("l_")
             .unwrap_or(&replay.identity.language);
-        let mut repeated: BTreeMap<i32, Vec<&replay::rows::OperationCompletionRow>> =
+        let mut repeated: BTreeMap<i32, Vec<&replay_data::rows::OperationCompletionRow>> =
             BTreeMap::new();
         for row in rows {
             #[cfg(test)]
@@ -467,7 +465,8 @@ impl Builder {
         for slots in assigned.values_mut() {
             slots.sort_unstable_by_key(|slot| slot.ordinal);
         }
-        let mut named: HashMap<u64, Option<&replay::rows::OperativeMembershipRow>> = HashMap::new();
+        let mut named: HashMap<u64, Option<&replay_data::rows::OperativeMembershipRow>> =
+            HashMap::new();
         let names_read = frame
             .complete::<tables::OperativeMemberships>()
             .ok()
@@ -589,7 +588,7 @@ impl Builder {
                             })
                             .and_then(|row| row.name.require("OperativeMemberships.name"))
                             .and_then(|bytes| {
-                                std::str::from_utf8(installed_content::parser::c_string(bytes))
+                                std::str::from_utf8(installed_content_core::parser::c_string(bytes))
                                     .map(str::to_owned)
                                     .map_err(|_| {
                                         "Assigned operative name has non-text bytes".to_owned()
@@ -1034,7 +1033,7 @@ fn present(
                 {
                     if let Some(raw) = name.name.take() {
                         match dashboard_text::catalogue::localised_bytes(
-                            &installed_content::localisation::Localisation::default(),
+                            &installed_content_localisation::localisation::Localisation::default(),
                             raw.as_bytes(),
                             dashboard_text::catalogue::View::Plain,
                         ) {
@@ -1260,10 +1259,8 @@ mod tests {
     use super::*;
     use dashboard_base::products::MAX_PRODUCT_REPLY_BYTES;
     use dashboard_core::transport::json_len;
-    use replay::{
-        frame::TableView,
-        rows::{CountryLinkRow, CountryRow, TableRows},
-    };
+    use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableRows};
+    use replay_frame::frame::TableView;
 
     pub(super) fn frame(hour: i32, count: u32) -> DecodedFrame {
         let mut frame = dashboard_base::test_fixtures::source(1, hour, Some(1));
@@ -1348,7 +1345,7 @@ mod tests {
     #[test]
     fn espionage_completions_override_disappearance_and_keep_deleted_instances_without_bulk_text() {
         use dashboard_base::test_fixtures::{CAMPAIGN, records};
-        use replay::rows::OperationCompletionRow;
+        use replay_data::rows::OperationCompletionRow;
         let mut initial = frame(100, 1);
         *initial.tables[TableId::OperationCompletions.index()] =
             TableView::Complete(TableRows::OperationCompletions(Vec::new()));
@@ -1432,7 +1429,7 @@ mod tests {
 
     #[test]
     fn espionage_held_scheduled_and_peer_memberships_do_not_supply_operative_names() {
-        use replay::rows::{OperationAssignmentRow, OperativeMembershipRow};
+        use replay_data::{rows::OperationAssignmentRow, rows::OperativeMembershipRow};
         let mut first = frame(15, 1);
         let mut operation = first.complete::<tables::Operations>().unwrap()[0].clone();
         operation.assigned_slots = 1;
@@ -1458,7 +1455,7 @@ mod tests {
         let mut scheduled = first.clone();
         scheduled.hour = 16;
         scheduled.metrics.table_ns[TableId::OperativeMemberships.index()] = 0;
-        assert!(replay::cadence::is_refresh(
+        assert!(replay_data::cadence::is_refresh(
             TableId::OperativeMemberships,
             scheduled.hour
         ));
@@ -1466,8 +1463,8 @@ mod tests {
         peer.hour = 17;
         peer.metrics.table_ns[TableId::WingCumulative.index()] = 1;
         assert_eq!(
-            replay::cadence::cadence(TableId::WingCumulative),
-            replay::cadence::cadence(TableId::OperativeMemberships)
+            replay_data::cadence::cadence(TableId::WingCumulative),
+            replay_data::cadence::cadence(TableId::OperativeMemberships)
         );
         let mut refreshed = first.clone();
         refreshed.hour = 18;
@@ -1507,7 +1504,7 @@ mod tests {
 
     #[test]
     fn espionage_names_use_recorded_assignment_order_and_do_not_backfill_an_unread_hour() {
-        use replay::rows::{OperationAssignmentRow, OperativeMembershipRow};
+        use replay_data::{rows::OperationAssignmentRow, rows::OperativeMembershipRow};
         let mut first = frame(100, 1);
         let mut operation = first.complete::<tables::Operations>().unwrap()[0].clone();
         operation.assigned_slots = 1;
@@ -1553,7 +1550,7 @@ mod tests {
 
     #[test]
     fn espionage_window_keeps_the_actual_ending_read_before_its_clipped_run() {
-        use replay::rows::{OperationAssignmentRow, OperativeMembershipRow};
+        use replay_data::{rows::OperationAssignmentRow, rows::OperativeMembershipRow};
         let mut builder = Builder::default();
         let mut initial = frame(100, 1);
         *initial.tables[TableId::Operations.index()] =
@@ -1697,7 +1694,7 @@ mod tests {
     #[test]
     fn espionage_product_reads_5000_countries_and_dates_disappearance_after_a_gap() {
         use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-        use replay::rows::LexicalTokenRow;
+        use replay_data::rows::LexicalTokenRow;
         let mut first = frame(100, 5000);
         first.tables[TableId::Campaign.index()] =
             source(1, 100, Some(1)).tables[TableId::Campaign.index()].clone();
@@ -2151,7 +2148,7 @@ mod tests {
 
     #[test]
     fn espionage_definition_name_gaps_are_recording_gaps_without_content_keys() {
-        use replay::rows::LexicalTokenRow;
+        use replay_data::rows::LexicalTokenRow;
         let mut builder = Builder::default();
         builder.observe(&frame(100, 1));
         builder.observe(&frame(101, 1));
@@ -2207,7 +2204,7 @@ mod tests {
 
     #[test]
     fn espionage_recorded_definition_name_refusals_are_not_recording_or_content_misses() {
-        use replay::rows::LexicalTokenRow;
+        use replay_data::rows::LexicalTokenRow;
         for (literal, reason) in [
             (vec![0xff], "unsupported non-text recorded name bytes"),
             (Vec::new(), "empty recorded name"),

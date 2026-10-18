@@ -5,8 +5,9 @@ use crate::{
     event_ledger::{Event, EventLedger},
     hook::Hook,
 };
-type Clock = engine::cgame_state::Clock<u64>;
-use engine::{Memory, building_damage_sites as native};
+type Clock = engine_native::cgame_state::Clock<u64>;
+use engine_events::building_damage_sites as native;
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::{
@@ -243,16 +244,16 @@ unsafe extern "system" fn before(
                 }
                 token = LEDGER.claim((building, 0))?;
                 let base = BASE.load(Ordering::Relaxed);
-                let memory = unsafe { engine::memory::LiveMemory::new() };
+                let memory = unsafe { engine_native::memory::LiveMemory::new() };
                 let game = base
-                    .checked_add(engine::cgame_state::SINGLETON_RVA)
-                    .and_then(|a| engine::read::<u64>(&memory, a))
+                    .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+                    .and_then(|a| engine_native::read::<u64>(&memory, a))
                     .and_then(|p| usize::try_from(p).ok())
                     .filter(|p| *p != 0)
                     .ok_or("building bombing game state unreadable")?;
                 let hour = game
-                    .checked_add(engine::cgame_state::CURRENT_HOUR)
-                    .and_then(|a| engine::read::<i32>(&memory, a))
+                    .checked_add(engine_native::cgame_state::CURRENT_HOUR)
+                    .and_then(|a| engine_native::read::<i32>(&memory, a))
                     .ok_or("building bombing clock unreadable")?;
                 let snapshot =
                     native::snapshot(&memory, base, game, building, source, caller, hour)?;
@@ -294,11 +295,11 @@ unsafe extern "system" fn after(token: usize, observation: *const Observation, r
             {
                 return Err("building bombing native world changed during original");
             }
-            let memory = unsafe { engine::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native::memory::LiveMemory::new() };
             let base = BASE.load(Ordering::Relaxed);
             if base
-                .checked_add(engine::cgame_state::SINGLETON_RVA)
-                .and_then(|a| engine::read::<u64>(&memory, a))
+                .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+                .and_then(|a| engine_native::read::<u64>(&memory, a))
                 != Some(observation.game as u64)
             {
                 return Err("building bombing game root changed during native call");
@@ -312,7 +313,7 @@ unsafe extern "system" fn after(token: usize, observation: *const Observation, r
             if returned == 0 || returned != observation.output {
                 return Err("building bombing return pointer differs");
             }
-            let credited = engine::read::<i64>(&memory, returned)
+            let credited = engine_native::read::<i64>(&memory, returned)
                 .ok_or("building bombing credited damage unreadable")?;
             if snapshot.attacker.is_none() {
                 UNATTRIBUTED.fetch_add(1, Ordering::Relaxed);
@@ -373,7 +374,7 @@ impl Hooks {
             FREQUENCY.store(frequency as u64, Ordering::Relaxed);
         }
         let install = || -> Result<Hook, &'static str> {
-            if engine::read::<[u8; 16]>(memory, base + native::APPLY_DAMAGE_RVA)
+            if engine_native::read::<[u8; 16]>(memory, base + native::APPLY_DAMAGE_RVA)
                 != Some(native::APPLY_DAMAGE_SENTINEL)
             {
                 return Err("building bombing sentinel differs or unreadable");

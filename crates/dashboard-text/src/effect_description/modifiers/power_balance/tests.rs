@@ -1,7 +1,8 @@
 use super::*;
 use crate::effect_description::tests::{Fixture, fresh};
-use installed_content::power_balance::{Database, Definition, Range};
-use replay::{frame::TableView, rows::*};
+use installed_content_core::{power_balance::Database, power_balance::Definition, power_balance::Range};
+use replay_data::rows::*;
+use replay_frame::frame::TableView;
 
 fn fixture() -> Fixture {
     let mut fixture = Fixture::new();
@@ -97,11 +98,11 @@ fn render(fixture: &Fixture, database: &Database, body: &str) -> Description {
 
 #[test]
 fn static_balance_modifiers_use_the_shared_raw_formatter_without_lf() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let database = database();
-    let static_modifiers = installed_content::static_modifiers::Descriptions::from_blocks([(
+    let static_modifiers = installed_content_core::static_modifiers::Descriptions::from_blocks([(
         "SYN_MOD".into(),
         Modifiers::default(),
     )]);
@@ -125,7 +126,7 @@ fn static_balance_modifiers_use_the_shared_raw_formatter_without_lf() {
 
 #[test]
 fn set_and_remove_compare_the_first_country_membership_and_keep_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let database = database();
@@ -159,7 +160,7 @@ fn set_and_remove_compare_the_first_country_membership_and_keep_order() {
 
 #[test]
 fn predicted_value_clamps_and_range_changes_use_strict_bounds_and_two_newlines() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let database = database();
@@ -194,7 +195,7 @@ fn predicted_value_clamps_and_range_changes_use_strict_bounds_and_two_newlines()
 
 #[test]
 fn duplicate_runtime_range_identity_is_a_named_refusal() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let definition = database().definition(b"SYN_BALANCE").unwrap().clone();
@@ -232,7 +233,7 @@ fn duplicate_runtime_range_identity_is_a_named_refusal() {
 
 #[test]
 fn moving_range_formats_the_numeric_difference_with_a_forced_plus() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     *fixture.frame.tables[TableId::LexicalTokens.index()] =
@@ -252,8 +253,9 @@ fn moving_range_formats_the_numeric_difference_with_a_forced_plus() {
             },
         ]));
     let definition = database().definition(b"SYN_BALANCE").unwrap().clone();
-    let modifiers =
-        |body: &[u8]| installed_content::modifiers::values(&installed_content::parser::parse(body).unwrap().items);
+    let modifiers = |body: &[u8]| {
+        installed_content_core::modifiers::values(&installed_content_core::parser::parse(body).unwrap().items)
+    };
     let database = Database::from_parsed([(
         definition,
         vec![
@@ -286,7 +288,7 @@ fn moving_range_formats_the_numeric_difference_with_a_forced_plus() {
 
 #[test]
 fn changing_an_unnamed_recorded_side_refuses_its_lost_null_identity() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     let TableView::Complete(TableRows::PowerBalances(rows)) =

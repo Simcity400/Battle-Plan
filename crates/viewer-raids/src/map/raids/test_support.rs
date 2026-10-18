@@ -1,13 +1,16 @@
 //! Synthetic raid inputs shared with host composition tests.
 use super::*;
-use installed_content::raids::{RaidCategory, RaidType as Kind, TargetType};
-use replay::{
-    frame::TableView,
-    rows::{LexicalTokenRow, RaidCountryRow, RaidTargetRow, RaidTargetStatusRow, TableSchema},
+use installed_content_raids::{raids::RaidCategory, raids::RaidType as Kind, raids::TargetType};
+use replay_data::{
+    rows::LexicalTokenRow, rows::RaidCountryRow, rows::RaidTargetRow, rows::RaidTargetStatusRow,
+    rows::TableSchema,
 };
+use replay_frame::frame::TableView;
 use viewer_foundation::map::test_support::gui;
-pub fn parse(source: &str) -> Vec<installed_content::parser::Item> {
-    installed_content::parser::parse(source.as_bytes()).unwrap().items
+pub fn parse(source: &str) -> Vec<installed_content_core::parser::Item> {
+    installed_content_core::parser::parse(source.as_bytes())
+        .unwrap()
+        .items
 }
 
 /// The count trigger names of the assets' buildings, as the document
@@ -16,7 +19,7 @@ pub fn set_counts(assets: &mut RaidAssets) {
     let facts = &mut assets.trigger_content;
     let ideologies = facts.ideologies.get_or_insert_with(Default::default);
     let mut names = (*facts.triggers).clone();
-    names.counts = Some(installed_content::trigger_keys::CountTriggerNames::new(
+    names.counts = Some(installed_content_core::trigger_keys::CountTriggerNames::new(
         &facts.buildings,
         ideologies,
         &[],
@@ -36,7 +39,7 @@ pub fn kind(name: &str, target: TargetType) -> Kind {
 
 /// Provinces 1..=4 in state 10 (1, 2) and state 20 (3, 4), in a 4 x 1 map.
 pub fn assets() -> RaidAssets {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut assets = unnamed_assets();
     set_counts(&mut assets);
@@ -111,10 +114,10 @@ pub fn unnamed_assets() -> RaidAssets {
 /// modifiers and both ace country modifiers registered at zero.
 pub fn registered_command_power(
     slots: impl IntoIterator<Item = u32>,
-) -> Vec<replay::rows::CountryCommandPowerRow> {
+) -> Vec<replay_data::rows::CountryCommandPowerRow> {
     slots
         .into_iter()
-        .map(|canonical_slot| replay::rows::CountryCommandPowerRow {
+        .map(|canonical_slot| replay_data::rows::CountryCommandPowerRow {
             canonical_slot,
             allocated_command_power_raw: 0,
             max_command_power: Some(0),
@@ -126,8 +129,8 @@ pub fn registered_command_power(
 }
 
 /// A RaidCountryInputs row whose two launch modifiers are registered at zero.
-pub fn registered_launch_inputs() -> replay::rows::RaidCountryInputRow {
-    replay::rows::RaidCountryInputRow {
+pub fn registered_launch_inputs() -> replay_data::rows::RaidCountryInputRow {
+    replay_data::rows::RaidCountryInputRow {
         air_range_factor: Some(0),
         naval_commando_range_factor: Some(0),
         ..Default::default()
@@ -146,7 +149,7 @@ pub fn reserved_faction(frame: &mut DecodedFrame, faction: u64) {
         .unwrap()
         .to_vec();
     assert_eq!(rows.len(), 1);
-    rows[0].faction = replay::rows::Recorded::Value(Some(faction));
+    rows[0].faction = replay_data::rows::Recorded::Value(Some(faction));
     put::<tables::ReservedCountryNaming>(frame, rows);
 }
 
@@ -256,7 +259,7 @@ pub fn target(id: u32, province: u32, detected: u8) -> RaidTargetRow {
 
 /// Provinces 1..=4 in a row, every edge 50000; 1 and 2 are sea, 3 and 4 land.
 pub fn path_assets() -> RaidAssets {
-    let mut graph = installed_content::province_graph::ProvinceGraph::default();
+    let mut graph = installed_content_core::province_graph::ProvinceGraph::default();
     for id in 1..=4_u32 {
         let next: Vec<_> = [id.wrapping_sub(1), id + 1]
             .into_iter()
@@ -267,7 +270,7 @@ pub fn path_assets() -> RaidAssets {
     }
     let mut assets = assets();
     assets.geometry.land = BTreeSet::from([3, 4]);
-    assets.moves = Ok(installed_content::unit_path::MoveGraph::new(
+    assets.moves = Ok(installed_content_unit_path::unit_path::MoveGraph::new(
         &graph,
         &assets.geometry,
     ));

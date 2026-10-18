@@ -10,7 +10,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-engine.workspace = true
+engine-allocation.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 

@@ -2,8 +2,8 @@
 //! tension the game showed, each country's contribution to it and the events
 //! (threat sources) that raised or lowered it.
 //!
-//! Every value is a recorded field, kept exact (`engine::cworld_threat`,
-//! `engine::cthreat_source`):
+//! Every value is a recorded field, kept exact (`engine_stability::cworld_threat`,
+//! `engine_stability::cthreat_source`):
 //!
 //! - A threat source's contributions (`current_raw`, `final_raw`) are fixed
 //!   point with [`cthreat_source::FIXED_POINT_SCALE`] units per percentage point
@@ -54,13 +54,13 @@ use dashboard_base::{products::LoadContext, products::country_history::branch_hi
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::validate_campaign;
 use dashboard_text::metadata::{link_slots, slot_read};
-use engine::{cthreat_source, cworld_threat};
+use engine_stability::{cthreat_source, cworld_threat};
 #[cfg(any(test, feature = "test-support"))]
-use replay::{container::Replay, frame::FrameDecoder};
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::tables};
+#[cfg(any(test, feature = "test-support"))]
+use replay_frame::frame::FrameDecoder;
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
 use std::{
@@ -385,7 +385,7 @@ impl Scan {
     #[cfg(any(test, feature = "test-support"))]
     pub fn observe(
         &mut self,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         decoded: &DecodedFrame,
     ) -> io::Result<()> {
         self.refresh_holders(decoded, true, true);
@@ -450,7 +450,7 @@ impl Scan {
     }
     fn observe_inputs(
         &mut self,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         decoded: &DecodedFrame,
         identities_changed: bool,
         contributions_changed: bool,
@@ -654,7 +654,7 @@ impl Scan {
     #[cfg(any(test, feature = "test-support"))]
     pub fn prepare(
         &mut self,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         frame: &DecodedFrame,
     ) -> io::Result<()> {
         let changes = self
@@ -665,7 +665,7 @@ impl Scan {
     }
     pub fn prepare_changed(
         &mut self,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         frame: &DecodedFrame,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
@@ -772,7 +772,7 @@ impl Scan {
     }
     fn prepare_frame(
         &mut self,
-        format: replay::format::FormatVersion,
+        format: replay_data::format::FormatVersion,
         frame: &DecodedFrame,
         identities_changed: bool,
         contributions_changed: bool,

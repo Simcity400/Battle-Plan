@@ -2,7 +2,7 @@
 //! resume points so later queries walk only the inputs their reply needs.
 use super::*;
 use dashboard_base::prepared::series::{self, Reader};
-use replay::codec::Decoder;
+use replay_data::codec::Decoder;
 use std::sync::{Arc, Mutex};
 
 /// Viewpoint walks kept per source, the most recently used first.

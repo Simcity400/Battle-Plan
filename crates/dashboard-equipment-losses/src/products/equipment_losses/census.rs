@@ -2,7 +2,7 @@
 
 use super::*;
 #[cfg(test)]
-use replay::frame::ViewIdentity;
+use replay_frame::frame::ViewIdentity;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Membership {
@@ -80,7 +80,7 @@ pub(super) fn memberships(decoded: &DecodedFrame) -> Option<BTreeMap<u32, Option
     ))
 }
 fn count_memberships(
-    rows: &[replay::rows::DivisionCensusRow],
+    rows: &[replay_data::rows::DivisionCensusRow],
     links: &[CountryLinkRow],
 ) -> BTreeMap<u32, Option<Membership>> {
     let mut values: BTreeMap<u32, Option<Membership>> = BTreeMap::new();

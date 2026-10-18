@@ -71,7 +71,10 @@ fn with_nothing_held_it_flies_level_ahead_at_the_throttle_speed() {
     fly(&mut flight, &idle(), &flat, 2.0);
     assert!(flight.yaw.abs() < 1e-6 && flight.pitch.abs() < 1e-6 && flight.roll.abs() < 1e-6);
     let travelled = flight.position[2] - 1000.0;
-    assert!((travelled - 2.0 * cruise(START_THROTTLE)).abs() < 0.05, "{travelled}");
+    assert!(
+        (travelled - 2.0 * cruise(START_THROTTLE)).abs() < 0.05,
+        "{travelled}"
+    );
     assert!((flight.position[0] - 3000.0).abs() < 1e-3);
     assert!((flight.position[1] - 200.0).abs() < 1e-3);
 }
@@ -119,7 +122,11 @@ fn the_pointer_moves_the_steering_point_by_its_motion_and_the_aircraft_follows()
     // Moving the pointer up climbs.
     assert!((flight.aim[1] - 40.0 * MOUSE_AIM).abs() < 1e-5);
     fly(&mut flight, &idle(), &flat, 2.0);
-    assert!((flight.yaw - 100.0 * MOUSE_AIM).abs() < 0.01, "{}", flight.yaw);
+    assert!(
+        (flight.yaw - 100.0 * MOUSE_AIM).abs() < 0.01,
+        "{}",
+        flight.yaw
+    );
     assert!(flight.position[1] > 200.0);
     // It cannot be pointed behind the aircraft, and a long motion to the right never wraps round
     // into a left turn: 1,500 pixels is 3.75 radians, past half a turn.
@@ -191,7 +198,12 @@ fn it_climbs_over_high_ground_before_it_reaches_it() {
 #[test]
 fn it_never_stalls_and_the_throttle_and_boost_set_its_speed() {
     let mut flight = level(200.0);
-    fly(&mut flight, &keys(&[egui::Key::S, egui::Key::ArrowUp]), &flat, 8.0);
+    fly(
+        &mut flight,
+        &keys(&[egui::Key::S, egui::Key::ArrowUp]),
+        &flat,
+        8.0,
+    );
     assert_eq!(flight.throttle, 0.0);
     assert!(flight.speed >= SLOWEST);
     let at = flight.position;
@@ -203,7 +215,12 @@ fn it_never_stalls_and_the_throttle_and_boost_set_its_speed() {
             .sqrt()
             >= SLOWEST * 0.99
     );
-    fly(&mut flight, &keys(&[egui::Key::W]), &flat, 1.0 / THROTTLE_RATE + 8.0);
+    fly(
+        &mut flight,
+        &keys(&[egui::Key::W]),
+        &flat,
+        1.0 / THROTTLE_RATE + 8.0,
+    );
     assert_eq!(flight.throttle, 1.0);
     assert!((flight.speed - FASTEST).abs() < 0.1, "{}", flight.speed);
     let boost = Frame {
@@ -211,7 +228,11 @@ fn it_never_stalls_and_the_throttle_and_boost_set_its_speed() {
         ..idle()
     };
     fly(&mut flight, &boost, &flat, 8.0);
-    assert!((flight.speed - FASTEST * BOOST).abs() < 0.5, "{}", flight.speed);
+    assert!(
+        (flight.speed - FASTEST * BOOST).abs() < 0.5,
+        "{}",
+        flight.speed
+    );
     // The triggers move the throttle as the keys do.
     let mut pad = level(200.0);
     let triggers = Frame {
@@ -229,7 +250,12 @@ fn it_never_stalls_and_the_throttle_and_boost_set_its_speed() {
 fn the_ceiling_and_the_map_edges_hold_it_and_east_and_west_wrap_round() {
     let map = base();
     let mut flight = level(2900.0);
-    fly(&mut flight, &keys(&[egui::Key::ArrowUp, egui::Key::W]), &flat, 20.0);
+    fly(
+        &mut flight,
+        &keys(&[egui::Key::ArrowUp, egui::Key::W]),
+        &flat,
+        20.0,
+    );
     assert!(flight.position[1] <= map.defines.heights[1] + 1e-3);
     let mut north = Flight::new([3000.0, 200.0, 2000.0], 0.0, 0.0, 0.0);
     fly(&mut north, &keys(&[egui::Key::W]), &flat, 5.0);
@@ -307,15 +333,7 @@ fn the_nose_view_looks_out_along_the_attitude_and_draws_no_aircraft() {
 #[test]
 fn across_the_seam_the_aircraft_stands_beside_the_eye() {
     let mut flight = Flight::new([1.0, 200.0, 1000.0], FRAC_PI_2, 0.0, 0.0);
-    flight.step(
-        &Frame {
-            dt: 0.0,
-            ..idle()
-        },
-        &base(),
-        &flat,
-        &PLANE,
-    );
+    flight.step(&Frame { dt: 0.0, ..idle() }, &base(), &flat, &PLANE);
     let sight = flight.sight(base(), &flat, &PLANE);
     let eye = sight.camera.eye();
     assert!(eye[0] >= 0.0 && eye[0] < base().map.x());
@@ -369,7 +387,10 @@ fn looking_around_turns_the_chase_camera_and_it_springs_back() {
     assert!(turned[0] < flight.position[0] - SIZE, "{turned:?}");
     fly(&mut flight, &idle(), &flat, 1.5);
     let [a, b] = [relative(&flight), ahead];
-    assert!((a[0] - b[0]).abs() < 0.05 && (a[1] - b[1]).abs() < 0.05, "{a:?} {b:?}");
+    assert!(
+        (a[0] - b[0]).abs() < 0.05 && (a[1] - b[1]).abs() < 0.05,
+        "{a:?} {b:?}"
+    );
 }
 
 /// Fly `flight` with `frame` until it crashes, at most `seconds`; the steps it took.
@@ -398,10 +419,18 @@ fn flying_into_a_ridge_crashes_explodes_for_the_content_s_time_and_flies_again_a
         unreachable!()
     };
     let struck = flight.position;
-    assert!(struck[2] > 1000.0 && struck[2] < 1006.0 + SIZE, "{struck:?}");
+    assert!(
+        struck[2] > 1000.0 && struck[2] < 1006.0 + SIZE,
+        "{struck:?}"
+    );
     // The controls stop and the camera holds where the chase view stood, watching the crash.
     let held = flight.sight(base(), &cliff, &PLANE);
-    flight.step(&keys(&[egui::Key::W, egui::Key::D]), &base(), &cliff, &PLANE);
+    flight.step(
+        &keys(&[egui::Key::W, egui::Key::D]),
+        &base(),
+        &cliff,
+        &PLANE,
+    );
     assert_eq!(flight.position, struck);
     let after = flight.sight(base(), &cliff, &PLANE);
     assert_eq!(after.camera.eye(), held.camera.eye());
@@ -428,9 +457,15 @@ fn flying_into_a_ridge_crashes_explodes_for_the_content_s_time_and_flies_again_a
     assert_eq!(flight.crashes, 1);
     assert_eq!(flight.yaw, heading);
     assert_eq!((flight.pitch, flight.roll), (0.0, 0.0));
-    assert_eq!([flight.position[0], flight.position[2]], [struck[0], struck[2]]);
+    assert_eq!(
+        [flight.position[0], flight.position[2]],
+        [struck[0], struck[2]]
+    );
     assert!(flight.position[1] >= 25.5 + clearance(SIZE) * START_CLEARANCES);
-    let alive = flight.sight(base(), &cliff, &PLANE).aircraft.expect("drawn");
+    let alive = flight
+        .sight(base(), &cliff, &PLANE)
+        .aircraft
+        .expect("drawn");
     assert_eq!(alive.animation, 0);
     assert_eq!(alive.animation_identity, 2);
     fly(&mut flight, &keys(&[egui::Key::W]), &cliff, 3.0);
@@ -542,11 +577,27 @@ fn a_crest_between_two_steps_is_still_met() {
         ..Frame::default()
     };
     flight.step(&long, &base(), &floor, &PLANE);
-    assert!(matches!(flight.phase, Phase::Crashed { .. }), "{:?}", flight.position);
+    assert!(
+        matches!(flight.phase, Phase::Crashed { .. }),
+        "{:?}",
+        flight.position
+    );
     assert!(flight.position[2] > 1098.0 && flight.position[2] < 1101.5);
     // The exact sweep against the same surface: a path over the crest a hair higher clears it.
-    let clear = sweeps_into(&floor, 5632.0, [3000.0, 25.6, 1099.8], [3000.0, 25.6, 1100.3], 0.0);
-    let met = sweeps_into(&floor, 5632.0, [3000.0, 25.4, 1099.8], [3000.0, 25.4, 1100.3], 0.0);
+    let clear = sweeps_into(
+        &floor,
+        5632.0,
+        [3000.0, 25.6, 1099.8],
+        [3000.0, 25.6, 1100.3],
+        0.0,
+    );
+    let met = sweeps_into(
+        &floor,
+        5632.0,
+        [3000.0, 25.4, 1099.8],
+        [3000.0, 25.4, 1100.3],
+        0.0,
+    );
     assert!(!clear && met);
 }
 
@@ -554,10 +605,7 @@ fn a_crest_between_two_steps_is_still_met() {
 fn a_respawn_clears_the_ground_under_its_wingtips_too() {
     // Water under the centreline, a hillside under the right wingtip.
     let hillside = |x: f32, _: f32| if x > 3000.6 { 25.5 } else { WATER_HEIGHT };
-    let airframe = Airframe {
-        size: 1.0,
-        ..PLANE
-    };
+    let airframe = Airframe { size: 1.0, ..PLANE };
     let mut flight = Flight::new([3000.0, 12.0, 1000.0], 0.0, 0.0, 0.0);
     flight.phase = Phase::Crashed {
         seconds: 0.0,
@@ -651,7 +699,12 @@ fn a_respawn_searches_the_whole_map_not_only_the_heading_line() {
     };
     let flight = respawn_on(&low, &channel, [100.0, 24.0, 600.0]);
     assert_eq!(flight.phase, Phase::Flying);
-    assert_eq!(flight.position[0], 180.0 + margin(), "{:?}", flight.position);
+    assert_eq!(
+        flight.position[0],
+        180.0 + margin(),
+        "{:?}",
+        flight.position
+    );
     assert_eq!(flight.position[2], 600.0);
     assert!(!flight.strikes(&channel, 256.0, &PLANE));
 }
@@ -731,10 +784,13 @@ fn the_footprints_are_built_once_and_searched_in_one_quick_pass() {
     assert!(pass < std::time::Duration::from_secs(2), "{pass:?}");
     // A second respawn on the same map and aircraft builds nothing again.
     let again = std::time::Instant::now();
-    footprints.ensure(&|_: f32, _: f32| -> f32 { unreachable!("rebuilt") }, &map, SIZE);
+    footprints.ensure(
+        &|_: f32, _: f32| -> f32 { unreachable!("rebuilt") },
+        &map,
+        SIZE,
+    );
     assert!(again.elapsed() < std::time::Duration::from_millis(50));
 }
-
 
 /// Crashes a level flight of `airframe` whose entity's player reads `played` by the seconds
 /// since the crash, as the last frame left them: the seconds until the explosion has gone and
@@ -757,7 +813,14 @@ fn explosion(
         let Phase::Crashed { seconds, .. } = flight.phase else {
             unreachable!("{:?}", flight.phase)
         };
-        flight.update(&idle(), &base(), &flat, airframe, played(seconds), &mut footprints);
+        flight.update(
+            &idle(),
+            &base(),
+            &flat,
+            airframe,
+            played(seconds),
+            &mut footprints,
+        );
         elapsed += STEP;
         if flight.phase == Phase::Flying {
             return (gone.or(Some(elapsed)), Some(elapsed));
@@ -775,7 +838,8 @@ fn near(seconds: Option<f32>, expected: f32) -> bool {
 }
 
 #[test]
-fn the_explosion_goes_when_its_entity_has_played_the_content_s_time_not_when_that_time_has_passed() {
+fn the_explosion_goes_when_its_entity_has_played_the_content_s_time_not_when_that_time_has_passed()
+{
     let long = Airframe {
         ground: GroundContact {
             offset: 0.0,
@@ -790,7 +854,10 @@ fn the_explosion_goes_when_its_entity_has_played_the_content_s_time_not_when_tha
     // A clip authored to start 3.5 seconds in has played them half a second after the crash, and
     // the aircraft still waits the least time before it flies again.
     let (gone, flies) = explosion(&long, |seconds| Some(Some((3.5 + seconds, 10.0))));
-    assert!(near(gone, 0.5) && near(flies, RESPAWN_AFTER), "{gone:?} {flies:?}");
+    assert!(
+        near(gone, 0.5) && near(flies, RESPAWN_AFTER),
+        "{gone:?} {flies:?}"
+    );
     // Before its player exists nothing has played.
     assert_eq!(explosion(&long, |_| None), (None, None));
     // A root that plays no animation reads zero against the content's time: it never reaches a
@@ -804,7 +871,10 @@ fn the_explosion_goes_when_its_entity_has_played_the_content_s_time_not_when_tha
         ..long
     };
     let (gone, flies) = explosion(&at_once, |_| Some(None));
-    assert!(near(gone, 0.0) && near(flies, RESPAWN_AFTER), "{gone:?} {flies:?}");
+    assert!(
+        near(gone, 0.0) && near(flies, RESPAWN_AFTER),
+        "{gone:?} {flies:?}"
+    );
     // Without an explode state nothing plays, whatever its player reads.
     let (gone, flies) = explosion(
         &Airframe {
@@ -864,7 +934,13 @@ fn an_explosion_whose_aircraft_goes_before_it_has_played_is_over_and_the_flight_
 }
 
 /// [`fly`] with another airframe.
-fn fly_with(flight: &mut Flight, frame: &Frame, floor: Floor<'_>, airframe: &Airframe, seconds: f32) {
+fn fly_with(
+    flight: &mut Flight,
+    frame: &Frame,
+    floor: Floor<'_>,
+    airframe: &Airframe,
+    seconds: f32,
+) {
     for _ in 0..(seconds / frame.dt).round() as usize {
         flight.step(frame, &base(), floor, airframe);
     }

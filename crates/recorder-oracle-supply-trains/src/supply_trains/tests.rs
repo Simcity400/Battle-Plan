@@ -1,6 +1,7 @@
 use super::*;
-use replay::rows::{
-    CountryCounterInputRow, FloatingHarborDeploymentRow, Recorded, SupplyNodeRow, TrainInventoryRow,
+use replay_data::{
+    rows::CountryCounterInputRow, rows::FloatingHarborDeploymentRow, rows::Recorded,
+    rows::SupplyNodeRow, rows::TrainInventoryRow,
 };
 
 #[test]
@@ -124,7 +125,7 @@ fn harbour_fixture(fields: &str, deployments: &[(i32, u8)]) -> (DecodedFrame, Sa
         "countries={{}} supply_system_2={{countries={{{}={{{fields}}}}}}}",
         String::from_utf8_lossy(&country.tag)
     );
-    let document = installed_content::parser::parse(input.as_bytes()).unwrap();
+    let document = installed_content_core::parser::parse(input.as_bytes()).unwrap();
     save.economy = save::economy::parse(&document.items).unwrap();
     *frame.tables[TableId::TrainInventory.index()] =
         TableView::Complete(TableRows::TrainInventory(vec![TrainInventoryRow {
@@ -316,7 +317,7 @@ fn floating_harbour_keeps_each_saved_country_separate_at_five_thousand_countries
     *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
         countries
             .iter()
-            .map(|country| replay::rows::CountryLinkRow {
+            .map(|country| replay_data::rows::CountryLinkRow {
                 id: country.id,
                 canonical_slot: country.canonical_slot,
             })
@@ -362,13 +363,13 @@ fn floating_harbour_keeps_each_saved_country_separate_at_five_thousand_countries
     assert!(changed.differences[0].contains("C1.temp_nodes[0].province"));
 }
 
-fn owned_states(frame: &mut DecodedFrame, countries: &[replay::rows::CountryRow], count: i32) {
+fn owned_states(frame: &mut DecodedFrame, countries: &[replay_data::rows::CountryRow], count: i32) {
     *frame.tables[TableId::CountryCounterInputs.index()] =
         TableView::Complete(TableRows::CountryCounterInputs(
             countries
                 .iter()
                 .map(|c| CountryCounterInputRow {
-                    forward_visibility: replay::rows::Recorded::NotRecorded,
+                    forward_visibility: replay_data::rows::Recorded::NotRecorded,
                     country: c.id,
                     owned_state_count: count,
                     ..Default::default()
@@ -411,7 +412,8 @@ fn supply_joins_fail_for_bad_censuses_but_do_not_compare_distinct_save_caches() 
                 .map(|c| TrainInventoryRow {
                     country: c.id,
                     node_count: u32::from(c.id == country),
-                    controller_access: replay::rows::SparseBytes::from_dense(&[0, 255]).unwrap(),
+                    controller_access: replay_data::rows::SparseBytes::from_dense(&[0, 255])
+                        .unwrap(),
                     ..Default::default()
                 })
                 .collect(),
@@ -531,7 +533,7 @@ fn only_inventories_read_at_the_oracle_hour_compare_their_saved_variants() {
                 .iter()
                 .map(|c| TrainInventoryRow {
                     country: c.id,
-                    allocations: vec![replay::rows::TrainAllocation {
+                    allocations: vec![replay_data::rows::TrainAllocation {
                         variant: 0xdead_0000_beef,
                         count: 1,
                     }],
@@ -551,12 +553,12 @@ fn only_inventories_read_at_the_oracle_hour_compare_their_saved_variants() {
     assert_eq!(unsaved(&report), 2);
     // The first country was read at the oracle hour, the second earlier.
     *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(vec![
-        replay::rows::SliceReadRow {
+        replay_data::rows::SliceReadRow {
             table: TableId::TrainInventory.index() as u32,
             owner: countries[0].id,
             sample_hour: frame.hour,
         },
-        replay::rows::SliceReadRow {
+        replay_data::rows::SliceReadRow {
             table: TableId::TrainInventory.index() as u32,
             owner: countries[1].id,
             sample_hour: frame.hour - 5,

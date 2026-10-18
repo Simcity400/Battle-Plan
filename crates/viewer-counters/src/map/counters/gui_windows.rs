@@ -33,7 +33,7 @@ use viewer_foundation::map::native_gui::{
 pub(super) fn window_assets(
     windows: &NativeWindows,
     registry: &native::resources::Registry,
-    localisation: &installed_content::localisation::Localisation,
+    localisation: &installed_content_localisation::localisation::Localisation,
 ) -> native_gui::Assets {
     let mut assets = windows.assets(localisation);
     assets.sprites.extend(

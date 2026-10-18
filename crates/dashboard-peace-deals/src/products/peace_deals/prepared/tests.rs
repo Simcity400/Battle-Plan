@@ -46,8 +46,9 @@ fn peace_observer_work_is_flat_over_unchanged_hours_and_retired_finalizer_histor
             }
             let before = prepared.work;
             current.hour += 1;
-            if let replay::frame::TableView::Complete(replay::rows::TableRows::States(rows)) =
-                &mut *current.tables[TableId::States.index()]
+            if let replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::States(
+                rows,
+            )) = &mut *current.tables[TableId::States.index()]
             {
                 rows.truncate(1);
                 rows[0].owner = 1002;
@@ -80,8 +81,9 @@ fn peace_deferred_country_evidence_matches_late_finalizers_after_commits_resume_
         }
         current.hour = hour;
         if hour == 120
-            && let replay::frame::TableView::Complete(replay::rows::TableRows::Countries(rows)) =
-                &mut *current.tables[TableId::Countries.index()]
+            && let replay_frame::frame::TableView::Complete(
+                replay_data::rows::TableRows::Countries(rows),
+            ) = &mut *current.tables[TableId::Countries.index()]
         {
             rows[0].tag = b"renamed peace holder".to_vec();
         }
@@ -139,10 +141,10 @@ fn peace_snapshot_projections_share_unchanged_maps_and_expire_subjects_at_native
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
     let mut current = frame(100, 2, false, &[]);
     let recording = replay(vec![current.clone()]);
-    if let replay::frame::TableView::Complete(replay::rows::TableRows::Subjects(rows)) =
+    if let replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::Subjects(rows)) =
         &mut *current.tables[TableId::Subjects.index()]
     {
-        rows.push(replay::rows::SubjectRow {
+        rows.push(replay_data::rows::SubjectRow {
             overlord: 1001,
             subject: 1002,
             start_hour: 90,
@@ -281,11 +283,11 @@ fn peace_events_match_two_commits_resume_append_late_capture_gaps_and_identity_c
     writer.commit().unwrap();
     compare(&fixture, &frames);
     let mut changed = frame(104, 3, false, &[]);
-    if let replay::frame::TableView::Complete(replay::rows::TableRows::Countries(rows)) =
+    if let replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::Countries(rows)) =
         &mut *changed.tables[TableId::Countries.index()]
     {
         rows[0].id += 100_000;
-        rows.sort_by_key(replay::rows::CountryRow::key);
+        rows.sort_by_key(replay_data::rows::CountryRow::key);
         rows.dedup_by_key(|row| row.key());
     }
     frames.push(changed);
@@ -340,10 +342,8 @@ fn peace_events_preserve_five_thousand_countries_and_finalized_rows_leave_the_ch
 /// owner's states and each overlord's subjects are listed in order, not hashed.
 #[test]
 fn peace_fresh_observers_write_the_same_continuation() {
-    use replay::{
-        frame::TableView,
-        rows::{SubjectRow, TableRows},
-    };
+    use replay_data::{rows::SubjectRow, rows::TableRows};
+    use replay_frame::frame::TableView;
     let recording = replay(vec![frame(100, 64, false, &[9])]);
     let mut first = frame(100, 64, false, &[9]);
     if let TableView::Complete(TableRows::States(rows)) =

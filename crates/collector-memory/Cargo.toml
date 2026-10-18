@@ -10,12 +10,13 @@ license.workspace = true
 doctest = false
 
 [features]
-alloc-fault-injection = ["engine/alloc-fault-injection"]
+alloc-fault-injection = ["engine-allocation/alloc-fault-injection", "engine-native/alloc-fault-injection"]
 test-support = ["dep:collector-test-support"]
 
 [dependencies]
-engine.workspace = true
-replay.workspace = true
+engine-allocation.workspace = true
+engine-native.workspace = true
+replay-data.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
 collector-test-support = { workspace = true, optional = true }
 

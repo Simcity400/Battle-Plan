@@ -58,7 +58,7 @@ fn same(a: &KeyState, b: &KeyState) -> bool {
 struct States<'a>(&'a BTreeMap<u64, KeyState>, &'a BTreeSet<u64>, &'a Cache);
 impl Serialize for States<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let _cpu = ::replay::cpu::scope_phase("series:save_keys");
+        let _cpu = ::replay_frame::cpu::scope_phase("series:save_keys");
         #[cfg(test)]
         if WHOLE_SAVED_KEYS.with(std::cell::Cell::get) {
             return self.0.serialize(serializer);

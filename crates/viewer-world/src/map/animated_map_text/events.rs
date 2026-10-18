@@ -8,18 +8,14 @@
 //! Unknown coverage never hides an event that was recorded.
 use std::{cell::OnceCell, collections::BTreeMap};
 
-use installed_content::{
-    buildings::Buildings,
-    localisation::{Argument, Localisation},
+use installed_content_core::buildings::Buildings;
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use replay_data::{
+    BranchId, rows::MapEvent, rows::MapEventBuildingReason, rows::MapEventFamily,
+    rows::MapEventFault, rows::MapEventPayload, rows::MapEventUnitIntel, rows::MapEventsRow,
+    rows::tables,
 };
-use replay::{
-    BranchId,
-    frame::DecodedFrame,
-    rows::{
-        MapEvent, MapEventBuildingReason, MapEventFamily, MapEventFault, MapEventPayload,
-        MapEventUnitIntel, MapEventsRow, tables,
-    },
-};
+use replay_frame::frame::DecodedFrame;
 use viewer_foundation::{
     map::{
         perspective::{Resolution, Vision},

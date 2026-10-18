@@ -1,7 +1,7 @@
 use super::*;
 
 fn weather(text: &[u8]) -> io::Result<Pack> {
-    parse(&installed_content::parser::parse(text)?.items)
+    parse(&installed_content_core::parser::parse(text)?.items)
 }
 
 #[test]

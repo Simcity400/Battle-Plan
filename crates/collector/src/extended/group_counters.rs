@@ -1,21 +1,19 @@
 //! Hourly COrdersGroup withdrawing byte over its own bounded registry census, and each group's
 //! direct commander's attack operands (`corders_group::LEADER`,
-//! `engine::carmy_leader::attack_stats`), which the selected army's attack list reads through its
+//! `engine_native::carmy_leader::attack_stats`), which the selected army's attack list reads through its
 //! direct commander lookup.
 use crate::{
     sampling::qpc,
     spooling::table,
     table_capture::{CaptureRows, grow_capacity, grow_vec},
 };
-use engine::allocation::{default_vec, owned_vec};
-use engine::{Memory, carmy_leader, corders_group, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{
-        CommanderAttackStats, CommanderMovementStats, OrdersGroupCounterInputRow, Recorded,
-        TableId, Witnessed, tables,
-    },
+use engine_allocation::{default_vec, owned_vec};
+use engine_native::{Memory, carmy_leader, corders_group, walk::Outcome};
+use replay_data::{
+    rows::CommanderAttackStats, rows::CommanderMovementStats, rows::OrdersGroupCounterInputRow,
+    rows::Recorded, rows::TableId, rows::Witnessed, rows::tables,
 };
+use replay_frame::frame::TableView;
 use std::mem::size_of;
 
 pub const N: usize = 1;
@@ -82,7 +80,7 @@ fn commander(
     let leader = root
         .pointer()
         .checked_add(corders_group::LEADER)
-        .and_then(|address| engine::read::<u64>(memory, address))
+        .and_then(|address| engine_native::read::<u64>(memory, address))
         .and_then(|leader| usize::try_from(leader).ok())?;
     if leader == 0 {
         return Some(None);
@@ -151,7 +149,7 @@ impl Captured {
         let source = corders_group::walk_roots_growing(memory, base, &mut self.roots);
         if !matches!(source, Outcome::Unavailable { .. })
             && let Err(reason) =
-                engine::walk::Buffer::Growing(&mut self.rows.rows).ensure(source.len())
+                engine_native::walk::Buffer::Growing(&mut self.rows.rows).ensure(source.len())
         {
             return Outcome::Unavailable { reason };
         }
@@ -263,7 +261,7 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     #[test]
     fn missing_registry_and_capacity_pressure_preserve_primary_rows() {
         let memory = SliceMemory {
@@ -284,7 +282,7 @@ mod tests {
             invasion_source_distance: Some(-17),
         };
         capture.rows.outcome = Outcome::Rows { len: 1 };
-        let [TableView::Complete(replay::rows::TableRows::OrdersGroupCounterInputs(rows))] =
+        let [TableView::Complete(replay_data::rows::TableRows::OrdersGroupCounterInputs(rows))] =
             capture.tables()
         else {
             panic!("complete primary row");
@@ -309,7 +307,7 @@ mod tests {
                 ..Default::default()
             })),
         )];
-        let [TableView::Complete(replay::rows::TableRows::OrdersGroupCounterInputs(rows))] =
+        let [TableView::Complete(replay_data::rows::TableRows::OrdersGroupCounterInputs(rows))] =
             capture.tables()
         else {
             panic!("complete primary row");

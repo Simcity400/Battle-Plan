@@ -33,7 +33,7 @@ fn growing_patrol_rows_and_region_scratch_publish_5000_country_combat_occurrence
         Buffer::Growing(&mut rows),
         |slot, emit| {
             for occurrence in 0..9 {
-                emit(engine::air_kamikaze::TaskForceCombat {
+                emit(engine_air_history::air_kamikaze::TaskForceCombat {
                     province: slot + occurrence,
                     region: 7,
                 })?;

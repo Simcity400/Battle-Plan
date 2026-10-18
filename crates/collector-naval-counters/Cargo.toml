@@ -13,8 +13,10 @@ doctest = false
 test-support = ["collector-certificates/test-support", "collector-division-parts/test-support", "collector-extended-support/test-support", "collector-memory/test-support", "collector-observers/test-support", "collector-primitives/test-support"]
 
 [dependencies]
-engine.workspace = true
-replay.workspace = true
+engine-allocation.workspace = true
+engine-native.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
 serde = { workspace = true, features = ["derive"] }
 collector-certificates.workspace = true
 collector-division-parts.workspace = true
@@ -27,9 +29,9 @@ collector-status.workspace = true
 windows-sys = { workspace = true, features = ["Win32_System_Performance"] }
 
 [dev-dependencies]
+engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-test-support.workspace = true
 serde_json.workspace = true
-engine = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-extended-support = { workspace = true, features = ["test-support"] }
 collector-certificates = { workspace = true, features = ["test-support"] }
 collector-division-parts = { workspace = true, features = ["default", "test-support"] }

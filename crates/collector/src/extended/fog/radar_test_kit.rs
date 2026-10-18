@@ -1,7 +1,7 @@
 use super::{
     Capacities, Captured, RadarCopyContext, RadarCopyReport, RadarJob, copy_radar_refresh,
 };
-use engine::{Memory, memory::SliceMemory, walk::Outcome};
+use engine_native::{Memory, memory::SliceMemory, walk::Outcome};
 
 pub(crate) const BASE: usize = 0;
 pub(crate) const GAME_STATE: usize = 0x10000;
@@ -28,7 +28,8 @@ fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
 }
 
 pub(crate) fn fixture() -> Vec<u8> {
-    use engine::{ccountry, cgame_state, cradars_pool, cstate, radar_group};
+    use engine_map_air::radar_group;
+    use engine_native::{ccountry, cgame_state, cradars_pool, cstate};
     let mut bytes = vec![0; 0x80000];
     header(&mut bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 2);
     put64(&mut bytes, CTAB, 0);
@@ -67,12 +68,12 @@ pub(crate) fn memory(bytes: &[u8]) -> SliceMemory<'_> {
 
 pub(crate) struct Split {
     pub outcome: Outcome,
-    pub rows: Vec<engine::radar_group::Row>,
+    pub rows: Vec<engine_map_air::radar_group::Row>,
     pub provinces: Vec<u32>,
 }
 
 fn collect_typed(memory: &impl Memory, rows_cap: usize, provinces_cap: usize) -> Split {
-    use engine::radar_group;
+    use engine_map_air::radar_group;
     let capacities = Capacities {
         rows: [rows_cap, 4, 4, 4, 4, 4, 4],
         radar_provinces: provinces_cap,

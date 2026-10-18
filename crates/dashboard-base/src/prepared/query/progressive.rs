@@ -5,10 +5,10 @@ use crate::{
     prepared::{coverage::Coverage, series::Run},
     products::country_groups::HourSpan,
 };
-use replay::{
-    container::SeekResult,
-    frame::{DecodedFrame, FrameDecoder, RecordedFrame as Frame, TableUpdate},
-    rows::TableId,
+use replay::container::SeekResult;
+use replay_data::rows::TableId;
+use replay_frame::{
+    frame::DecodedFrame, frame::FrameDecoder, frame::RecordedFrame as Frame, frame::TableUpdate,
 };
 use std::{
     cell::Cell,
@@ -29,7 +29,7 @@ pub type Samples = BTreeMap<(String, String), (Option<(u32, u32)>, Option<i128>)
 pub struct SamplesCache(std::cell::RefCell<Option<CachedSamples>>);
 struct CachedSamples {
     branch: u64,
-    views: Vec<(usize, replay::frame::ViewIdentity)>,
+    views: Vec<(usize, replay_frame::frame::ViewIdentity)>,
     requested: Option<Vec<(String, String)>>,
     values: Samples,
 }
@@ -358,7 +358,7 @@ pub fn histories(
         && let Some(first) = replay.index.iter().find(|block| block.branch == branch)
     {
         use crate::metadata::{TaggedCountry, tagged_countries};
-        use replay::rows::tables;
+        use replay_data::rows::tables;
         check_cancel(cancelled)?;
         let selected = [TableId::Countries, TableId::CountryLinks];
         let keyframe = replay.read_keyframe_recorded(first, &selected)?;
@@ -727,7 +727,7 @@ fn supplying_read(
         if frame.hour != expected
             || !matches!(
                 &*frame.tables[table.index()],
-                replay::frame::TableView::Complete(_)
+                replay_frame::frame::TableView::Complete(_)
             )
         {
             return Ok(None);
@@ -2370,7 +2370,8 @@ mod tests {
     fn latest_reads_are_bounded_shared_and_stop_at_missing_hours_or_tables() {
         use crate::prepared::query::frames;
         use crate::test_fixtures::file_source;
-        use replay::{frame::TableView, rows::TableRows};
+        use replay_data::rows::TableRows;
+        use replay_frame::frame::TableView;
         let flag = AtomicBool::new(false);
         let table = TableId::CountryIntel;
         for blocks in [2, 12] {
@@ -2506,7 +2507,8 @@ mod tests {
     #[test]
     fn supplying_reads_across_keyframes_validate_the_carried_snapshots() {
         use crate::test_fixtures::file_source;
-        use replay::{frame::TableView, rows::TableRows};
+        use replay_data::rows::TableRows;
+        use replay_frame::frame::TableView;
         let table = TableId::CountryIntel;
         let make = |hour| {
             let mut frame = frame(1, hour, None);
@@ -2637,8 +2639,9 @@ mod tests {
     fn renamed_seed_recording() -> Replay {
         fn named(branch: u64, hour: i32, tag: &[u8]) -> DecodedFrame {
             let mut frame = frame(branch, hour, None);
-            if let replay::frame::TableView::Complete(replay::rows::TableRows::Countries(rows)) =
-                &mut *frame.tables[TableId::Countries.index()]
+            if let replay_frame::frame::TableView::Complete(
+                replay_data::rows::TableRows::Countries(rows),
+            ) = &mut *frame.tables[TableId::Countries.index()]
             {
                 rows[0].tag = tag.to_vec();
             }
@@ -4179,21 +4182,24 @@ mod tests {
         let mut frames = (0..5)
             .map(|hour| frame(1, hour, Some(7)))
             .collect::<Vec<_>>();
-        if let replay::frame::TableView::Complete(replay::rows::TableRows::Countries(rows)) =
-            &mut *frames[1].tables[TableId::Countries.index()]
+        if let replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::Countries(
+            rows,
+        )) = &mut *frames[1].tables[TableId::Countries.index()]
         {
             rows[0].political_power_raw = None;
         }
         for decoded in &mut frames[3..] {
-            if let replay::frame::TableView::Complete(replay::rows::TableRows::Countries(rows)) =
-                &mut *decoded.tables[TableId::Countries.index()]
+            if let replay_frame::frame::TableView::Complete(
+                replay_data::rows::TableRows::Countries(rows),
+            ) = &mut *decoded.tables[TableId::Countries.index()]
             {
                 rows[0].id = 9002;
             }
-            if let replay::frame::TableView::Complete(replay::rows::TableRows::CountryLinks(rows)) =
-                &mut *decoded.tables[TableId::CountryLinks.index()]
+            if let replay_frame::frame::TableView::Complete(
+                replay_data::rows::TableRows::CountryLinks(rows),
+            ) = &mut *decoded.tables[TableId::CountryLinks.index()]
             {
-                rows.push(replay::rows::CountryLinkRow {
+                rows.push(replay_data::rows::CountryLinkRow {
                     canonical_slot: 7,
                     id: 9002,
                 });
@@ -4289,7 +4295,7 @@ mod tests {
         // has integrity warnings, the writer correctly refuses further appends.
         let mut replay = Replay::from_records(CAMPAIGN.into(), &segments).unwrap();
         assert_eq!(replay.index.len(), 16);
-        replay.gaps.push(replay::branches::Gap {
+        replay.gaps.push(replay_frame::branches::Gap {
             branch: 1,
             first_hour: 5,
             last_hour: 5,
@@ -4395,15 +4401,17 @@ mod tests {
     /// value, a replaced native holder inside a block, and a recorded gap.
     fn varied_source() -> Source {
         let holder = |frame: &mut DecodedFrame| {
-            if let replay::frame::TableView::Complete(replay::rows::TableRows::Countries(rows)) =
-                &mut *frame.tables[TableId::Countries.index()]
+            if let replay_frame::frame::TableView::Complete(
+                replay_data::rows::TableRows::Countries(rows),
+            ) = &mut *frame.tables[TableId::Countries.index()]
             {
                 rows[0].id = 9002;
             }
-            if let replay::frame::TableView::Complete(replay::rows::TableRows::CountryLinks(rows)) =
-                &mut *frame.tables[TableId::CountryLinks.index()]
+            if let replay_frame::frame::TableView::Complete(
+                replay_data::rows::TableRows::CountryLinks(rows),
+            ) = &mut *frame.tables[TableId::CountryLinks.index()]
             {
-                rows.push(replay::rows::CountryLinkRow {
+                rows.push(replay_data::rows::CountryLinkRow {
                     canonical_slot: 7,
                     id: 9002,
                 });
@@ -4449,7 +4457,7 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(replay.index.len(), 5);
-        replay.gaps.push(replay::branches::Gap {
+        replay.gaps.push(replay_frame::branches::Gap {
             branch: 1,
             first_hour: 13,
             last_hour: 13,
@@ -4619,7 +4627,7 @@ mod tests {
             .unwrap();
         assert_eq!(held, direct);
         assert!(
-            held.complete::<replay::rows::tables::CountryLinks>()
+            held.complete::<replay_data::rows::tables::CountryLinks>()
                 .is_err()
         );
         assert_eq!(super::super::frames::reads(&source), (1, 2));
@@ -4772,8 +4780,9 @@ mod tests {
         );
         // A row's list is counted, not only the row.
         let mut long = frame(1, 0, Some(1));
-        if let replay::frame::TableView::Complete(replay::rows::TableRows::Countries(rows)) =
-            &mut *long.tables[TableId::Countries.index()]
+        if let replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::Countries(
+            rows,
+        )) = &mut *long.tables[TableId::Countries.index()]
         {
             rows[0].tag = vec![b'x'; 256 << 10];
         }
@@ -4854,18 +4863,18 @@ mod tests {
     #[test]
     fn held_rows_count_every_nested_allocation() {
         use super::super::frames;
-        use replay::rows::{PowerBalanceModifierBreakdownRow, TableRows};
+        use replay_data::{rows::PowerBalanceModifierBreakdownRow, rows::TableRows};
         const SOURCES: usize = 10_000;
         let mut decoded = frame(1, 0, Some(1));
         *decoded.tables[TableId::PowerBalanceModifierBreakdowns.index()] =
-            replay::frame::TableView::Complete(TableRows::PowerBalanceModifierBreakdowns(vec![
-                PowerBalanceModifierBreakdownRow {
+            replay_frame::frame::TableView::Complete(TableRows::PowerBalanceModifierBreakdowns(
+                vec![PowerBalanceModifierBreakdownRow {
                     record: 1,
                     // Each empty source encodes in four bytes but holds a list.
                     sources: vec![Vec::new(); SOURCES],
                     ..Default::default()
-                },
-            ]));
+                }],
+            ));
         let flag = AtomicBool::new(false);
         let source = Source::from_replay(
             crate::SourceKey {
@@ -4896,7 +4905,8 @@ mod tests {
     #[test]
     fn supplying_read_lookups_share_a_bounded_cache_across_hour_variants() {
         use crate::test_fixtures::file_source;
-        use replay::{frame::TableView, rows::TableRows};
+        use replay_data::rows::TableRows;
+        use replay_frame::frame::TableView;
         let table = TableId::CountryIntel;
         let recording = crate::test_fixtures::replay(
             (0..24)
@@ -4943,7 +4953,8 @@ mod tests {
         use crate::test_fixtures::{
             continuation_records, file_source, replay as recording, source as frame,
         };
-        use replay::{frame::TableView, rows::TableRows};
+        use replay_data::rows::TableRows;
+        use replay_frame::frame::TableView;
         let make = |hour| {
             let mut value = frame(1, hour, None);
             value.tables[TableId::AirAces.index()] =
@@ -4994,10 +5005,8 @@ mod tests {
 #[cfg(test)]
 mod sample_cache_tests {
     use super::*;
-    use replay::{
-        frame::TableView,
-        rows::{TableRows, tables},
-    };
+    use replay_data::{rows::TableRows, rows::tables};
+    use replay_frame::frame::TableView;
     use std::cell::Cell;
 
     #[test]

@@ -81,8 +81,8 @@ pub enum Selector {
 }
 
 impl Selector {
-    pub fn resolve(self, frame: &replay::frame::DecodedFrame) -> io::Result<Selection> {
-        use replay::rows::tables;
+    pub fn resolve(self, frame: &replay_frame::frame::DecodedFrame) -> io::Result<Selection> {
+        use replay_data::rows::tables;
         use viewer_foundation::map::tables::rows;
         let mut matches = Vec::new();
         for row in rows::<tables::LandCombats>(frame)?.rows() {
@@ -179,7 +179,7 @@ pub struct Window {
 /// perspective choice and the viewing country it resolved to there.
 #[derive(Clone, Debug, PartialEq)]
 struct Scope {
-    branch: replay::BranchId,
+    branch: replay_data::BranchId,
     hour: i32,
     selection: Selection,
     perspective: Choice,
@@ -191,7 +191,7 @@ struct Scope {
 impl Scope {
     fn matches_request(
         &self,
-        branch: replay::BranchId,
+        branch: replay_data::BranchId,
         hour: i32,
         selection: Selection,
         perspective: &Choice,
@@ -254,11 +254,11 @@ struct Cached {
 /// The hour's engaged flags for the viewer, of every land and
 /// naval combat.
 fn combat_flags(
-    frame: &replay::frame::DecodedFrame,
+    frame: &replay_frame::frame::DecodedFrame,
     ours: u32,
     engaged: Option<&History>,
 ) -> io::Result<CombatFlags> {
-    use replay::rows::tables;
+    use replay_data::rows::tables;
     use viewer_foundation::map::tables::rows;
     let links: BTreeMap<u32, u32> = rows::<tables::CountryLinks>(frame)?
         .rows()
@@ -548,9 +548,9 @@ impl Window {
     pub fn draw(
         &mut self,
         document: &Arc<StaticContent>,
-        branch: replay::BranchId,
-        hour: replay::Hour,
-        frame: io::Result<&replay::frame::DecodedFrame>,
+        branch: replay_data::BranchId,
+        hour: replay_data::Hour,
+        frame: io::Result<&replay_frame::frame::DecodedFrame>,
         extent: [f32; 2],
         perspective: &Choice,
         engaged: Option<&History>,

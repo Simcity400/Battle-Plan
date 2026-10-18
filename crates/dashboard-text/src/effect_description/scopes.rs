@@ -1,7 +1,7 @@
 use super::*;
 use crate::triggers::{Eval, Scope};
-use installed_content::scope::{self, Scope as Parsed};
-use replay::rows::tables;
+use installed_content_core::{scope, scope::Scope as Parsed};
+use replay_data::rows::tables;
 
 #[cfg(test)]
 mod tests;
@@ -185,7 +185,8 @@ impl Renderer<'_, '_, '_> {
         let Some(input) = field(children(item), "input") else {
             return Ok(String::new());
         };
-        let collection = installed_content::collections::compile(input, self.context.content.collections)?;
+        let collection =
+            installed_content_core::collections::compile(input, self.context.content.collections)?;
         let Some(selected) = self
             .evaluator()?
             .collection_representative(&collection, scopes)?
@@ -193,9 +194,11 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         };
         let header = match &collection.header {
-            installed_content::collections::Header::Empty => String::new(),
-            installed_content::collections::Header::Key(key) => self.localised(key, &[], scopes, true)?,
-            installed_content::collections::Header::Bound(item) => {
+            installed_content_core::collections::Header::Empty => String::new(),
+            installed_content_core::collections::Header::Key(key) => {
+                self.localised(key, &[], scopes, true)?
+            }
+            installed_content_core::collections::Header::Bound(item) => {
                 let Some(key) = item.value.scalar() else {
                     return Err("collection bound-name argument tree is unsupported".into());
                 };
@@ -233,7 +236,7 @@ impl Renderer<'_, '_, '_> {
 
     pub(super) fn is_context(&self, item: &Item) -> bool {
         let name = key(item);
-        !installed_content::effect_keys::REGISTERED_EFFECTS
+        !installed_content_core::effect_keys::REGISTERED_EFFECTS
             .iter()
             .any(|(_, native)| native.eq_ignore_ascii_case(&name))
             && item.value.items().is_some()
@@ -559,7 +562,11 @@ impl Renderer<'_, '_, '_> {
                 };
                 let mut out = Vec::new();
                 let invisible = field(children(item), "include_invisible").is_some_and(|field| {
-                    field.value.scalar().and_then(installed_content::parser::read_bool) == Some(true)
+                    field
+                        .value
+                        .scalar()
+                        .and_then(installed_content_core::parser::read_bool)
+                        == Some(true)
                 });
                 if !operative {
                     // combines army then navy only; operatives have
@@ -658,7 +665,11 @@ impl Renderer<'_, '_, '_> {
                     return Ok(Vec::new());
                 }
                 let invisible = field(children(item), "include_invisible").is_some_and(|field| {
-                    field.value.scalar().and_then(installed_content::parser::read_bool) == Some(true)
+                    field
+                        .value
+                        .scalar()
+                        .and_then(installed_content_core::parser::read_bool)
+                        == Some(true)
                 });
                 let mut rows = Vec::new();
                 for row in frame
@@ -1133,7 +1144,7 @@ impl Renderer<'_, '_, '_> {
     // default country/organisation pair; FROM is owner.
     fn organisation_scopes(
         &self,
-        row: &replay::rows::IndustrialOrganisationRow,
+        row: &replay_data::rows::IndustrialOrganisationRow,
     ) -> Result<Scopes, String> {
         use crate::scripted_text::{EventObject, EventScope, Link};
         let owner = self
@@ -1159,7 +1170,7 @@ impl Renderer<'_, '_, '_> {
 
     fn organisation_visible(
         &self,
-        row: &replay::rows::IndustrialOrganisationRow,
+        row: &replay_data::rows::IndustrialOrganisationRow,
     ) -> Result<bool, String> {
         let world = self.context.world()?;
         let token = world
@@ -1330,7 +1341,11 @@ impl Renderer<'_, '_, '_> {
             }
         }
         let visible = field(items, "visible_when_empty").is_some_and(|field| {
-            field.value.scalar().and_then(installed_content::parser::read_bool) == Some(true)
+            field
+                .value
+                .scalar()
+                .and_then(installed_content_core::parser::read_bool)
+                == Some(true)
         });
         if targets.is_empty() && !visible {
             return Ok(String::new());
@@ -1382,7 +1397,11 @@ impl Renderer<'_, '_, '_> {
             return Ok(indent_nonempty_lines(&text, indent));
         }
         let individual = field(items, "display_individual_scopes").is_some_and(|field| {
-            field.value.scalar().and_then(installed_content::parser::read_bool) == Some(true)
+            field
+                .value
+                .scalar()
+                .and_then(installed_content_core::parser::read_bool)
+                == Some(true)
         });
         let mut text = String::new();
         let mut selected = self.evaluator()?.with_this(scopes, scopes.this)?;
@@ -1530,7 +1549,7 @@ impl Renderer<'_, '_, '_> {
                         .min_by_key(|row| row.ordinal)
                         && let Some(row) = traits.iter().find(|row| {
                             row.character == id
-                                && row.kind == replay::rows::CharacterRoleTraitRow::ADVISOR
+                                && row.kind == replay_data::rows::CharacterRoleTraitRow::ADVISOR
                                 && row.role == role.ordinal
                         })
                     {
@@ -1553,7 +1572,8 @@ impl Renderer<'_, '_, '_> {
                 // visits every advisor role,
                 // including roles outside the displayed section.
                 for row in traits.iter().filter(|row| {
-                    row.character == id && row.kind == replay::rows::CharacterRoleTraitRow::ADVISOR
+                    row.character == id
+                        && row.kind == replay_data::rows::CharacterRoleTraitRow::ADVISOR
                 }) {
                     for token in &row.tokens {
                         let name = world
@@ -1651,9 +1671,11 @@ impl Renderer<'_, '_, '_> {
                 false,
             )?);
         }
-        match field(items, "elections_allowed")
-            .and_then(|item| item.value.scalar().and_then(installed_content::parser::read_bool))
-        {
+        match field(items, "elections_allowed").and_then(|item| {
+            item.value
+                .scalar()
+                .and_then(installed_content_core::parser::read_bool)
+        }) {
             Some(false) => text.push_str(&self.line(
                 b"EFFECT_SET_POLITICS_NO_ELECTIONS",
                 &[],

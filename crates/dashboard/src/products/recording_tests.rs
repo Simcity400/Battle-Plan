@@ -1,7 +1,7 @@
 //! Products against recorded inputs: a real recording's product impact, and the
 //! rule that products date tables only by the recording's format.
 
-use replay::frame::TableView;
+use replay_frame::frame::TableView;
 use std::sync::{Arc, atomic::AtomicBool};
 
 #[test]
@@ -11,11 +11,8 @@ fn compatibility_real_g2_product_impact() {
         products::{self, LoadContext, Product},
         scope::{Context, RecordedScopes, Target, Unresolved},
     };
-    use installed_content::{
-        localisation::Localisation,
-        scope::{Keyword, Scope},
-        tag_aliases::TagAliases,
-    };
+    use installed_content_core::{scope::Keyword, scope::Scope, tag_aliases::TagAliases};
+    use installed_content_localisation::localisation::Localisation;
     let path = std::env::var("BATTLE_PLAN_COMPAT_RECORDINGS").or_else(|_| std::env::var("HOI4_COMPAT_RECORDINGS")).unwrap();
     let cancelled = AtomicBool::new(false);
     let source = crate::Source::open(
@@ -32,7 +29,9 @@ fn compatibility_real_g2_product_impact() {
     let replay::container::SeekResult::Frame(frame) = replay.seek(2, 60827796).unwrap() else {
         panic!("missing G2 comparison hour")
     };
-    let countries = frame.complete::<replay::rows::tables::Countries>().unwrap();
+    let countries = frame
+        .complete::<replay_data::rows::tables::Countries>()
+        .unwrap();
     let country = countries
         .iter()
         .find(|country| {
@@ -55,10 +54,10 @@ fn compatibility_real_g2_product_impact() {
     let flags = products::country_flags::choices(&frame).unwrap();
     assert!(!flags.is_empty());
     let appearances = frame
-        .complete::<replay::rows::tables::CountryAppearance>()
+        .complete::<replay_data::rows::tables::CountryAppearance>()
         .unwrap();
     let links = frame
-        .complete::<replay::rows::tables::CountryLinks>()
+        .complete::<replay_data::rows::tables::CountryLinks>()
         .unwrap();
     for flag in &flags {
         let canonical = links
@@ -81,7 +80,8 @@ fn compatibility_real_g2_product_impact() {
         };
         // Format 94 retains cosmetic candidates but has no exact signed
         // original-tag selection operand, even for an aliased raw link.
-        let refusal = installed_content::country_names::original_tag(country, appearance).unwrap_err();
+        let refusal =
+            installed_content_country_names::country_names::original_tag(country, appearance).unwrap_err();
         assert!(refusal.contains("CountryAppearance.original_tag_reference not recorded"));
         assert!(
             flag.refusal
@@ -89,7 +89,7 @@ fn compatibility_real_g2_product_impact() {
                 .is_some_and(|why| why.contains(&refusal))
         );
     }
-    let names = installed_content::country_names::CountryNames::read(&frame, &localisation);
+    let names = installed_content_country_names::country_names::CountryNames::read(&frame, &localisation);
     assert!(names.operands(country.canonical_slot).unwrap().is_ok());
     let scopes = RecordedScopes::read(&frame, Arc::new(TagAliases::default()));
     assert_eq!(scopes.resolve_tag(tag).unwrap(), country.canonical_slot);
@@ -133,10 +133,10 @@ fn compatibility_real_g2_product_impact() {
         owners.countries.len()
     );
     for table in [
-        replay::rows::TableId::CountryAppearance,
-        replay::rows::TableId::DivisionTemplates,
-        replay::rows::TableId::Decisions,
-        replay::rows::TableId::DivisionMovement,
+        replay_data::rows::TableId::CountryAppearance,
+        replay_data::rows::TableId::DivisionTemplates,
+        replay_data::rows::TableId::Decisions,
+        replay_data::rows::TableId::DivisionMovement,
     ] {
         assert!(matches!(
             &*frame.tables[table.index()],
@@ -146,7 +146,7 @@ fn compatibility_real_g2_product_impact() {
 }
 
 /// Products date tables only through the recording's format
-/// (`replay::cadence::cadence_in`, through [`crate::metadata::slot_read`]), so a later
+/// (`replay_data::cadence::cadence_in`, through [`crate::metadata::slot_read`]), so a later
 /// cadence change cannot redate an older recording. Test modules may name
 /// today's cadence to build their fixtures.
 #[test]

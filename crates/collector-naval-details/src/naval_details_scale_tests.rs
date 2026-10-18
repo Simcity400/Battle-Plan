@@ -1,5 +1,5 @@
 use super::*;
-use engine::naval_combat_demand as breakdown;
+use engine_naval_history::naval_combat_demand as breakdown;
 use std::{
     hint::black_box,
     time::{Duration, Instant},
@@ -61,8 +61,8 @@ impl Memory for Singles<'_> {
 
     fn copy_records(
         &self,
-        sources: engine::memory::RecordSources<'_>,
-        layout: &engine::memory::RecordLayout<'_>,
+        sources: engine_native::memory::RecordSources<'_>,
+        layout: &engine_native::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         self.source.copy_records(sources, layout, destination)
@@ -89,7 +89,7 @@ fn combat_ship_fields_are_read_in_one_gather() {
     let singles = memory.singles.borrow();
     for ordinal in 0..SHIPS_PER_COMBAT {
         let ship = BODIES + 0xc000 + ordinal * 0xa00;
-        for (offset, len) in [(0x270, 8), (0x628, 8), (engine::cship::STRENGTH, 8)] {
+        for (offset, len) in [(0x270, 8), (0x628, 8), (engine_native::cship::STRENGTH, 8)] {
             assert!(
                 !singles.contains(&(ship + offset, len)),
                 "ship {ordinal} +{offset:#x} read alone"
@@ -141,24 +141,27 @@ fn cold_and_later_terrain_names_keep_mod_heap_bytes_in_publication() {
         memory.array(WEATHER + 0x370, province_weather, 2);
         for country in 0..COUNTRY_COUNT {
             let task = TASK_BASE + country * TASK_STRIDE;
-            memory.u64(task + engine::cunit::LOCATION, (BODIES + 0xb00) as u64);
+            memory.u64(
+                task + engine_native::cunit::LOCATION,
+                (BODIES + 0xb00) as u64,
+            );
             let diplomacy = memory.allocate(0x400);
             memory.u64(
                 diplomacy,
-                (IMAGE + engine::cdiplomacy_status::VTABLE_RVA) as u64,
+                (IMAGE + engine_native::cdiplomacy_status::VTABLE_RVA) as u64,
             );
             let relations = memory.allocate(8);
             memory.array(
-                diplomacy + engine::cdiplomacy_status::RELATIONS,
+                diplomacy + engine_native::cdiplomacy_status::RELATIONS,
                 relations,
                 1,
             );
             memory.u64(
-                COUNTRY_BASE + country * COUNTRY_STRIDE + engine::ccountry::DIPLOMACY_STATUS,
+                COUNTRY_BASE + country * COUNTRY_STRIDE + engine_native::ccountry::DIPLOMACY_STATUS,
                 diplomacy as u64,
             );
         }
-        assert!(engine::msvc_string::read_text::<256>(&memory, TERRAIN + 0x18).is_none());
+        assert!(engine_native::msvc_string::read_text::<256>(&memory, TERRAIN + 0x18).is_none());
         captured.reset();
         captured.capture(&memory, IMAGE, STATE);
         assert_eq!(captured.details.outcome, Outcome::Rows { len: 1 });
@@ -218,7 +221,11 @@ fn naval_live_header_bounds_scale_from_actual_combat_demand() {
         for index in 0..combats {
             memory.u64(roster + index * 8, BODIES as u64);
         }
-        memory.array(STATE + engine::cgame_state::COMBATS + 8, roster, combats);
+        memory.array(
+            STATE + engine_native::cgame_state::COMBATS + 8,
+            roster,
+            combats,
+        );
         let demand = breakdown::demand(&memory, IMAGE, STATE).unwrap();
         assert_eq!(demand.rows, combats);
         assert_eq!(demand.ships, one.ships * combats);
@@ -246,7 +253,7 @@ fn naval_hint_reserve_failure_keeps_existing_lengths() {
 #[test]
 fn naval_bench_in_place_changes_keep_headers_and_reach_capture() {
     let mut memory = Fixture::new(1);
-    let root = COUNTRY_BASE + engine::ccountry::MODIFIER_ACCUMULATOR;
+    let root = COUNTRY_BASE + engine_native::ccountry::MODIFIER_ACCUMULATOR;
     let root_header = memory.0[root - STATE..root - STATE + 16].to_vec();
     let mut captured = Captured::with_capacities(&Capacities::default());
     captured.capture(&memory, IMAGE, STATE);

@@ -12,8 +12,25 @@ doctest = false
 [features]
 # Tests that take more than about two seconds; see AGENTS.md.
 slow-tests = []
+# Frontend contract generation; ordinary hosts need only the runtime registry.
+export-types = []
 
 [dependencies]
+replay.workspace = true
+engine-allocation.workspace = true
+engine-executable.workspace = true
+engine-native.workspace = true
+installed-content-core.workspace = true
+installed-content-country-names.workspace = true
+installed-content-equipment-graphics.workspace = true
+installed-content-gfx.workspace = true
+installed-content-image.workspace = true
+installed-content-localisation.workspace = true
+installed-content-province-area.workspace = true
+installed-content-regions.workspace = true
+installed-content-settings.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
 blake3.workspace = true
 dashboard-base.workspace = true
 dashboard-air-aces.workspace = true
@@ -43,11 +60,8 @@ dashboard-intelligence.workspace = true
 dashboard-land-battles.workspace = true
 dashboard-naval.workspace = true
 dashboard-text.workspace = true
-replay.workspace = true
 store = { path = "../store" }
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
-installed-content.workspace = true
-engine.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 # Saved preparation state reads back every f64 bit for bit, so a restored
 # observer compares equal values as equal.
@@ -64,6 +78,7 @@ zstd = "0.13"
 [[bin]]
 name = "export-types"
 path = "src/bin/export-types.rs"
+required-features = ["export-types"]
 # No tests of its own; `cargo test` would only build and link an empty harness.
 test = false
 
@@ -72,7 +87,23 @@ name = "dashboard-bridge"
 path = "src/bin/dashboard-bridge.rs"
 
 [dev-dependencies]
+engine-research.workspace = true
+engine-stability.workspace = true
 replay = { workspace = true, features = ["test-support"] }
+installed-content-core = { workspace = true, features = ["test-support"] }
+installed-content-country-names = { workspace = true, features = ["test-support"] }
+installed-content-equipment-graphics = { workspace = true, features = ["test-support"] }
+installed-content-events = { workspace = true, features = ["test-support"] }
+installed-content-focus = { workspace = true, features = ["test-support"] }
+installed-content-gfx = { workspace = true, features = ["test-support"] }
+installed-content-image = { workspace = true, features = ["test-support"] }
+installed-content-localisation = { workspace = true, features = ["test-support"] }
+installed-content-province-area = { workspace = true, features = ["test-support"] }
+installed-content-regions = { workspace = true, features = ["test-support"] }
+installed-content-settings = { workspace = true, features = ["test-support"] }
+installed-content-states = { workspace = true, features = ["test-support"] }
+replay-data = { workspace = true, features = ["test-support"] }
+replay-frame = { workspace = true, features = ["test-support"] }
 dashboard-air-aces = { workspace = true, features = ["test-support"] }
 dashboard-air-superiority = { workspace = true, features = ["test-support"] }
 dashboard-equipment-losses = { workspace = true, features = ["test-support"] }
@@ -100,6 +131,5 @@ dashboard-land-battles = { workspace = true, features = ["test-support"] }
 dashboard-naval = { workspace = true, features = ["test-support"] }
 dashboard-text = { workspace = true, features = ["test-support"] }
 # Folder layers, so tests load localisation files as the game content does.
-installed-content = { workspace = true, features = ["test-support"] }
 # Prepared files publish without disk flushes, which no test can observe.
 store = { path = "../store", features = ["test-support"] }

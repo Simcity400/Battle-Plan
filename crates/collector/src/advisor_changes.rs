@@ -1,13 +1,14 @@
 //! Bounded advisor-map notifications. Only authenticated exact map addresses
 //! are watched; generic tree helpers also operate on unrelated template maps.
 //! This family also owns the character role-row writer sites
-//! ([`engine::character_role_mutations`]) and forwards every advisor-family
+//! ([`engine_mutations::character_role_mutations`]) and forwards every advisor-family
 //! call to [`crate::character_changes`], which shares these patches.
 use crate::{
     extended::characters::advisors::{Changes, Counts},
     hook::Hook,
 };
-use engine::{Memory, advisor_mutations::MUTATIONS};
+use engine_mutations::advisor_mutations::MUTATIONS;
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -21,7 +22,7 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 static POISONED: AtomicBool = AtomicBool::new(false);
 pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL: [AtomicUsize; 11] = [const { AtomicUsize::new(0) }; 11];
-const ROLE_SITES: usize = engine::character_role_mutations::MUTATIONS.len();
+const ROLE_SITES: usize = engine_mutations::character_role_mutations::MUTATIONS.len();
 static ROLE_ORIGINAL: [AtomicUsize; ROLE_SITES] = [const { AtomicUsize::new(0) }; ROLE_SITES];
 /// Whether every character role-row site was installed.
 static ROLES_INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -83,16 +84,16 @@ pub fn invalidate() {
 }
 fn character_map(character: usize) -> usize {
     character
-        .checked_add(engine::ccharacter::ADVISOR_MAP_HEAD)
+        .checked_add(engine_native::ccharacter::ADVISOR_MAP_HEAD)
         .unwrap_or(0)
 }
 fn role_map(role: usize) -> usize {
     // Native receiver is a live advisor, but still guard the metadata read.
     // On failure revoke every certificate rather than guess its owner.
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let owner = role
-        .checked_add(engine::cadvisor::CHARACTER)
-        .and_then(|address| engine::read::<u64>(&memory, address))
+        .checked_add(engine_native::cadvisor::CHARACTER)
+        .and_then(|address| engine_native::read::<u64>(&memory, address))
         .filter(|&owner| owner != 0);
     match owner {
         Some(owner) => character_map(owner as usize),
@@ -248,7 +249,7 @@ impl Hooks {
                 destroy_character as *const () as usize,
             ];
             for (index, site) in MUTATIONS.iter().enumerate() {
-                if engine::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+                if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
                     return Err("advisor hook sentinel differs");
                 }
                 let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
@@ -259,10 +260,10 @@ impl Hooks {
             // The role sites complete this family's character coverage. A
             // differing sentinel leaves them all uninstalled; the character
             // domain then stays disabled and every hour reads afresh.
-            let roles = engine::character_role_mutations::MUTATIONS;
+            let roles = engine_mutations::character_role_mutations::MUTATIONS;
             if cfg!(feature = "character_changes")
                 && roles.iter().all(|site| {
-                    engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                    engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
                 })
             {
                 let callbacks: [usize; ROLE_SITES] = [
@@ -368,7 +369,7 @@ callback!(merge_character, 8, (this:usize, source:usize, country:usize) -> (), c
 callback!(read_character, 9, (this:usize, reader:usize, token:i32) -> (), character_map(this));
 callback!(destroy_character, 10, (this:usize) -> (), character_map(this));
 
-// Role-row writers ([`engine::character_role_mutations`]): integer and
+// Role-row writers ([`engine_mutations::character_role_mutations`]): integer and
 // pointer arguments only (the asm prologues use at most RCX..R9), and void
 // returns pass RAX through unchanged. Each names its character as the audit
 // there establishes; a role whose parent does not read revokes every
@@ -390,23 +391,23 @@ macro_rules! role_callback {
         }
     };
 }
-use engine::character_role_mutations as roles;
+use engine_mutations::character_role_mutations as roles;
 // Country leader modifiers (leader).
 role_callback!(country_leader_modifiers, roles::COUNTRY_LEADER_MODIFIERS, (leader: usize),
-    crate::character_changes::role_character(leader, engine::ccountry_leader::CHARACTER));
+    crate::character_changes::role_character(leader, engine_native::ccountry_leader::CHARACTER));
 // Country leader destroy (leader): its character link still names the character on entry.
 role_callback!(country_leader_destroy, roles::COUNTRY_LEADER_DESTROY, (leader: usize),
-    crate::character_changes::role_character(leader, engine::ccountry_leader::CHARACTER));
+    crate::character_changes::role_character(leader, engine_native::ccountry_leader::CHARACTER));
 // Leader-map try_emplace (map = the character's leader map, result, key, value).
 role_callback!(country_leader_map_insert, roles::COUNTRY_LEADER_MAP_INSERT,
     (map: usize, result: usize, key: usize, value: usize),
-    Some(map.saturating_sub(engine::ccharacter::LEADER_MAP_HEAD)));
+    Some(map.saturating_sub(engine_native::ccharacter::LEADER_MAP_HEAD)));
 // Role builder (out, character, definition).
 role_callback!(country_leader_create, roles::COUNTRY_LEADER_CREATE,
     (out: usize, character: usize, definition: usize), Some(character));
 // Advisor modifier rebuild (advisor).
 role_callback!(advisor_modifiers, roles::ADVISOR_MODIFIERS, (advisor: usize),
-    crate::character_changes::role_character(advisor, engine::cadvisor::CHARACTER));
+    crate::character_changes::role_character(advisor, engine_native::cadvisor::CHARACTER));
 // Name setter (character, name): the token, the name and the unit leader name.
 role_callback!(character_name, roles::CHARACTER_NAME, (character: usize, name: usize),
     Some(character));

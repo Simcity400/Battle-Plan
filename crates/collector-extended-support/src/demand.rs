@@ -1,7 +1,7 @@
 //! Sizing-read contracts the extended capture families share: failed-observation
 //! counters, a census outcome's storage demand and the live world they read.
 
-use engine::{Memory, cgame_state, walk::Outcome};
+use engine_native::{Memory, cgame_state, walk::Outcome};
 use std::sync::{
     Mutex,
     atomic::{AtomicU64, Ordering},
@@ -68,7 +68,7 @@ pub fn rows(outcome: Outcome) -> Result<usize, &'static str> {
 pub fn demand_game_state(memory: &impl Memory, base: usize) -> Result<Option<usize>, &'static str> {
     let game_state = base
         .checked_add(cgame_state::SINGLETON_RVA)
-        .and_then(|at| engine::read::<u64>(memory, at))
+        .and_then(|at| engine_native::read::<u64>(memory, at))
         .ok_or("input demand game state unreadable or address overflow")?;
     let state =
         usize::try_from(game_state).map_err(|_| "input demand game state address overflow")?;
@@ -77,7 +77,7 @@ pub fn demand_game_state(memory: &impl Memory, base: usize) -> Result<Option<usi
     }
     let countries = state
         .checked_add(cgame_state::COUNTRIES)
-        .and_then(|at| engine::cpdx_array::Array::read(memory, at, 8))
+        .and_then(|at| engine_native::cpdx_array::Array::read(memory, at, 8))
         .ok_or("input demand country array unreadable or invalid")?;
     Ok((countries.count >= 2).then_some(state))
 }
@@ -94,19 +94,19 @@ pub fn demand_air_game_state(
     };
     let manager = state
         .checked_add(cgame_state::STRATEGIC_AIR_MANAGER)
-        .and_then(|at| engine::read::<u64>(memory, at))
+        .and_then(|at| engine_native::read::<u64>(memory, at))
         .and_then(|p| usize::try_from(p).ok())
         .ok_or("input demand strategic air manager unreadable")?;
     if manager == 0 {
         return Ok(None);
     }
     let slots = manager
-        .checked_add(engine::cstrategic_air_manager::COUNTRY_AIR)
-        .and_then(|at| engine::cpdx_array::Array::read(memory, at, 8))
+        .checked_add(engine_native::cstrategic_air_manager::COUNTRY_AIR)
+        .and_then(|at| engine_native::cpdx_array::Array::read(memory, at, 8))
         .ok_or("input demand strategic air country roster unreadable or invalid")?;
     let countries = state
         .checked_add(cgame_state::COUNTRIES)
-        .and_then(|at| engine::cpdx_array::Array::read(memory, at, 8))
+        .and_then(|at| engine_native::cpdx_array::Array::read(memory, at, 8))
         .ok_or("input demand country array unreadable or invalid")?;
     Ok((countries.count >= 2 && slots.count >= countries.count).then_some(state))
 }

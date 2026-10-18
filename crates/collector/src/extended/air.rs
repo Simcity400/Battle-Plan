@@ -13,19 +13,17 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
-use engine::{
-    Memory, allocation, cace, cair_base,
-    cair_regional_mission::{self, WingIdentity},
-    cair_wing, cair_wing_pool, ccountry, ccountry_air_container, cgame_state, cloop_history,
-    cpdx_array::Array,
-    cprovince, cstate, cstrategic_air_manager, cstrategic_navy_manager, equipment_entry,
-    map_air_base_reference, msvc_string,
-    walk::{Buffer, Outcome},
+use engine_air_history::cloop_history;
+use engine_allocation as allocation;
+use engine_map_air::map_air_base_reference;
+use engine_native::{
+    Memory, cace, cair_base, cair_regional_mission, cair_regional_mission::WingIdentity, cair_wing,
+    cair_wing_pool, ccountry, ccountry_air_container, cgame_state, cpdx_array::Array, cprovince,
+    cstate, cstrategic_air_manager, cstrategic_navy_manager, equipment_entry, msvc_string,
+    walk::Buffer, walk::Outcome,
 };
-use replay::{
-    frame::TableView,
-    rows::{self, TableId, tables},
-};
+use replay_data::{rows, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 
 use super::{
     air_histories,
@@ -113,10 +111,10 @@ impl Capacities {
         let mut missions = 0usize;
         // Ordinary mission occurrences appear in both country lists;
         // the complete region list additionally includes carrier-only regions.
-        engine::cstrategic_air::visit(memory, base, state, |root| {
+        engine_native::cstrategic_air::visit(memory, base, state, |root| {
             let active = root
                 .address
-                .checked_add(engine::cstrategic_air::ALL_ACTIVE_MISSIONS)
+                .checked_add(engine_native::cstrategic_air::ALL_ACTIVE_MISSIONS)
                 .and_then(|at| Array::read(memory, at, 8))
                 .ok_or("air mission sizing active vector unreadable")?;
             missions = missions
@@ -144,7 +142,8 @@ impl Capacities {
         self.rows[6] = self.rows[6].max(handles);
         // Task-force combat census reaches native task-force combat occurrences. Every
         // task-force roster occurrence is an independent upper bound.
-        let task_forces = engine::cfleet::walk(memory, base, state, &mut [], &mut [], &mut []);
+        let task_forces =
+            engine_native::cfleet::walk(memory, base, state, &mut [], &mut [], &mut []);
         self.rows[8] = self.rows[8].max(crate::country_scale::table_demand::rows(
             task_forces.task_forces,
         )?);
@@ -176,11 +175,11 @@ pub struct WingSource<'a> {
 }
 
 /// RaidAirScores, captured in their own job with the attachment's held table
-/// ([`engine::raid_air_scores::Held`]) and then installed in the frame's
+/// ([`engine_raid_inputs::raid_air_scores::Held`]) and then installed in the frame's
 /// pack ([`Captured::install_scores`]). The walk reads only the game state
 /// and the hour, so it leaves in the first burst.
 pub(crate) struct ScorePart {
-    rows: CaptureRows<engine::raid_air_scores::Row>,
+    rows: CaptureRows<engine_raid_inputs::raid_air_scores::Row>,
     /// The walk's region and country demand, which sizes the held table.
     demand: [usize; 2],
     ticks: u64,
@@ -213,12 +212,12 @@ impl ScorePart {
         hour: i32,
         force_full: bool,
         capacity: [usize; 2],
-        held: &mut engine::raid_air_scores::Held,
+        held: &mut engine_raid_inputs::raid_air_scores::Held,
     ) -> u64 {
         self.rows.reset();
         self.demand = [0; 2];
         self.ticks = 0;
-        if !replay::cadence::should_walk(TableId::RaidAirScores, hour, force_full) {
+        if !replay_data::cadence::should_walk(TableId::RaidAirScores, hour, force_full) {
             self.rows.outcome = SKIPPED;
             held.invalidate();
             return 0;
@@ -238,7 +237,7 @@ impl ScorePart {
             });
             return 0;
         }
-        let walked = engine::raid_air_scores::walk_growing(
+        let walked = engine_raid_inputs::raid_air_scores::walk_growing(
             memory,
             base,
             game_state,
@@ -259,7 +258,7 @@ impl ScorePart {
         self.demand = [0; 2];
         self.ticks = 0;
         self.rows.fail(failed(
-            replay::cadence::should_walk(TableId::RaidAirScores, hour, force_full),
+            replay_data::cadence::should_walk(TableId::RaidAirScores, hour, force_full),
             reason,
         ));
     }
@@ -272,7 +271,7 @@ pub struct Captured {
     cumulative: CaptureRows<cair_wing::CumulativeRow>,
     aces: CaptureRows<cace::Row>,
     statistics: CaptureRows<cloop_history::Row>,
-    scores: CaptureRows<engine::raid_air_scores::Row>,
+    scores: CaptureRows<engine_raid_inputs::raid_air_scores::Row>,
     /// Held-table sizes: this pack's capacities, then the last walk's demand.
     score_capacity: [usize; 2],
     score_demand: [usize; 2],
@@ -326,7 +325,7 @@ const NO_WING_SOURCE: Outcome = Outcome::Unavailable {
 };
 
 const SKIPPED: Outcome = Outcome::Unavailable {
-    reason: replay::cadence::SKIPPED_REASON,
+    reason: replay_data::cadence::SKIPPED_REASON,
 };
 
 fn failed(active: bool, reason: &'static str) -> Outcome {
@@ -508,7 +507,8 @@ impl Captured {
 
     /// Freeze the requested tables before contexts and shared map callbacks.
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
-        self.active = TABLES.map(|table| replay::cadence::should_walk(table, hour, force_full));
+        self.active =
+            TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
     }
 
     /// Whether this hour's registrations and combats were captured.
@@ -886,7 +886,7 @@ impl Captured {
         game_state: usize,
         hour: i32,
         force_full: bool,
-        scores: Option<&mut engine::raid_air_scores::Held>,
+        scores: Option<&mut engine_raid_inputs::raid_air_scores::Held>,
     ) -> [u64; N] {
         self.prepare_hour(hour, force_full);
         self.bases.reset();
@@ -947,7 +947,7 @@ impl Captured {
             None => {
                 let mut part = ScorePart::vacant();
                 self.swap_scores(&mut part);
-                let mut fresh = engine::raid_air_scores::Held::default();
+                let mut fresh = engine_raid_inputs::raid_air_scores::Held::default();
                 let ticks = part.capture(
                     memory,
                     base,
@@ -1480,7 +1480,7 @@ fn capture_patrol_combats(
         let country = countries
             .at(slot)?
             .ok_or("naval-patrol country slot is empty")?;
-        engine::air_kamikaze::task_force_combats(memory, base, country, emit)
+        engine_air_history::air_kamikaze::task_force_combats(memory, base, country, emit)
     })
 }
 
@@ -1494,7 +1494,9 @@ fn patrol_combats(
     combats: &mut [rows::AirNavalPatrolCombatRow],
     walk: impl FnMut(
         u32,
-        &mut dyn FnMut(engine::air_kamikaze::TaskForceCombat) -> Result<(), &'static str>,
+        &mut dyn FnMut(
+            engine_air_history::air_kamikaze::TaskForceCombat,
+        ) -> Result<(), &'static str>,
     ) -> Result<(), &'static str>,
 ) -> Result<(Outcome, (usize, usize)), &'static str> {
     patrol_combats_buffer(Buffer::Fixed(scratch), count, Buffer::Fixed(combats), walk)
@@ -1506,7 +1508,9 @@ fn patrol_combats_buffer(
     mut combats: Buffer<'_, rows::AirNavalPatrolCombatRow>,
     mut walk: impl FnMut(
         u32,
-        &mut dyn FnMut(engine::air_kamikaze::TaskForceCombat) -> Result<(), &'static str>,
+        &mut dyn FnMut(
+            engine_air_history::air_kamikaze::TaskForceCombat,
+        ) -> Result<(), &'static str>,
     ) -> Result<(), &'static str>,
 ) -> Result<(Outcome, (usize, usize)), &'static str> {
     scratch.ensure(
@@ -1606,7 +1610,14 @@ fn read_equipment(
     source: &WingSource<'_>,
     output: &mut [rows::WingEquipmentRow],
 ) -> Outcome {
-    read_equipment_buffer(memory, base, source, engine::walk::Buffer::Fixed(output), 0).0
+    read_equipment_buffer(
+        memory,
+        base,
+        source,
+        engine_native::walk::Buffer::Fixed(output),
+        0,
+    )
+    .0
 }
 
 /// [`read_equipment_buffer`] with `reuse` carrying the rows of a wing whose
@@ -1616,7 +1627,7 @@ fn read_equipment_carried(
     memory: &impl Memory,
     base: usize,
     source: &WingSource<'_>,
-    mut output: engine::walk::Buffer<'_, rows::WingEquipmentRow>,
+    mut output: engine_native::walk::Buffer<'_, rows::WingEquipmentRow>,
     start: usize,
     reuse: Option<&mut WingReuse<'_>>,
 ) -> (Outcome, usize) {
@@ -1647,7 +1658,7 @@ fn read_equipment_buffer(
     memory: &impl Memory,
     base: usize,
     source: &WingSource<'_>,
-    mut output: engine::walk::Buffer<'_, rows::WingEquipmentRow>,
+    mut output: engine_native::walk::Buffer<'_, rows::WingEquipmentRow>,
     start: usize,
 ) -> (Outcome, usize) {
     let mut required = 0;
@@ -1735,7 +1746,7 @@ fn valid_names(outcome: Outcome, rows: &[cace::Row], bytes: &[u8], len: usize) -
 /// during acquisition; the worker installs value rows without memory reads.
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct WingMembershipRead {
-    pub value: engine::ctheatre::WingMembership,
+    pub value: engine_native::ctheatre::WingMembership,
     pub error: Option<&'static str>,
 }
 

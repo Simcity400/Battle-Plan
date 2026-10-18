@@ -77,14 +77,17 @@ pub(super) fn combat_tint(
 /// argument. A key the content lacks keeps its own bytes; text layout retains
 /// colour runs and inline icons.
 fn progress_text(
-    localisation: &installed_content::localisation::Localisation,
+    localisation: &installed_content_localisation::localisation::Localisation,
     value: i64,
 ) -> Result<String, String> {
     const KEY: &str = "COMBAT_ICON_PROGRESS";
     localisation
         .localise_with(
             KEY.as_bytes(),
-            &[("VAL", installed_content::localisation::Argument::Fixed5(value))],
+            &[(
+                "VAL",
+                installed_content_localisation::localisation::Argument::Fixed5(value),
+            )],
         )
         .map_err(|refusal| refusal.to_string())
 }
@@ -130,7 +133,7 @@ fn gap(gaps: &mut Gaps, cause: String, combat: u64) {
 }
 
 /// How `table` lacks the row for `key` this hour.
-fn missing<T: replay::rows::TableSchema>(
+fn missing<T: replay_data::rows::TableSchema>(
     table: &Available<'_, T>,
     name: &str,
     key: impl std::fmt::Display,
@@ -572,13 +575,12 @@ pub(super) fn land_combats(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{
-            DivisionMovementRow, DivisionRow, DivisionStatusRow, LandCombatDetailsRow,
-            LandCombatDivisionRow, LandCombatRow, LandCombatSideRow, TableId, TableRows,
-        },
+    use replay_data::{
+        rows::DivisionMovementRow, rows::DivisionRow, rows::DivisionStatusRow,
+        rows::LandCombatDetailsRow, rows::LandCombatDivisionRow, rows::LandCombatRow,
+        rows::LandCombatSideRow, rows::TableId, rows::TableRows,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     fn frame() -> DecodedFrame {
         DecodedFrame {
@@ -676,7 +678,7 @@ mod tests {
     /// its bytes, not as a number.
     #[test]
     fn the_progress_box_localises_its_fixed_point_value() {
-        let localisation: installed_content::localisation::Localisation =
+        let localisation: installed_content_localisation::localisation::Localisation =
             [("COMBAT_ICON_PROGRESS", "§Y$VAL|1$§! pct")]
                 .into_iter()
                 .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -687,7 +689,7 @@ mod tests {
             progress_text(&localisation, value).as_deref(),
             Ok("\u{11}Y45.6\u{11}! pct")
         );
-        let empty = installed_content::localisation::Localisation::default();
+        let empty = installed_content_localisation::localisation::Localisation::default();
         assert_eq!(
             progress_text(&empty, value).as_deref(),
             Ok("COMBAT_ICON_PROGRESS")

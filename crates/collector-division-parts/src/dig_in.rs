@@ -10,7 +10,7 @@
 //! projection reads only owned rows.
 
 use crate::table_capture::{Arena, grow_vec};
-use engine::{Memory, carmy, walk::Outcome};
+use engine_native::{Memory, carmy, walk::Outcome};
 
 #[derive(Clone, Copy, Default)]
 struct Row {
@@ -153,7 +153,7 @@ impl Work {
                     let index = match self.refusals.binary_search_by_key(&reason, |entry| entry.0) {
                         Ok(index) => index,
                         Err(index) => {
-                            engine::allocation::reserve(&mut self.refusals, 1)?;
+                            engine_allocation::reserve(&mut self.refusals, 1)?;
                             self.refusals.insert(index, (reason, 0));
                             index
                         }
@@ -189,7 +189,7 @@ mod tests {
     fn each_division_keeps_its_own_factor_or_refusal() {
         // A null orders group has no selected commander: the native factor is
         // 100000 without an accumulator. An unread group stays a refusal.
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0x1000,
             bytes: &[],
         };
@@ -224,7 +224,7 @@ mod tests {
 
     impl Commanders {
         fn new(terms: [i64; 2]) -> Self {
-            use engine::{carmy_leader, corders_group as group, cunit_leader};
+            use engine_native::{carmy_leader, corders_group as group, cunit_leader};
             fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
                 bytes[at..at + value.len()].copy_from_slice(value);
             }
@@ -264,7 +264,7 @@ mod tests {
                 put(
                     &mut bytes,
                     MODIFIERS[index],
-                    &engine::modifier_keys::COMBAT_ENTRENCHMENT.to_le_bytes(),
+                    &engine_executable::modifier_keys::COMBAT_ENTRENCHMENT.to_le_bytes(),
                 );
                 put(
                     &mut bytes,
@@ -290,11 +290,11 @@ mod tests {
     impl Memory for Commanders {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.reads.borrow_mut().push(address);
-            if address == engine::modifier_definition::TABLE_RVA && output.len() == 8 {
+            if address == engine_native::modifier_definition::TABLE_RVA && output.len() == 8 {
                 output.copy_from_slice(&(DEFINITIONS as u64).to_le_bytes());
                 return true;
             }
-            if address == engine::modifier_definition::TRADE_FEATURE_FLAGS_RVA {
+            if address == engine_native::modifier_definition::TRADE_FEATURE_FLAGS_RVA {
                 output.fill(0);
                 return true;
             }
@@ -302,7 +302,7 @@ mod tests {
                 output.fill(0);
                 return true;
             }
-            engine::memory::SliceMemory {
+            engine_native::memory::SliceMemory {
                 base: 0,
                 bytes: &self.bytes,
             }
@@ -378,7 +378,7 @@ mod tests {
                 assert_eq!(memory.count(modifiers), block);
             }
             assert_eq!(
-                memory.count(engine::modifier_definition::TRADE_FEATURE_FLAGS_RVA),
+                memory.count(engine_native::modifier_definition::TRADE_FEATURE_FLAGS_RVA),
                 1
             );
         }
@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn incomplete_census_publishes_no_factor() {
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0x1000,
             bytes: &[],
         };

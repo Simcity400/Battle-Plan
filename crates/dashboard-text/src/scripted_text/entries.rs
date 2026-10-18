@@ -88,20 +88,22 @@ impl ActiveEntry {
 }
 
 pub struct StateContent {
-    pub defines: installed_content::defines::Defines,
-    pub states: installed_content::states::States,
+    pub defines: installed_content_core::defines::Defines,
+    pub states: installed_content_states::states::States,
     pub names: StateNames,
-    pub warnings: Vec<installed_content::states::Diagnostic>,
+    pub warnings: Vec<installed_content_states::states::Diagnostic>,
 }
 
-pub fn live_state_warnings(notes: &[installed_content::states::Diagnostic]) -> impl Iterator<Item = &str> {
-    use installed_content::states::MisreadCause;
+pub fn live_state_warnings(
+    notes: &[installed_content_states::states::Diagnostic],
+) -> impl Iterator<Item = &str> {
+    use installed_content_states::states::MisreadCause;
     // States' Warning channel contains nonpositive-ID and duplicate-ID
     // skips. Both keep exactly the templates the game keeps.
     // Only the listed state-field recoveries preserve the game's result;
     // shared reader notes and unsupported readers still warn.
     notes.iter().filter_map(|note| {
-        let exact = note.kind == installed_content::DiagnosticKind::Misread
+        let exact = note.kind == installed_content_core::DiagnosticKind::Misread
             && matches!(
                 note.cause,
                 Some(
@@ -112,13 +114,16 @@ pub fn live_state_warnings(notes: &[installed_content::states::Diagnostic]) -> i
                         | MisreadCause::NonBlockBuildings
                 )
             );
-        (note.kind != installed_content::DiagnosticKind::Warning && !exact).then_some(note.message.as_str())
+        (note.kind != installed_content_core::DiagnosticKind::Warning && !exact)
+            .then_some(note.message.as_str())
     })
 }
 
 /// Shared state templates and name keys, resolved through the recorded stack.
-pub fn read_state_content(layers: &installed_content::ResolvedLayers) -> std::io::Result<StateContent> {
-    let defines = installed_content::defines::read(layers)?;
+pub fn read_state_content(
+    layers: &installed_content_core::ResolvedLayers,
+) -> std::io::Result<StateContent> {
+    let defines = installed_content_core::defines::read(layers)?;
     let (states, names, warnings) = read_state_templates(layers, &defines)?;
     Ok(StateContent {
         defines,
@@ -129,16 +134,18 @@ pub fn read_state_content(layers: &installed_content::ResolvedLayers) -> std::io
 }
 
 fn read_state_templates(
-    layers: &installed_content::ResolvedLayers,
-    defines: &installed_content::defines::Defines,
+    layers: &installed_content_core::ResolvedLayers,
+    defines: &installed_content_core::defines::Defines,
 ) -> std::io::Result<(
-    installed_content::states::States,
+    installed_content_states::states::States,
     StateNames,
-    Vec<installed_content::states::Diagnostic>,
+    Vec<installed_content_states::states::Diagnostic>,
 )> {
-    let map = installed_content::terrain::read_default_map(layers)?;
-    let provinces = installed_content::map::parse_definitions(&layers.read(&map.file("definitions")?)?)?;
-    let (states, warnings) = installed_content::states::read_with_diagnostics(layers, defines, &provinces)?;
+    let map = installed_content_core::terrain::read_default_map(layers)?;
+    let provinces =
+        installed_content_core::map::parse_definitions(&layers.read(&map.file("definitions")?)?)?;
+    let (states, warnings) =
+        installed_content_states::states::read_with_diagnostics(layers, defines, &provinces)?;
     let names = states
         .definitions()
         .iter()
@@ -152,18 +159,18 @@ type Database<T> = std::sync::OnceLock<(Result<T, String>, Vec<String>)>;
 pub struct Environment {
     prepared: prepared::PreparedInputs,
     // Shared defines stay independent of lazy map inputs.
-    defines: installed_content::defines::Defines,
-    layers: installed_content::ResolvedLayers,
-    ideologies: Database<installed_content::ideologies::Ideologies>,
-    terrain_definitions: Database<installed_content::terrain::TerrainDefinitions>,
-    leader_traits: Database<installed_content::leader_traits::LeaderTraits>,
+    defines: installed_content_core::defines::Defines,
+    layers: installed_content_core::ResolvedLayers,
+    ideologies: Database<installed_content_core::ideologies::Ideologies>,
+    terrain_definitions: Database<installed_content_core::terrain::TerrainDefinitions>,
+    leader_traits: Database<installed_content_core::leader_traits::LeaderTraits>,
     #[cfg(any(test, feature = "test-support"))]
     pub(super) inputs: std::sync::OnceLock<Result<EnvironmentInputs, String>>,
 }
 
 impl Environment {
-    pub(super) fn read(layers: &installed_content::ResolvedLayers) -> std::io::Result<Self> {
-        let defines = installed_content::defines::read(layers)?;
+    pub(super) fn read(layers: &installed_content_core::ResolvedLayers) -> std::io::Result<Self> {
+        let defines = installed_content_core::defines::read(layers)?;
         Ok(Self {
             prepared: Default::default(),
             defines,
@@ -189,37 +196,39 @@ impl Environment {
         .collect()
     }
 
-    pub(crate) fn defines(&self) -> &installed_content::defines::Defines {
+    pub(crate) fn defines(&self) -> &installed_content_core::defines::Defines {
         &self.defines
     }
 
-    pub(crate) fn ideologies(&self) -> Result<&installed_content::ideologies::Ideologies, String> {
+    pub(crate) fn ideologies(&self) -> Result<&installed_content_core::ideologies::Ideologies, String> {
         self.ideologies_result().as_ref().map_err(Clone::clone)
     }
 
-    pub(crate) fn terrain(&self) -> Result<&installed_content::terrain::TerrainDefinitions, String> {
+    pub(crate) fn terrain(&self) -> Result<&installed_content_core::terrain::TerrainDefinitions, String> {
         self.terrain_result().as_ref().map_err(Clone::clone)
     }
 
-    pub(crate) fn leader_traits(&self) -> Result<&installed_content::leader_traits::LeaderTraits, String> {
+    pub(crate) fn leader_traits(
+        &self,
+    ) -> Result<&installed_content_core::leader_traits::LeaderTraits, String> {
         self.leader_traits_result().as_ref().map_err(Clone::clone)
     }
 
-    fn ideologies_result(&self) -> &Result<installed_content::ideologies::Ideologies, String> {
+    fn ideologies_result(&self) -> &Result<installed_content_core::ideologies::Ideologies, String> {
         &self
             .ideologies
-            .get_or_init(|| match installed_content::ideologies::read(&self.layers) {
+            .get_or_init(|| match installed_content_core::ideologies::read(&self.layers) {
                 Ok((db, notes)) => (Ok(db), notes.into_iter().map(|(_, why)| why).collect()),
                 Err(why) => (Err(why.to_string()), Vec::new()),
             })
             .0
     }
 
-    fn terrain_result(&self) -> &Result<installed_content::terrain::TerrainDefinitions, String> {
+    fn terrain_result(&self) -> &Result<installed_content_core::terrain::TerrainDefinitions, String> {
         &self
             .terrain_definitions
             .get_or_init(
-                || match installed_content::terrain::read_definitions(&self.layers) {
+                || match installed_content_core::terrain::read_definitions(&self.layers) {
                     Ok(db) => {
                         let notes = db.skipped.clone();
                         (Ok(db), notes)
@@ -230,10 +239,10 @@ impl Environment {
             .0
     }
 
-    fn leader_traits_result(&self) -> &Result<installed_content::leader_traits::LeaderTraits, String> {
+    fn leader_traits_result(&self) -> &Result<installed_content_core::leader_traits::LeaderTraits, String> {
         &self
             .leader_traits
-            .get_or_init(|| match installed_content::leader_traits::read(&self.layers) {
+            .get_or_init(|| match installed_content_core::leader_traits::read(&self.layers) {
                 Ok((db, notes)) => (Ok(db), notes.into_iter().map(|(_, why)| why).collect()),
                 Err(why) => (Err(why.to_string()), Vec::new()),
             })
@@ -258,18 +267,18 @@ pub(super) struct EnvironmentInputs {
     continents: Result<Vec<String>, String>,
     impassable: BTreeSet<u32>,
     neighbors: std::sync::OnceLock<Result<BTreeMap<u32, Vec<u32>>, String>>,
-    terrain: std::sync::OnceLock<Option<installed_content::movement::MovementMap>>,
+    terrain: std::sync::OnceLock<Option<installed_content_core::movement::MovementMap>>,
     terrain_names: Result<Vec<Vec<u8>>, String>,
     dlcs: BTreeSet<String>,
-    triggers: Result<installed_content::trigger_keys::TriggerNames, String>,
-    aliases: std::sync::Arc<installed_content::tag_aliases::TagAliases>,
-    buildings: Result<installed_content::buildings::Buildings, String>,
+    triggers: Result<installed_content_core::trigger_keys::TriggerNames, String>,
+    aliases: std::sync::Arc<installed_content_core::tag_aliases::TagAliases>,
+    buildings: Result<installed_content_core::buildings::Buildings, String>,
     bonuses: Result<[i64; 2], String>,
     roles: Result<LeaderRoles, String>,
     invasion_days: Result<i32, String>,
-    constants: Result<installed_content::script_constants::Constants, String>,
+    constants: Result<installed_content_core::script_constants::Constants, String>,
     /// Registered unit-leader traits; country-leader traits stay in Environment.
-    traits: Result<installed_content::unit_leader::Traits, String>,
+    traits: Result<installed_content_core::unit_leader::Traits, String>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -354,7 +363,7 @@ impl ScriptedContent {
             .get_or_init(|| self.layers.layers.dlc_names().map_err(|e| e.to_string()))
             .as_ref()
             .map_err(Clone::clone)?;
-        static TRIGGERS: std::sync::OnceLock<installed_content::trigger_keys::TriggerNames> =
+        static TRIGGERS: std::sync::OnceLock<installed_content_core::trigger_keys::TriggerNames> =
             std::sync::OnceLock::new();
         Ok(World::unrecorded(
             dlcs,
@@ -385,7 +394,7 @@ pub enum StateNameUsage {
 
 /// State tables and place labels share stored-language and template precedence.
 pub fn state_display_name(
-    state: &replay::rows::StateRow,
+    state: &replay_data::rows::StateRow,
     cat: &crate::catalogue::Catalogue,
     names: Result<&StateNames, &str>,
     usage: StateNameUsage,
@@ -521,8 +530,12 @@ impl<'a> ScriptedText<'a> {
                 }
             }
             let key = match value {
-                installed_content::scripted_localisation::TextValue::Key(key) => key.as_slice(),
-                installed_content::scripted_localisation::TextValue::RandomList(list) => {
+                installed_content_scripted_localisation::scripted_localisation::TextValue::Key(key) => {
+                    key.as_slice()
+                }
+                installed_content_scripted_localisation::scripted_localisation::TextValue::RandomList(
+                    list,
+                ) => {
                     let key = self
                         .random_key(
                             list,
@@ -729,7 +742,7 @@ impl<'a> ScriptedText<'a> {
                 })?
             }
         };
-        let tag = installed_content::country_names::original_or_own_tag(self.frame, owner)?;
+        let tag = installed_content_country_names::country_names::original_or_own_tag(self.frame, owner)?;
         for key in [
             format!("{tag}_VICTORY_POINTS_{id}"),
             format!("VICTORY_POINTS_{id}"),
@@ -780,7 +793,7 @@ impl<'a> ScriptedText<'a> {
 
 /// Shared with state tables: name precedence without another ID scan.
 pub(crate) fn state_name_from(
-    state: &replay::rows::StateRow,
+    state: &replay_data::rows::StateRow,
     stored: impl Fn(&[u8], &str) -> Result<String, String>,
     template: impl Fn(u32) -> Result<String, String>,
 ) -> Result<String, String> {
@@ -920,7 +933,7 @@ pub(super) fn entry_scopes(scopes: &ExpansionScopes, at: usize, bare: bool) -> S
 #[cfg(any(test, feature = "test-support"))]
 #[test]
 fn entry_invocations_keep_the_original_bounds_of_unresolved_links() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let scopes = ExpansionScopes::new(&EventScopes::new(vec![EventScope {
         prev: Link::Scope(1),
@@ -966,13 +979,16 @@ impl EnvironmentInputs {
     #[cfg(test)]
     pub(super) fn with_aliases(
         self,
-        aliases: std::sync::Arc<installed_content::tag_aliases::TagAliases>,
+        aliases: std::sync::Arc<installed_content_core::tag_aliases::TagAliases>,
     ) -> Self {
         Self { aliases, ..self }
     }
 
     #[cfg(test)]
-    pub(super) fn with_triggers(self, triggers: installed_content::trigger_keys::TriggerNames) -> Self {
+    pub(super) fn with_triggers(
+        self,
+        triggers: installed_content_core::trigger_keys::TriggerNames,
+    ) -> Self {
         Self {
             triggers: Ok(triggers),
             ..self

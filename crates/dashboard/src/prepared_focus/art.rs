@@ -7,7 +7,7 @@
 //! a byte budget, least recently used evicted first.
 use super::*;
 use crate::products::{Product, validate_tag};
-use replay::frame::SharedView;
+use replay_frame::frame::SharedView;
 use std::sync::{Arc, PoisonError};
 
 /// Most tokens one `focus-art` request evaluates: one page of a country's

@@ -134,7 +134,7 @@ impl PriorityIcon {
 pub struct Priorities([[i8; PriorityIcon::ALL.len()]; PriorityTable::ALL.len()]);
 
 impl Priorities {
-    pub fn load(defines: &installed_content::defines::Defines) -> std::io::Result<Self> {
+    pub fn load(defines: &installed_content_core::defines::Defines) -> std::io::Result<Self> {
         let mut tables = [[0; PriorityIcon::ALL.len()]; PriorityTable::ALL.len()];
         for (row, table) in tables.iter_mut().zip(PriorityTable::ALL) {
             for (value, icon) in row.iter_mut().zip(PriorityIcon::ALL) {

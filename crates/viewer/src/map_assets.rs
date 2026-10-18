@@ -1,10 +1,7 @@
 //! Ordered loading of world textures, shaders and movement artwork.
 
-use installed_content::{
-    ResolvedLayers,
-    image::{bmp, native::Decode},
-    terrain::{DefaultMap, TerrainDefinitions},
-};
+use installed_content_core::{ResolvedLayers, terrain::DefaultMap, terrain::TerrainDefinitions};
+use installed_content_image::{bmp, native::Decode};
 use std::io;
 use viewer_world::map::scene_content::MapAssets;
 use {
@@ -26,8 +23,8 @@ use {
 #[allow(clippy::too_many_arguments)]
 pub fn load(
     layers: &ResolvedLayers,
-    defines: &installed_content::defines::Defines,
-    art_defines: &installed_content::defines::Defines,
+    defines: &installed_content_core::defines::Defines,
+    art_defines: &installed_content_core::defines::Defines,
     map: MapSize,
     definitions: &TerrainDefinitions,
     default_map: &DefaultMap,
@@ -202,9 +199,9 @@ pub fn load(
 fn world_normal(
     layers: &ResolvedLayers,
     decode: Decode,
-) -> io::Result<installed_content::image::Rgba8Image> {
+) -> io::Result<installed_content_image::Rgba8Image> {
     layers.artwork("map/world_normal.bmp", |stack| {
-        installed_content::terrain::read_world_normal(stack, decode)
+        installed_content_core::terrain::read_world_normal(stack, decode)
     })
 }
 
@@ -213,9 +210,9 @@ fn world_normal(
 pub fn graphics_define<T>(
     layers: &ResolvedLayers,
     name: &str,
-    art_defines: &installed_content::defines::Defines,
-    defines: &installed_content::defines::Defines,
-    read: impl Fn(&installed_content::defines::Defines) -> io::Result<T>,
+    art_defines: &installed_content_core::defines::Defines,
+    defines: &installed_content_core::defines::Defines,
+    read: impl Fn(&installed_content_core::defines::Defines) -> io::Result<T>,
 ) -> io::Result<T> {
     if layers.presentation_defines().is_none() {
         return read(defines);
@@ -254,7 +251,7 @@ mod tests {
     /// drawn from the recording, named.
     #[test]
     fn a_mods_world_normal_map_is_drawn() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "hoi4_world_normal_{}_{:?}",
@@ -279,7 +276,7 @@ mod tests {
             );
         }
         std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
-        let options = installed_content::ResolveOptions {
+        let options = installed_content_core::ResolveOptions {
             game_dir: root.join("steamapps/common/Game"),
             user_dir: root.join("user"),
             cache_dir: root.join("cache"),
@@ -288,11 +285,11 @@ mod tests {
         let cancel = std::sync::atomic::AtomicBool::new(false);
         let normal = |name: &str| {
             let mut layers = ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
-            let selected = [installed_content::content::visual::Choice {
+            let selected = [installed_content_core::content::visual::Choice {
                 id: format!("mod/{name}.mod"),
                 name: name.into(),
             }];
-            installed_content::content::visual::apply(&mut layers, &options, &selected, &[], &cancel)
+            installed_content_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel)
                 .unwrap();
             let normal = world_normal(&layers, Decode::default()).unwrap();
             (normal, layers.read_warnings().overlay_refusals())
@@ -336,7 +333,7 @@ mod tests {
             &format!("name=\"Art\"\npath=\"{art}\"\n"),
         );
         std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
-        let options = installed_content::ResolveOptions {
+        let options = installed_content_core::ResolveOptions {
             game_dir: root.join("steamapps/common/Game"),
             user_dir: root.join("user"),
             cache_dir: root.join("cache"),
@@ -344,21 +341,23 @@ mod tests {
         let base = root.join("base");
         let mut layers = ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
         let read = |layers: &ResolvedLayers, name: &str| {
-            let defines = installed_content::defines::read(layers).unwrap();
+            let defines = installed_content_core::defines::read(layers).unwrap();
             let art =
-                installed_content::defines::read(layers.presentation_defines().unwrap_or(layers)).unwrap();
+                installed_content_core::defines::read(layers.presentation_defines().unwrap_or(layers))
+                    .unwrap();
             graphics_define(layers, name, &art, &defines, |defines| {
                 defines.number("NGraphics", name)
             })
             .unwrap()
         };
         assert_eq!(read(&layers, "SIZE"), 2.0);
-        let selected = [installed_content::content::visual::Choice {
+        let selected = [installed_content_core::content::visual::Choice {
             id: "mod/art.mod".into(),
             name: "Art".into(),
         }];
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        installed_content::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
+        installed_content_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel)
+            .unwrap();
         assert!(layers.presentation_defines().is_some());
         assert!(layers.read_warnings().overlay_refusals().is_none());
         assert_eq!(read(&layers, "SIZE"), 7.0);

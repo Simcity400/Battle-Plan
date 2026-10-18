@@ -9,17 +9,13 @@ use crate::{
     table_capture::Arena,
     table_conversion::{table_iter, unavailable},
 };
-use engine::{
-    Memory,
-    allocation::{collect_vec, copy_vec, owned_vec},
-    attrition_modifier_breakdown as tree, production_modifiers as native,
-    walk::Outcome,
+use engine_allocation::{collect_vec, copy_vec, owned_vec};
+use engine_native::{Memory, walk::Outcome};
+use engine_production::{attrition_modifier_breakdown as tree, production_modifiers as native};
+use replay_data::{
+    cadence::SKIPPED_REASON, cadence::should_walk, rows, rows::TableId, rows::tables,
 };
-use replay::{
-    cadence::{SKIPPED_REASON, should_walk},
-    frame::TableView,
-    rows::{self, TableId, tables},
-};
+use replay_frame::frame::TableView;
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [
@@ -216,19 +212,19 @@ impl Part {
                 return Ok(());
             }
             let mut trees = tree::Buffers {
-                requests: engine::walk::Buffer::Growing(&mut self.requests.first),
+                requests: engine_native::walk::Buffer::Growing(&mut self.requests.first),
                 request_len: self.requests.len,
                 request_required: self.requests.required,
-                roots: engine::walk::Buffer::Growing(&mut self.roots.first),
+                roots: engine_native::walk::Buffer::Growing(&mut self.roots.first),
                 root_len: 0,
                 root_required: 0,
-                nodes: engine::walk::Buffer::Growing(&mut self.nodes.first),
+                nodes: engine_native::walk::Buffer::Growing(&mut self.nodes.first),
                 node_len: 0,
                 node_required: 0,
-                text: engine::walk::Buffer::Growing(&mut self.text.first),
+                text: engine_native::walk::Buffer::Growing(&mut self.text.first),
                 text_len: 0,
                 text_required: 0,
-                stack: engine::walk::Buffer::Growing(&mut self.stack.first),
+                stack: engine_native::walk::Buffer::Growing(&mut self.stack.first),
                 stack_required: 0,
                 repeats: Some(&mut self.repeats),
             };
@@ -342,7 +338,7 @@ impl Part {
             active_factories: line.active_factories,
             resource_penalty_raw: line.resource_penalty,
             organisation_dirty: line.organisation_dirty,
-            conversion: replay::rows::RetiredBool::default(),
+            conversion: replay_data::rows::RetiredBool::default(),
             licensed: line.licensed,
             bonuses: line.bonuses,
             conversion_output: line.conversion_output,
@@ -756,7 +752,7 @@ mod tests {
     }
     #[test]
     fn failed_root_preserves_independent_native_sources_and_negative_factory_entries() {
-        use replay::rows::TableRows;
+        use replay_data::rows::TableRows;
         let mut capacity = Capacities {
             lines: 1,
             efficiencies: 2,

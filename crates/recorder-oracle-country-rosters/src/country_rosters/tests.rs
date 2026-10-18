@@ -1,10 +1,10 @@
 use super::*;
 use installed_content_save::{characters, country_rosters};
-use replay::rows::Recorded;
+use replay_data::rows::Recorded;
 
 fn saved_roles() -> characters::Pack {
     characters::parse(
-        &installed_content::parser::parse(
+        &installed_content_core::parser::parse(
             br"character_manager={historical={
                 character={id={id=7 type=73} token=general country=GER
                     corps_commander={id={id=17 type=4713} skill=1}}
@@ -48,7 +48,7 @@ fn directed_cache_and_zero_war_limits_distinguish_history_refusal_and_runtime_va
         let mut report = Report::default();
         compare_lists(
             &[CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
+                forward_visibility: replay_data::rows::Recorded::NotRecorded,
                 country: 101,
                 co_belligerents,
                 zero_war,
@@ -87,7 +87,7 @@ fn country_rosters_compare_sets_preserve_absence_and_name_null_limitations() {
     save.countries.get_mut(b"GER".as_slice()).unwrap().cores = vec![7, 3];
     save.characters = saved_roles();
     save.characters.character_status = characters::parse(
-        &installed_content::parser::parse(
+        &installed_content_core::parser::parse(
             br"countries={GER={characters={
             character_status={character={id=8 type=73} unit_leader=yes}
             character_status={character={id=7 type=73} unit_leader=yes}
@@ -100,7 +100,7 @@ fn country_rosters_compare_sets_preserve_absence_and_name_null_limitations() {
     .unwrap()
     .character_status;
     let row = CountryCounterInputRow {
-        forward_visibility: replay::rows::Recorded::NotRecorded,
+        forward_visibility: replay_data::rows::Recorded::NotRecorded,
         country: 101,
         owned_states: Some(vec![1, 1, 0]).into(),
         controlled_states: Some(vec![1]).into(),
@@ -116,7 +116,7 @@ fn country_rosters_compare_sets_preserve_absence_and_name_null_limitations() {
     assert!(report.limitations.keys().any(|key| key.contains("null")));
 
     let missing = CountryCounterInputRow {
-        forward_visibility: replay::rows::Recorded::NotRecorded,
+        forward_visibility: replay_data::rows::Recorded::NotRecorded,
         country: 101,
         ..Default::default()
     };
@@ -150,7 +150,7 @@ fn core_rosters_compare_saved_order_and_duplicate_multiplicity() {
         let mut report = Report::default();
         compare_lists(
             &[CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
+                forward_visibility: replay_data::rows::Recorded::NotRecorded,
                 country: 101,
                 core_states: Some(states).into(),
                 ..Default::default()
@@ -174,7 +174,7 @@ fn country_rosters_distinguish_history_capture_failure_and_native_empty() {
         .clear();
     let tags = [(101, b"GER".as_slice())].into();
     let historical = CountryCounterInputRow {
-        forward_visibility: replay::rows::Recorded::NotRecorded,
+        forward_visibility: replay_data::rows::Recorded::NotRecorded,
         country: 101,
         owned_states: Recorded::NotRecorded,
         controlled_states: Recorded::NotRecorded,
@@ -203,7 +203,7 @@ fn country_rosters_distinguish_history_capture_failure_and_native_empty() {
         let mut report = Report::default();
         compare_lists(
             &[CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
+                forward_visibility: replay_data::rows::Recorded::NotRecorded,
                 country: 101,
                 core_states: core_states.into(),
                 ..Default::default()
@@ -234,7 +234,7 @@ fn country_rosters_report_missing_saved_countries_and_refuse_duplicate_roles() {
     let (_, mut save, _, _) = super::super::fixtures::fixture();
     let tags = [(101, b"GER".as_slice())].into();
     let rows = [CountryCounterInputRow {
-        forward_visibility: replay::rows::Recorded::NotRecorded,
+        forward_visibility: replay_data::rows::Recorded::NotRecorded,
         country: 101,
         ..Default::default()
     }];
@@ -309,7 +309,7 @@ fn country_rosters_compare_five_thousand_countries_without_owner_role_substituti
         );
         tags.insert(id, tag);
         rows.push(CountryCounterInputRow {
-            forward_visibility: replay::rows::Recorded::NotRecorded,
+            forward_visibility: replay_data::rows::Recorded::NotRecorded,
             country: id,
             owned_states: Some(vec![id]).into(),
             controlled_states: Some(vec![id]).into(),

@@ -5,7 +5,7 @@
 //! the fallback. Nothing caches the answer natively, so it is recomputed
 //! from the recorded hour on every use.
 
-use installed_content::tag_aliases::{TagAlias, VariableKey};
+use installed_content_core::{tag_aliases::TagAlias, tag_aliases::VariableKey};
 
 use super::{Eval, Scope, Scopes, eval::Evaluator};
 
@@ -166,7 +166,7 @@ impl Evaluator<'_, '_> {
             ));
         }
         let targets = self.script_target_candidates(
-            &installed_content::country_scorers::ScriptTargets {
+            &installed_content_core::country_scorers::ScriptTargets {
                 targets: alias.targets.clone(),
                 ..Default::default()
             },
@@ -178,7 +178,7 @@ impl Evaluator<'_, '_> {
     /// Script target selection, shared by aliases, scorers and scripted map modes.
     pub fn script_target_candidates(
         &self,
-        targets: &installed_content::country_scorers::ScriptTargets,
+        targets: &installed_content_core::country_scorers::ScriptTargets,
         caller: Scopes,
     ) -> Result<Vec<u32>, String> {
         let country = match caller.this {

@@ -6,15 +6,15 @@ use installed_content_save::Save;
 use recorder_oracle_support::fixtures;
 use recorder_oracle_support::report::Report;
 use recorder_oracle_support::support::*;
-use replay::frame::DecodedFrame;
 #[cfg(test)]
-use replay::frame::TableView;
+use replay_data::rows::CountryRow;
+use replay_data::rows::TableId;
 #[cfg(test)]
-use replay::rows::CountryRow;
-use replay::rows::TableId;
+use replay_data::rows::TableRows;
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 #[cfg(test)]
-use replay::rows::TableRows;
-use replay::rows::tables;
+use replay_frame::frame::TableView;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::io;

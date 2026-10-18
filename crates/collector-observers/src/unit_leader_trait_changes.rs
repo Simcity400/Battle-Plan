@@ -1,4 +1,4 @@
-//! UnitLeaderTraits rows held per leader between hours. A leader's assigned Trait vector 
+//! UnitLeaderTraits rows held per leader between hours. A leader's assigned Trait vector
 //! (`cunit_leader::TRAIT_DATA`, with its count) is written at run time only by trait insertion and
 //! removal, which updates the vector count. Each then recalculates modifiers on the same leader,
 //! with no return or branch past the call; recalculation ends in a jump to its shared tail. The

@@ -4,15 +4,16 @@
 //! first reached direct predicate, and cannot be reassigned to a later frame.
 //!
 //! A positive receiver's cells derive from the hour's WarRelations
-//! ([`replay::directed_war_derive`]). Recordings through format 101 stored a
+//! ([`replay_derive::directed_war_derive`]). Recordings through format 101 stored a
 //! sparse packet per receiver; where one is present it answers instead, so
 //! those recordings keep their recorded cells and unknowns.
 
-use replay::{
-    directed_war_derive::ReceiverWars,
-    frame::DecodedFrame,
-    rows::{DirectedWarContext, DirectedWars, ReservedReverseVisibilityInputs, tables},
+use replay_data::{
+    rows::DirectedWarContext, rows::DirectedWars, rows::ReservedReverseVisibilityInputs,
+    rows::tables,
 };
+use replay_derive::directed_war_derive::ReceiverWars;
+use replay_frame::frame::DecodedFrame;
 use std::sync::OnceLock;
 
 type Fact<T> = Result<T, String>;
@@ -194,11 +195,11 @@ impl<'a> Owner<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{DirectedWars, ReverseZeroVisibilityInputs, WarCell};
+    use replay_data::{rows::DirectedWars, rows::ReverseZeroVisibilityInputs, rows::WarCell};
     #[test]
     fn actual_zero_active_cell_survives_native_skipped_target_read() {
         let packet = ReservedReverseVisibilityInputs {
-            sample_hour: replay::rows::PacketHour::Stamped(12),
+            sample_hour: replay_data::rows::PacketHour::Stamped(12),
             cells: vec![
                 Some(ReverseZeroVisibilityInputs {
                     target: None,
@@ -221,7 +222,7 @@ mod tests {
     #[test]
     fn direct_positive_alias_to_zero_remains_a_direct_cell() {
         let packet = DirectedWars {
-            sample_hour: replay::rows::PacketHour::Stamped(12),
+            sample_hour: replay_data::rows::PacketHour::Stamped(12),
             receiver_raw_id: 99,
             receiver_slot: 1,
             matrix_count: 3,
@@ -239,7 +240,7 @@ mod tests {
     fn corrupt_actual_zero_presence_never_becomes_clear_war() {
         for war in [[0, 8], [2, 0]] {
             let packet = ReservedReverseVisibilityInputs {
-                sample_hour: replay::rows::PacketHour::Stamped(12),
+                sample_hour: replay_data::rows::PacketHour::Stamped(12),
                 cells: vec![Some(ReverseZeroVisibilityInputs {
                     war: Some(war),
                     ..Default::default()
@@ -253,14 +254,12 @@ mod tests {
 #[cfg(test)]
 mod owner_tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{
-            CountryCounterInputRow, CountryLinkRow, CountryRow, DirectedWars, Recorded,
-            ReservedCountryNamingRow, ReverseZeroVisibilityInputs, TableId, TableRows, WarCell,
-            WarRelationRow,
-        },
+    use replay_data::{
+        rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryRow, rows::DirectedWars,
+        rows::Recorded, rows::ReservedCountryNamingRow, rows::ReverseZeroVisibilityInputs,
+        rows::TableId, rows::TableRows, rows::WarCell, rows::WarRelationRow,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     fn frame(packet: Recorded<Option<DirectedWars>>) -> DecodedFrame {
         let mut frame = DecodedFrame {
@@ -321,7 +320,7 @@ mod owner_tests {
 
     fn packet(hour: i32, active: bool) -> DirectedWars {
         DirectedWars {
-            sample_hour: replay::rows::PacketHour::Stamped(hour),
+            sample_hour: replay_data::rows::PacketHour::Stamped(hour),
             receiver_raw_id: 99,
             receiver_slot: 1,
             matrix_count: 3,
@@ -360,7 +359,7 @@ mod owner_tests {
             TableView::Complete(TableRows::ReservedCountryNaming(vec![
                 ReservedCountryNamingRow {
                     reverse_visibility: Recorded::Value(Some(ReservedReverseVisibilityInputs {
-                        sample_hour: replay::rows::PacketHour::Stamped(12),
+                        sample_hour: replay_data::rows::PacketHour::Stamped(12),
                         cells: vec![Some(ReverseZeroVisibilityInputs {
                             target: None,
                             war: Some([1, 0]),

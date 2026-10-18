@@ -15,11 +15,12 @@ use dashboard_base::{
 };
 use dashboard_core::{config::LoadContext, transport::json_len};
 use dashboard_text::metadata::{LinkTags, check_cancel};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, SharedView},
-    rows::{NavalResultCountryRow, NavalResultMemberRow, NavalResultRow, TableId, tables},
+use replay::container::Replay;
+use replay_data::{
+    rows::NavalResultCountryRow, rows::NavalResultMemberRow, rows::NavalResultRow, rows::TableId,
+    rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::SharedView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -29,7 +30,7 @@ use std::{
 use ts_rs::TS;
 #[cfg(any(test, feature = "test-support"))]
 use {
-    dashboard_text::metadata::validate_campaign, replay::frame::FrameDecoder,
+    dashboard_text::metadata::validate_campaign, replay_frame::frame::FrameDecoder,
     std::collections::VecDeque,
 };
 
@@ -226,7 +227,7 @@ impl ResultInput {
         row: &NavalResultRow,
         members: Option<&[&NavalResultMemberRow]>,
         countries: Option<&[&NavalResultCountryRow]>,
-        detail: Option<&replay::rows::NavalCombatResultDetailsRow>,
+        detail: Option<&replay_data::rows::NavalCombatResultDetailsRow>,
     ) -> bool {
         self.row == *row
             && match (&self.members, members) {
@@ -436,7 +437,7 @@ impl Scan {
         frame: &DecodedFrame,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
     ) {
-        let cpu = ::replay::cpu::scope_phase("naval:observe_apply");
+        let cpu = ::replay_frame::cpu::scope_phase("naval:observe_apply");
         self.available |= frame_available(frame);
         let hour = frame.hour;
         self.hour = hour;
@@ -474,7 +475,7 @@ impl Scan {
         self.links_known = links_known;
 
         drop(cpu);
-        let cpu = ::replay::cpu::scope_phase("naval:combat_projection");
+        let cpu = ::replay_frame::cpu::scope_phase("naval:combat_projection");
         let unchanged_combat = contiguous
             && !links_changed
             && self
@@ -509,7 +510,7 @@ impl Scan {
             }
         } else {
             // FrameDecoder validates unique table keys; the participant codec also
-            // rejects side > 1 (replay::rows). These complete reads need no repeats.
+            // rejects side > 1 (replay_data::rows). These complete reads need no repeats.
             let participants = frame.complete::<tables::NavalCombatParticipants>().ok();
             let combat_details = frame.complete::<tables::NavalCombatDetails>().ok();
             let by_combat = grouped(participants.into_iter().flatten(), |row| row.combat);
@@ -624,7 +625,7 @@ impl Scan {
         }
 
         drop(cpu);
-        let cpu = ::replay::cpu::scope_phase("naval:settle_reconcile");
+        let cpu = ::replay_frame::cpu::scope_phase("naval:settle_reconcile");
         if self.result_through.is_some()
             && !self
                 .result_views
@@ -636,7 +637,7 @@ impl Scan {
         }
         self.observe_sources(frame, &previous_combats, previous_hour);
         drop(cpu);
-        let _cpu = ::replay::cpu::scope_phase("naval:results_projection");
+        let _cpu = ::replay_frame::cpu::scope_phase("naval:results_projection");
         let Ok(rows) = frame.complete::<tables::NavalResults>() else {
             self.extend_results();
             self.refuse("Retained result census unavailable or incomplete");
@@ -737,7 +738,7 @@ impl Scan {
             .map(|row| (row.result, row))
             .collect();
         {
-            let _cpu = ::replay::cpu::scope_phase("naval:pruning");
+            let _cpu = ::replay_frame::cpu::scope_phase("naval:pruning");
             self.result_inputs.retain(|id, _| ids.contains(id));
         }
         let mut incomplete = 0;

@@ -7,13 +7,14 @@ use crate::{
     table_capture::{Arena, CaptureRows, grow_capacity},
     table_conversion::{table, unavailable},
 };
-use engine::allocation::{copy_vec, owned_vec};
-use engine::{Memory, cfaction, cfaction_theater_manager as native, walk::Outcome};
-use replay::{
-    cadence::{SKIPPED_REASON, should_walk},
-    frame::TableView,
-    rows::{FactionAdvisorRow, FactionTheatreRow, TableId, tables},
+use engine_allocation::{copy_vec, owned_vec};
+use engine_land_inputs::cfaction_theater_manager as native;
+use engine_native::{Memory, cfaction, walk::Outcome};
+use replay_data::{
+    cadence::SKIPPED_REASON, cadence::should_walk, rows::FactionAdvisorRow,
+    rows::FactionTheatreRow, rows::TableId, rows::tables,
 };
+use replay_frame::frame::TableView;
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [TableId::FactionTheatres, TableId::FactionAdvisors];
@@ -252,7 +253,7 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
 
     #[test]
     fn growth_follows_the_walk_demand_for_rows_and_every_arena() {

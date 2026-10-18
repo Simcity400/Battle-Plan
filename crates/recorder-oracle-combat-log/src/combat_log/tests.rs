@@ -1,8 +1,9 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{CombatLogEquipmentRow, LendLeaseEquipmentRow, SliceReadRow, TableId, TableRows},
+use replay_data::{
+    rows::CombatLogEquipmentRow, rows::LendLeaseEquipmentRow, rows::SliceReadRow, rows::TableId,
+    rows::TableRows,
 };
+use replay_frame::frame::TableView;
 
 const GER: u32 = 4;
 const SOV: u32 = 9;
@@ -13,7 +14,7 @@ const AUGUST: i32 = DATE - 24 * 61;
 
 #[test]
 fn census_compares_all_saved_divisions_groups_and_expeditionary_owners() {
-    use replay::rows::DivisionCensusRow;
+    use replay_data::rows::DivisionCensusRow;
     let units = "units={ division={ id={id=1 type=51} logical_country=GER strength=1 organisation=1 } division={ id={id=2 type=51} logical_country=GER expeditionary_owner=SOV strength=1 organisation=1 } }";
     let saved = save_with(
         &[],
@@ -130,7 +131,7 @@ fn census_compares_all_saved_divisions_groups_and_expeditionary_owners() {
 
 #[test]
 fn an_empty_saved_group_still_supplies_membership_data() {
-    use replay::rows::DivisionCensusRow;
+    use replay_data::rows::DivisionCensusRow;
     let saved = save_with(
         &[],
         "units={ division={ id={id=1 type=51} logical_country=GER strength=1 organisation=1 } } theatres={ theatre={ id={id=1 type=56} orders_group={ id={id=1 type=53} name=\"Empty army\" field_marshal_group=no motorization_level=0 } } }",
@@ -186,9 +187,10 @@ fn army_group_members_do_not_duplicate_child_army_members() {
 /// One saved division has a reciprocally observed group in the omitted
 /// slot-zero theatre; the other remains independently ungrouped.
 fn omitted_group_census_fixture() -> (DecodedFrame, Save) {
-    use replay::rows::{
-        DivisionCensusRow, DivisionRow, LandTheatreRow, OrdersGroupMemberRow, OrdersGroupRow,
-        Recorded, ReservedCountryNamingRow,
+    use replay_data::{
+        rows::DivisionCensusRow, rows::DivisionRow, rows::LandTheatreRow,
+        rows::OrdersGroupMemberRow, rows::OrdersGroupRow, rows::Recorded,
+        rows::ReservedCountryNamingRow,
     };
     let saved = save_with(
         &[],
@@ -256,8 +258,9 @@ fn omitted_group_census_fixture() -> (DecodedFrame, Save) {
 
 #[test]
 fn omitted_group_split_qualifies_only_certified_members_and_keeps_total_and_other_members_exact() {
-    use replay::rows::{
-        DivisionCensusRow, DivisionRow, LandTheatreRow, OrdersGroupMemberRow, OrdersGroupRow,
+    use replay_data::{
+        rows::DivisionCensusRow, rows::DivisionRow, rows::LandTheatreRow,
+        rows::OrdersGroupMemberRow, rows::OrdersGroupRow,
     };
     let (mut recorded, saved) = omitted_group_census_fixture();
     let countries = links();

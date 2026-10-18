@@ -346,7 +346,10 @@ fn an_hourly_slice_verifies_only_its_scopes_and_carries_the_rest() {
 
 #[test]
 fn every_site_names_its_manager() {
-    use engine::script_flag_mutations::{MUTATIONS, Receiver, manager};
+    use engine_mutations::{
+        script_flag_mutations::MUTATIONS, script_flag_mutations::Receiver,
+        script_flag_mutations::manager,
+    };
     for (site, receiver) in MUTATIONS {
         let expected = match site.name {
             "assign_flags" => Receiver::Rows,

@@ -3,8 +3,10 @@
 //! association admits the attempted hour, not a native admission certificate;
 //! the hourly host row, not the packet, records that hour.
 
-use engine::cunit::MapCombatReference;
-use replay::rows::{PacketHour, Recorded, UnitCombatReference, UnitCombatReferences};
+use engine_native::cunit::MapCombatReference;
+use replay_data::{
+    rows::PacketHour, rows::Recorded, rows::UnitCombatReference, rows::UnitCombatReferences,
+};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
 
 const NAMES: [&str; 6] = [
@@ -64,7 +66,7 @@ pub fn project(
         REFUSALS[4].fetch_add(1, Relaxed);
         return None;
     }
-    match engine::allocation::collect_vec(entries.iter().map(|entry| UnitCombatReference {
+    match engine_allocation::collect_vec(entries.iter().map(|entry| UnitCombatReference {
         combat: entry.combat,
         kind: entry.kind,
     })) {

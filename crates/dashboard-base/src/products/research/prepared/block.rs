@@ -35,15 +35,12 @@ use crate::prepared::{
 use crate::products::research::{
     FrameReads, FreshRead, Index, IndexChanges, Inventory, Reads, Scan, owned,
 };
-use replay::{
-    container::{BlockIndex, Replay},
-    format::FormatVersion,
-    frame::DecodedFrame,
-    rows::{
-        ResearchAppliedBonusRow, ResearchInputRow, ResearchModifierRow, ResearchTechnologyRow,
-        TableId,
-    },
+use replay::{container::BlockIndex, container::Replay};
+use replay_data::{
+    format::FormatVersion, rows::ResearchAppliedBonusRow, rows::ResearchInputRow,
+    rows::ResearchModifierRow, rows::ResearchTechnologyRow, rows::TableId,
 };
+use replay_frame::frame::DecodedFrame;
 use std::{
     any::Any,
     borrow::Cow,
@@ -191,7 +188,7 @@ impl BlockExtract {
                 .iter()
                 .filter(|input| input.technology_present != 0)
                 .filter_map(|input| match input.database_index {
-                    replay::rows::Recorded::Value(index) => Some(index as u32),
+                    replay_data::rows::Recorded::Value(index) => Some(index as u32),
                     _ => None,
                 })
                 .collect();
@@ -306,16 +303,16 @@ fn sized<T>(count: usize) -> u64 {
 
 /// Each research row of a frame, about: what the first frame kept holds.
 fn frame_bytes(frame: &DecodedFrame) -> u64 {
-    use replay::rows::tables;
+    use replay_data::rows::tables;
     let rows = |bytes: Option<u64>| bytes.unwrap_or(0);
     rows(frame.complete::<tables::Countries>().ok().map(|rows| {
-        sized::<replay::rows::CountryRow>(rows.len())
+        sized::<replay_data::rows::CountryRow>(rows.len())
             + rows.iter().map(|row| row.tag.len() as u64).sum::<u64>()
     })) + rows(
         frame
             .complete::<tables::CountryLinks>()
             .ok()
-            .map(|rows| sized::<replay::rows::CountryLinkRow>(rows.len())),
+            .map(|rows| sized::<replay_data::rows::CountryLinkRow>(rows.len())),
     ) + rows(
         frame
             .complete::<tables::ResearchTechnologies>()
@@ -338,7 +335,7 @@ fn frame_bytes(frame: &DecodedFrame) -> u64 {
         frame
             .complete::<tables::SliceReads>()
             .ok()
-            .map(|rows| sized::<replay::rows::SliceReadRow>(rows.len())),
+            .map(|rows| sized::<replay_data::rows::SliceReadRow>(rows.len())),
     )
 }
 
@@ -351,7 +348,10 @@ fn hour_bytes(hour: &Hour) -> u64 {
                 .values()
                 .map(|holders| {
                     sized::<(usize, u32, Vec<u8>)>(holders.len())
-                        + holders.iter().map(|(_, _, tag)| tag.len() as u64).sum::<u64>()
+                        + holders
+                            .iter()
+                            .map(|(_, _, tag)| tag.len() as u64)
+                            .sum::<u64>()
                 })
                 .sum::<u64>()
     });
@@ -415,7 +415,10 @@ fn index_bytes(scan: &Scan) -> u64 {
         .values()
         .map(|holders| {
             sized::<(usize, u32, Vec<u8>)>(holders.len())
-                + holders.iter().map(|(_, _, tag)| tag.len() as u64).sum::<u64>()
+                + holders
+                    .iter()
+                    .map(|(_, _, tag)| tag.len() as u64)
+                    .sum::<u64>()
         })
         .sum::<u64>();
     let owners = scan
@@ -507,9 +510,9 @@ pub fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let facts = {
-        let _cpu = ::replay::cpu::scope("fold facts", None);
+        let _cpu = ::replay_frame::cpu::scope("fold facts", None);
         facts
             .downcast::<BlockFacts>()
             .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -524,7 +527,7 @@ pub fn fold(
     let changes = FrameChanges::alone(&first.frame, replay.format);
     prepass::note(OBSERVED);
     let result = {
-        let _cpu = ::replay::cpu::scope("fold observe", None);
+        let _cpu = ::replay_frame::cpu::scope("fold observe", None);
         prepared.observe_changed(&first.frame, &changes)
     };
     if !observed(first_hour, result)? {
@@ -538,11 +541,11 @@ pub fn fold(
     // The fold's own copy of the read hours, which the country step reads
     // beside its indexes; and the holders' slots.
     let mut dates = {
-        let _cpu = ::replay::cpu::scope("fold facts", None);
+        let _cpu = ::replay_frame::cpu::scope("fold facts", None);
         prepared.scan.input_dates.clone()
     };
     let mut slots: Option<Arc<HashMap<u32, u32>>> = {
-        let _cpu = ::replay::cpu::scope("fold facts", None);
+        let _cpu = ::replay_frame::cpu::scope("fold facts", None);
         prepared
             .scan
             .country_reads
@@ -551,7 +554,7 @@ pub fn fold(
     };
     let mut reached = first_hour;
     for hour in hours {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         check()?;
         if !covered(&prepared.scan, &hour) || forced(hour.hour) {
             let after = observe_after(prepared, replay, index, Some(reached), observed, check)?;
@@ -564,7 +567,7 @@ pub fn fold(
             fresh,
         } = hour;
         {
-            let _cpu = ::replay::cpu::scope("fold facts", None);
+            let _cpu = ::replay_frame::cpu::scope("fold facts", None);
             prepared.scan.adopt(&changes);
             if let Some((held, _)) = &changes.countries {
                 slots = Some(Arc::clone(held));
@@ -590,7 +593,7 @@ pub fn fold(
             fresh: &fresh,
         };
         let result = {
-            let _cpu = ::replay::cpu::scope("fold observe", None);
+            let _cpu = ::replay_frame::cpu::scope("fold observe", None);
             prepared.observe_with(hour, |scan| {
                 scan.observe_refreshed(hour, refreshed, slots.as_deref(), &reads)
             })
@@ -618,7 +621,7 @@ pub fn observe_after(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     if after.is_some() {
         prepared.scan.clear_index();
     }
@@ -630,7 +633,7 @@ pub fn observe_after(
         index,
         sorted_tables(),
         |raw, frame| {
-            let _cpu = ::replay::cpu::scope("fold driver", None);
+            let _cpu = ::replay_frame::cpu::scope("fold driver", None);
             let changes = tracker.observe_updates(frame, Arc::new(raw), replay.format);
             if stopped {
                 return Ok(());
@@ -642,7 +645,7 @@ pub fn observe_after(
             reached = Some(frame.hour);
             prepass::note(OBSERVED);
             let result = {
-                let _cpu = ::replay::cpu::scope("fold observe", None);
+                let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                 prepared.observe_changed(frame, &changes)
             };
             match observed(frame.hour, result) {

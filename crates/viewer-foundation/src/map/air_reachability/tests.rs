@@ -1,11 +1,10 @@
 use super::*;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{
-        AIR_MISSION_MAP_FLAGS, AIR_MISSION_ZERO_PLANE_FLAGS, CountryRow, FactionMemberRow,
-        NavalCombatShipRow, RelationLinkRow, TableId, TableRows, VolunteerHostRow, WarRelationRow,
-    },
+use replay_data::{
+    rows::AIR_MISSION_MAP_FLAGS, rows::AIR_MISSION_ZERO_PLANE_FLAGS, rows::CountryRow,
+    rows::FactionMemberRow, rows::NavalCombatShipRow, rows::RelationLinkRow, rows::TableId,
+    rows::TableRows, rows::VolunteerHostRow, rows::WarRelationRow,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 
 const LAND: RegionFractions = RegionFractions {
     land_raw: 100_000,

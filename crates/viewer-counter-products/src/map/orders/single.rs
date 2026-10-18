@@ -8,7 +8,7 @@
 
 use viewer_foundation::map::province_geometry::{Centers, province_at};
 
-use installed_content::map::MapData;
+use installed_content_core::map::MapData;
 
 use super::fixed::{self, Point, SCALE};
 

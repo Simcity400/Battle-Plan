@@ -90,15 +90,11 @@ use viewer_foundation::map::province_map::ProvinceMap;
 use viewer_foundation::movement_timing::Etas;
 use viewer_foundation::table_access::TokenNames;
 
-use installed_content::image::native::Decode;
-use installed_content::{
-    ResolvedLayers, defines::Defines, localisation::Localisation, map::MapData, mesh,
-    terrain::DefaultMap,
-};
-use replay::{
-    frame::DecodedFrame,
-    rows::{DivisionTemplateIconRow, VariantDefinitionRow, tables},
-};
+use installed_content_core::{ResolvedLayers, defines::Defines, map::MapData, mesh, terrain::DefaultMap};
+use installed_content_image::native::Decode;
+use installed_content_localisation::localisation::Localisation;
+use replay_data::{rows::DivisionTemplateIconRow, rows::VariantDefinitionRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 mod ships;
 
@@ -114,11 +110,11 @@ use {
     crate::map::models::ModelLibrary, crate::map::models::hash_rotation,
     crate::map::unit_history::Field, crate::map::unit_history::Kind,
     crate::map::unit_history::NavalSources, crate::map::unit_history::Target,
-    installed_content::equipment_graphics::countries as model_countries,
-    installed_content::equipment_graphics::countries::ModelCountry, viewer_foundation::map::counter_move,
-    viewer_foundation::map::perspective::Sight, viewer_foundation::map::perspective::Vision,
-    viewer_foundation::map::tables::core, viewer_foundation::map::tables::rows,
-    viewer_foundation::map::unit_rules::STANDSTILL,
+    installed_content_equipment_graphics::equipment_graphics::countries as model_countries,
+    installed_content_equipment_graphics::equipment_graphics::countries::ModelCountry,
+    viewer_foundation::map::counter_move, viewer_foundation::map::perspective::Sight,
+    viewer_foundation::map::perspective::Vision, viewer_foundation::map::tables::core,
+    viewer_foundation::map::tables::rows, viewer_foundation::map::unit_rules::STANDSTILL,
 };
 
 /// The suffix every unit entity's name ends with (seven bytes).
@@ -605,7 +601,7 @@ impl UnitModelAssets {
         mut try_load: impl FnMut(
             LoadStack,
             &Defines,
-            &mut Vec<installed_content::Diagnostic>,
+            &mut Vec<installed_content_core::Diagnostic>,
         ) -> io::Result<Self>,
     ) -> Self {
         let mut notes = Vec::new();
@@ -676,12 +672,12 @@ impl UnitModelAssets {
         defines: &Defines,
         map: &MapData,
         default_map: &DefaultMap,
-        warnings: &mut Vec<installed_content::Diagnostic>,
+        warnings: &mut Vec<installed_content_core::Diagnostic>,
     ) -> io::Result<Self> {
         let roster = layers.descriptor_roster()?;
         if !roster.unreadable.is_empty() {
             warnings.push((
-                installed_content::DiagnosticKind::ParseFailure,
+                installed_content_core::DiagnosticKind::ParseFailure,
                 format!(
                     "Unit model descriptors that do not parse even when closed are skipped: {}",
                     roster.unreadable.join(", ")
@@ -690,7 +686,7 @@ impl UnitModelAssets {
         }
         if !roster.logged.is_empty() {
             warnings.push((
-                installed_content::DiagnosticKind::Logged,
+                installed_content_core::DiagnosticKind::Logged,
                 format!(
                     "Unit model entity registration diagnostics: {}",
                     roster.logged.join("; ")
@@ -700,7 +696,7 @@ impl UnitModelAssets {
         let sub_units = model_selection::Content::load(layers)?;
         if !sub_units.dropped.is_empty() {
             warnings.push((
-                installed_content::DiagnosticKind::Warning,
+                installed_content_core::DiagnosticKind::Warning,
                 format!(
                     "Sub-unit equipment needs the engine drops: {}",
                     sub_units.dropped.join("; ")
@@ -712,7 +708,7 @@ impl UnitModelAssets {
         warnings.extend(
             name_warnings
                 .into_iter()
-                .map(|message| (installed_content::DiagnosticKind::Warning, message)),
+                .map(|message| (installed_content_core::DiagnosticKind::Warning, message)),
         );
         let graphics = equipment_graphics::Content::load(layers, &names)?;
         let geography = context::Content::load(layers, default_map, &map.definitions, defines)?;
@@ -743,7 +739,7 @@ impl UnitModelAssets {
                 .cloned()
                 .collect(),
             ships,
-            dynamic_tags: installed_content::country_tags::read_definitions(layers)
+            dynamic_tags: installed_content_core::country_tags::read_definitions(layers)
                 .map(|tags| {
                     tags.into_iter()
                         .filter(|(_, tag)| tag.dynamic)
@@ -916,7 +912,7 @@ impl UnitModelAssets {
             return Err("SimulationFeatures must have one complete row".into());
         };
         fn text(bytes: &[u8]) -> Result<&str, String> {
-            installed_content::parser::text(bytes).map_err(|error| error.to_string())
+            installed_content_core::parser::text(bytes).map_err(|error| error.to_string())
         }
         let key = || {
             let tokens = TokenNames::new(frame).map_err(|error| error.to_string())?;
@@ -1472,7 +1468,7 @@ struct Hour<'a> {
     /// Spells the variants' equipment type tokens.
     tokens: TokenNames<'a>,
     equipment: Result<Equipment<'a>, String>,
-    statuses: BTreeMap<u64, &'a replay::rows::DivisionStatusRow>,
+    statuses: BTreeMap<u64, &'a replay_data::rows::DivisionStatusRow>,
     camouflage: camouflage::Context<'a>,
     /// Joined on first use: most hours need neither.
     geography: OnceCell<Result<context::Prepared, String>>,
@@ -1638,7 +1634,7 @@ fn graphics_model_for_country(
 /// from the daily one is unknown. A division in both takes the hourly rows
 /// alone: they are the newer capture, and its rows are never doubled.
 struct Equipment<'a> {
-    by_division: BTreeMap<u64, Vec<&'a replay::rows::DivisionEquipmentRow>>,
+    by_division: BTreeMap<u64, Vec<&'a replay_data::rows::DivisionEquipmentRow>>,
     new_complete: bool,
 }
 
@@ -1653,8 +1649,8 @@ impl<'a> Equipment<'a> {
     }
 
     fn join(
-        daily: &'a [replay::rows::DivisionEquipmentRow],
-        new: &'a [replay::rows::DivisionEquipmentRow],
+        daily: &'a [replay_data::rows::DivisionEquipmentRow],
+        new: &'a [replay_data::rows::DivisionEquipmentRow],
         new_complete: bool,
     ) -> Self {
         let mut by_division: BTreeMap<u64, Vec<_>> = BTreeMap::new();
@@ -1671,7 +1667,7 @@ impl<'a> Equipment<'a> {
         }
     }
 
-    fn of(&self, division: u64) -> Result<&[&'a replay::rows::DivisionEquipmentRow], String> {
+    fn of(&self, division: u64) -> Result<&[&'a replay_data::rows::DivisionEquipmentRow], String> {
         match self.by_division.get(&division) {
             Some(rows) => Ok(rows),
             None if self.new_complete => Ok(&[]),
@@ -2166,7 +2162,7 @@ struct RaidModel {
     slot: usize,
     instance: ModelInstance,
     track: viewer_foundation::map::unit_pose::UnitTrack,
-    stages: Vec<installed_content::raids::RaidAnimationStage>,
+    stages: Vec<installed_content_raids::raids::RaidAnimationStage>,
 }
 
 impl RaidModel {
@@ -2286,13 +2282,11 @@ mod tests;
 #[cfg(test)]
 mod aircraft_ladder_tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{
-            CountryAppearanceRow, CountryLinkRow, LexicalTokenRow, SimulationFeatureRow, TableId,
-            TableRows,
-        },
+    use replay_data::{
+        rows::CountryAppearanceRow, rows::CountryLinkRow, rows::LexicalTokenRow,
+        rows::SimulationFeatureRow, rows::TableId, rows::TableRows,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     fn frame(dlc_mask: u32, saved: &[u8]) -> DecodedFrame {
         let mut views = std::array::from_fn(|_| TableView::Unavailable {
@@ -2320,7 +2314,7 @@ mod aircraft_ladder_tests {
 
     fn limits(values: &equipment_graphics::LimitValues) -> equipment_graphics::Limits<'_> {
         fn evaluate(
-            _: &[installed_content::parser::Item],
+            _: &[installed_content_core::parser::Item],
             _: dashboard_text::triggers::Scopes,
         ) -> dashboard_text::triggers::Eval {
             panic!("a declared saved or cosmetic model never evaluates graphical pool limits")

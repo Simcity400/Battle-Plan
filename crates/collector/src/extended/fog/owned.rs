@@ -1,5 +1,5 @@
 use super::*;
-use engine::allocation::{default_vec, filled, owned_vec, resize};
+use engine_allocation::{default_vec, filled, owned_vec, resize};
 
 #[derive(Debug)]
 pub(crate) struct OwnedFogJob<R> {
@@ -127,7 +127,7 @@ impl<M: Memory> FogMemory<'_, M> {
     }
 }
 impl<M: Memory> Memory for FogMemory<'_, M> {
-    fn read_scalar<T: engine::memory::Raw>(&self, address: usize) -> Option<T> {
+    fn read_scalar<T: engine_native::memory::Raw>(&self, address: usize) -> Option<T> {
         let value = self.inner.read_scalar::<T>(address);
         if value.is_some() {
             self.count(size_of::<T>());
@@ -260,9 +260,9 @@ fn acquire_intel(
         ctx.base,
         ctx.game_state,
         if job.growing {
-            engine::walk::Buffer::Growing(&mut job.rows)
+            engine_native::walk::Buffer::Growing(&mut job.rows)
         } else {
-            engine::walk::Buffer::Fixed(&mut job.rows[..job.row_limit])
+            engine_native::walk::Buffer::Fixed(&mut job.rows[..job.row_limit])
         },
         divisions,
     );
@@ -276,7 +276,7 @@ pub(crate) fn copy_radar_refresh(
     ctx: RadarCopyContext,
     job: &mut RadarJob,
 ) -> RadarCopyReport {
-    if !replay::cadence::should_walk(TableId::RadarCoverage, ctx.hour, ctx.force_full) {
+    if !replay_data::cadence::should_walk(TableId::RadarCoverage, ctx.hour, ctx.force_full) {
         job.clear();
         return RadarCopyReport::default();
     }
@@ -317,7 +317,7 @@ pub(crate) fn copy_radar_refresh_growing(
     ctx: RadarCopyContext,
     job: &mut RadarJob,
 ) -> RadarCopyReport {
-    if !replay::cadence::should_walk(TableId::RadarCoverage, ctx.hour, ctx.force_full) {
+    if !replay_data::cadence::should_walk(TableId::RadarCoverage, ctx.hour, ctx.force_full) {
         job.clear();
         return RadarCopyReport::default();
     }
@@ -402,16 +402,16 @@ impl Captured {
     ) {
         self.active[0] = job.active;
         if !job.active {
-            self.fail_radar_capture(replay::cadence::SKIPPED_REASON);
+            self.fail_radar_capture(replay_data::cadence::SKIPPED_REASON);
             return;
         }
         let started = qpc();
         self.radar_provinces.required = job.required_provinces;
         let growth = if job.growing {
-            engine::walk::Buffer::Growing(&mut self.radar.rows)
+            engine_native::walk::Buffer::Growing(&mut self.radar.rows)
                 .ensure(job.outcome.len())
                 .and_then(|_| {
-                    engine::walk::Buffer::Growing(&mut self.radar_provinces.first)
+                    engine_native::walk::Buffer::Growing(&mut self.radar_provinces.first)
                         .ensure(job.provinces_len)
                 })
         } else {
@@ -452,7 +452,7 @@ impl Captured {
     ) {
         let started = qpc();
         let growth = if job.growing {
-            engine::walk::Buffer::Growing(&mut self.intel.rows).ensure(job.outcome.len())
+            engine_native::walk::Buffer::Growing(&mut self.intel.rows).ensure(job.outcome.len())
         } else {
             Ok(true)
         };

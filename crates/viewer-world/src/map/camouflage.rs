@@ -10,7 +10,7 @@
 //! A recording's DivisionStatus holds the category the first two steps keep
 //! (`camouflage`), decided at capture with the live define. Recordings before
 //! it hold every entry and the maximum, and the same port
-//! ([`engine::acclimatization_data::camouflage`]) decides here with the
+//! ([`engine_native::acclimatization_data::camouflage`]) decides here with the
 //! content's define.
 //!
 //! A condition is literal `snow` (the executable keyword, effective snow
@@ -20,11 +20,9 @@
 
 use std::{collections::BTreeMap, io};
 
-use installed_content::{ResolvedLayers, defines::Defines, parser};
-use replay::{
-    frame::DecodedFrame,
-    rows::{DivisionStatusRow, Recorded, tables},
-};
+use installed_content_core::{ResolvedLayers, defines::Defines, parser};
+use replay_data::{rows::DivisionStatusRow, rows::Recorded, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use viewer_foundation::map::tables::{Available, core, rows};
 use viewer_foundation::table_access::{TokenKeys, TokenNames};
@@ -128,7 +126,7 @@ impl Content {
                 let maximum = status
                     .acclimatization_maximum
                     .ok_or_else(|| invalid("division acclimatization is unavailable this hour"))?;
-                Ok(engine::acclimatization_data::camouflage(
+                Ok(engine_native::acclimatization_data::camouflage(
                     status
                         .acclimatization
                         .iter()
@@ -328,7 +326,7 @@ impl<'a> Context<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{DivisionAcclimatization, DivisionCamouflage};
+    use replay_data::{rows::DivisionAcclimatization, rows::DivisionCamouflage};
 
     fn content() -> Content {
         Content::parse(
@@ -366,16 +364,16 @@ mod tests {
     fn tokens() -> TokenNames<'static> {
         TokenNames::from_rows(
             Box::leak(Box::new([
-                replay::rows::LexicalTokenRow {
+                replay_data::rows::LexicalTokenRow {
                     token: 1,
                     literal: b"cold".to_vec(),
                 },
-                replay::rows::LexicalTokenRow {
+                replay_data::rows::LexicalTokenRow {
                     token: 2,
                     literal: b"hot".to_vec(),
                 },
                 // A spelling that differs from its authored key in ASCII case.
-                replay::rows::LexicalTokenRow {
+                replay_data::rows::LexicalTokenRow {
                     token: 3,
                     literal: b"COLD".to_vec(),
                 },
@@ -503,7 +501,7 @@ mod tests {
                     for (categories, province) in [((1, 2), 1), ((2, 1), 2), ((2, 2), 3)] {
                         let entries = [(categories.0, first), (categories.1, second)];
                         let old = status(&entries, maximum);
-                        let current = recorded(engine::acclimatization_data::camouflage(
+                        let current = recorded(engine_native::acclimatization_data::camouflage(
                             entries,
                             maximum,
                             content.show_at,

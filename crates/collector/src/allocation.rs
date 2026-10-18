@@ -17,14 +17,14 @@ pub(crate) fn fail(phase: Phase, code: Code) {
 }
 
 pub(crate) fn install_hooks() {
-    engine::allocation::set_hooks(Some(should_fail), Some(failure_hook));
-    engine::allocation::set_stop_hook(Some(failed));
+    engine_allocation::set_hooks(Some(should_fail), Some(failure_hook));
+    engine_allocation::set_stop_hook(Some(failed));
 }
 fn failure_hook() {
     fail(phase(), Code::Reserve);
 }
 pub(crate) fn native_error(error: &io::Error) {
-    if engine::allocation::is_allocation_error(error) {
+    if engine_allocation::is_allocation_error(error) {
         fail(phase(), Code::Native);
     }
 }

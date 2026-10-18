@@ -3,7 +3,7 @@
 //! and scoped custom-tooltip expansion use the shared text code.
 use super::super::rules::Lines;
 use super::*;
-use installed_content::{parser::Item, scripted_triggers::Lookup};
+use installed_content_core::{parser::Item, scripted_triggers::Lookup};
 use std::collections::BTreeSet;
 use viewer_foundation::tooltip_text::ensure_newlines;
 
@@ -83,7 +83,7 @@ impl Context<'_, '_> {
                     let expected = match trigger
                         .value
                         .scalar()
-                        .and_then(installed_content::parser::read_bool)
+                        .and_then(installed_content_core::parser::read_bool)
                     {
                         Some(expected) => expected,
                         None => {
@@ -171,7 +171,7 @@ impl Context<'_, '_> {
                 let expected = trigger
                     .value
                     .scalar()
-                    .and_then(installed_content::parser::read_bool)
+                    .and_then(installed_content_core::parser::read_bool)
                     .ok_or("boolean trigger has unsupported value")?;
                 // Choose by whether inversion equals the authored boolean.
                 let key = match (key.as_str(), invert == expected) {

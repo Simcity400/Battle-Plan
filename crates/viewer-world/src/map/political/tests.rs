@@ -32,11 +32,12 @@ fn build_oracle(
     })
 }
 
-use installed_content::map::{CountryColors, ProvinceDefinition};
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{AutonomyRow, CountryAppearanceRow, CountryLinkRow, TableId, TableRows},
+use installed_content_core::{map::CountryColors, map::ProvinceDefinition};
+use replay_data::{
+    rows::AutonomyRow, rows::CountryAppearanceRow, rows::CountryLinkRow, rows::TableId,
+    rows::TableRows,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 
 /// Recorded colours: `0.75, 0.5, 0.25` truncate to these bytes.
 const GER: [u8; 3] = [191, 127, 63];

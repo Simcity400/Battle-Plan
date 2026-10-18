@@ -266,9 +266,8 @@ impl<R: Held> LeaderCarry<R> {
         self.pending = token;
         if !unchanged {
             self.visits.clear();
-            let reserved = engine::allocation::advisory(|| {
-                engine::allocation::reserve(&mut self.visits, bound)
-            });
+            let reserved =
+                engine_allocation::advisory(|| engine_allocation::reserve(&mut self.visits, bound));
             if reserved.is_err() {
                 return false;
             }
@@ -460,9 +459,9 @@ impl<R: Held> LeaderCarry<R> {
             let held = visit.entry.map(|index| &self.entries[index]);
             // The fresh read's rows and text, appended to the added buffers.
             let (rows_start, text_start) = (self.added_rows.len(), self.added_text.len());
-            engine::allocation::advisory(|| {
-                engine::allocation::reserve(&mut self.added_rows, len)?;
-                engine::allocation::reserve(
+            engine_allocation::advisory(|| {
+                engine_allocation::reserve(&mut self.added_rows, len)?;
+                engine_allocation::reserve(
                     &mut self.added_text,
                     read.iter().map(Held::text_len).sum(),
                 )
@@ -500,7 +499,7 @@ impl<R: Held> LeaderCarry<R> {
                 self.added_text.truncate(text_start);
                 continue;
             }
-            engine::allocation::advisory(|| engine::allocation::reserve(&mut self.added, 1))
+            engine_allocation::advisory(|| engine_allocation::reserve(&mut self.added, 1))
                 .map_err(|_| ())?;
             if let Some(index) = visit.entry {
                 // Replaced by the fresh read.
@@ -535,10 +534,10 @@ impl<R: Held> LeaderCarry<R> {
         let mut next_entries = Vec::new();
         let mut next_rows = Vec::new();
         let mut next_text = Vec::new();
-        engine::allocation::advisory(|| {
-            engine::allocation::reserve_exact(&mut next_entries, entries + self.added.len())?;
-            engine::allocation::reserve_exact(&mut next_rows, rows + self.added_rows.len())?;
-            engine::allocation::reserve_exact(&mut next_text, text + self.added_text.len())
+        engine_allocation::advisory(|| {
+            engine_allocation::reserve_exact(&mut next_entries, entries + self.added.len())?;
+            engine_allocation::reserve_exact(&mut next_rows, rows + self.added_rows.len())?;
+            engine_allocation::reserve_exact(&mut next_text, text + self.added_text.len())
         })?;
         let mut push = |entry: &Entry, rows: &[R], text: &[u8]| {
             let (row_start, text_start) = (next_rows.len(), next_text.len());

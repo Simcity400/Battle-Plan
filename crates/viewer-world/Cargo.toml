@@ -14,19 +14,43 @@ slow-tests = ["viewer-foundation/slow-tests"]
 test-support = ["viewer-foundation/test-support"]
 
 [dependencies]
+replay.workspace = true
+engine-air-history.workspace = true
+engine-executable.workspace = true
+engine-native.workspace = true
+engine-research.workspace = true
+installed-content-core.workspace = true
+installed-content-country-names.workspace = true
+installed-content-equipment-graphics.workspace = true
+installed-content-image.workspace = true
+installed-content-localisation.workspace = true
+installed-content-raids.workspace = true
+installed-content-regions.workspace = true
+installed-content-state-categories.workspace = true
+installed-content-states.workspace = true
+installed-content-weather.workspace = true
+replay-data.workspace = true
+replay-derive.workspace = true
+replay-frame.workspace = true
 viewer-foundation = { path = "../viewer-foundation" }
 dashboard-core.workspace = true
 dashboard-text.workspace = true
-engine.workspace = true
-installed-content.workspace = true
-replay.workspace = true
 shader-pipeline = { path = "../shader-pipeline" }
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts"] }
 bytemuck = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
+installed-content-core = { workspace = true, features = ["test-support"] }
+installed-content-country-names = { workspace = true, features = ["test-support"] }
+installed-content-equipment-graphics = { workspace = true, features = ["test-support"] }
+installed-content-image = { workspace = true, features = ["test-support"] }
+installed-content-localisation = { workspace = true, features = ["test-support"] }
+installed-content-raids = { workspace = true, features = ["test-support"] }
+installed-content-regions = { workspace = true, features = ["test-support"] }
+installed-content-state-categories = { workspace = true, features = ["test-support"] }
+installed-content-states = { workspace = true, features = ["test-support"] }
+installed-content-weather = { workspace = true, features = ["test-support"] }
 viewer-foundation = { path = "../viewer-foundation", features = ["test-support"] }
 shader-pipeline = { path = "../shader-pipeline", features = ["test-support"] }
-installed-content = { workspace = true, features = ["test-support"] }
 pollster.workspace = true
 serde_json.workspace = true

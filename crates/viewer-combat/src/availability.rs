@@ -1,6 +1,7 @@
 //! Table gaps required by the selected combat window.
 
-use replay::{frame::DecodedFrame, rows::tables};
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 use viewer_foundation::combat_selection::Selection;
 use viewer_foundation::map::tables::Limitations;
 

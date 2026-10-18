@@ -3,14 +3,12 @@ mod newest;
 mod places;
 mod speed;
 use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-use replay::{
-    frame::TableView,
-    rows::{
-        CountryLinkRow, CountryRow, NavalCombatParticipantRow, NavalCombatResultDetailsRow,
-        NavalCombatRow, NavalResultCountryRow, NavalResultRow, NavalResultShip,
-        NavalResultSourceRow, TableRows,
-    },
+use replay_data::{
+    rows::CountryLinkRow, rows::CountryRow, rows::NavalCombatParticipantRow,
+    rows::NavalCombatResultDetailsRow, rows::NavalCombatRow, rows::NavalResultCountryRow,
+    rows::NavalResultRow, rows::NavalResultShip, rows::NavalResultSourceRow, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 
 fn frame(hour: i32) -> DecodedFrame {
     let mut f = source(1, hour, Some(1));
@@ -1027,7 +1025,7 @@ fn war_frame(countries: u32, generation: u32) -> DecodedFrame {
             result: result_id,
             ..Default::default()
         };
-        let mut active = replay::rows::NavalCombatDetailsRow {
+        let mut active = replay_data::rows::NavalCombatDetailsRow {
             combat: id,
             province: i + 1,
             custom_sea: Some(vec![]),

@@ -1,8 +1,8 @@
 //! Allocation-free notifications from the native writers of every building status's StateBuildings
-//! and ProvinceBuildings rows ([`engine::building_mutations`]). A detour only notifies the shared
+//! and ProvinceBuildings rows ([`engine_mutations::building_mutations`]). A detour only notifies the shared
 //! watch registry ([`WatchRegistry`]) for the `CBuildingStatus` its first argument names, counts
 //! its site and calls the original; it never changes game behaviour. A building writer names its
-//! status through the building's guarded backlink (`engine::cbuilding::BUILDING_STATUS`); when that
+//! status through the building's guarded backlink (`engine_native::cbuilding::BUILDING_STATUS`); when that
 //! read fails the call revokes every certificate. Entering nudge mode (the developer map editor,
 //! [`Receiver::Structure`]) poisons the domain: the nudger then rebuilds statuses and locations at
 //! any moment without a hooked writer. Anything unobserved (disabled, poisoned, a refused
@@ -18,10 +18,8 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{
-    Memory,
-    building_mutations::{MUTATIONS, Receiver},
-};
+use engine_mutations::{building_mutations::MUTATIONS, building_mutations::Receiver};
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -183,10 +181,10 @@ fn status_of(receiver: Receiver, first: usize) -> Option<usize> {
     match receiver {
         Receiver::Status => Some(first),
         Receiver::Building => {
-            let memory = unsafe { engine::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native::memory::LiveMemory::new() };
             first
-                .checked_add(engine::cbuilding::BUILDING_STATUS)
-                .and_then(|address| engine::read::<u64>(&memory, address))
+                .checked_add(engine_native::cbuilding::BUILDING_STATUS)
+                .and_then(|address| engine_native::read::<u64>(&memory, address))
                 .and_then(|status| usize::try_from(status).ok())
                 .filter(|&status| status != 0)
         }
@@ -207,7 +205,7 @@ struct Forwarded(
 /// sums read a status's buildings, to [`crate::rail_changes`], whose rail infos read the rail
 /// building of their province's status, and to [`crate::raid_changes`], whose state inputs read a
 /// state's infrastructure level. A named status marks its province or state through its own flags
-/// and location id (`engine::cbuilding_status::FLAGS` and `ID`, written only by the status
+/// and location id (`engine_native::cbuilding_status::FLAGS` and `ID`, written only by the status
 /// constructor); a status that cannot be named or read marks every province and state; entering
 /// nudge mode poisons the three families. The marks cover the original in flight.
 fn forward(receiver: Receiver, first: usize) -> Forwarded {
@@ -217,10 +215,10 @@ fn forward(receiver: Receiver, first: usize) -> Forwarded {
         crate::raid_changes::poison();
         return Forwarded(None, None, None);
     }
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let location = status_of(receiver, first)
-        .and_then(|status| status.checked_add(engine::cbuilding_status::FLAGS))
-        .and_then(|address| engine::read::<[u8; 8]>(&memory, address));
+        .and_then(|status| status.checked_add(engine_native::cbuilding_status::FLAGS))
+        .and_then(|address| engine_native::read::<[u8; 8]>(&memory, address));
     match location {
         Some(bytes) => {
             let flags = u32::from_le_bytes(bytes[..4].try_into().unwrap());
@@ -365,7 +363,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "building_changes")
             && MUTATIONS.iter().all(|(site, _)| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [
@@ -400,7 +398,7 @@ impl Hooks {
         if !enabled {
             WATCHES.registry.set_enabled(false);
             collector_observers::nuclear_strikes::forwarder(
-                replay::rows::NuclearStrikePart::Buildings,
+                replay_data::rows::NuclearStrikePart::Buildings,
                 false,
             );
             // The rail and raid state domains observe only while these
@@ -421,7 +419,7 @@ impl Hooks {
             .registry
             .set_enabled(enabled && !self.hooks.is_empty());
         collector_observers::nuclear_strikes::forwarder(
-            replay::rows::NuclearStrikePart::Buildings,
+            replay_data::rows::NuclearStrikePart::Buildings,
             enabled && !self.hooks.is_empty(),
         );
         crate::rail_changes::forwarder(enabled && !self.hooks.is_empty());
@@ -504,9 +502,9 @@ mod tests {
     /// whose backlink is null names none, so it revokes every certificate.
     #[test]
     fn a_building_writer_names_its_backlinked_status() {
-        let mut building = vec![0_u8; engine::cbuilding::TEMPLATE + 8];
+        let mut building = vec![0_u8; engine_native::cbuilding::TEMPLATE + 8];
         let status = 0x7654_3210_usize;
-        let at = engine::cbuilding::BUILDING_STATUS;
+        let at = engine_native::cbuilding::BUILDING_STATUS;
         building[at..at + 8].copy_from_slice(&(status as u64).to_le_bytes());
         let address = building.as_ptr() as usize;
         assert_eq!(status_of(Receiver::Building, address), Some(status));

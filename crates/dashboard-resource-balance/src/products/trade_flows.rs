@@ -14,7 +14,7 @@
 //! shared country census date names and flags to the supplying read, including
 //! peace. Chosen tags expand to their recorded native holders before filtering.
 //!
-//! The deal table is read every hour (`replay::cadence`). Deals are known only
+//! The deal table is read every hour (`replay_data::cadence`). Deals are known only
 //! where the table and country catalogue are recorded: `known` lists those hours,
 //! so an hour outside them is unknown, never "no trade". An hour listing deals it
 //! cannot attribute (a seller or buyer the links do not resolve, a resource the
@@ -24,7 +24,7 @@
 //! `PurchaseContracts` (the international market's equipment contracts, with a
 //! seller, a buyer, civilian industry paid and deliveries made) is not read here:
 //! it trades equipment, not resources, and the recorded table has no equipment
-//! type or quantity to size a flow by (`engine::cpurchase_contract`).
+//! type or quantity to size a flow by (`engine_production::cpurchase_contract`).
 //!
 //! The reply covers the whole branch so playback is a local lookup. A reply past
 //! the product byte budget is refused with a message asking for fewer countries,
@@ -43,7 +43,7 @@ use dashboard_base::{
     prepared::frame_changes::field_mask, products::country_groups::HourSpan, source::Source,
 };
 use dashboard_core::{config::LoadContext, protocol::validate_tag};
-use replay::rows::{DeltaRow, TableId, tables};
+use replay_data::{rows::DeltaRow, rows::TableId, rows::tables};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -55,7 +55,9 @@ use ts_rs::TS;
 #[cfg(test)]
 use dashboard_text::metadata::validate_campaign;
 #[cfg(test)]
-use replay::{container::Replay, frame::FrameDecoder};
+use replay::container::Replay;
+#[cfg(test)]
+use replay_frame::frame::FrameDecoder;
 #[cfg(test)]
 use std::{collections::VecDeque, sync::atomic::Ordering};
 
@@ -230,7 +232,7 @@ static EXCHANGE_FIELDS: LazyLock<u64> = LazyLock::new(|| {
 static HOLDER_FIELDS: LazyLock<u64> =
     LazyLock::new(|| field_mask(TableId::Countries, &["canonical_slot", "tag"]));
 
-fn exchange_operand(row: &replay::rows::ResourceExchangeRow) -> Operand {
+fn exchange_operand(row: &replay_data::rows::ResourceExchangeRow) -> Operand {
     (
         row.exporter,
         row.importer,
@@ -248,14 +250,14 @@ fn exchange_operand(row: &replay::rows::ResourceExchangeRow) -> Operand {
 /// Native fields in recorded order, each with its row key. Re-resolving
 /// aliases must not regroup these operands before checked addition: signed
 /// partial sums can overflow.
-fn exchange_operands(rows: &[replay::rows::ResourceExchangeRow]) -> Vec<(u128, Operand)> {
+fn exchange_operands(rows: &[replay_data::rows::ResourceExchangeRow]) -> Vec<(u128, Operand)> {
     rows.iter()
         .map(|row| (row.key(), exchange_operand(row)))
         .collect()
 }
 
 /// The resources recorded definitions and tokens name this hour.
-fn read_names(frame: &replay::frame::DecodedFrame) -> Option<Learned> {
+fn read_names(frame: &replay_frame::frame::DecodedFrame) -> Option<Learned> {
     frame
         .complete::<tables::ResourceDefinitions>()
         .ok()
@@ -284,7 +286,7 @@ struct Inputs {
 impl Inputs {
     fn refresh(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
     ) -> bool {
         let forced = !self.ready;
@@ -369,7 +371,7 @@ impl Inputs {
         ids
     }
     /// Whether this frame names every resource as the current names do.
-    fn same_names(&mut self, frame: &replay::frame::DecodedFrame) -> bool {
+    fn same_names(&mut self, frame: &replay_frame::frame::DecodedFrame) -> bool {
         #[cfg(test)]
         {
             self.row_visits += frame
@@ -701,7 +703,7 @@ pub(crate) struct Scan {
 }
 impl Scan {
     #[cfg(test)]
-    fn observe(&mut self, decoded: &replay::frame::DecodedFrame) -> io::Result<()> {
+    fn observe(&mut self, decoded: &replay_frame::frame::DecodedFrame) -> io::Result<()> {
         let requested = self.wanted.as_ref().map(|ids| {
             let mut requested = ids
                 .iter()
@@ -715,9 +717,9 @@ impl Scan {
         self.inputs.refresh(
             decoded,
             &dashboard_base::prepared::frame_changes::FrameChanges {
-                rows_changed: [true; replay::frame::TABLE_COUNT],
-                table_read: [true; replay::frame::TABLE_COUNT],
-                slot_read: [true; replay::frame::TABLE_COUNT],
+                rows_changed: [true; replay_data::rows::TABLE_COUNT],
+                table_read: [true; replay_data::rows::TABLE_COUNT],
+                slot_read: [true; replay_data::rows::TABLE_COUNT],
                 updates: None,
             },
         );
@@ -785,7 +787,7 @@ impl Scan {
     }
     fn observe_sampled(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
+        decoded: &replay_frame::frame::DecodedFrame,
         sampled: &dashboard_base::prepared::query::progressive::Samples,
     ) -> io::Result<()> {
         let Self {
@@ -994,7 +996,7 @@ impl Scan {
     /// from the whole tables.
     fn observe_rows(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         changed: &[DeltaRow],
         deleted: &[u128],
     ) -> io::Result<Option<BTreeMap<usize, bool>>> {

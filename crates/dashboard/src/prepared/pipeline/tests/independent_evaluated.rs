@@ -12,9 +12,9 @@ use crate::prepared::prepass;
 use crate::products::research::test_fixtures::research_frame;
 use crate::test_fixtures::fixture_research_inputs;
 use independent::evaluated;
-use replay::rows::{
-    LexicalTokenRow, ProjectProgramRow, ProjectRow, ProjectState, StateGarrisonRow,
-    StateResistanceRow,
+use replay_data::{
+    rows::LexicalTokenRow, rows::ProjectProgramRow, rows::ProjectRow, rows::ProjectState,
+    rows::StateGarrisonRow, rows::StateResistanceRow,
 };
 use std::{collections::BTreeSet, sync::Mutex};
 
@@ -982,7 +982,10 @@ fn project_content(root: &std::path::Path, name: &str) {
 /// GER's one state and province, and its `project_flag` variable, set from
 /// +4 on.
 fn with_scope_tables(mut frame: DecodedFrame) -> DecodedFrame {
-    use replay::rows::{ProvinceRow, Recorded, ScriptVariableEntry, ScriptVariablesRow, StateRow};
+    use replay_data::{
+        rows::ProvinceRow, rows::Recorded, rows::ScriptVariableEntry, rows::ScriptVariablesRow,
+        rows::StateRow,
+    };
     let at = offset(frame.branch, frame.hour);
     *frame.tables[TableId::States.index()] =
         TableView::Complete(TableRows::States(vec![StateRow {
@@ -1029,7 +1032,7 @@ fn with_scope_tables(mut frame: DecodedFrame) -> DecodedFrame {
 /// publish and save what hourly preparation does, across an appended block.
 #[test]
 fn special_projects_read_the_trigger_kit_only_where_content_can_evaluate_scoped_text() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (label, name, scoped) in [
         ("plain", "Plain project", false),
@@ -1146,8 +1149,9 @@ fn quiet_projects_at(hour: i32) -> DecodedFrame {
     ignore = "slow: runs in the full suite (--features slow-tests)"
 )]
 fn special_projects_fold_quiet_hours_and_an_equal_dictionary_read_again_as_hourly_preparation() {
-    use replay::{frame::TableUpdate, spool::Record};
-    engine::executable_tables::initialize_for_tests()
+    use replay::spool::Record;
+    use replay_frame::frame::TableUpdate;
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (label, name) in [
         ("plain", "Plain project"),
@@ -1610,7 +1614,7 @@ fn occupation_states_and_first_daily_samples_match_preparation_while_identity_hi
 /// its `project_flag` variable set from +2; and a project completion the
 /// history dates +1, which is a deadline at that quiet hour.
 fn deadline_projects_at(hour: i32) -> DecodedFrame {
-    use replay::rows::ProjectHistoryRow;
+    use replay_data::rows::ProjectHistoryRow;
     /// The handles the game stores in a completion's history entry.
     const COMPLETION_MARKER: u32 = 0x4c17;
     let at = offset(1, hour);
@@ -1670,7 +1674,7 @@ fn manpower_content(root: &std::path::Path) {
 /// every recorded hour once, across an appended block.
 #[test]
 fn special_projects_never_read_a_read_hour_carrying_a_built_table_as_whole() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frames = |hours: std::ops::Range<i32>| -> Vec<DecodedFrame> {
         hours.map(|at| deadline_projects_at(BASE + at)).collect()

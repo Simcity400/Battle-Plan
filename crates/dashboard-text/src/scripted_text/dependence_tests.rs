@@ -10,10 +10,11 @@ use crate::triggers::inputs::{
         tables_each_key_reads,
     },
 };
-use replay::rows::{
-    CharacterRow, CountryAppearanceRow, FactionMemberRow, FactionRow, IntelligenceAgencyRow,
-    LexicalTokenRow, LocalPlayerRow, PartyLeaderRow, PoliticalPartyRow, PoliticsRow, ProvinceRow,
-    Recorded, ReservedCountryNamingRow, TableId, TableRows, UnitLeaderRow,
+use replay_data::{
+    rows::CharacterRow, rows::CountryAppearanceRow, rows::FactionMemberRow, rows::FactionRow,
+    rows::IntelligenceAgencyRow, rows::LexicalTokenRow, rows::LocalPlayerRow, rows::PartyLeaderRow,
+    rows::PoliticalPartyRow, rows::PoliticsRow, rows::ProvinceRow, rows::Recorded,
+    rows::ReservedCountryNamingRow, rows::TableId, rows::TableRows, rows::UnitLeaderRow,
 };
 
 fn set(frame: &mut DecodedFrame, rows: TableRows) {
@@ -297,7 +298,7 @@ const CONSTANT: [&str; 3] = [
 /// Runs `check` with the text digests of `keys` at a frame, for the
 /// country of slot 1.
 fn with_texts(check: impl FnOnce(&dyn Fn(&DecodedFrame, &[Key]) -> Vec<Option<u64>>)) {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = super::tests::catalogue(
         "defined_text = { name = GetModText text = { localization_key = GER } }",

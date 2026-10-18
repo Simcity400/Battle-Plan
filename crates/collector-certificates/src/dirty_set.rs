@@ -50,7 +50,7 @@ struct Bits {
 impl Bits {
     /// Off the hook path; `None` when the allocation fails.
     fn new(words: usize) -> Option<Box<Self>> {
-        let mut bits = engine::allocation::vec(words).ok()?;
+        let mut bits = engine_allocation::vec(words).ok()?;
         bits.resize_with(words, AtomicU64::default);
         Some(Box::new(Self { words: bits }))
     }
@@ -290,7 +290,7 @@ impl DirtySet {
     /// installed and offered ones are smaller. A boundary installs it.
     pub fn offer(&self, ids: usize) {
         let Some(words) = ids.checked_add(BITS - 1).map(|bits| bits / BITS) else {
-            let _ = engine::allocation::oom();
+            let _ = engine_allocation::oom();
             self.failed_offers.fetch_add(1, Relaxed);
             return;
         };

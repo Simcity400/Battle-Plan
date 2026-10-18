@@ -3,14 +3,13 @@
 //! saves both full-handle words.
 use super::{Report, complete, country_context, invalid, required_country_tag};
 use installed_content_save::Save;
-use replay::{
-    container::{Replay, SeekResult},
-    frame::{DecodedFrame, FrameDecoder},
-    rows::{
-        CountryRow, DivisionDeletionDisposition, EquipmentDestructionCause,
-        EquipmentDestructionCoverage, Recorded, RowCodec, TableId, tables,
-    },
+use replay::{container::Replay, container::SeekResult};
+use replay_data::{
+    rows::CountryRow, rows::DivisionDeletionDisposition, rows::EquipmentDestructionCause,
+    rows::EquipmentDestructionCoverage, rows::Recorded, rows::RowCodec, rows::TableId,
+    rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -51,7 +50,7 @@ pub fn compare(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
                 row.country
             )));
         }
-        if row.variant as u32 != engine::cequipment_variant::REFERENCE_TYPE {
+        if row.variant as u32 != engine_native::cequipment_variant::REFERENCE_TYPE {
             return Err(invalid(
                 "EquipmentDestruction invalid design reference type",
             ));

@@ -328,7 +328,13 @@ mod tests {
             world.u32(diplomacy + CAPITULATED_HOUR, slot);
         }
         let mut expected = vec![CapitulationRow::default(); COUNT as usize];
-        let outcome = walk_capitulation(&world.memory(), BASE, world.game_state(), &mut expected, &mut []);
+        let outcome = walk_capitulation(
+            &world.memory(),
+            BASE,
+            world.game_state(),
+            &mut expected,
+            &mut [],
+        );
         assert_eq!(
             outcome,
             Outcome::Rows {
@@ -337,7 +343,13 @@ mod tests {
         );
         let mut rows = Vec::new();
         assert_eq!(
-            walk_capitulation_growing(&world.memory(), BASE, world.game_state(), &mut rows, &mut Vec::new()),
+            walk_capitulation_growing(
+                &world.memory(),
+                BASE,
+                world.game_state(),
+                &mut rows,
+                &mut Vec::new()
+            ),
             outcome
         );
         assert_eq!(&rows[..COUNT as usize], expected.as_slice());
@@ -457,13 +469,35 @@ mod tests {
         let mut bytes = fixture();
         bytes.resize(0xb000, 0);
         let goals = 0xa000;
-        put(&mut bytes, FIRST_DIPLOMACY + OWNED_WARGOALS, &(goals as u64).to_le_bytes());
-        put(&mut bytes, FIRST_DIPLOMACY + OWNED_WARGOALS + 8, &2_u32.to_le_bytes());
-        put(&mut bytes, FIRST_DIPLOMACY + OWNED_WARGOALS + 12, &2_u32.to_le_bytes());
-        for (index, (goal, recipient)) in [(0xa100_usize, 7_u32), (0xa200, 9)].into_iter().enumerate() {
+        put(
+            &mut bytes,
+            FIRST_DIPLOMACY + OWNED_WARGOALS,
+            &(goals as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            FIRST_DIPLOMACY + OWNED_WARGOALS + 8,
+            &2_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            FIRST_DIPLOMACY + OWNED_WARGOALS + 12,
+            &2_u32.to_le_bytes(),
+        );
+        for (index, (goal, recipient)) in
+            [(0xa100_usize, 7_u32), (0xa200, 9)].into_iter().enumerate()
+        {
             put(&mut bytes, goals + index * 8, &(goal as u64).to_le_bytes());
-            put(&mut bytes, goal, &((BASE + cwar_goal::VTABLE_RVA) as u64).to_le_bytes());
-            put(&mut bytes, goal + cwar_goal::RECIPIENT, &recipient.to_le_bytes());
+            put(
+                &mut bytes,
+                goal,
+                &((BASE + cwar_goal::VTABLE_RVA) as u64).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                goal + cwar_goal::RECIPIENT,
+                &recipient.to_le_bytes(),
+            );
         }
         let mut rows = [CapitulationRow::default(); 2];
         let mut recipients = [0_u32; 2];
@@ -477,7 +511,10 @@ mod tests {
         // Too short a fixed buffer leaves the country unread.
         assert_eq!(
             walk_capitulation(&memory(&bytes), BASE, GAME, &mut rows, &mut [0; 1]),
-            Outcome::Truncated { len: 1, unread_rows: 1 }
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 1
+            }
         );
         // A goal that is not a war goal refuses only that country's list.
         put(&mut bytes, 0xa200, &0_u64.to_le_bytes());

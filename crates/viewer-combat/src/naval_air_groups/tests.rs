@@ -1,9 +1,11 @@
 use super::*;
-use replay::rows::{NavalCombatAirEfficiency, NavalShipModifierSource, NavalShipModifierTerm};
+use replay_data::{
+    rows::NavalCombatAirEfficiency, rows::NavalShipModifierSource, rows::NavalShipModifierTerm,
+};
 
 #[test]
 fn sortie_content_keys_spell_the_fixed_modifier_keys() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (index, name) in SORTIE.into_iter().zip(SORTIE_KEYS) {
         assert!(
@@ -591,7 +593,7 @@ fn source3_without_combat_member_uses_shared_host_organisation() {
     }];
     let models = [ShipModelRow {
         ship: 77,
-        counter: Some(replay::rows::ShipCounterInputs {
+        counter: Some(replay_data::rows::ShipCounterInputs {
             maximum_organisation: 1_000_000,
             ..Default::default()
         }),
@@ -727,7 +729,7 @@ fn joins_refuse_missing_rows_and_duplicate_or_disordered_keys() {
     };
     let model = |ship| ShipModelRow {
         ship,
-        counter: Some(replay::rows::ShipCounterInputs::default()),
+        counter: Some(replay_data::rows::ShipCounterInputs::default()),
         ..Default::default()
     };
     let bases = [base(41, 76), base(42, 77)];
@@ -955,7 +957,7 @@ fn positioning_air_weights_mixed_sortie_efficiency_and_all_admitted_slots() {
     }];
     let models = [ShipModelRow {
         ship: 77,
-        counter: Some(replay::rows::ShipCounterInputs {
+        counter: Some(replay_data::rows::ShipCounterInputs {
             maximum_organisation: 1_000_000,
             ..Default::default()
         }),

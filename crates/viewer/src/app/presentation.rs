@@ -50,7 +50,7 @@ impl Viewer {
     // hours
     /// Whether the map can show `hour` of `branch` on the next frame: it is on
     /// screen or built and waiting.
-    pub(super) fn hour_ready(&self, branch: replay::BranchId, hour: i32) -> bool {
+    pub(super) fn hour_ready(&self, branch: replay_data::BranchId, hour: i32) -> bool {
         self.ready.contains_key(&(branch, hour))
             || self.shown.as_ref().is_some_and(|shown| {
                 shown.epoch == self.epoch && (shown.branch, shown.hour) == (branch, hour)

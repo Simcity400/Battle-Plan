@@ -10,12 +10,10 @@
 //! projection can convert disjoint tables on the spool thread and its helper.
 
 use crate::table_conversion::{table, unavailable};
-use engine::walk::Outcome;
-use replay::{
-    BranchId, Hour,
-    frame::{FrameEncoder, TABLE_COUNT, TableInput, TableView},
-    rows::{RowCodec, TableRows, TableSchema},
-};
+use engine_native::walk::Outcome;
+use replay_data::rows::TABLE_COUNT;
+use replay_data::{BranchId, Hour, rows::RowCodec, rows::TableRows, rows::TableSchema};
+use replay_frame::{frame::FrameEncoder, frame::TableInput, frame::TableView};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 #[derive(Default)]
@@ -54,13 +52,13 @@ struct OrderingStatus {
 }
 
 impl ProjectionScratch {
-    fn table(&self, table: replay::rows::TableId) -> MutexGuard<'_, Ordering> {
+    fn table(&self, table: replay_data::rows::TableId) -> MutexGuard<'_, Ordering> {
         self.tables[table.index()]
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn ordering_status(&self, table: replay::rows::TableId) -> OrderingStatus {
+    fn ordering_status(&self, table: replay_data::rows::TableId) -> OrderingStatus {
         let order = self.table(table);
         OrderingStatus {
             compared: order.compared,
@@ -76,7 +74,7 @@ impl ProjectionScratch {
     pub fn status(&self) -> impl serde::Serialize + '_ {
         crate::status::status!({
             "scope": "current complete native payload compared with encoder baseline; cumulative conversion decisions including later failed writes",
-            "tables": crate::status::sequence(replay::rows::TableId::ALL.into_iter().map(|table| (table, self.ordering_status(table))).filter(|(_, order)| order.compared != 0 || order.converted != 0).map(|(table, order)| crate::status::status!({
+            "tables": crate::status::sequence(replay_data::rows::TableId::ALL.into_iter().map(|table| (table, self.ordering_status(table))).filter(|(_, order)| order.compared != 0 || order.converted != 0).map(|(table, order)| crate::status::status!({
                 "table": crate::status::DebugValue(table),
                 "compared": order.compared,
                 "reused": order.reused,
@@ -142,7 +140,7 @@ impl<'a> Projection<'a> {
         if !natural {
             if order.indices.len() != source.len() {
                 order.indices.clear();
-                if engine::allocation::reserve_exact(&mut order.indices, source.len()).is_err() {
+                if engine_allocation::reserve_exact(&mut order.indices, source.len()).is_err() {
                     return unavailable("collector allocation failed").into();
                 }
                 order.indices.extend(0..source.len());
@@ -169,7 +167,7 @@ impl<'a> Projection<'a> {
         // Staggered tables also need a recovery cache for skipped hours. Their
         // existing immutable-cache path owns that contract; this path is hourly.
         if matches!(outcome, Outcome::Rows { .. })
-            && !replay::cadence::is_staggered(S::ID)
+            && !replay_data::cadence::is_staggered(S::ID)
             && let Some((token, baseline)) =
                 self.encoder
                     .comparison_baseline::<S>(self.branch, self.hour, self.force)
@@ -187,8 +185,7 @@ impl<'a> Projection<'a> {
                         // Equal baselines still allocate nothing. The first
                         // changed row reserves the entire remaining batch.
                         if indices.is_empty()
-                            && engine::allocation::reserve_exact(&mut indices, source.len())
-                                .is_err()
+                            && engine_allocation::reserve_exact(&mut indices, source.len()).is_err()
                         {
                             allocation_failed = true;
                             return false;
@@ -206,7 +203,7 @@ impl<'a> Projection<'a> {
                         return TableInput::ComparedEqual(token);
                     }
                     let mut rows = Vec::new();
-                    if engine::allocation::reserve_exact(&mut rows, indices.len()).is_err() {
+                    if engine_allocation::reserve_exact(&mut rows, indices.len()).is_err() {
                         return unavailable("collector allocation failed").into();
                     }
                     rows.extend(indices.iter().map(|&index| convert(at(index))));
@@ -231,7 +228,7 @@ impl<'a> Projection<'a> {
             }
         }
         let mut rows = Vec::new();
-        if engine::allocation::reserve_exact(&mut rows, source.len()).is_err() {
+        if engine_allocation::reserve_exact(&mut rows, source.len()).is_err() {
             return unavailable("collector allocation failed").into();
         }
         rows.extend((0..source.len()).map(|index| convert(at(index))));
@@ -249,7 +246,7 @@ impl<'a> Projection<'a> {
 }
 
 /// `key` must be the replay key and `equal` must compare every replay field,
-/// a field with a display step ([`replay::display`]) at that step, since the
+/// a field with a display step ([`replay_data::display`]) at that step, since the
 /// baseline holds it rounded. All source and arena checks are performed before
 /// calling this function. Converted rows are rounded to their display steps.
 pub fn project_table<S: TableSchema, T>(
@@ -296,9 +293,9 @@ fn displayed<S: TableSchema>(mut row: S::Row) -> S::Row {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::{DecodedFrame, FrameDecoder, FrameInput, Metrics},
-        rows::{StateRow, TableId, tables},
+    use replay_data::{rows::StateRow, rows::TableId, rows::tables};
+    use replay_frame::{
+        frame::DecodedFrame, frame::FrameDecoder, frame::FrameInput, frame::Metrics,
     };
     use std::cell::Cell;
 

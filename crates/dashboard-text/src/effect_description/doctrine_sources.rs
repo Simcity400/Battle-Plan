@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{scripted_text::EventScope, triggers::Eval};
-use installed_content::{doctrines::DefinitionSources, tokens::Token};
+use installed_content_core::{doctrines::DefinitionSources, tokens::Token};
 
 /// Fully formatted source fragments, retaining source order and duplicates.
 /// `resolve_tactic` shares the caller's exact-name combat-tactic registry.
@@ -231,7 +231,7 @@ fn tracked_source(
     key: &[u8],
     doctrine_argument: &str,
     name: &str,
-    track: &installed_content::gui::native::BoundLocalization,
+    track: &installed_content_core::gui::native::BoundLocalization,
     mastery: Option<i64>,
 ) -> Result<String, String> {
     // localisation expansion receives an empty

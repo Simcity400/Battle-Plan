@@ -6,10 +6,8 @@ use std::{
 };
 
 use installed_content_save::{GameDate, characters as saved_characters, intel as saved};
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryRow, tables},
-};
+use replay_data::{rows::CountryRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::{Report, TokenNames, complete, country_tag, invalid, required_country_tag};
 
@@ -31,7 +29,7 @@ pub fn compare(
     characters: Option<&saved_characters::Manager>,
     countries: &BTreeMap<u32, &CountryRow>,
     tokens: &TokenNames<'_>,
-    intelligence: Result<&installed_content::intelligence::AgencyUpgrades, &str>,
+    intelligence: Result<&installed_content_core::intelligence::AgencyUpgrades, &str>,
     scopes: ScopeKinds,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -570,7 +568,7 @@ fn compare_operative_memberships(
     }
     let assignment_names = assignment_literals(tokens);
     let nationalities_key = token(tokens, 0x3d12);
-    let assignment_key = token(tokens, engine::coperative_leader::TOKEN_ASSIGNMENT);
+    let assignment_key = token(tokens, engine_native::coperative_leader::TOKEN_ASSIGNMENT);
     let literals = || OperativeLiterals {
         assignment_names: assignment_names.as_ref(),
         nationalities_key,
@@ -685,7 +683,7 @@ struct OperativeLiterals<'a> {
 fn compare_operative_row(
     report: &mut Report,
     label: &str,
-    actual: &replay::rows::OperativeMembershipRow,
+    actual: &replay_data::rows::OperativeMembershipRow,
     expected: &saved::OperativeEntry,
     countries: &BTreeMap<u32, &CountryRow>,
     literals: OperativeLiterals<'_>,
@@ -746,7 +744,7 @@ fn compare_operative_row(
         literals.assignment_names,
         literals.assignment_key,
     );
-    if actual.assignment == engine::coperative_leader::COOLDOWN_ASSIGNMENT {
+    if actual.assignment == engine_native::coperative_leader::COOLDOWN_ASSIGNMENT {
         compare_cooldown(
             report,
             label,
@@ -789,7 +787,7 @@ fn compare_operative_row(
 fn compare_operative_placement(
     report: &mut Report,
     label: &str,
-    actual: &replay::rows::OperativeMembershipRow,
+    actual: &replay_data::rows::OperativeMembershipRow,
     expected: &saved::OperativeEntry,
     countries: &BTreeMap<u32, &CountryRow>,
     literals: &OperativeLiterals<'_>,
@@ -799,7 +797,7 @@ fn compare_operative_placement(
     if let Some(variant) = actual.action_variant {
         let id = variant
             .checked_sub(1)
-            .and_then(|index| engine::operative_action::SAVE_TOKENS.get(index as usize))
+            .and_then(|index| engine_native::operative_action::SAVE_TOKENS.get(index as usize))
             .ok_or_else(|| invalid("recorded operative mission variant is unsupported"))?;
         if let Some(name) = token(literals.tokens, *id).filter(|name| !name.contains(&0)) {
             equal(
@@ -900,7 +898,7 @@ fn compare_operative_placement(
 /// The saved assignment literal of each assignment value, through the
 /// recorded LexicalTokens; `None` unless all six are exact.
 fn assignment_literals<'a>(tokens: &TokenNames<'a>) -> Option<BTreeMap<u32, &'a [u8]>> {
-    use engine::coperative_leader as leader;
+    use engine_native::coperative_leader as leader;
     let names: BTreeMap<u32, &[u8]> = [
         (0, leader::ASSIGNMENT_LITERAL_IDLE),
         (1, leader::ASSIGNMENT_LITERAL_TRAINING),
@@ -999,7 +997,7 @@ fn compare_operative_missions(
     tokens: &TokenNames<'_>,
     report: &mut Report,
 ) -> io::Result<()> {
-    let handle_type = u64::from(engine::coperative_leader::HANDLE_TYPE);
+    let handle_type = u64::from(engine_native::coperative_leader::HANDLE_TYPE);
     type SavedActive<'a> = BTreeMap<(u64, Vec<u8>), Vec<(u32, &'a saved::OperativeEntry)>>;
     let mut saved_active = SavedActive::new();
     for (owner, country) in report.canonical_countries(&save.countries) {
@@ -1035,7 +1033,7 @@ fn compare_operative_missions(
         }
     }
     let assignment_names = assignment_literals(tokens);
-    let assignment_key = token(tokens, engine::coperative_leader::TOKEN_ASSIGNMENT);
+    let assignment_key = token(tokens, engine_native::coperative_leader::TOKEN_ASSIGNMENT);
     let target_key = token(tokens, 0x6b) == Some(b"target".as_slice());
     let mut matched = 0;
     for ((id, owner), entries) in saved_active {
@@ -1060,7 +1058,7 @@ fn compare_operative_missions(
             assignment_names.as_ref(),
             assignment_key,
         );
-        if actual.assignment == engine::coperative_leader::COOLDOWN_ASSIGNMENT {
+        if actual.assignment == engine_native::coperative_leader::COOLDOWN_ASSIGNMENT {
             compare_cooldown(
                 report,
                 &label,
@@ -1090,7 +1088,7 @@ fn compare_operative_missions(
         };
         let definition = variant
             .checked_sub(1)
-            .and_then(|index| engine::operative_action::SAVE_TOKENS.get(index as usize))
+            .and_then(|index| engine_native::operative_action::SAVE_TOKENS.get(index as usize))
             .ok_or_else(|| invalid("recorded operative mission variant is unsupported"))?;
         match token(tokens, *definition).filter(|name| !name.contains(&0)) {
             Some(name) => equal(
@@ -1296,7 +1294,7 @@ struct NetworkState {
 }
 
 impl NetworkState {
-    fn recorded(row: &replay::rows::IntelNetworkRow) -> Self {
+    fn recorded(row: &replay_data::rows::IntelNetworkRow) -> Self {
         let subnetwork = |value: Option<i64>| value.filter(|_| row.subnetwork_selector >= 0);
         Self {
             state: row.state_id,
@@ -1387,7 +1385,7 @@ fn compare_intel_networks(
     for entries in saved.values_mut() {
         entries.sort_unstable_by_key(|entry| entry.state);
     }
-    let mut recorded = BTreeMap::<(u32, Vec<u8>), Vec<&replay::rows::IntelNetworkRow>>::new();
+    let mut recorded = BTreeMap::<(u32, Vec<u8>), Vec<&replay_data::rows::IntelNetworkRow>>::new();
     for actual in complete::<tables::IntelNetworks>(frame)? {
         let owner = required_country_tag(actual.owner_country, countries)?;
         let target = required_country_tag(actual.target_country, countries)?;
@@ -1751,8 +1749,8 @@ fn token<'a>(tokens: &TokenNames<'a>, id: u32) -> Option<&'a [u8]> {
 
 fn missing_token_reason(frame: &DecodedFrame) -> &'static str {
     if matches!(
-        &*frame.tables[replay::rows::TableId::LexicalTokens.index()],
-        replay::frame::TableView::Complete(_)
+        &*frame.tables[replay_data::rows::TableId::LexicalTokens.index()],
+        replay_frame::frame::TableView::Complete(_)
     ) {
         "complete recorded lexical dictionary has no entry for a token resolved by this serializer; the dependent name and fields remain unverified"
     } else {
@@ -1865,10 +1863,12 @@ fn compare_agency_upgrade_levels(
     let mut refused = Vec::new();
     // Refused rows survive a truncated read. Name them before refusing the
     // table's coverage, without comparing partial rows against a full save.
-    let acquired = match &*frame.tables[replay::rows::TableId::AgencyUpgradeLevels.index()] {
-        replay::frame::TableView::Complete(replay::rows::TableRows::AgencyUpgradeLevels(rows))
-        | replay::frame::TableView::Truncated {
-            rows: replay::rows::TableRows::AgencyUpgradeLevels(rows),
+    let acquired = match &*frame.tables[replay_data::rows::TableId::AgencyUpgradeLevels.index()] {
+        replay_frame::frame::TableView::Complete(
+            replay_data::rows::TableRows::AgencyUpgradeLevels(rows),
+        )
+        | replay_frame::frame::TableView::Truncated {
+            rows: replay_data::rows::TableRows::AgencyUpgradeLevels(rows),
             ..
         } => rows.as_slice(),
         _ => complete::<tables::AgencyUpgradeLevels>(frame)?,
@@ -1899,7 +1899,7 @@ fn compare_agency_upgrade_levels(
                 "{}.upgrades[{}] {}, definition {:#x}, branch {:#x}, level {}",
                 text(tag),
                 row.ordinal,
-                engine::agency_upgrade_levels::status_name(row.identity_status),
+                engine_native::agency_upgrade_levels::status_name(row.identity_status),
                 row.definition_pointer,
                 row.branch_pointer,
                 row.level
@@ -2000,7 +2000,7 @@ fn compare_agency_upgrade_identities(
     frame: &DecodedFrame,
     countries: &BTreeMap<u32, &CountryRow>,
     tokens: &TokenNames<'_>,
-    intelligence: Result<&installed_content::intelligence::AgencyUpgrades, &str>,
+    intelligence: Result<&installed_content_core::intelligence::AgencyUpgrades, &str>,
     report: &mut Report,
 ) -> io::Result<()> {
     let rows = complete::<tables::AgencyUpgradeLevels>(frame)?;
@@ -2030,7 +2030,7 @@ fn compare_agency_upgrade_identities(
         if row.identity_status != 0 {
             return Err(invalid(format!(
                 "{label} {} is refused",
-                engine::agency_upgrade_levels::status_name(row.identity_status)
+                engine_native::agency_upgrade_levels::status_name(row.identity_status)
             )));
         }
         let upgrade = name(row.upgrade_token, "upgrade")?;
@@ -2373,7 +2373,7 @@ fn compare_flags(
 fn compare_flag_values(
     report: &mut Report,
     label: &str,
-    actual: &[&replay::rows::ScriptFlagRow],
+    actual: &[&replay_data::rows::ScriptFlagRow],
     expected: &[&saved::Flag],
     unresolved: bool,
 ) -> io::Result<usize> {
@@ -3139,7 +3139,7 @@ const FACTORY_SCALE: i64 = 100_000;
 fn compare_operation_phases(
     report: &mut Report,
     field: &str,
-    actual: &replay::rows::OperationRow,
+    actual: &replay_data::rows::OperationRow,
     expected: &saved::OperationInstance,
     tokens: &TokenNames<'_>,
 ) {
@@ -3171,7 +3171,7 @@ fn compare_operation_phases(
 fn compare_operation_resources(
     report: &mut Report,
     field: &str,
-    actual: &replay::rows::OperationRow,
+    actual: &replay_data::rows::OperationRow,
     expected: &saved::OperationInstance,
     tokens: &TokenNames<'_>,
 ) {
@@ -3233,7 +3233,7 @@ fn compare_operation_resources(
 fn compare_operation_equipment(
     report: &mut Report,
     field: &str,
-    actual: &replay::rows::OperationRow,
+    actual: &replay_data::rows::OperationRow,
     expected: &saved::OperationInstance,
 ) {
     let label = format!("{field}.equipment");
@@ -3397,8 +3397,8 @@ fn compare_operation_assignments(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::frame::TableView;
-    use replay::rows::{Recorded, TableId, TableRows};
+    use replay_data::{rows::Recorded, rows::TableId, rows::TableRows};
+    use replay_frame::frame::TableView;
 
     #[test]
     fn captured_reference_oracle_checks_order_nulls_and_duplicates() {
@@ -3420,7 +3420,7 @@ mod tests {
         .into_iter()
         .enumerate()
         .map(
-            |(ordinal, (operative, owner))| replay::rows::CapturedOperativeReferenceRow {
+            |(ordinal, (operative, owner))| replay_data::rows::CapturedOperativeReferenceRow {
                 country: 7,
                 ordinal: ordinal as u32,
                 operative,
@@ -3472,12 +3472,13 @@ mod tests {
         // Goal 4 is in use in a war: saved, but no longer in the owned vector.
         let input: &[u8] = br#"countries={AAA={diplomacy={wargoals={take_state={id={id=3 type=4713} wargoaldata_actor=AAA wargoaldata_recipient=BBB type=take_state} puppet={id={id=4 type=4713} wargoaldata_actor=AAA wargoaldata_recipient=AAA type=puppet}} available_wargoals={wargoal={id=3 type=4713}}}} BBB={diplomacy={}}}"#;
         let save = parsed(input);
-        let rosters =
-            installed_content_save::country_rosters::parse(&installed_content::parser::parse(input).unwrap().items)
-                .unwrap();
+        let rosters = installed_content_save::country_rosters::parse(
+            &installed_content_core::parser::parse(input).unwrap().items,
+        )
+        .unwrap();
         let run = |goals: [Recorded<Option<Vec<u32>>>; 2]| {
             let [first, second] = goals;
-            let capitulation = |country, war_goal_recipients| replay::rows::CapitulationRow {
+            let capitulation = |country, war_goal_recipients| replay_data::rows::CapitulationRow {
                 country,
                 war_goal_recipients,
                 ..Default::default()
@@ -3529,7 +3530,7 @@ mod tests {
         let make = |present| {
             frame(
                 TableId::RaidIntelInputs,
-                TableRows::RaidIntelInputs(vec![replay::rows::RaidIntelInputRow {
+                TableRows::RaidIntelInputs(vec![replay_data::rows::RaidIntelInputRow {
                     country: 101,
                     strategic_present: present,
                     country_defense: 123456,
@@ -3588,15 +3589,15 @@ mod tests {
         )
     }
 
-    fn incoming_rows(rows: Vec<replay::rows::IncomingDiplomaticActionRow>) -> DecodedFrame {
+    fn incoming_rows(rows: Vec<replay_data::rows::IncomingDiplomaticActionRow>) -> DecodedFrame {
         frame(
             TableId::IncomingDiplomaticActions,
             TableRows::IncomingDiplomaticActions(rows),
         )
     }
 
-    fn incoming_row() -> replay::rows::IncomingDiplomaticActionRow {
-        replay::rows::IncomingDiplomaticActionRow {
+    fn incoming_row() -> replay_data::rows::IncomingDiplomaticActionRow {
+        replay_data::rows::IncomingDiplomaticActionRow {
             country: 1,
             ordinal: 0,
             handle: (63179 << 32) | 4713,
@@ -3723,7 +3724,8 @@ mod tests {
 
         // A changed handle, tag or date is its own single difference.
         for mutate in [
-            (|row: &mut replay::rows::IncomingDiplomaticActionRow| row.handle = 1) as fn(&mut _),
+            (|row: &mut replay_data::rows::IncomingDiplomaticActionRow| row.handle = 1)
+                as fn(&mut _),
             |row| row.action_type = 1,
             |row| row.actor = 1,
             |row| row.hour += 1,
@@ -3785,7 +3787,7 @@ mod tests {
     }
 
     fn parsed(input: &[u8]) -> saved::Pack {
-        saved::parse(&installed_content::parser::parse(input).unwrap().items).unwrap()
+        saved::parse(&installed_content_core::parser::parse(input).unwrap().items).unwrap()
     }
 
     fn germany() -> CountryRow {
@@ -3804,7 +3806,7 @@ mod tests {
     /// empty store.
     #[test]
     fn character_variables_compare_with_each_saved_character() {
-        let items = installed_content::parser::parse(
+        let items = installed_content_core::parser::parse(
             br#"variables={} countries={} character_manager={historical={
             character={id={id=44 type=73} token=a variables={ score=1.5 }}
             character={id={id=45 type=73} token=b}
@@ -3815,20 +3817,20 @@ mod tests {
         let characters = saved_characters::parse(&items).unwrap();
         let manager = characters.manager.as_ref().unwrap();
         let pack = saved::parse(&items).unwrap();
-        let row = |scope_id: u32, entries: &[(&[u8], i64)]| replay::rows::ScriptVariablesRow {
+        let row = |scope_id: u32, entries: &[(&[u8], i64)]| replay_data::rows::ScriptVariablesRow {
             scope_kind: SCOPES.character,
             scope_id,
             seed: Recorded::Value(None),
             entries: entries
                 .iter()
-                .map(|(name, value_raw)| replay::rows::ScriptVariableEntry {
+                .map(|(name, value_raw)| replay_data::rows::ScriptVariableEntry {
                     name: name.to_vec(),
                     value_raw: *value_raw,
                 })
                 .collect(),
         };
-        let global = replay::rows::ScriptVariablesRow::default();
-        let run = |rows: Vec<replay::rows::ScriptVariablesRow>| {
+        let global = replay_data::rows::ScriptVariablesRow::default();
+        let run = |rows: Vec<replay_data::rows::ScriptVariablesRow>| {
             let mut report = Report::default();
             compare_variables(
                 &frame(TableId::ScriptVariables, TableRows::ScriptVariables(rows)),
@@ -3861,7 +3863,7 @@ mod tests {
 
     #[test]
     fn character_flags_compare_with_each_saved_characters_flags() {
-        let items = installed_content::parser::parse(
+        let items = installed_content_core::parser::parse(
             br#"countries={} character_manager={historical={
             character={id={id=44 type=73} token=a flags={
                 recently_sick={ value=1 date="1936.1.26.1" days=180 }
@@ -3878,16 +3880,17 @@ mod tests {
             .unwrap()
             .engine_hour()
             .unwrap();
-        let row = |scope_id: u32, token: u32, remaining_days: i16| replay::rows::ScriptFlagRow {
-            scope_kind: SCOPES.character,
-            scope_id,
-            token,
-            set_hour: date,
-            value: 1,
-            remaining_days,
-        };
+        let row =
+            |scope_id: u32, token: u32, remaining_days: i16| replay_data::rows::ScriptFlagRow {
+                scope_kind: SCOPES.character,
+                scope_id,
+                token,
+                set_hour: date,
+                value: 1,
+                remaining_days,
+            };
         let tokens = BTreeMap::from([(600, b"recently_sick".as_slice()), (601, b"other")]);
-        let run = |rows: Vec<replay::rows::ScriptFlagRow>| {
+        let run = |rows: Vec<replay_data::rows::ScriptFlagRow>| {
             let mut report = Report::default();
             compare_character_flags(
                 &frame(TableId::ScriptFlags, TableRows::ScriptFlags(rows)),
@@ -3938,7 +3941,7 @@ mod tests {
         let pack = parsed(b"countries={GER={intelligence_agency={name=CustomAgency is_created=yes defense=90071992547.40993 max_operative_count=-1 usable_operative_slots=-2}}}");
         let country = germany();
         let links = BTreeMap::from([(101, &country), (102, &country)]);
-        let mut actual = replay::rows::IntelligenceAgencyRow {
+        let mut actual = replay_data::rows::IntelligenceAgencyRow {
             country: 102,
             defense_raw: 9_007_199_254_740_993,
             name: b"CustomAgency".to_vec(),
@@ -4007,14 +4010,14 @@ mod tests {
         assert_eq!(report.differences.len(), 1);
     }
 
-    fn acquired_upgrade_frame(rows: Vec<replay::rows::AgencyUpgradeLevelRow>) -> DecodedFrame {
+    fn acquired_upgrade_frame(rows: Vec<replay_data::rows::AgencyUpgradeLevelRow>) -> DecodedFrame {
         let mut captured = frame(
             TableId::AgencyUpgradeLevels,
             TableRows::AgencyUpgradeLevels(rows),
         );
         *captured.tables[TableId::IntelligenceAgencies.index()] =
             TableView::Complete(TableRows::IntelligenceAgencies(vec![
-                replay::rows::IntelligenceAgencyRow {
+                replay_data::rows::IntelligenceAgencyRow {
                     country: 101,
                     ..Default::default()
                 },
@@ -4022,20 +4025,22 @@ mod tests {
         captured
     }
 
-    fn acquired_upgrade_rows() -> Vec<replay::rows::AgencyUpgradeLevelRow> {
+    fn acquired_upgrade_rows() -> Vec<replay_data::rows::AgencyUpgradeLevelRow> {
         [3, -2, 0]
             .into_iter()
             .enumerate()
-            .map(|(ordinal, level)| replay::rows::AgencyUpgradeLevelRow {
-                country: 102, // authenticated alias of the same current country
-                ordinal: ordinal as u32,
-                definition_pointer: 0x1000 + ordinal as u64 * 0x100,
-                branch_pointer: 0x2000,
-                upgrade_token: Some(if ordinal == 1 { 12 } else { 11 }),
-                branch_token: Some(10),
-                level,
-                identity_status: 0,
-            })
+            .map(
+                |(ordinal, level)| replay_data::rows::AgencyUpgradeLevelRow {
+                    country: 102, // authenticated alias of the same current country
+                    ordinal: ordinal as u32,
+                    definition_pointer: 0x1000 + ordinal as u64 * 0x100,
+                    branch_pointer: 0x2000,
+                    upgrade_token: Some(if ordinal == 1 { 12 } else { 11 }),
+                    branch_token: Some(10),
+                    level,
+                    identity_status: 0,
+                },
+            )
             .collect()
     }
 
@@ -4106,7 +4111,7 @@ mod tests {
         );
         let mut partial_refused = acquired_upgrade_frame(vec![]);
         let mut partial_rows = acquired_upgrade_rows();
-        partial_rows[0].identity_status = engine::agency_upgrade_levels::NULL_DEFINITION;
+        partial_rows[0].identity_status = engine_native::agency_upgrade_levels::NULL_DEFINITION;
         *partial_refused.tables[TableId::AgencyUpgradeLevels.index()] = TableView::Truncated {
             rows: TableRows::AgencyUpgradeLevels(partial_rows),
             missing: 1,
@@ -4198,7 +4203,7 @@ mod tests {
         let mut agencies = Vec::new();
         for (&id, country) in &countries {
             save.countries.insert(country.tag.clone(), template.clone());
-            rows.push(replay::rows::AgencyUpgradeLevelRow {
+            rows.push(replay_data::rows::AgencyUpgradeLevelRow {
                 country: id,
                 ordinal: 0,
                 upgrade_token: Some(11),
@@ -4206,7 +4211,7 @@ mod tests {
                 level: -3,
                 ..Default::default()
             });
-            agencies.push(replay::rows::IntelligenceAgencyRow {
+            agencies.push(replay_data::rows::IntelligenceAgencyRow {
                 country: id,
                 ..Default::default()
             });
@@ -4249,8 +4254,8 @@ mod tests {
         let file = root.join("common/intelligence_agency_upgrades/synthetic.txt");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, b"first_branch={mod_upgrade={picture=first}} second_branch={mod_upgrade={picture=second}}").unwrap();
-        let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-        let intelligence = installed_content::intelligence::read_agency_upgrades(&layers).unwrap();
+        let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let intelligence = installed_content_core::intelligence::read_agency_upgrades(&layers).unwrap();
         let country = germany();
         let countries = BTreeMap::from([(101, &country), (102, &country)]);
         let tokens = BTreeMap::from([
@@ -4285,12 +4290,12 @@ mod tests {
         let pack = parsed(b"countries={GER={intelligence_agency={defense=0.00001 max_operative_count=0 usable_operative_slots=0}}}");
         let country = germany();
         let links = BTreeMap::from([(101, &country), (102, &country)]);
-        let first = replay::rows::IntelligenceAgencyRow {
+        let first = replay_data::rows::IntelligenceAgencyRow {
             country: 101,
             defense_raw: 2,
             ..Default::default()
         };
-        let duplicate = replay::rows::IntelligenceAgencyRow {
+        let duplicate = replay_data::rows::IntelligenceAgencyRow {
             country: 102,
             ..first.clone()
         };
@@ -4373,7 +4378,7 @@ mod tests {
             let mut report = Report::default();
             let recorded = frame(
                 TableId::ScriptFlags,
-                TableRows::ScriptFlags(vec![replay::rows::ScriptFlagRow {
+                TableRows::ScriptFlags(vec![replay_data::rows::ScriptFlagRow {
                     scope_kind: 9,
                     scope_id: 101,
                     token: u32::MAX,
@@ -4427,7 +4432,7 @@ mod tests {
         ]);
         let hour = |date| GameDate::parse(date).unwrap().engine_hour().unwrap();
         let mut rows = vec![
-            replay::rows::ScriptFlagRow {
+            replay_data::rows::ScriptFlagRow {
                 scope_kind: SCOPES.country,
                 scope_id: 101,
                 token: 0,
@@ -4435,7 +4440,7 @@ mod tests {
                 set_hour: hour(b"1936.1.1.1"),
                 remaining_days: -1,
             },
-            replay::rows::ScriptFlagRow {
+            replay_data::rows::ScriptFlagRow {
                 scope_kind: SCOPES.country,
                 scope_id: 101,
                 token: 1,
@@ -4443,7 +4448,7 @@ mod tests {
                 set_hour: hour(b"1936.1.2.1"),
                 remaining_days: 5,
             },
-            replay::rows::ScriptFlagRow {
+            replay_data::rows::ScriptFlagRow {
                 scope_kind: SCOPES.country,
                 scope_id: 101,
                 token: 2,
@@ -4502,7 +4507,7 @@ mod tests {
             .unwrap();
         let rows = [0, 1]
             .into_iter()
-            .map(|token| replay::rows::ScriptFlagRow {
+            .map(|token| replay_data::rows::ScriptFlagRow {
                 scope_kind: SCOPES.country,
                 scope_id: 101,
                 token,
@@ -4583,7 +4588,7 @@ mod tests {
         let links = BTreeMap::from([(101, &ger), (201, &fra)]);
         let flags = frame(
             TableId::ScriptFlags,
-            TableRows::ScriptFlags(vec![replay::rows::ScriptFlagRow {
+            TableRows::ScriptFlags(vec![replay_data::rows::ScriptFlagRow {
                 scope_kind: 1,
                 scope_id: 101,
                 token: 7,
@@ -4630,7 +4635,7 @@ mod tests {
         );
         let rows = frame(
             TableId::OperationTokens,
-            TableRows::OperationTokens(vec![replay::rows::OperationTokensRow {
+            TableRows::OperationTokens(vec![replay_data::rows::OperationTokensRow {
                 owner: 101,
                 target: 201,
                 tokens: vec![1, 2],
@@ -4664,7 +4669,7 @@ mod tests {
         let links = BTreeMap::from([(101, &ger), (201, &fra)]);
         let names = BTreeMap::from([(1, b"a".as_slice()), (2, b"z".as_slice())]);
         let table = TableId::OperationTokens;
-        let mut row = replay::rows::OperationTokensRow {
+        let mut row = replay_data::rows::OperationTokensRow {
             owner: 101,
             target: 201,
             tokens: vec![2, 1, 1],
@@ -4737,7 +4742,7 @@ mod tests {
             (2, b"y\0unproved".as_slice()),
         ]);
         let table = TableId::OperationTokens;
-        let mut row = replay::rows::OperationTokensRow {
+        let mut row = replay_data::rows::OperationTokensRow {
             owner: 101,
             target: 201,
             tokens: vec![1, 2, 0],
@@ -4786,7 +4791,7 @@ mod tests {
         let ger = germany();
         let links = BTreeMap::from([(101, &ger), (102, &ger)]);
         let table = TableId::ScriptVariables;
-        let mut row = replay::rows::ScriptVariablesRow {
+        let mut row = replay_data::rows::ScriptVariablesRow {
             scope_kind: 1,
             scope_id: 102,
             seed: Recorded::Value(None),
@@ -4799,7 +4804,7 @@ mod tests {
                 (b"\xff".as_slice(), -100_001),
             ]
             .into_iter()
-            .map(|(name, value_raw)| replay::rows::ScriptVariableEntry {
+            .map(|(name, value_raw)| replay_data::rows::ScriptVariableEntry {
                 name: name.to_vec(),
                 value_raw,
             })
@@ -4870,7 +4875,7 @@ mod tests {
 
     #[test]
     fn variable_seeds_compare_all_scope_kinds_and_name_missing_operands() {
-        let items = installed_content::parser::parse(
+        let items = installed_content_core::parser::parse(
             br#"variables={random={11 2147483648}}
             countries={GER={variables={random={12 99}}}}
             states={1={variables={random={13 0}}}}
@@ -4894,7 +4899,7 @@ mod tests {
         ]
         .into_iter()
         .map(
-            |(scope_kind, scope_id, seed)| replay::rows::ScriptVariablesRow {
+            |(scope_kind, scope_id, seed)| replay_data::rows::ScriptVariablesRow {
                 scope_kind,
                 scope_id,
                 seed: Recorded::Value(Some(seed)),
@@ -4902,7 +4907,7 @@ mod tests {
             },
         )
         .collect::<Vec<_>>();
-        let compare = |rows: Vec<replay::rows::ScriptVariablesRow>| {
+        let compare = |rows: Vec<replay_data::rows::ScriptVariablesRow>| {
             let mut report = Report::default();
             compare_variables(
                 &frame(table, TableRows::ScriptVariables(rows)),
@@ -4989,12 +4994,14 @@ mod tests {
         let table = TableId::ScriptVariables;
         let rows = [(SCOPES.global, 0), (SCOPES.country, 101), (SCOPES.state, 7)]
             .into_iter()
-            .map(|(scope_kind, scope_id)| replay::rows::ScriptVariablesRow {
-                scope_kind,
-                scope_id,
-                seed: Recorded::Value(None),
-                entries: vec![],
-            })
+            .map(
+                |(scope_kind, scope_id)| replay_data::rows::ScriptVariablesRow {
+                    scope_kind,
+                    scope_id,
+                    seed: Recorded::Value(None),
+                    entries: vec![],
+                },
+            )
             .collect();
         let recorded = frame(table, TableRows::ScriptVariables(rows));
         let ger = germany();
@@ -5037,13 +5044,13 @@ mod tests {
         ]
         .into_iter()
         .map(
-            |(scope_kind, scope_id, value)| replay::rows::ScriptVariablesRow {
+            |(scope_kind, scope_id, value)| replay_data::rows::ScriptVariablesRow {
                 scope_kind,
                 scope_id,
                 seed: Recorded::Value(None),
                 entries: value
                     .into_iter()
-                    .map(|value_raw| replay::rows::ScriptVariableEntry {
+                    .map(|value_raw| replay_data::rows::ScriptVariableEntry {
                         name: b"same".to_vec(),
                         value_raw,
                     })
@@ -5134,7 +5141,7 @@ mod tests {
 
     #[test]
     fn buffered_targets_compare_saved_capitals_in_every_bucket_and_reject_mutations() {
-        use replay::rows::{AgencyBufferedOperation, AgencyOperationBuffersRow};
+        use replay_data::{rows::AgencyBufferedOperation, rows::AgencyOperationBuffersRow};
         let pack = parsed(OPERATION_SAVE);
         let governance = installed_content_save::governance::Pack {
             countries: [(
@@ -5220,7 +5227,7 @@ mod tests {
     #[test]
     fn buffered_province_targets_take_precedence_and_capital_absence_means_no_state() {
         use installed_content_save::{PartialMapMembership, ProvinceMembership};
-        use replay::rows::{AgencyBufferedOperation, AgencyOperationBuffersRow};
+        use replay_data::{rows::AgencyBufferedOperation, rows::AgencyOperationBuffersRow};
         let mut pack = parsed(OPERATION_SAVE);
         let operation = pack
             .countries
@@ -5336,8 +5343,8 @@ mod tests {
         (ger, sov, map)
     }
 
-    fn operation_row() -> replay::rows::OperationRow {
-        replay::rows::OperationRow {
+    fn operation_row() -> replay_data::rows::OperationRow {
+        replay_data::rows::OperationRow {
             id: (69023 << 32) | 4713,
             owner: 101,
             target: 102,
@@ -5359,7 +5366,7 @@ mod tests {
             phase_count: 2,
             assigned_slots: 1,
             phases: vec![21, 22],
-            requirements: vec![replay::rows::OperationRequirement {
+            requirements: vec![replay_data::rows::OperationRequirement {
                 amount: 18_000_000,
                 archetype: 31,
                 equipment: 1,
@@ -5371,7 +5378,7 @@ mod tests {
         }
     }
 
-    fn operation_frame(rows: Vec<replay::rows::OperationRow>) -> DecodedFrame {
+    fn operation_frame(rows: Vec<replay_data::rows::OperationRow>) -> DecodedFrame {
         frame(TableId::Operations, TableRows::Operations(rows))
     }
 
@@ -5506,7 +5513,7 @@ mod tests {
         }
 
         // Every exactly-compared field can differ on its own.
-        type Change = fn(&mut replay::rows::OperationRow);
+        type Change = fn(&mut replay_data::rows::OperationRow);
         let mutate: [(&str, Change); 8] = [
             ("owner", |row| row.owner = 102),
             ("target", |row| row.target = 101),
@@ -5673,8 +5680,8 @@ mod tests {
     /// The row [`PREPARED_SAVE`] certifies, with runtime-only totals, an
     /// equipment requirement's days, uses-time bytes and an omitted zero
     /// pool entry.
-    fn prepared_row() -> replay::rows::OperationRow {
-        replay::rows::OperationRow {
+    fn prepared_row() -> replay_data::rows::OperationRow {
+        replay_data::rows::OperationRow {
             start_hour: 0x29c77f8,
             duration_days: 0,
             assigned_slots: 0,
@@ -5682,7 +5689,7 @@ mod tests {
             preparation_required: 1_200_000,
             phases: vec![21, 21],
             requirements: vec![
-                replay::rows::OperationRequirement {
+                replay_data::rows::OperationRequirement {
                     amount: 18_000_000,
                     days: 5,
                     archetype: 31,
@@ -5690,25 +5697,25 @@ mod tests {
                     uses_time: 1,
                 },
                 // Truncated toward zero to two whole factories.
-                replay::rows::OperationRequirement {
+                replay_data::rows::OperationRequirement {
                     amount: 299_999,
                     days: 30,
                     ..Default::default()
                 },
             ],
             equipment: vec![
-                replay::rows::OperationEquipment {
+                replay_data::rows::OperationEquipment {
                     variant: (12 << 32) | 70,
                     archetype: 31,
                     amount: 10_000_000,
                 },
-                replay::rows::OperationEquipment {
+                replay_data::rows::OperationEquipment {
                     variant: (13 << 32) | 70,
                     archetype: 31,
                     amount: 0,
                 },
             ],
-            equipment_totals: vec![replay::rows::OperationEquipmentTotal {
+            equipment_totals: vec![replay_data::rows::OperationEquipmentTotal {
                 archetype: 31,
                 amount: 10_000_000,
             }],
@@ -5716,7 +5723,7 @@ mod tests {
         }
     }
 
-    fn compare_prepared(row: replay::rows::OperationRow, save: &[u8]) -> Report {
+    fn compare_prepared(row: replay_data::rows::OperationRow, save: &[u8]) -> Report {
         let (_, _, countries) = operation_links();
         let owned = countries.iter().map(|(id, row)| (*id, row)).collect();
         let mut report = Report::default();
@@ -5741,7 +5748,7 @@ mod tests {
             "{:?}",
             report.limitations
         );
-        type Change = fn(&mut replay::rows::OperationRow);
+        type Change = fn(&mut replay_data::rows::OperationRow);
         let changes: [(&str, Change); 14] = [
             ("civilian_factories", |row| row.preparation_current += 1),
             ("total", |row| row.preparation_required += 1),
@@ -5763,7 +5770,7 @@ mod tests {
                 row.equipment.pop();
             }),
             ("equipment.count", |row| {
-                row.equipment.push(replay::rows::OperationEquipment {
+                row.equipment.push(replay_data::rows::OperationEquipment {
                     variant: (14 << 32) | 70,
                     archetype: 31,
                     amount: 1,
@@ -5848,30 +5855,30 @@ mod tests {
             8={ subversive_activity_level={ value=0 } danger_level={ value=0 } }
         } }"#;
 
-    fn strategic_rows() -> Vec<replay::rows::StrategicOperativeRow> {
+    fn strategic_rows() -> Vec<replay_data::rows::StrategicOperativeRow> {
         vec![
-            replay::rows::StrategicOperativeRow {
+            replay_data::rows::StrategicOperativeRow {
                 country: 101,
                 slot: 7,
                 mission_activity: 123_456,
                 operation_activity: -50_000,
                 trade_influence: vec![
-                    replay::rows::TradeInfluence {
+                    replay_data::rows::TradeInfluence {
                         owner: 102,
                         value: 250_000,
                     },
-                    replay::rows::TradeInfluence {
+                    replay_data::rows::TradeInfluence {
                         owner: 101,
                         value: 0,
                     },
                 ],
-                diplomatic_pressure: vec![replay::rows::DiplomaticPressure {
+                diplomatic_pressure: vec![replay_data::rows::DiplomaticPressure {
                     owner: 102,
                     acceptance: 32_768,
                     tension: -16_384,
                 }],
             },
-            replay::rows::StrategicOperativeRow {
+            replay_data::rows::StrategicOperativeRow {
                 country: 102,
                 slot: 8,
                 ..Default::default()
@@ -5880,7 +5887,7 @@ mod tests {
     }
 
     fn compare_strategic(
-        rows: Vec<replay::rows::StrategicOperativeRow>,
+        rows: Vec<replay_data::rows::StrategicOperativeRow>,
         save: &str,
     ) -> io::Result<Report> {
         let (_, _, countries) = operation_links();
@@ -5910,7 +5917,7 @@ mod tests {
             "{:?}",
             report.limitations
         );
-        type Change = fn(&mut [replay::rows::StrategicOperativeRow]);
+        type Change = fn(&mut [replay_data::rows::StrategicOperativeRow]);
         let changes: [(&str, Change); 9] = [
             ("subversive_activity_level", |rows| {
                 rows[0].mission_activity += 1
@@ -6009,22 +6016,22 @@ mod tests {
         assert!(compare_strategic(rows, STRATEGIC_SAVE).is_err());
     }
 
-    fn assignment_frame(rows: Vec<replay::rows::OperationAssignmentRow>) -> DecodedFrame {
+    fn assignment_frame(rows: Vec<replay_data::rows::OperationAssignmentRow>) -> DecodedFrame {
         frame(
             TableId::OperationAssignments,
             TableRows::OperationAssignments(rows),
         )
     }
 
-    fn assignment_rows() -> Vec<replay::rows::OperationAssignmentRow> {
+    fn assignment_rows() -> Vec<replay_data::rows::OperationAssignmentRow> {
         vec![
-            replay::rows::OperationAssignmentRow {
+            replay_data::rows::OperationAssignmentRow {
                 operation: (69023 << 32) | 4713,
                 ordinal: 0,
                 operative: (9831 << 32) | 4713,
                 selection: 0,
             },
-            replay::rows::OperationAssignmentRow {
+            replay_data::rows::OperationAssignmentRow {
                 operation: (69023 << 32) | 4713,
                 ordinal: 1,
                 operative: 0,
@@ -6089,7 +6096,7 @@ mod tests {
 
         // A recorded assignment beyond the saved list length is a difference.
         let mut rows = assignment_rows();
-        rows.push(replay::rows::OperationAssignmentRow {
+        rows.push(replay_data::rows::OperationAssignmentRow {
             operation: (69023 << 32) | 4713,
             ordinal: 2,
             operative: 0,
@@ -6110,7 +6117,7 @@ mod tests {
 
         let mut bad = assignment_frame(assignment_rows());
         *bad.tables[TableId::OperationAssignments.index()] =
-            replay::frame::TableView::Unavailable {
+            replay_frame::frame::TableView::Unavailable {
                 reason: "source failed".into(),
             };
         assert!(compare_operation_assignments(&bad, &pack, &mut Report::default()).is_err());
@@ -6158,9 +6165,9 @@ mod tests {
         ENG={intelligence_agency={ defense=0 max_operative_count=0 usable_operative_slots=0 }}
     }"#;
 
-    fn operative_rows() -> Vec<replay::rows::OperativeMembershipRow> {
+    fn operative_rows() -> Vec<replay_data::rows::OperativeMembershipRow> {
         vec![
-            replay::rows::OperativeMembershipRow {
+            replay_data::rows::OperativeMembershipRow {
                 id: (9831 << 32) | 4713,
                 owner_country: 0,
                 roster_country: 101,
@@ -6178,7 +6185,7 @@ mod tests {
                 ordinal: Recorded::Value(0),
                 ..Default::default()
             },
-            replay::rows::OperativeMembershipRow {
+            replay_data::rows::OperativeMembershipRow {
                 id: (1043 << 32) | 4713,
                 owner_country: 0,
                 roster_country: 101,
@@ -6261,7 +6268,7 @@ mod tests {
         compare_operative_memberships(&frame(vec![]), &pack, &owned, &tokens, &mut report).unwrap();
         assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
         let mut rows = operative_rows();
-        rows.push(replay::rows::OperativeMembershipRow {
+        rows.push(replay_data::rows::OperativeMembershipRow {
             id: (99999 << 32) | 4713,
             roster_country: 101,
             roster_kind: 0,
@@ -6292,7 +6299,7 @@ mod tests {
             .is_err()
         );
         let mut bad = frame(operative_rows());
-        *bad.tables[table.index()] = replay::frame::TableView::Unavailable {
+        *bad.tables[table.index()] = replay_frame::frame::TableView::Unavailable {
             reason: "source failed".into(),
         };
         assert!(
@@ -6307,7 +6314,7 @@ mod tests {
         let owned = countries.iter().map(|(id, row)| (*id, row)).collect();
         let definitions: [&[u8]; 8] = [b"m1", b"m2", b"m3", b"m4", b"m5", b"m6", b"m7", b"m8"];
         let mut tokens = operative_tokens();
-        for (id, name) in engine::operative_action::SAVE_TOKENS
+        for (id, name) in engine_native::operative_action::SAVE_TOKENS
             .into_iter()
             .zip(definitions)
         {
@@ -6330,7 +6337,7 @@ mod tests {
             let make_frame = |row| {
                 frame(
                     TableId::OperativeMemberships,
-                    replay::rows::TableRows::OperativeMemberships(vec![row]),
+                    replay_data::rows::TableRows::OperativeMemberships(vec![row]),
                 )
             };
             let mut report = Report::default();
@@ -6397,7 +6404,7 @@ mod tests {
         compare_operative_memberships(
             &frame(
                 TableId::OperativeMemberships,
-                replay::rows::TableRows::OperativeMemberships(rows),
+                replay_data::rows::TableRows::OperativeMemberships(rows),
             ),
             &pack,
             &owned,
@@ -6421,7 +6428,7 @@ mod tests {
     fn mission_tokens() -> TokenNames<'static> {
         let mut tokens = operative_tokens();
         let definitions: [&[u8]; 8] = [b"m1", b"m2", b"m3", b"m4", b"m5", b"m6", b"m7", b"m8"];
-        for (id, name) in engine::operative_action::SAVE_TOKENS
+        for (id, name) in engine_native::operative_action::SAVE_TOKENS
             .into_iter()
             .zip(definitions)
         {
@@ -6431,33 +6438,33 @@ mod tests {
     }
 
     /// The rows the save above certifies, with an unsaved pending mission on the first.
-    fn mission_rows(pack: &saved::Pack) -> Vec<replay::rows::OperativeMissionRow> {
+    fn mission_rows(pack: &saved::Pack) -> Vec<replay_data::rows::OperativeMissionRow> {
         let saved = &pack.countries[b"GER".as_slice()]
             .agency
             .as_ref()
             .unwrap()
             .operatives[1];
         vec![
-            replay::rows::OperativeMissionRow {
+            replay_data::rows::OperativeMissionRow {
                 roster_country: 101,
                 id: (9831 << 32) | 4713,
                 ordinal: 0,
                 assignment: 3,
-                variant: Some(engine::operative_action::BOOST_IDEOLOGY),
+                variant: Some(engine_native::operative_action::BOOST_IDEOLOGY),
                 target_country: Some(102),
                 target_state: Some(219),
                 ideology: b"fascism".to_vec(),
-                pending_variant: Some(engine::operative_action::BUILD_NETWORK),
+                pending_variant: Some(engine_native::operative_action::BUILD_NETWORK),
                 pending_country: Some(101),
                 pending_state: Some(7),
                 portrait: b"GFX_spy".to_vec(),
                 ..Default::default()
             },
-            replay::rows::OperativeMissionRow {
+            replay_data::rows::OperativeMissionRow {
                 roster_country: 101,
                 id: (1043 << 32) | 4713,
                 ordinal: 1,
-                assignment: engine::coperative_leader::COOLDOWN_ASSIGNMENT,
+                assignment: engine_native::coperative_leader::COOLDOWN_ASSIGNMENT,
                 cooldown_kind: Some(2),
                 cooldown_start_hour: saved_hour(saved.cooldown_start_date).unwrap(),
                 cooldown_end_hour: saved_hour(saved.cooldown_end_date).unwrap(),
@@ -6467,7 +6474,7 @@ mod tests {
     }
 
     fn compare_missions(
-        rows: Vec<replay::rows::OperativeMissionRow>,
+        rows: Vec<replay_data::rows::OperativeMissionRow>,
         pack: &saved::Pack,
     ) -> io::Result<Report> {
         let (_, _, countries) = operative_links();
@@ -6506,7 +6513,7 @@ mod tests {
                 report.limitations
             );
         }
-        type Change = fn(&mut [replay::rows::OperativeMissionRow]);
+        type Change = fn(&mut [replay_data::rows::OperativeMissionRow]);
         let changes: [(usize, &str, Change); 13] = [
             // A changed portrait, and a missionless operative whose save omits gfx.
             (0, "gfx", |rows| rows[0].portrait = b"GFX_other".to_vec()),
@@ -6522,7 +6529,7 @@ mod tests {
             }),
             (0, "mission_present", |rows| rows[0].variant = None),
             (0, "mission_name", |rows| {
-                rows[0].variant = Some(engine::operative_action::PROPAGANDA)
+                rows[0].variant = Some(engine_native::operative_action::PROPAGANDA)
             }),
             (0, "mission_target", |rows| {
                 rows[0].target_country = Some(101)
@@ -6576,7 +6583,7 @@ mod tests {
                 .as_bytes(),
         );
         let mut rows = mission_rows(&pack);
-        rows[0].variant = Some(engine::operative_action::ROOT_OUT_RESISTANCE);
+        rows[0].variant = Some(engine_native::operative_action::ROOT_OUT_RESISTANCE);
         rows[0].ideology = Vec::new();
         for (country, operative, nationality) in [
             (Some(25_000), Some(-7_000), Some(1)),
@@ -6632,7 +6639,7 @@ mod tests {
                 .as_bytes(),
         );
         let mut rows = mission_rows(&country);
-        rows[0].variant = Some(engine::operative_action::COUNTER_INTELLIGENCE);
+        rows[0].variant = Some(engine_native::operative_action::COUNTER_INTELLIGENCE);
         rows[0].target_state = None;
         rows[0].ideology = Vec::new();
         assert!(
@@ -6659,7 +6666,7 @@ mod tests {
             report.differences
         );
         let mut rows = mission_rows(&pack);
-        rows.push(replay::rows::OperativeMissionRow {
+        rows.push(replay_data::rows::OperativeMissionRow {
             roster_country: 101,
             id: (77 << 32) | 4713,
             ordinal: 2,
@@ -6926,9 +6933,9 @@ mod tests {
         SOV={} ITA={}
     }"#;
 
-    fn cryptology_rows() -> Vec<replay::rows::CryptologyRow> {
+    fn cryptology_rows() -> Vec<replay_data::rows::CryptologyRow> {
         vec![
-            replay::rows::CryptologyRow {
+            replay_data::rows::CryptologyRow {
                 owner_country: 102,
                 target_country: 201,
                 amount_raw: 2_762_500_000,
@@ -6936,7 +6943,7 @@ mod tests {
                 bonus_active: 0,
                 decrypting: 1,
             },
-            replay::rows::CryptologyRow {
+            replay_data::rows::CryptologyRow {
                 owner_country: 102,
                 target_country: 202,
                 amount_raw: 1_200_000_000,
@@ -7013,7 +7020,7 @@ mod tests {
         compare_cryptology(&frame(vec![]), &pack, &owned, &mut report).unwrap();
         assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
         let mut rows = cryptology_rows();
-        rows.push(replay::rows::CryptologyRow {
+        rows.push(replay_data::rows::CryptologyRow {
             owner_country: 101,
             target_country: 201,
             ..Default::default()
@@ -7023,7 +7030,7 @@ mod tests {
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
 
         let mut bad = frame(cryptology_rows());
-        *bad.tables[table.index()] = replay::frame::TableView::Unavailable {
+        *bad.tables[table.index()] = replay_frame::frame::TableView::Unavailable {
             reason: "source failed".into(),
         };
         assert!(compare_cryptology(&bad, &pack, &owned, &mut Report::default()).is_err());
@@ -7064,9 +7071,9 @@ mod tests {
         ])
     }
 
-    fn network_rows() -> Vec<replay::rows::IntelNetworkRow> {
+    fn network_rows() -> Vec<replay_data::rows::IntelNetworkRow> {
         vec![
-            replay::rows::IntelNetworkRow {
+            replay_data::rows::IntelNetworkRow {
                 owner_country: 101,
                 target_country: 201,
                 state_id: 219,
@@ -7083,7 +7090,7 @@ mod tests {
                 target_from_counterintelligence_raw: Some(-4_750_000),
                 subnetwork_quiet: 1,
             },
-            replay::rows::IntelNetworkRow {
+            replay_data::rows::IntelNetworkRow {
                 owner_country: 101,
                 target_country: 201,
                 state_id: 253,
@@ -7103,7 +7110,7 @@ mod tests {
         let owned: BTreeMap<u32, &CountryRow> = map.iter().map(|(id, row)| (*id, row)).collect();
         let pack = parsed(NETWORK_SAVE);
         let tokens: TokenNames<'_> = [(0x006b_u32, b"target".as_slice())].into_iter().collect();
-        let run = |rows: Vec<replay::rows::IntelNetworkRow>| {
+        let run = |rows: Vec<replay_data::rows::IntelNetworkRow>| {
             let mut report = Report::default();
             compare_intel_networks(
                 &frame(TableId::IntelNetworks, TableRows::IntelNetworks(rows)),
@@ -7120,7 +7127,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert!(run(network_rows()).is_empty());
-        type Change = fn(&mut replay::rows::IntelNetworkRow);
+        type Change = fn(&mut replay_data::rows::IntelNetworkRow);
         let changes: [(&str, usize, Change); 10] = [
             ("gain", 0, |row| row.gain_raw += 1),
             ("gain", 1, |row| row.gain_raw = 0),
@@ -7195,7 +7202,7 @@ mod tests {
         assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
 
         let mut bad = frame(network_rows());
-        *bad.tables[table.index()] = replay::frame::TableView::Unavailable {
+        *bad.tables[table.index()] = replay_frame::frame::TableView::Unavailable {
             reason: "source failed".into(),
         };
         assert!(
@@ -7270,7 +7277,7 @@ mod tests {
         let owned: BTreeMap<u32, &CountryRow> = map.iter().map(|(id, row)| (*id, row)).collect();
         let pack = parsed(AUTONOMY_SAVE);
         let table = TableId::Autonomy;
-        let rows = vec![replay::rows::AutonomyRow {
+        let rows = vec![replay_data::rows::AutonomyRow {
             subject: 102,
             score: 431_286_618,
             lower_score: 0,
@@ -7330,7 +7337,7 @@ mod tests {
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
 
         let mut bad = frame(table, TableRows::Autonomy(vec![]));
-        *bad.tables[table.index()] = replay::frame::TableView::Unavailable {
+        *bad.tables[table.index()] = replay_frame::frame::TableView::Unavailable {
             reason: "source failed".into(),
         };
         assert!(

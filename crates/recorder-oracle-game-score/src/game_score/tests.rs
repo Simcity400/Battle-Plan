@@ -1,11 +1,9 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{
-        AirWingGameScoreStatsRow, CountryGameScoreInputRow, GameScoreFleetCount,
-        GameScoreMultiplierRow, TableId, TableRows,
-    },
+use replay_data::{
+    rows::AirWingGameScoreStatsRow, rows::CountryGameScoreInputRow, rows::GameScoreFleetCount,
+    rows::GameScoreMultiplierRow, rows::TableId, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 
 fn inputs(frame: &mut DecodedFrame, rows: Vec<CountryGameScoreInputRow>) {
     *frame.tables[TableId::CountryGameScoreInputs.index()] =
@@ -258,7 +256,7 @@ fn game_score_wings_compare_zero_missing_and_extra_without_inventing_cached_stat
 fn game_score_oracle_names_unsaved_industry_effective_totals() {
     let (mut frame, _, _, _) = super::super::fixtures::fixture();
     *frame.tables[TableId::GameScoreMultipliers.index()] = TableView::Unavailable {
-        reason: replay::format::GAME_SCORE_DISABLED_REASON.into(),
+        reason: replay_data::format::GAME_SCORE_DISABLED_REASON.into(),
     };
     let mut report = Report::default();
     assert!(multipliers(&frame, &mut report).is_err());

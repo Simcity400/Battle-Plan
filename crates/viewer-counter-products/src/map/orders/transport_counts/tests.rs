@@ -11,7 +11,7 @@ fn source_to_id_distance_uses_native_wrap_sqrt_and_invalid_signed_slot_zero() {
     // Newton iteration stops at its fixed5 tolerance.
     assert_eq!(distance(&map, 1, 2), 500_002);
     assert_eq!(distance(&map, 1, 1), 0);
-    let zero = installed_content::province_geometry::native_fixed_sqrt(20);
+    let zero = installed_content_core::province_geometry::native_fixed_sqrt(20);
     for invalid in [0, 300, u32::MAX] {
         assert_eq!(distance(&map, 1, invalid), zero);
     }
@@ -25,7 +25,7 @@ fn source_to_id_distance_uses_native_wrap_sqrt_and_invalid_signed_slot_zero() {
 
 #[test]
 fn invasion_counts_distinguish_old_absence_refusal_zero_and_signed_values() {
-    use replay::rows::Recorded;
+    use replay_data::rows::Recorded;
     let mut plan = ArmyOrderPlanRow {
         invasion_transports: Recorded::NotRecorded,
         ..Default::default()

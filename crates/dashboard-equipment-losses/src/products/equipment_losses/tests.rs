@@ -9,7 +9,7 @@ fn scan(replay: &Replay, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::
 
 #[test]
 fn recorded_census_dates_partial_counts_without_selecting_divisions() {
-    use replay::rows::DivisionCensusRow;
+    use replay_data::rows::DivisionCensusRow;
     assert!(!oracle::SELECTED.contains(&TableId::Divisions));
     let base = 60_827_880;
     let mut first = frame(base, vec![], &[]);
@@ -32,7 +32,7 @@ fn recorded_census_dates_partial_counts_without_selecting_divisions() {
     let mut unavailable = first.clone();
     unavailable.hour += 1;
     *unavailable.tables[TableId::DivisionCensus.index()] = TableView::Unavailable {
-        reason: replay::cadence::SKIPPED_REASON.into(),
+        reason: replay_data::cadence::SKIPPED_REASON.into(),
     };
     let mut changed = first.clone();
     changed.hour += 2;
@@ -144,7 +144,7 @@ fn daily_values_change_at_the_slot_read_even_without_their_own_timing() {
     );
     assert_eq!(last_known_name(&scanned, 1326).as_deref(), Some("Kar98k"));
     let next_definition_read = (read.hour + 1..=read.hour + 24)
-        .find(|&hour| replay::cadence::is_refresh(TableId::VariantDefinitions, hour))
+        .find(|&hour| replay_data::cadence::is_refresh(TableId::VariantDefinitions, hour))
         .unwrap();
     let mut definitions = read.clone();
     definitions.hour = next_definition_read;
@@ -160,16 +160,17 @@ fn daily_values_change_at_the_slot_read_even_without_their_own_timing() {
         Some("Seen at slot")
     );
 }
-use replay::{
-    branches::{BranchReason, BranchStart, Parentage},
-    frame::{FrameEncoder, Metrics, TableView},
-    identity::{Identity, Roster, SampleBoundary, SessionStart, Verification},
-    rows::{
-        CampaignRow, CombatLogEquipmentRow, CombatLogStateRow, CountryLinkRow, CountryRow,
-        LendLeaseEquipmentRow, PlayerRow, SliceReadRow, SunkConvoyRow, SunkShipEntry, SunkShipsRow,
-        TableRows, VariantDefinitionRow,
-    },
-    spool::Record,
+use replay::spool::Record;
+use replay_data::{
+    identity::Identity, identity::Roster, identity::SampleBoundary, identity::SessionStart,
+    identity::Verification, rows::CampaignRow, rows::CombatLogEquipmentRow,
+    rows::CombatLogStateRow, rows::CountryLinkRow, rows::CountryRow, rows::LendLeaseEquipmentRow,
+    rows::PlayerRow, rows::SliceReadRow, rows::SunkConvoyRow, rows::SunkShipEntry,
+    rows::SunkShipsRow, rows::TableRows, rows::VariantDefinitionRow,
+};
+use replay_frame::{
+    branches::BranchReason, branches::BranchStart, branches::Parentage, frame::FrameEncoder,
+    frame::Metrics, frame::TableView,
 };
 
 const CAMPAIGN: &[u8] = b"losses-test";
@@ -258,12 +259,12 @@ fn frame(hour: i32, log: Vec<CombatLogEquipmentRow>, read: &[u32]) -> DecodedFra
     );
     put(
         TableId::Divisions,
-        TableRows::Divisions(vec![replay::rows::DivisionRow {
+        TableRows::Divisions(vec![replay_data::rows::DivisionRow {
             id: 1 << 32 | 51,
             roster_owner: GER,
             logical_owner: GER,
             orders_group: 1 << 32 | 53,
-            ..replay::rows::DivisionRow::default()
+            ..replay_data::rows::DivisionRow::default()
         }]),
     );
     put(
@@ -283,11 +284,11 @@ fn frame(hour: i32, log: Vec<CombatLogEquipmentRow>, read: &[u32]) -> DecodedFra
     );
     put(
         TableId::SimulationFeatures,
-        TableRows::SimulationFeatures(vec![replay::rows::SimulationFeatureRow {
-            dlc_mask: engine::dlc_feature_state::EQUIPMENT_LOSSES_MASK,
+        TableRows::SimulationFeatures(vec![replay_data::rows::SimulationFeatureRow {
+            dlc_mask: engine_dlc::dlc_feature_state::EQUIPMENT_LOSSES_MASK,
             human_ai: 0,
-            weather_suspend: replay::rows::Recorded::Value(None),
-            instant_decisions: replay::rows::Recorded::Value(Some(0)),
+            weather_suspend: replay_data::rows::Recorded::Value(None),
+            instant_decisions: replay_data::rows::Recorded::Value(Some(0)),
             runtime_scalars: Default::default(),
             movement_defines: Default::default(),
         }]),
@@ -319,7 +320,7 @@ fn frame(hour: i32, log: Vec<CombatLogEquipmentRow>, read: &[u32]) -> DecodedFra
     );
     put(
         TableId::LexicalTokens,
-        TableRows::LexicalTokens(vec![replay::rows::LexicalTokenRow {
+        TableRows::LexicalTokens(vec![replay_data::rows::LexicalTokenRow {
             token: 5,
             literal: b"mod_rifle_1".to_vec(),
         }]),
@@ -359,12 +360,12 @@ fn populate_census(frame: &mut DecodedFrame) {
         };
         return;
     };
-    let mut rows: BTreeMap<u32, replay::rows::DivisionCensusRow> = countries
+    let mut rows: BTreeMap<u32, replay_data::rows::DivisionCensusRow> = countries
         .iter()
         .map(|row| {
             (
                 row.id,
-                replay::rows::DivisionCensusRow {
+                replay_data::rows::DivisionCensusRow {
                     country: row.id,
                     ..Default::default()
                 },
@@ -379,7 +380,7 @@ fn populate_census(frame: &mut DecodedFrame) {
         };
         let row = rows
             .entry(country)
-            .or_insert_with(|| replay::rows::DivisionCensusRow {
+            .or_insert_with(|| replay_data::rows::DivisionCensusRow {
                 country,
                 ..Default::default()
             });
@@ -498,7 +499,7 @@ fn design_names_follow_reads_and_native_suffix_without_crossing_unavailable_hour
         reason: "failed naming read".into(),
     };
     let mut replay = replay_of(vec![first, carried, renamed, unread, recovered]);
-    replay.gaps.push(replay::branches::Gap {
+    replay.gaps.push(replay_frame::branches::Gap {
         branch: 1,
         first_hour: base + 5,
         last_hour: base + 6,
@@ -590,7 +591,7 @@ fn land_losses_keep_each_entrys_last_value_through_windows_and_prunes() {
                 log(
                     GER,
                     1,
-                    engine::ncombat_log_cmanager::RECOVERED_KIND,
+                    engine_land_inputs::ncombat_log_cmanager::RECOVERED_KIND,
                     NOVEMBER,
                     1,
                 ),
@@ -867,8 +868,8 @@ fn a_modded_equipment_type_resolves_through_the_content_stack() {
         "equipments = { mod_rifle = { is_archetype = yes } mod_rifle_1 = { archetype = mod_rifle } }",
     )
     .unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let archetypes = installed_content::equipment::Database::load_complete(&layers).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let archetypes = installed_content_core::equipment::Database::load_complete(&layers).unwrap();
     let base = 60_827_880;
     let replay = replay_of(vec![frame(base, vec![log(GER, 1, 0, OCTOBER, 3)], &[GER])]);
     let scanned = scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
@@ -885,7 +886,7 @@ fn a_modded_equipment_type_resolves_through_the_content_stack() {
     assert_eq!(reply.designs[0].archetype.as_deref(), Some("mod_rifle"));
     assert_eq!(reply.retained_months, Some(12));
     // A variant the content does not declare keeps its type unknown.
-    let empty = installed_content::equipment::Database::default();
+    let empty = installed_content_core::equipment::Database::default();
     let reply = super::reply(
         &params(),
         &scanned,
@@ -1106,7 +1107,7 @@ fn a_combat_log_value_that_falls_is_a_signed_correction() {
 /// so a mod that renames them names the causes.
 #[test]
 fn interface_authored_cause_names_come_from_the_contents_gui() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "hoi4_losses_gui_{}_{:?}",
@@ -1137,9 +1138,9 @@ fn interface_authored_cause_names_come_from_the_contents_gui() {
 }"#,
     )
     .unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
     let mut warnings = Vec::new();
-    let guis = installed_content::gui::native::read_layers(&layers).unwrap();
+    let guis = installed_content_core::gui::native::read_layers(&layers).unwrap();
     let keys = InterfaceKeys::read(&guis, &mut warnings);
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(
@@ -1234,11 +1235,11 @@ fn interface_authored_cause_names_come_from_the_contents_gui() {
         Some("Air accidents")
     );
     // A content stack without the window leaves the names null, warned.
-    let bare = installed_content::ResolvedLayers::from_folders(&[(&interface, &[][..])]).unwrap();
+    let bare = installed_content_core::ResolvedLayers::from_folders(&[(&interface, &[][..])]).unwrap();
     let mut warnings = Vec::new();
     assert_eq!(
         InterfaceKeys::read(
-            &installed_content::gui::native::read_layers(&bare).unwrap(),
+            &installed_content_core::gui::native::read_layers(&bare).unwrap(),
             &mut warnings,
         ),
         InterfaceKeys::default()
@@ -1298,12 +1299,12 @@ fn daily_records_only_change_at_the_read_that_saw_them() {
 fn human_membership_does_not_prove_ungrouped_divisions_are_logged() {
     let mut frame = frame(60_827_880, vec![log(GER, 1, 0, OCTOBER, 3)], &[GER]);
     *frame.tables[TableId::Divisions.index()] =
-        TableView::Complete(TableRows::Divisions(vec![replay::rows::DivisionRow {
+        TableView::Complete(TableRows::Divisions(vec![replay_data::rows::DivisionRow {
             id: 1 << 32 | 51,
             roster_owner: GER,
             logical_owner: GER,
             orders_group: 0,
-            ..replay::rows::DivisionRow::default()
+            ..replay_data::rows::DivisionRow::default()
         }]));
     let scanned = scan(&replay_of(vec![frame]), 1, "GER", &AtomicBool::new(false)).unwrap();
     assert_eq!(scanned.coverage[0].coverage, Coverage::NotLogged);
@@ -1340,12 +1341,12 @@ fn a_disabled_writer_feature_is_not_logged_without_excluding_recorded_totals() {
     let mut frame = frame(60_827_880, vec![log(GER, 1, 0, OCTOBER, 3)], &[GER]);
     *frame.tables[TableId::SimulationFeatures.index()] =
         TableView::Complete(TableRows::SimulationFeatures(vec![
-            replay::rows::SimulationFeatureRow {
+            replay_data::rows::SimulationFeatureRow {
                 // Other runtime features do not enable this writer.
-                dlc_mask: !engine::dlc_feature_state::EQUIPMENT_LOSSES_MASK,
+                dlc_mask: !engine_dlc::dlc_feature_state::EQUIPMENT_LOSSES_MASK,
                 human_ai: 0,
-                weather_suspend: replay::rows::Recorded::Value(None),
-                instant_decisions: replay::rows::Recorded::Value(Some(0)),
+                weather_suspend: replay_data::rows::Recorded::Value(None),
+                instant_decisions: replay_data::rows::Recorded::Value(Some(0)),
                 runtime_scalars: Default::default(),
                 movement_defines: Default::default(),
             },
@@ -1363,13 +1364,13 @@ fn a_disabled_writer_feature_is_not_logged_without_excluding_recorded_totals() {
 fn mixed_division_membership_is_partial_and_unread_census_is_unknown() {
     let mut mixed = frame(60_827_880, vec![], &[]);
     *mixed.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(vec![
-        replay::rows::DivisionRow {
+        replay_data::rows::DivisionRow {
             id: 1 << 32 | 51,
             roster_owner: GER,
             orders_group: 1 << 32 | 53,
             ..Default::default()
         },
-        replay::rows::DivisionRow {
+        replay_data::rows::DivisionRow {
             id: 2 << 32 | 51,
             roster_owner: GER_ALIAS,
             ..Default::default()
@@ -1402,13 +1403,13 @@ fn coverage_uses_the_writers_expeditionary_or_roster_country() {
     let mut frame = frame(60_827_880, vec![], &[]);
     *frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(vec![
         // Logical ownership is not the country the Combat Log writer chooses.
-        replay::rows::DivisionRow {
+        replay_data::rows::DivisionRow {
             id: 1 << 32 | 51,
             roster_owner: GER,
             logical_owner: SOV,
             ..Default::default()
         },
-        replay::rows::DivisionRow {
+        replay_data::rows::DivisionRow {
             id: 2 << 32 | 51,
             roster_owner: GER,
             expeditionary_owner: SOV,
@@ -1425,13 +1426,13 @@ fn division_census_tracks_transfers_remapping_deletion_and_unread_recovery() {
     let base = 60_827_880;
     let mut first = frame(base, vec![], &[]);
     let mut rows = vec![
-        replay::rows::DivisionRow {
+        replay_data::rows::DivisionRow {
             id: 1 << 32 | 51,
             roster_owner: GER,
             orders_group: 1 << 32 | 53,
             ..Default::default()
         },
-        replay::rows::DivisionRow {
+        replay_data::rows::DivisionRow {
             id: 2 << 32 | 51,
             roster_owner: SOV,
             ..Default::default()
@@ -1508,7 +1509,7 @@ fn division_census_tracks_transfers_remapping_deletion_and_unread_recovery() {
 fn unresolved_division_owner_keeps_the_census_unknown() {
     let mut frame = frame(60_827_880, vec![], &[]);
     *frame.tables[TableId::Divisions.index()] =
-        TableView::Complete(TableRows::Divisions(vec![replay::rows::DivisionRow {
+        TableView::Complete(TableRows::Divisions(vec![replay_data::rows::DivisionRow {
             id: 1 << 32 | 51,
             roster_owner: 123,
             ..Default::default()
@@ -1525,11 +1526,11 @@ fn closed_feature_gate_stays_not_logged_with_an_unread_census() {
     };
     *frame.tables[TableId::SimulationFeatures.index()] =
         TableView::Complete(TableRows::SimulationFeatures(vec![
-            replay::rows::SimulationFeatureRow {
+            replay_data::rows::SimulationFeatureRow {
                 dlc_mask: 0,
                 human_ai: 0,
-                weather_suspend: replay::rows::Recorded::Value(None),
-                instant_decisions: replay::rows::Recorded::Value(Some(0)),
+                weather_suspend: replay_data::rows::Recorded::Value(None),
+                instant_decisions: replay_data::rows::Recorded::Value(Some(0)),
                 runtime_scalars: Default::default(),
                 movement_defines: Default::default(),
             },
@@ -1591,7 +1592,7 @@ fn recorded_gaps_including_a_trailing_gap_are_unread() {
     let base = 60_827_880;
     let mut replay = replay_of(vec![frame(base, vec![], &[]), frame(base + 4, vec![], &[])]);
     for (first_hour, last_hour) in [(base + 1, base + 3), (base + 5, base + 8)] {
-        replay.gaps.push(replay::branches::Gap {
+        replay.gaps.push(replay_frame::branches::Gap {
             branch: 1,
             first_hour,
             last_hour,
@@ -1622,7 +1623,7 @@ fn a_frame_inside_a_recorded_gap_does_not_supply_losses_or_coverage() {
         hidden,
         later,
     ]);
-    replay.gaps.push(replay::branches::Gap {
+    replay.gaps.push(replay_frame::branches::Gap {
         branch: 1,
         first_hour: base + 1,
         last_hour: base + 1,
@@ -1751,18 +1752,18 @@ fn mixed_census_counts_ungrouped_divisions_and_splits_when_the_count_changes() {
     let base = 60_827_880;
     let mut first = frame(base, vec![log(GER, 1, 0, OCTOBER, 3)], &[GER]);
     let mut divisions = vec![
-        replay::rows::DivisionRow {
+        replay_data::rows::DivisionRow {
             id: 1 << 32 | 51,
             roster_owner: GER,
             orders_group: 1 << 32 | 53,
             ..Default::default()
         },
-        replay::rows::DivisionRow {
+        replay_data::rows::DivisionRow {
             id: 2 << 32 | 51,
             roster_owner: GER_ALIAS,
             ..Default::default()
         },
-        replay::rows::DivisionRow {
+        replay_data::rows::DivisionRow {
             id: 3 << 32 | 51,
             roster_owner: GER,
             ..Default::default()

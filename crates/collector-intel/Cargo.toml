@@ -20,8 +20,14 @@ variable_changes = []
 variable_verify = ["variable_changes"]
 
 [dependencies]
-engine.workspace = true
-replay.workspace = true
+engine-allocation.workspace = true
+engine-events.workspace = true
+engine-intelligence.workspace = true
+engine-mutations.workspace = true
+engine-native.workspace = true
+engine-scripts.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
 serde = { workspace = true, features = ["derive"] }
 collector-certificates.workspace = true
 collector-extended-support.workspace = true
@@ -37,9 +43,9 @@ collector-timing.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
+engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-test-support.workspace = true
 serde_json.workspace = true
-engine = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-extended-support = { workspace = true, features = ["test-support"] }
 collector-certificates = { workspace = true, features = ["test-support"] }
 collector-hooks = { workspace = true, features = ["test-support"] }

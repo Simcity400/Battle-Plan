@@ -1,9 +1,7 @@
 use super::*;
 use dashboard_base::test_fixtures::{CAMPAIGN, records};
-use replay::{
-    frame::TableView,
-    rows::{CountryLinkRow, CountryRow, LexicalTokenRow, TableRows},
-};
+use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow, rows::TableRows};
+use replay_frame::frame::TableView;
 
 #[test]
 fn completion_presentation_scans_only_blocks_with_pending_hours() {
@@ -71,7 +69,7 @@ fn frame(hour: i32, read: bool) -> DecodedFrame {
     }
     frame.metrics = fixture.metrics;
     *frame.tables[TableId::Campaign.index()] =
-        TableView::Complete(TableRows::Campaign(vec![replay::rows::CampaignRow {
+        TableView::Complete(TableRows::Campaign(vec![replay_data::rows::CampaignRow {
             id: CAMPAIGN.into(),
         }]));
     *frame.tables[TableId::LexicalTokens.index()] =
@@ -253,15 +251,15 @@ fn completion_scripted_dependencies_follow_native_aliases_and_country_name_keys(
         ),
     )
     .unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&guard.0, &[][..])]).unwrap();
-    let localisation = installed_content::localisation::read(&layers, "english").unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&guard.0, &[][..])]).unwrap();
+    let localisation = installed_content_localisation::localisation::read(&layers, "english").unwrap();
     let mut definitions = Catalog::default();
     for (name, expected) in [
         ("plain_name", false),
         ("scoped_name", true),
         ("prefixed_name", true),
     ] {
-        let mut project = installed_content::special_projects::Project::default();
+        let mut project = installed_content_core::special_projects::Project::default();
         project.name = Some(name.into());
         definitions.projects.insert("mod_project".into(), project);
         assert_eq!(
@@ -358,7 +356,7 @@ fn completion_world_scan_keeps_only_last_progress_run_per_country() {
                 definition_id: 8,
                 local_id: 1,
                 started: 1,
-                state: replay::rows::ProjectState {
+                state: replay_data::rows::ProjectState {
                     current_offset: 0x18,
                     ..Default::default()
                 },
@@ -513,7 +511,7 @@ fn completion_scan_refuses_a_reassigned_country_at_its_completion_hour() {
 
 #[test]
 fn completion_projection_uses_mod_override_name_and_native_art_path() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let guard = super::super::tests::TempRoot::new("feed-mod");
     let base = guard.0.join("base");
@@ -566,7 +564,8 @@ fn completion_projection_uses_mod_override_name_and_native_art_path() {
         .write_image_data(&[41, 73, 99, 255])
         .unwrap();
     let layers =
-        installed_content::ResolvedLayers::from_folders(&[(&base, &[][..]), (&over, &[][..])]).unwrap();
+        installed_content_core::ResolvedLayers::from_folders(&[(&base, &[][..]), (&over, &[][..])])
+            .unwrap();
     let catalogue = Arc::new(Catalogue::of_layers(layers, "english").unwrap());
     let mut content = Content {
         definitions: Catalog::read(&catalogue.content.layers).unwrap(),

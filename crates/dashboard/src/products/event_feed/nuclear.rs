@@ -1,18 +1,20 @@
-//! Recorded nuclear impacts ([`replay::rows::NuclearStrikeRow`]): who dropped
+//! Recorded nuclear impacts ([`replay_data::rows::NuclearStrikeRow`]): who dropped
 //! which bomb on whose state, and what the impact did before the authored
 //! `on_nuke_drop` effects.
 
 use super::{Builder, EventFeedKind, EventFeedRow, EventFeedStrike, check_cancel};
 #[cfg(test)]
 use crate::{metadata::validate_campaign, products::country_history::NativeNames as Names};
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{NuclearStrikePart, NuclearStrikeRow, RowCodec, TableId, tables},
+use replay_data::{
+    rows::NuclearStrikePart, rows::NuclearStrikeRow, rows::RowCodec, rows::TableId, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
 
 #[cfg(test)]
-use replay::{container::Replay, frame::FrameDecoder};
+use replay::container::Replay;
+#[cfg(test)]
+use replay_frame::frame::FrameDecoder;
 #[cfg(test)]
 use std::collections::BTreeSet;
 
@@ -144,7 +146,7 @@ pub(super) fn read(
 pub(super) fn project(
     read_hour: i32,
     strike: &NuclearStrikeRow,
-    mut tag_at: impl FnMut(i32, replay::event_feed_rows::EventFeedCountry) -> Option<String>,
+    mut tag_at: impl FnMut(i32, replay_data::event_feed_rows::EventFeedCountry) -> Option<String>,
     builder: &mut Builder,
     items: &BTreeMap<u32, u32>,
 ) {
@@ -320,9 +322,9 @@ pub(super) fn scan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{
-        NuclearBuildingDamage, NuclearEquipmentLoss, NuclearStrikeRefusal, NuclearUnitDamage,
-        NuclearWarSupport,
+    use replay_data::{
+        rows::NuclearBuildingDamage, rows::NuclearEquipmentLoss, rows::NuclearStrikeRefusal,
+        rows::NuclearUnitDamage, rows::NuclearWarSupport,
     };
 
     #[test]

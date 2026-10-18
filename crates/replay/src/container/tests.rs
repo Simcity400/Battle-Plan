@@ -1908,7 +1908,7 @@ fn format97_replay_opens_seeks_and_decodes_selected_and_parallel_blocks() {
         raw.clear();
         raw.extend_from_slice(&64_u32.to_le_bytes());
         for hour in 1..=64 {
-            let frame = crate::rows::format98_tests::empty_frame97(hour, hour == 1);
+            let frame = replay_frame::test_support::empty_frame97(hour, hour == 1);
             raw.extend_from_slice(&(frame.len() as u32).to_le_bytes());
             raw.extend(frame);
         }

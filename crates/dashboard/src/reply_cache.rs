@@ -33,7 +33,7 @@ const ENTRY_BUDGET: usize = crate::transport::MAX_REPLY_BYTES;
 static WRITTEN: AtomicU64 = AtomicU64::new(LIMIT);
 
 /// The history cache folder beside the content hash cache.
-pub fn folder(options: &installed_content::ResolveOptions) -> PathBuf {
+pub fn folder(options: &installed_content_core::ResolveOptions) -> PathBuf {
     options.cache_dir.join("history")
 }
 
@@ -61,7 +61,7 @@ impl Entry {
             .ok()?;
             source.content(&content.options).ok()?;
         }
-        let settings = installed_content::settings::read_keys(&content.options.user_dir).ok()?;
+        let settings = installed_content_settings::settings::read_keys(&content.options.user_dir).ok()?;
         let language = settings.language().ok()?;
         let decode = settings.texture_decode();
         let key = format!(

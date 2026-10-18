@@ -8,10 +8,7 @@ use std::{
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
 
-use installed_content::{
-    ResolveOptions,
-    content::{ResolvedContent, UncoveredReads},
-};
+use installed_content_core::{ResolveOptions, content::ResolvedContent, content::UncoveredReads};
 use replay::container::Replay;
 
 use crate::{
@@ -20,7 +17,8 @@ use crate::{
     metadata::{self, warn},
     products::ContentOptions,
 };
-use installed_content::{country_names::CountryNames, localisation::Localisation};
+use installed_content_country_names::country_names::CountryNames;
+use installed_content_localisation::localisation::Localisation;
 use replay::container::SeekResult;
 pub mod metadata_cache;
 
@@ -285,7 +283,7 @@ impl Source {
                     let at = (country.observed_branch_id.clone(), country.observed_hour);
                     let frame = frames.entry(at).or_insert_with(|| {
                         let branch = country.observed_branch_id.parse().ok()?;
-                        let tables = Some(&installed_content::country_names::TABLES[..]);
+                        let tables = Some(&installed_content_country_names::country_names::TABLES[..]);
                         match self
                             .replay
                             .seek_selected(branch, country.observed_hour, tables)
@@ -331,7 +329,7 @@ impl Source {
                 && old.user_dir == options.user_dir
                 && old.cache_dir == options.cache_dir
         }) {
-            let content = Arc::new(installed_content::resolve(&self.replay.identity, options)?);
+            let content = Arc::new(installed_content_core::resolve(&self.replay.identity, options)?);
             let reads = content.layers.report_uncovered_reads();
             *cache = Some((options.clone(), content, reads));
         }
@@ -454,8 +452,8 @@ impl Source {
 impl Source {
     pub fn set_test_content(
         &self,
-        options: installed_content::ResolveOptions,
-        content: Arc<installed_content::content::ResolvedContent>,
+        options: installed_content_core::ResolveOptions,
+        content: Arc<installed_content_core::content::ResolvedContent>,
     ) {
         let reads = content.layers.report_uncovered_reads();
         *self.content.lock().unwrap() = Some((options, content, reads));

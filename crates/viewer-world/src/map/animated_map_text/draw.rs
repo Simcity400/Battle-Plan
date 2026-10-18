@@ -12,7 +12,7 @@ use std::{
 };
 
 use eframe::wgpu;
-use installed_content::pdxshader::{DepthStencilState, program::Stage};
+use installed_content_core::{pdxshader::DepthStencilState, pdxshader::program::Stage};
 use shader_pipeline::{
     gpu,
     library::{Effect, Selection},

@@ -6,10 +6,11 @@ use std::{
 };
 
 use installed_content_save::naval_history as saved;
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryRow, NavalSupremacyRow, SunkConvoyRow, SunkShipEntry, tables},
+use replay_data::{
+    rows::CountryRow, rows::NavalSupremacyRow, rows::SunkConvoyRow, rows::SunkShipEntry,
+    rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 use super::{Report, complete, country_tag, invalid, serialized_text};
 
@@ -272,7 +273,7 @@ fn compare_ship(
                 "sunk ship class token {token} lacks its recorded lexical entry"
             ))
         })?;
-        if token == engine::cpdx_lexer::FIXED15_TOKEN {
+        if token == engine_native::cpdx_lexer::FIXED15_TOKEN {
             return Err(invalid(
                 "sunk ship class uses the fixed15 formatter token, not a directly serialized lexical spelling",
             ));

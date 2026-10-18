@@ -1,12 +1,14 @@
 use super::*;
-use installed_content::{
-    doctrines::{Database, Name, RewardSource},
-    gui::native::BoundLocalization,
+use installed_content_core::{
+    doctrines::Database, doctrines::Name, doctrines::RewardSource, gui::native::BoundLocalization,
 };
 
 fn bound(body: &str) -> BoundLocalization {
     BoundLocalization::from_value(
-        &installed_content::parser::parse(body.as_bytes()).unwrap().items[0].value,
+        &installed_content_core::parser::parse(body.as_bytes())
+            .unwrap()
+            .items[0]
+            .value,
     )
 }
 
@@ -41,9 +43,11 @@ fn database() -> Database {
         DefinitionSources {
             // All three links are the fresh country, independently of the
             // caller's description graph or variable session.
-            available: installed_content::parser::parse(b"ROOT={tag=AAA} FROM={tag=AAA} PREV={tag=AAA}")
-                .unwrap()
-                .items,
+            available: installed_content_core::parser::parse(
+                b"ROOT={tag=AAA} FROM={tag=AAA} PREV={tag=AAA}",
+            )
+            .unwrap()
+            .items,
             tactics: vec![b"Target".to_vec(), b"Target".to_vec()],
             tracks: vec![track.clone(), track.clone()],
             tracks_requested: true,
@@ -78,8 +82,8 @@ fn run(
     country: u32,
 ) -> (Result<Vec<String>, String>, BTreeMap<String, usize>) {
     let mut fixture = super::super::tests::Fixture::new();
-    *fixture.frame.tables[replay::rows::TableId::CompletedFocuses.index()] =
-        replay::frame::TableView::Unavailable {
+    *fixture.frame.tables[replay_data::rows::TableId::CompletedFocuses.index()] =
+        replay_frame::frame::TableView::Unavailable {
             reason: "synthetic completed focuses unavailable".into(),
         };
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
@@ -123,7 +127,7 @@ fn run(
 
 #[test]
 fn occurrences_order_nested_names_and_all_reward_mastery_are_preserved() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (sources, refused) = run(&database(), 1);
     assert!(refused.is_empty(), "{refused:?}");
@@ -150,7 +154,7 @@ fn occurrences_order_nested_names_and_all_reward_mastery_are_preserved() {
 
 #[test]
 fn local_refusals_preserve_known_sources_and_never_claim_unknown_empty() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut database = database();
     database.tactic_sources.sub_unread = Some("synthetic sub tail is unsettled".into());
@@ -181,7 +185,7 @@ fn local_refusals_preserve_known_sources_and_never_claim_unknown_empty() {
 
 #[test]
 fn bound_name_failure_and_default_define_shortage_are_feature_local() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut database = database();
     let bad = Token::c_str(b"bad");
@@ -209,7 +213,7 @@ fn bound_name_failure_and_default_define_shortage_are_feature_local() {
 
 #[test]
 fn unknown_available_gate_keeps_independent_sources_and_is_not_false() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut database = database();
     database
@@ -217,7 +221,7 @@ fn unknown_available_gate_keeps_independent_sources_and_is_not_false() {
         .grand
         .get_mut(&Token::c_str(b"g"))
         .unwrap()
-        .available = installed_content::parser::parse(b"has_completed_focus=synthetic_focus")
+        .available = installed_content_core::parser::parse(b"has_completed_focus=synthetic_focus")
         .unwrap()
         .items;
     let (sources, refused) = run(&database, 1);

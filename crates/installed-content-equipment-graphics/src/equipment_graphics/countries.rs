@@ -7,17 +7,15 @@
 
 use std::{collections::BTreeMap, io};
 
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{TableSchema, tables},
-};
+use replay_data::{rows::TableSchema, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 /// The rows of `T` this hour holds, complete or truncated, and whether the table
 /// is complete; an unavailable table holds none.
 fn rows<T: TableSchema>(frame: &DecodedFrame) -> io::Result<(&[T::Row], bool)> {
     fn typed<T: TableSchema>(
-        rows: &replay::rows::TableRows,
-        hour: replay::Hour,
+        rows: &replay_data::rows::TableRows,
+        hour: replay_data::Hour,
     ) -> io::Result<&[T::Row]> {
         rows.rows::<T>().ok_or_else(|| {
             io::Error::new(

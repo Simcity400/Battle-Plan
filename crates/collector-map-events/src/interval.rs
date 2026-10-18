@@ -1,11 +1,12 @@
 //! The hourly interval: its coverage, sealed on the game thread in constant
 //! time, and its row, assembled on the spool thread from the copied frames.
 use crate::{hooks, lanes};
-use replay::rows::{
-    MapEvent, MapEventBuildingDamage, MapEventBuildingReason, MapEventCriticalBombardment,
-    MapEventFamily as Family, MapEventFamilyHealth, MapEventFault as Fault, MapEventFaults,
-    MapEventGeneralCapture, MapEventIntelEntry, MapEventParadrop, MapEventPayload,
-    MapEventResistance, MapEventUnitIntel, MapEventsRow,
+use replay_data::{
+    rows::MapEvent, rows::MapEventBuildingDamage, rows::MapEventBuildingReason,
+    rows::MapEventCriticalBombardment, rows::MapEventFamily as Family, rows::MapEventFamilyHealth,
+    rows::MapEventFault as Fault, rows::MapEventFaults, rows::MapEventGeneralCapture,
+    rows::MapEventIntelEntry, rows::MapEventParadrop, rows::MapEventPayload,
+    rows::MapEventResistance, rows::MapEventUnitIntel, rows::MapEventsRow,
 };
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
@@ -165,7 +166,7 @@ pub fn payload(family: u8, bytes: &[u8]) -> Result<MapEventPayload, &'static str
                 return Err("map event intel length differs");
             }
             let mut intel = Vec::new();
-            engine::allocation::reserve_exact(&mut intel, count)
+            engine_allocation::reserve_exact(&mut intel, count)
                 .map_err(|_| "map event assembly allocation failed")?;
             for _ in 0..count {
                 intel.push(MapEventIntelEntry {
@@ -207,7 +208,7 @@ pub fn payload(family: u8, bytes: &[u8]) -> Result<MapEventPayload, &'static str
             let controller = input.u32()?;
             let overlord = input.u32()?;
             let len = input.u32()? as usize;
-            let key = engine::allocation::copy_vec(input.take(len)?)
+            let key = engine_allocation::copy_vec(input.take(len)?)
                 .map_err(|_| "map event assembly allocation failed")?;
             MapEventPayload::ResistanceActivity(MapEventResistance {
                 province,
@@ -236,7 +237,7 @@ pub fn row(
     assembled: &lanes::Assembled,
 ) -> Result<MapEventsRow, &'static str> {
     let mut events = Vec::new();
-    engine::allocation::reserve_exact(&mut events, assembled.frames.len())
+    engine_allocation::reserve_exact(&mut events, assembled.frames.len())
         .map_err(|_| "map event assembly allocation failed")?;
     for frame in &assembled.frames {
         // An event of an ended occurrence belongs to no interval of this one.

@@ -32,11 +32,10 @@ use dashboard_base::prepared::{
     prepass::{Extract, Family, Folded},
 };
 use replay::{
-    container::{BlockIndex, QuietHours, Replay, TableFields},
-    format::FormatVersion,
-    frame::DecodedFrame,
-    rows::{CountryRow, TableId},
+    container::BlockIndex, container::QuietHours, container::Replay, container::TableFields,
 };
+use replay_data::{format::FormatVersion, rows::CountryRow, rows::TableId};
+use replay_frame::frame::DecodedFrame;
 use std::{any::Any, io, ops::Range};
 
 /// The tables the tension observer reads.
@@ -206,9 +205,9 @@ pub fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let facts = {
-        let _cpu = ::replay::cpu::scope("fold facts", None);
+        let _cpu = ::replay_frame::cpu::scope("fold facts", None);
         facts
             .downcast::<BlockFacts>()
             .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -217,7 +216,7 @@ pub fn fold(
     note_frames(FAMILY.name, facts.frames);
     let mut reached = None;
     for hour in facts.hours {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         check()?;
         match hour {
             Hour::Observed { frame, changes } => {
@@ -225,7 +224,7 @@ pub fn fold(
                 #[cfg(any(test, feature = "test-support"))]
                 note_observed(FAMILY.name);
                 let result = {
-                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     scan.prepare_changed(replay.format, &frame, &changes)
                 };
                 if !observed(frame.hour, result)? {
@@ -234,7 +233,7 @@ pub fn fold(
             }
             Hour::Quiet { first, reads } => {
                 for (offset, read) in reads.into_iter().enumerate() {
-                    let _cpu = ::replay::cpu::scope("fold driver", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
                     // The span's hours are consecutive i32 hours.
                     let hour = first + offset as i32;
                     if !scan.continues_to(hour) {
@@ -244,7 +243,7 @@ pub fn fold(
                     }
                     reached = Some(hour);
                     let result = {
-                        let _cpu = ::replay::cpu::scope("fold observe", None);
+                        let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                         scan.advance_quiet(hour, read)
                     };
                     if !observed(hour, result)? {
@@ -268,7 +267,7 @@ pub fn observe_block(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     observe_hours(
         replay,
         index,

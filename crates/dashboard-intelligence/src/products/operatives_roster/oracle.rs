@@ -60,7 +60,7 @@ pub(super) fn scan(
 impl Scan {
     pub(super) fn observe(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         content: Option<&super::super::operative_content::OperativeContent>,
         selected_identities: Option<&BTreeSet<(u32, u32)>>,
     ) -> io::Result<()> {

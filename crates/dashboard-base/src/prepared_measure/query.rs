@@ -690,7 +690,7 @@ mod tests {
         let mut rows: Vec<_> = ["alpha", "beta"]
             .into_iter()
             .enumerate()
-            .map(|(slot, tag)| replay::rows::CountryRow {
+            .map(|(slot, tag)| replay_data::rows::CountryRow {
                 canonical_slot: slot as u32,
                 id: slot as u32,
                 tag: tag.as_bytes().to_vec(),
@@ -700,7 +700,7 @@ mod tests {
             .collect();
         let links: Vec<_> = rows
             .iter()
-            .map(|row| replay::rows::CountryLinkRow {
+            .map(|row| replay_data::rows::CountryLinkRow {
                 canonical_slot: row.canonical_slot,
                 id: row.id,
             })
@@ -754,14 +754,14 @@ mod tests {
         let fixture = crate::prepared::series::tests::Fixture::new();
         let flag = AtomicBool::new(false);
         let mut accumulator = crate::prepared_measure::MeasureAccumulator::new(0);
-        let mut rows = vec![replay::rows::CountryRow {
+        let mut rows = vec![replay_data::rows::CountryRow {
             canonical_slot: 7,
             id: 11,
             tag: b"opaque / tag".to_vec(),
             political_power_raw: Some(i64::MAX),
             ..Default::default()
         }];
-        let links = [replay::rows::CountryLinkRow {
+        let links = [replay_data::rows::CountryLinkRow {
             canonical_slot: 7,
             id: 11,
         }];
@@ -810,14 +810,14 @@ mod tests {
         let fixture = crate::prepared::series::tests::Fixture::new();
         let flag = AtomicBool::new(false);
         let mut accumulator = crate::prepared_measure::MeasureAccumulator::new(0);
-        let mut rows = vec![replay::rows::CountryRow {
+        let mut rows = vec![replay_data::rows::CountryRow {
             canonical_slot: 7,
             id: 11,
             tag: b"holder".to_vec(),
             political_power_raw: Some(0),
             ..Default::default()
         }];
-        let mut links = [replay::rows::CountryLinkRow {
+        let mut links = [replay_data::rows::CountryLinkRow {
             canonical_slot: 7,
             id: 11,
         }];

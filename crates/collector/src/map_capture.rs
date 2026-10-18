@@ -9,11 +9,11 @@
 use crate::raw::RawLog;
 use crate::sampling::qpc;
 use crate::table_capture::{CaptureRows, grow_capacity, grow_vec};
-use engine::{
+use engine_native::{
     Memory, cair_wing, cfleet, chuman, cland_combat, cnaval_combat, cnaval_combatant,
     corder_instance, corders_group, cship, ctask_force, walk::Outcome,
 };
-use replay::rows::TableId;
+use replay_data::rows::TableId;
 use std::mem::size_of;
 
 pub const MAP_TABLES: usize = 10;
@@ -141,8 +141,8 @@ impl MapCapacities {
         base: usize,
     ) -> Result<(), &'static str> {
         let state = base
-            .checked_add(engine::cgame_state::SINGLETON_RVA)
-            .and_then(|address| engine::read::<u64>(memory, address))
+            .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+            .and_then(|address| engine_native::read::<u64>(memory, address))
             .and_then(|pointer| usize::try_from(pointer).ok())
             .filter(|pointer| *pointer != 0)
             .ok_or("map combat sizing state unreadable")?;
@@ -321,16 +321,16 @@ impl Orders {
     fn new(capacity: &MapCapacities) -> Self {
         Self {
             rows: CaptureRows::new(capacity.rows[9]),
-            geometry: engine::allocation::owned_vec(engine::allocation::default_vec(
+            geometry: engine_allocation::owned_vec(engine_allocation::default_vec(
                 capacity.order_geometry,
             )),
             geometry_len: 0,
             geometry_required: 0,
-            groups: engine::allocation::owned_vec(engine::allocation::default_vec::<
+            groups: engine_allocation::owned_vec(engine_allocation::default_vec::<
                 corders_group::Root,
             >(capacity.order_groups)),
             groups_required: 0,
-            visits: engine::allocation::owned_vec(engine::allocation::default_vec::<
+            visits: engine_allocation::owned_vec(engine_allocation::default_vec::<
                 corder_instance::Visit,
             >(capacity.order_visits)),
             visits_required: 0,
@@ -503,7 +503,7 @@ impl Orders {
         let mut result = Ok(());
         for (index, range) in ranges.into_iter().enumerate().take(count) {
             if self.parts[index].is_none() {
-                match engine::allocation::boxed(crate::orders_parts::Part::new()) {
+                match engine_allocation::boxed(crate::orders_parts::Part::new()) {
                     Ok(part) => self.parts[index] = Some(part),
                     Err(_) => {
                         result = Err("army order part allocation failed");
@@ -778,7 +778,7 @@ impl MapCaptured {
             naval_combats: CaptureRows::new(capacity.rows[6]),
             naval_combat_participants: CaptureRows::new(capacity.rows[7]),
             air_wings: CaptureRows::new(capacity.rows[8]),
-            air_wing_names: engine::allocation::owned_vec(engine::allocation::default_vec(
+            air_wing_names: engine_allocation::owned_vec(engine_allocation::default_vec(
                 capacity.air_wing_names,
             )),
             air_wing_names_len: 0,
@@ -789,20 +789,20 @@ impl MapCaptured {
             owned_air_captured: false,
             air_capture_failure: None,
             orders: Orders::new(capacity),
-            player_names: engine::allocation::owned_vec(engine::allocation::default_vec(
+            player_names: engine_allocation::owned_vec(engine_allocation::default_vec(
                 capacity.player_names,
             )),
             player_names_len: 0,
             player_names_required: 0,
-            land_participants: engine::allocation::owned_vec(engine::allocation::default_vec(
+            land_participants: engine_allocation::owned_vec(engine_allocation::default_vec(
                 capacity.land_participants,
             )),
-            land_classes: engine::allocation::owned_vec(engine::allocation::default_vec(
+            land_classes: engine_allocation::owned_vec(engine_allocation::default_vec(
                 capacity.land_participants,
             )),
             land_participants_len: 0,
             land_participants_required: 0,
-            naval_groups: engine::allocation::owned_vec(engine::allocation::default_vec(
+            naval_groups: engine_allocation::owned_vec(engine_allocation::default_vec(
                 capacity.naval_groups,
             )),
             naval_groups_required: 0,
@@ -1143,7 +1143,7 @@ fn ppool_u64(log: &RawLog<2>, start: usize) -> u64 {
 /// keys inside roster elements) via `Recorded` containment.
 fn pspan(
     log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     addr: Option<usize>,
     len: usize,
     mask: u32,
@@ -1154,12 +1154,12 @@ fn pspan(
 /// Original player fields and string gates, without retrying a failed span.
 fn copy_player(
     log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     pointer: usize,
     vtable: usize,
     keys: &mut Vec<i32>,
 ) -> bool {
-    use engine::{chuman, msvc_string};
+    use engine_native::{chuman, msvc_string};
     let Some(key_address) = pointer.checked_add(chuman::PLAYER_KEY) else {
         return false;
     };
@@ -1242,7 +1242,7 @@ fn copy_player(
 /// A failed source preserves the other table's healthy acquisition.
 fn copy_players_pass(
     log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
 ) {
@@ -1254,11 +1254,11 @@ fn copy_players_pass(
 
 fn copy_player_roster(
     log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
 ) {
-    use engine::{cgame_state, chuman, cpdx_array::Array};
+    use engine_native::{cgame_state, chuman, cpdx_array::Array};
     log.has_bulk = true;
     // Live roster.
     let roster_start = match pspan(
@@ -1280,7 +1280,7 @@ fn copy_player_roster(
     let Some(vtable) = base.checked_add(chuman::VTABLE_RVA) else {
         return;
     };
-    let Ok(mut keys) = engine::allocation::vec(roster.count as usize) else {
+    let Ok(mut keys) = engine_allocation::vec(roster.count as usize) else {
         return;
     };
     for index in 0..roster.count {
@@ -1295,7 +1295,7 @@ fn copy_player_roster(
 
 fn copy_controller_pass(
     log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
 ) {
@@ -1304,7 +1304,7 @@ fn copy_controller_pass(
         memory: &'a M,
         log: RefCell<&'a mut RawLog<2>>,
     }
-    impl<M: engine::Memory> engine::Memory for ControllerCopy<'_, M> {
+    impl<M: engine_native::Memory> engine_native::Memory for ControllerCopy<'_, M> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let mut log = self.log.borrow_mut();
             let Some(start) = log.take(self.memory, address, output.len(), P_CONTROLLERS) else {
@@ -1330,7 +1330,7 @@ fn copy_controller_pass(
 /// Copy one hourly players payload and record copy-only costs. Worker storage
 /// grows before each original span; failures are never retried live.
 pub(crate) fn copy_players_refresh(
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     ctx: PlayersCopyContext,
     job: &mut PlayersJob,
 ) -> PlayersCopyReport {
@@ -1405,7 +1405,7 @@ mod players_split_tests {
         MapCapacities, MapCaptured, PlayersCopyContext, PlayersCopyReport, PlayersJob,
         copy_players_refresh,
     };
-    use engine::{ccountry, cgame_state, chuman, memory::SliceMemory, walk::Outcome};
+    use engine_native::{ccountry, cgame_state, chuman, memory::SliceMemory, walk::Outcome};
 
     const BASE: usize = 0;
     const GS: usize = 0x10000;
@@ -1436,7 +1436,7 @@ mod players_split_tests {
     }
 
     fn fixture() -> Vec<u8> {
-        let mut bytes = engine::allocation::owned_vec(engine::allocation::default_vec(0x20000));
+        let mut bytes = engine_allocation::owned_vec(engine_allocation::default_vec(0x20000));
         // Country census: 1 canonical country (slot1, id1).
         array(&mut bytes, GS + cgame_state::COUNTRIES, COUNTRY_PTR, 2);
         put(&mut bytes, COUNTRY_PTR + 8, &(COUNTRY as u64).to_le_bytes());
@@ -1576,7 +1576,7 @@ mod players_split_tests {
         // walk's enclosed 32 B halves and unaligned sub-reads inside it are
         // served from the same recorded bytes. Proves bulk containment plus
         // bulk-wins-for-sub-ranges; straddling reads fail.
-        use engine::Memory;
+        use engine_native::Memory;
         let bytes = fixture();
         let memory = SliceMemory {
             base: GS,
@@ -2140,7 +2140,7 @@ mod tests {
     fn map_pack_tables_are_hourly_tier_h_with_no_refresh_gate() {
         // The eight map-pack tables keep hourly cadence: no stagger slot,
         // every hour walks. This pins the unchanged typed cadence.
-        use replay::rows::TableId;
+        use replay_data::rows::TableId;
         for table in [
             TableId::LandCombats,
             TableId::Fleets,
@@ -2151,10 +2151,10 @@ mod tests {
             TableId::AirWings,
             TableId::ArmyOrders,
         ] {
-            assert!(!replay::cadence::is_staggered(table), "{table:?}");
+            assert!(!replay_data::cadence::is_staggered(table), "{table:?}");
             for hour in [0, 1, 2, 3, 60_820_531] {
                 assert!(
-                    replay::cadence::is_refresh(table, hour),
+                    replay_data::cadence::is_refresh(table, hour),
                     "{table:?} at {hour}"
                 );
             }

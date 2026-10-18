@@ -1,5 +1,5 @@
 use super::*;
-use engine::memory::SliceMemory;
+use engine_native::memory::SliceMemory;
 use std::cell::{Cell, RefCell};
 
 // Offsets from the world's base.
@@ -23,12 +23,13 @@ impl World {
         Self::build(provinces, regions, budgets, false)
     }
 
-    /// At its own address, for [`engine::memory::LiveMemory`]; otherwise at
+    /// At its own address, for [`engine_native::memory::LiveMemory`]; otherwise at
     /// a fixed base for [`SliceMemory`].
     fn build(provinces: u32, regions: u32, budgets: (i32, i32), live: bool) -> Self {
         let accumulators = REGIONS + regions as usize * sweather_per_region::STRIDE;
         let province_data =
-            (accumulators + regions as usize * 2 * engine::modifier_entry::STRIDE + 0xff) & !0xff;
+            (accumulators + regions as usize * 2 * engine_native::modifier_entry::STRIDE + 0xff)
+                & !0xff;
         let snow = province_data + provinces as usize * sweather_per_province::STRIDE;
         let mud = snow + provinces as usize;
         let clocks = (mud + provinces as usize + 0xff) & !0xff;
@@ -47,7 +48,7 @@ impl World {
             province_data,
         };
         world.put(
-            STATE + engine::cgame_state::WEATHER_MANAGER,
+            STATE + engine_native::cgame_state::WEATHER_MANAGER,
             &((world.base + MANAGER) as u64).to_le_bytes(),
         );
         world.put(
@@ -79,7 +80,7 @@ impl World {
                 record + sweather_per_region::ID,
                 &(slot as i32 + 1).to_le_bytes(),
             );
-            let entries = accumulators + slot as usize * 2 * engine::modifier_entry::STRIDE;
+            let entries = accumulators + slot as usize * 2 * engine_native::modifier_entry::STRIDE;
             world.put(
                 record + sweather_per_region::MODIFIERS,
                 &((world.base + entries) as u64).to_le_bytes(),
@@ -93,7 +94,7 @@ impl World {
                 &2_u32.to_le_bytes(),
             );
             for (index, key) in COMBAT_KEYS.into_iter().enumerate() {
-                let entry = entries + index * engine::modifier_entry::STRIDE;
+                let entry = entries + index * engine_native::modifier_entry::STRIDE;
                 world.put(entry, &key.to_le_bytes());
                 world.put(entry + 8, &(i64::from(slot) * 1000).to_le_bytes());
             }
@@ -134,7 +135,7 @@ impl World {
     }
 
     fn combat_value(&self, slot: u32) -> usize {
-        self.accumulators + slot as usize * 2 * engine::modifier_entry::STRIDE + 8
+        self.accumulators + slot as usize * 2 * engine_native::modifier_entry::STRIDE + 8
     }
 
     fn budgets(&mut self, (provinces, regions): (i32, i32)) {
@@ -163,7 +164,8 @@ impl World {
     /// the world's arrays; returns the value's address.
     fn province_entry(&mut self, slot: u32, key: u32, value: i64) -> usize {
         let entry = (self.bytes.len() + 0xf) & !0xf;
-        self.bytes.resize(entry + engine::modifier_entry::STRIDE, 0);
+        self.bytes
+            .resize(entry + engine_native::modifier_entry::STRIDE, 0);
         let header = self.province(slot) + sweather_per_province::MODIFIERS;
         self.put(header, &((self.base + entry) as u64).to_le_bytes());
         self.put(header + 8, &1_u32.to_le_bytes());
@@ -617,7 +619,7 @@ fn a_difference_reads_all_and_only_an_unexplained_one_poisons() {
 fn a_record_difference_reads_every_province_modifier_entry() {
     let rotation = crate::sampled_verify::ROTATION as u32;
     let mut world = World::new(80, 9, (5, 2));
-    let key = engine::modifier_keys::ARMY_SPEED_FACTOR;
+    let key = engine_executable::modifier_keys::ARMY_SPEED_FACTOR;
     let entries: Vec<usize> = (0..80)
         .map(|slot| world.province_entry(slot, key, i64::from(slot)))
         .collect();
@@ -657,7 +659,7 @@ fn a_record_difference_reads_every_province_modifier_entry() {
 #[ignore = "synthetic guarded weather window timing"]
 fn weather_window_bench() {
     let mut world = World::build(13_414, 305, (584, 7), true);
-    let live = unsafe { engine::memory::LiveMemory::new() };
+    let live = unsafe { engine_native::memory::LiveMemory::new() };
     let state = world.base + STATE;
     let mut evict = vec![0_u8; 256 << 20];
     let mut jobs: [WeatherJob; 3] = std::array::from_fn(|_| WeatherJob::new());

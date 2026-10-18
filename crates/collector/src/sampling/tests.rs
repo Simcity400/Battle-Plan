@@ -1,14 +1,14 @@
 use super::*;
 
 struct NoDivisionReads;
-impl engine::Memory for NoDivisionReads {
+impl engine_native::Memory for NoDivisionReads {
     fn copy(&self, address: usize, _: &mut [u8]) -> bool {
         panic!("division handoff retried native input at {address:#x}");
     }
 }
 
 struct NoRosterRetry<'a>(&'a [u8]);
-impl engine::Memory for NoRosterRetry<'_> {
+impl engine_native::Memory for NoRosterRetry<'_> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         use super::divisions_test_kit as kit;
         assert!(
@@ -177,7 +177,7 @@ fn a_rejected_presentation_fails_beside_a_completed_movement_pass() {
 #[test]
 fn a_rejected_fronts_job_returns_its_part_and_keeps_the_orders_failure() {
     use crate::extended::plans::{Capacities, Captured};
-    use engine::walk::Outcome;
+    use engine_native::walk::Outcome;
     let shared = Shared::new(0, 0, 1);
     let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
     pool.shutdown().unwrap();
@@ -265,7 +265,7 @@ fn a_rejected_order_part_returns_its_part_with_the_admission_reason() {
 #[test]
 fn a_rejected_stitch_keeps_an_earlier_order_failure() {
     use crate::extended::plans::{Capacities, Captured};
-    use engine::walk::Outcome;
+    use engine_native::walk::Outcome;
     let shared = Shared::new(0, 0, 1);
     let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
     pool.shutdown().unwrap();
@@ -336,7 +336,7 @@ fn stitch_request(base: usize, earlier: Option<&'static str>) -> acquisition::Or
 /// failing there did. An uncontained panic stopped the pool at once.
 #[test]
 fn a_stitch_panic_stops_the_pool_only_at_the_stitch_join() {
-    use engine::walk::Outcome;
+    use engine_native::walk::Outcome;
     let shared = Shared::new(0, 0, 1);
     let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
     let mut batch = acquisition::Batch::new(&pool);
@@ -435,7 +435,7 @@ fn a_drained_stitch_panic_is_counted_and_stops_the_pool() {
 /// failure takes the acquisition reason. An earlier census reason stands.
 #[test]
 fn a_stitch_settles_with_the_reason_of_its_join_segment() {
-    use engine::walk::Outcome;
+    use engine_native::walk::Outcome;
     let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
     pool.shutdown().unwrap();
     let batch = acquisition::Batch::new(&pool);
@@ -543,7 +543,7 @@ fn failed_division_inputs_keep_the_original_roster_fault_through_core_and_decode
         bytes: &'a [u8],
         attempts: std::cell::Cell<usize>,
     }
-    impl engine::Memory for FirstRosterFault<'_> {
+    impl engine_native::Memory for FirstRosterFault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             if address == kit::C0 + ccountry::DIVISIONS {
                 self.attempts.set(self.attempts.get() + 1);
@@ -702,10 +702,10 @@ fn missing_and_short_owned_division_source_packets_refuse_final_equipment_consum
         ..Default::default()
     };
     let countries = Arc::new(Cache::try_with_capacity(0).unwrap());
-    let hour = replay::cadence::refresh_slot(TableId::DivisionEquipment).unwrap() as i32;
+    let hour = replay_data::cadence::refresh_slot(TableId::DivisionEquipment).unwrap() as i32;
     // Exercise the final equipment consumers on their native slot; a full
     // refresh also acquires the independent fuel contributor roster.
-    assert!(!replay::cadence::should_walk(
+    assert!(!replay_data::cadence::should_walk(
         TableId::CountryFuel,
         hour,
         false
@@ -824,15 +824,15 @@ fn failed_division_job_publishes_hourly_census_reason_even_without_details() {
         let unavailable = Outcome::Unavailable { reason };
         assert_eq!(frame.divisions_result, unavailable);
         assert_eq!(
-            frame.extended.outcomes()[replay::rows::TableId::DivisionCensus.index()],
+            frame.extended.outcomes()[replay_data::rows::TableId::DivisionCensus.index()],
             unavailable
         );
         for table in [
-            replay::rows::TableId::DivisionEquipment,
-            replay::rows::TableId::ArmyUpgradeGroups,
-            replay::rows::TableId::ArmyUpgradeRequests,
-            replay::rows::TableId::ArmyUpgradeDeliveries,
-            replay::rows::TableId::ArmyUpgradeProduced,
+            replay_data::rows::TableId::DivisionEquipment,
+            replay_data::rows::TableId::ArmyUpgradeGroups,
+            replay_data::rows::TableId::ArmyUpgradeRequests,
+            replay_data::rows::TableId::ArmyUpgradeDeliveries,
+            replay_data::rows::TableId::ArmyUpgradeProduced,
         ] {
             assert_eq!(
                 frame.extended.outcomes()[table.index()],
@@ -886,8 +886,8 @@ fn the_daily_hour_stores_both_id_counters_and_later_hours_compare_by_handle_type
     impl Memory for Counterset {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let bytes = match address {
-                engine::cship::NEXT_ID_RVA => self.0.to_le_bytes(),
-                engine::creference_registry::ID_COUNTER_RVA => self.1.to_le_bytes(),
+                engine_native::cship::NEXT_ID_RVA => self.0.to_le_bytes(),
+                engine_native::creference_registry::ID_COUNTER_RVA => self.1.to_le_bytes(),
                 _ => return false,
             };
             if output.len() != 4 {
@@ -920,8 +920,8 @@ fn the_daily_hour_stores_both_id_counters_and_later_hours_compare_by_handle_type
     assert!(counters.minted_after((7_001 << 32) | 0x1268));
     assert!(!counters.minted_after((41 << 32) | 0x1268));
     // The unit counter's own value is the next unit id.
-    assert!(!counters.minted_after((39 << 32) | u64::from(engine::cship::HANDLE_TYPE)));
-    assert!(counters.minted_after((40 << 32) | u64::from(engine::cship::HANDLE_TYPE)));
+    assert!(!counters.minted_after((39 << 32) | u64::from(engine_native::cship::HANDLE_TYPE)));
+    assert!(counters.minted_after((40 << 32) | u64::from(engine_native::cship::HANDLE_TYPE)));
     // An unreadable counter at the daily walk leaves the next hours unknown.
     struct Unreadable;
     impl Memory for Unreadable {
@@ -958,7 +958,7 @@ fn order_counter_capture_gates_and_clears_recycled_metadata_without_allocation()
         0x2000 + ccountry::ORDER_INSTANCE_COUNTER,
         &3812_u32.to_le_bytes(),
     );
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: 0x1000,
         bytes: &bytes,
     };
@@ -971,7 +971,7 @@ fn order_counter_capture_gates_and_clears_recycled_metadata_without_allocation()
     sample.capture(
         true,
         &memory,
-        engine::Memory::authenticated_countries(&cached, 0, 0x1000),
+        engine_native::Memory::authenticated_countries(&cached, 0, 0x1000),
     );
     assert!(sample.forced);
     assert!(sample.read.unwrap().complete());
@@ -983,7 +983,7 @@ fn order_counter_capture_gates_and_clears_recycled_metadata_without_allocation()
     sample.capture(
         false,
         &memory,
-        engine::Memory::authenticated_countries(&cached, 0, 0x1000),
+        engine_native::Memory::authenticated_countries(&cached, 0, 0x1000),
     );
     assert!(!sample.forced);
     assert_eq!(sample.read, None);
@@ -1054,7 +1054,7 @@ fn divisions_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and
     assert!(
         detail_bytes
             >= job.census.source_requirement() as u64
-                * size_of::<engine::carmy_upgrades_requests::Row>() as u64
+                * size_of::<engine_deployment::carmy_upgrades_requests::Row>() as u64
     );
     decode_divisions_payload(&mut frame, 0, &mut job, &mut [0; 6]);
     let payload_after = expected(&job);
@@ -1552,7 +1552,10 @@ fn lost_ranges_preserve_reload_origins_and_never_bridge_discontinuities() {
 
 #[test]
 fn end_of_hour_losses_record_the_entry_hour_as_the_lost_and_loaded_hour() {
-    assert_eq!(SAMPLE_BOUNDARY, replay::identity::SampleBoundary::EndOfHour);
+    assert_eq!(
+        SAMPLE_BOUNDARY,
+        replay_data::identity::SampleBoundary::EndOfHour
+    );
     let mut batch = LossBatch::default();
     batch.push(Some(clock(20, 3).borrowed()));
     batch.push(Some(clock(21, 3).borrowed()));
@@ -1654,16 +1657,16 @@ fn prepared_cadence() -> CadenceState {
 
 #[test]
 fn cadence_rotation_walks_recorded_families_once_per_24_hours() {
-    use replay::cadence::{Cadence, cadence, is_refresh};
-    use replay::rows::TableId;
+    use replay_data::rows::TableId;
+    use replay_data::{cadence::Cadence, cadence::cadence, cadence::is_refresh};
     // A retired table keeps its cadence but is never walked.
     let recorded = |table: TableId| {
         table
             .last_change()
-            .present(replay::format::FormatVersion::CURRENT.version())
+            .present(replay_data::format::FormatVersion::CURRENT.version())
     };
     for base in [i32::MIN, -25, -1, 0, 1, 60_820_531, i32::MAX - 23] {
-        let mut refreshes = [0; replay::frame::TABLE_COUNT];
+        let mut refreshes = [0; replay_data::rows::TABLE_COUNT];
         for offset in 0..24 {
             let hour: i32 = base + offset;
             let slot = hour.rem_euclid(24);
@@ -1675,14 +1678,14 @@ fn cadence_rotation_walks_recorded_families_once_per_24_hours() {
                     Cadence::Static => false,
                 };
                 assert_eq!(is_refresh(table, hour), expected, "{table:?} at {hour}");
-                let walk = replay::cadence::should_walk(table, hour, false);
+                let walk = replay_data::cadence::should_walk(table, hour, false);
                 assert_eq!(
                     walk,
                     expected && recorded(table),
                     "{table:?} walk at {hour}"
                 );
                 assert_eq!(
-                    replay::cadence::should_walk(table, hour, true),
+                    replay_data::cadence::should_walk(table, hour, true),
                     recorded(table),
                     "{table:?} forced at {hour}"
                 );
@@ -1754,7 +1757,7 @@ fn periodic_keyframe_keeps_observation_continuous_but_load_gap_and_campaign_do_n
 fn table_retry_preserves_admitted_politics_mutations() {
     use crate::politics_changes::{self as politics, Event, LaneCursor, StagingFixture};
     let _serial = politics::staging_test();
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: 0,
         bytes: &[],
     };
@@ -1798,10 +1801,13 @@ fn table_retry_preserves_admitted_politics_mutations() {
 fn wars_table_is_hourly_tier_h_with_no_refresh_gate() {
     // WarRelations keeps its hourly cadence: no stagger slot, every hour
     // walks. This pins the unchanged cadence for typed capture.
-    use replay::rows::TableId;
-    assert!(!replay::cadence::is_staggered(TableId::WarRelations));
+    use replay_data::rows::TableId;
+    assert!(!replay_data::cadence::is_staggered(TableId::WarRelations));
     for hour in [0, 1, 2, 3, 60_820_531] {
-        assert!(replay::cadence::is_refresh(TableId::WarRelations, hour));
+        assert!(replay_data::cadence::is_refresh(
+            TableId::WarRelations,
+            hour
+        ));
     }
 }
 
@@ -1845,12 +1851,12 @@ fn wars_typed_capacities_keep_full_validation_and_exact_unread_counts() {
 #[test]
 fn wars_primary_faults_preserve_native_validation_scope() {
     use super::wars_test_kit as kit;
-    use engine::{ccountry, cdiplomacy_status, cgame_state, crelation, memory::SliceMemory};
+    use engine_native::{ccountry, cdiplomacy_status, cgame_state, crelation, memory::SliceMemory};
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: std::ops::Range<usize>,
     }
-    impl engine::Memory for Fault<'_> {
+    impl engine_native::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let Some(end) = address.checked_add(output.len()) else {
                 return false;
@@ -1900,7 +1906,7 @@ fn wars_primary_faults_preserve_native_validation_scope() {
 
 #[test]
 fn divisions_core_is_hourly_and_five_details_refresh_on_daily_slot_two() {
-    use replay::cadence::{is_refresh, refresh_slot, should_walk};
+    use replay_data::{cadence::is_refresh, cadence::refresh_slot, cadence::should_walk};
 
     for table in [
         TableId::Divisions,
@@ -1988,15 +1994,15 @@ fn divisions_split_copy_matches_direct_walk_under_truncation() {
 #[test]
 fn divisions_split_copy_matches_direct_walk_on_fault_matrix() {
     use super::divisions_test_kit as kit;
-    use engine::{
-        carmy_upgrades_requests, cequipment_variant_pool, cgame_state, cprovince, cunit,
-        cupgrade_delivery, memory::SliceMemory,
+    use engine_deployment::{carmy_upgrades_requests, cupgrade_delivery};
+    use engine_native::{
+        cequipment_variant_pool, cgame_state, cprovince, cunit, memory::SliceMemory,
     };
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: std::ops::Range<usize>,
     }
-    impl engine::Memory for Fault<'_> {
+    impl engine_native::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let Some(end) = address.checked_add(output.len()) else {
                 return false;
@@ -2016,8 +2022,8 @@ fn divisions_split_copy_matches_direct_walk_on_fault_matrix() {
         (kit::GAME_STATE + cgame_state::COUNTRIES, [false; 6]),
         (kit::CTAB + 8, [false; 6]),
         (kit::C0, [false; 6]),
-        (kit::C0 + engine::ccountry::ID, [false; 6]),
-        (kit::C0 + engine::ccountry::DIVISIONS, [false; 6]),
+        (kit::C0 + engine_native::ccountry::ID, [false; 6]),
+        (kit::C0 + engine_native::ccountry::DIVISIONS, [false; 6]),
         (0x23000, [false; 6]),
         (kit::A1, [false; 6]),
         (kit::A1 + cunit::HANDLE, [false; 6]),
@@ -2113,11 +2119,11 @@ fn divisions_split_copy_matches_direct_walk_on_fault_matrix() {
     }
 }
 
-fn divisions_presentation_memory() -> impl engine::Memory {
+fn divisions_presentation_memory() -> impl engine_native::Memory {
     use super::divisions_test_kit as kit;
-    use engine::csub_unit_definition as stats;
+    use engine_native::csub_unit_definition as stats;
     struct Memory(Vec<u8>);
-    impl engine::Memory for Memory {
+    impl engine_native::Memory for Memory {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             if address == carmy::COUNTER_ATTRITION_THRESHOLD_RVA && output.len() == 8 {
                 output.copy_from_slice(&500_i64.to_le_bytes());
@@ -2139,8 +2145,9 @@ fn divisions_presentation_memory() -> impl engine::Memory {
         bytes[army + cunit::STAT_BLOCK..army + cunit::STAT_BLOCK + 8]
             .copy_from_slice(&(stats as u64).to_le_bytes());
         let acclimatization = army + carmy::ACCLIMATIZATION;
-        bytes[acclimatization..acclimatization + 8]
-            .copy_from_slice(&(engine::acclimatization_data::VTABLE_RVA as u64).to_le_bytes());
+        bytes[acclimatization..acclimatization + 8].copy_from_slice(
+            &(engine_native::acclimatization_data::VTABLE_RVA as u64).to_le_bytes(),
+        );
     }
     Memory(bytes)
 }
@@ -2148,8 +2155,8 @@ fn divisions_presentation_memory() -> impl engine::Memory {
 #[test]
 fn divisions_owned_success_supplies_both_live_companions_before_decode_without_erasing_them() {
     use super::divisions_test_kit as kit;
-    use replay::frame::TableView;
-    use replay::rows::{TableId, TableRows};
+    use replay_data::{rows::TableId, rows::TableRows};
+    use replay_frame::frame::TableView;
     let memory = divisions_presentation_memory();
     let ctx = DivisionsCopyContext {
         base: kit::BASE,
@@ -2285,7 +2292,7 @@ fn divisions_copied_sources_distinguish_semantic_faults_capacity_and_empty_censu
 fn divisions_owned_census_survives_a_private_core_field_fault() {
     use super::divisions_test_kit as kit;
     struct Fault<'a>(&'a [u8]);
-    impl engine::Memory for Fault<'_> {
+    impl engine_native::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let fault = kit::A1 + carmy::STRENGTH;
             if address <= fault && address.saturating_add(output.len()) > fault {
@@ -2324,9 +2331,10 @@ fn divisions_shared_empty_country_census_preserves_independent_fog_success() {
     let memory = kit::memory(&bytes);
     let mut census = crate::division_census::Census::new();
     census.capture(&memory, kit::BASE, kit::GAME_STATE, 64);
-    let direct = engine::unit_viewer_entry::walk(&memory, kit::BASE, kit::GAME_STATE, &mut []);
+    let direct =
+        engine_visibility::unit_viewer_entry::walk(&memory, kit::BASE, kit::GAME_STATE, &mut []);
     assert_eq!(direct, Outcome::Rows { len: 0 });
-    let shared = engine::unit_viewer_entry::walk_with_divisions(
+    let shared = engine_visibility::unit_viewer_entry::walk_with_divisions(
         &memory,
         kit::BASE,
         kit::GAME_STATE,
@@ -2349,7 +2357,7 @@ fn divisions_owned_batch_does_not_retry_a_failed_field_into_success() {
         bytes: &'a [u8],
         pending: std::cell::Cell<bool>,
     }
-    impl engine::Memory for OnceFault<'_> {
+    impl engine_native::Memory for OnceFault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let fault = kit::A1 + carmy::STRENGTH;
             if address <= fault
@@ -2383,19 +2391,19 @@ fn divisions_owned_batch_does_not_retry_a_failed_field_into_success() {
 fn divisions_seeded_worker_preserves_primary_trace_and_never_repeats_core() {
     use super::divisions_test_kit as kit;
     use crate::read_accounting;
-    use replay::rows::TableId;
+    use replay_data::rows::TableId;
     struct Traced<'a> {
         bytes: &'a [u8],
         calls: std::cell::RefCell<Vec<(usize, usize)>>,
     }
-    impl engine::Memory for Traced<'_> {
+    impl engine_native::Memory for Traced<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.calls.borrow_mut().push((address, output.len()));
             kit::memory(self.bytes).copy(address, output)
         }
     }
     struct NoRead;
-    impl engine::Memory for NoRead {
+    impl engine_native::Memory for NoRead {
         fn copy(&self, _: usize, _: &mut [u8]) -> bool {
             panic!("completed core repeated a read");
         }
@@ -2488,7 +2496,7 @@ fn divisions_seeded_worker_preserves_primary_trace_and_never_repeats_core() {
 fn divisions_seeded_worker_rejects_changed_context_without_reacquiring_inputs() {
     use super::divisions_test_kit as kit;
     struct NoRead;
-    impl engine::Memory for NoRead {
+    impl engine_native::Memory for NoRead {
         fn copy(&self, _: usize, _: &mut [u8]) -> bool {
             panic!("invalid worker context must not acquire live state");
         }
@@ -2548,7 +2556,7 @@ fn inactive_division_details_skip_capacity_reads_and_decode_installation() {
         bytes: &'a [u8],
         calls: std::cell::RefCell<Vec<(usize, usize)>>,
     }
-    impl engine::Memory for Traced<'_> {
+    impl engine_native::Memory for Traced<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.calls.borrow_mut().push((address, output.len()));
             kit::memory(self.bytes).copy(address, output)
@@ -2583,7 +2591,7 @@ fn inactive_division_details_skip_capacity_reads_and_decode_installation() {
     assert!(Arc::ptr_eq(&lease, job.census.unit_inputs().unwrap()));
     assert_eq!(job.details.allocated_bytes(), 0);
     let skipped = Outcome::Unavailable {
-        reason: replay::cadence::SKIPPED_REASON,
+        reason: replay_data::cadence::SKIPPED_REASON,
     };
     assert_eq!(job.details.outcomes(), [skipped; 5]);
     assert_eq!(report.copy_ticks[1..], [0; 5]);
@@ -2605,7 +2613,7 @@ fn inactive_division_details_skip_capacity_reads_and_decode_installation() {
     let mut frame = Captured::new();
     frame
         .extended
-        .fail_division_details(replay::cadence::SKIPPED_REASON);
+        .fail_division_details(replay_data::cadence::SKIPPED_REASON);
     frame.extended.set_divisions_raw_mode(true);
     let detail = frame.extended.test_division_detail();
     let pointer = detail.division_equipment.rows.as_ptr();
@@ -2757,7 +2765,7 @@ fn contained_acquisition_failure_marks_the_naval_event_interval_unavailable() {
 struct CampaignClockMemory {
     bytes: Vec<u8>,
 }
-impl engine::Memory for CampaignClockMemory {
+impl engine_native::Memory for CampaignClockMemory {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
             output.copy_from_slice(&0x1000_u64.to_le_bytes());
@@ -2766,7 +2774,7 @@ impl engine::Memory for CampaignClockMemory {
             output.copy_from_slice(&7_i64.to_le_bytes());
             true
         } else {
-            engine::memory::SliceMemory {
+            engine_native::memory::SliceMemory {
                 base: 0x1000,
                 bytes: &self.bytes,
             }

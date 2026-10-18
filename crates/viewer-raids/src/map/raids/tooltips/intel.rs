@@ -2,7 +2,9 @@
 //! for products, divisions and the final subtraction. The displayed rating
 //! is derived rather than stored.
 use super::super::{RaidAssets, script::World};
-use replay::rows::{RaidCounterOperative, RaidIntelInputRow, RaidScope, tables};
+use replay_data::{
+    rows::RaidCounterOperative, rows::RaidIntelInputRow, rows::RaidScope, rows::tables,
+};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug)]
@@ -47,7 +49,7 @@ impl Default for Defines {
 }
 
 impl Defines {
-    pub fn read(d: &installed_content::defines::Defines) -> Result<Self, String> {
+    pub fn read(d: &installed_content_core::defines::Defines) -> Result<Self, String> {
         let raid = |name| d.fixed5("NRaids", name).map_err(|e| e.to_string());
         let op = |name| d.fixed5("NOperatives", name).map_err(|e| e.to_string());
         Ok(Self {
@@ -340,7 +342,7 @@ pub fn current(
 }
 
 pub fn target_state(world: &World<'_>, scope: &RaidScope) -> Result<Option<u32>, String> {
-    installed_content::raids::target::state(world.frame(), scope)
+    installed_content_raids::raids::target::state(world.frame(), scope)
 }
 
 #[cfg(test)]

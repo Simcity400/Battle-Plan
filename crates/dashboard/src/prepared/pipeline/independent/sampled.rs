@@ -72,7 +72,9 @@ use crate::{
 };
 use dashboard_base::prepared::timing::FamilyTimings;
 use dashboard_base::products::resources::ResourceNaming;
-use replay::{container::Replay, format::FormatVersion, frame::DecodedFrame, rows::TableId};
+use replay::container::Replay;
+use replay_data::{format::FormatVersion, rows::TableId};
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     any::Any,
@@ -123,7 +125,7 @@ trait Sampled: Serialize + DeserializeOwned + Send + 'static {
     /// Before the block's hours: what hourly preparation does for it at
     /// every block. An error stops preparation, as the walk's does.
     fn configure(&mut self, block: &Block<'_>) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope("fold binds", None);
+        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
         let _ = block;
         Ok(())
     }
@@ -259,7 +261,7 @@ impl Sampled for air_force::prepared::Prepared {
     }
 
     fn configure(&mut self, block: &Block<'_>) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope("fold binds", None);
+        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
         Self::configure(self, block.source, block.context);
         Ok(())
     }
@@ -346,7 +348,7 @@ impl Sampled for navy::prepared::Prepared {
     }
 
     fn configure(&mut self, block: &Block<'_>) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope("fold binds", None);
+        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
         Self::configure(self, block.source, block.context);
         Ok(())
     }
@@ -426,7 +428,7 @@ impl Sampled for StabilityAccumulator {
                     TableId::WarRelations,
                     TableId::CountryCounterInputs,
                 ],
-                &installed_content::country_names::TABLES,
+                &installed_content_country_names::country_names::TABLES,
             ])
         });
         &TABLES
@@ -581,7 +583,7 @@ impl Sampled for supply_health::prepared::Prepared {
     /// Its defines, read once from the content, as the walk binds them at
     /// every block.
     fn configure(&mut self, block: &Block<'_>) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope("fold binds", None);
+        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
         Self::configure(self, block.source, block.context.content.as_ref())
     }
 
@@ -646,7 +648,7 @@ impl Sampled for party_history::prepared::Prepared {
                     TableId::Provinces,
                     TableId::ReservedCountryNaming,
                 ],
-                &installed_content::country_names::TABLES,
+                &installed_content_country_names::country_names::TABLES,
             ])
         });
         &TABLES
@@ -744,7 +746,7 @@ impl Sampled for Trade {
     }
 
     fn configure(&mut self, block: &Block<'_>) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope("fold binds", None);
+        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
         self.naming = Some(ResourceNaming::of(block.source, block.context));
         Ok(())
     }
@@ -858,7 +860,7 @@ impl Sampled for Territory {
                     TableId::CountryCounterInputs,
                     TableId::CountryExperienceGains,
                 ],
-                &installed_content::country_names::TABLES,
+                &installed_content_country_names::country_names::TABLES,
             ])
         });
         &TABLES
@@ -874,7 +876,7 @@ impl Sampled for Territory {
     /// Its area data and breakdown content, bound at every block as the walk
     /// binds them.
     fn configure(&mut self, block: &Block<'_>) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope("fold binds", None);
+        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
         // Cancellation is checked between blocks.
         self.prepared
             .configure(block.source, block.context, &AtomicBool::new(false))
@@ -1050,9 +1052,9 @@ where
     F::Scanned: Send,
     F::Part: Send,
 {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let mut facts = {
-        let _cpu = ::replay::cpu::scope("fold facts", None);
+        let _cpu = ::replay_frame::cpu::scope("fold facts", None);
         *facts
             .downcast::<BlockFacts<F>>()
             .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -1061,7 +1063,7 @@ where
     // whole, so its refusals are the walk's.
     let running = AtomicBool::new(false);
     let (first, result) = {
-        let _cpu = ::replay::cpu::scope("fold observe", None);
+        let _cpu = ::replay_frame::cpu::scope("fold observe", None);
         prepared.fold_first(&facts, block.replay, block.source, block.context, &running)
     };
     #[cfg(test)]
@@ -1094,7 +1096,7 @@ where
         block.index,
         tables,
         |raw, frame| {
-            let _cpu = ::replay::cpu::scope("fold driver", None);
+            let _cpu = ::replay_frame::cpu::scope("fold driver", None);
             let changes = tracker.observe_updates(frame, raw, format);
             if frame.hour == block.index.last_hour {
                 last = Some(frame.clone());
@@ -1106,7 +1108,7 @@ where
             #[cfg(test)]
             prepass::note(notes.0);
             let result = {
-                let _cpu = ::replay::cpu::scope("fold observe", None);
+                let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                 prepared.observe(
                     frame,
                     block.replay,
@@ -1185,9 +1187,9 @@ where
     F::Scanned: Send,
     F::Part: Send,
 {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let last = {
-        let _cpu = ::replay::cpu::scope("fold frame", None);
+        let _cpu = ::replay_frame::cpu::scope("fold frame", None);
         facts.last.clone()
     };
     #[cfg(test)]
@@ -1196,7 +1198,7 @@ where
     }
     let threads = super::super::lanes::parallelism().clamp(1, 8);
     let reached = {
-        let _cpu = ::replay::cpu::scope("fold observe", None);
+        let _cpu = ::replay_frame::cpu::scope("fold observe", None);
         prepared.fold_rest(facts, block.source, block.context, threads, observed)?
     };
     Ok((Folded::Fast, reached.or(Some(hour)), last))
@@ -1337,7 +1339,7 @@ impl<S: Sampled> SampledBranch<S> {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         let previous = if S::RESUMES {
             self.previous(block)?
         } else {
@@ -1361,7 +1363,7 @@ impl<S: Sampled> SampledBranch<S> {
         let read = block.read_alone(
             S::tables(),
             |raw, frame| {
-                let _cpu = ::replay::cpu::scope("fold driver", None);
+                let _cpu = ::replay_frame::cpu::scope("fold driver", None);
                 let changes = tracker.observe_updates(frame, raw, format);
                 if S::RESUMES && frame.hour == block.index.last_hour {
                     last = Some(frame.clone());
@@ -1373,7 +1375,7 @@ impl<S: Sampled> SampledBranch<S> {
                 #[cfg(test)]
                 prepass::note(S::OBSERVED);
                 let result = {
-                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     state.observe(frame, block, &changes, &running, timings)
                 };
                 match observed(frame.hour, result) {
@@ -1413,7 +1415,7 @@ impl<S: Sampled> Branch for SampledBranch<S> {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<(Folded, Option<i32>)> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         if S::FOLDS {
             let previous = if S::RESUMES {
                 self.previous(block)?
@@ -1444,7 +1446,7 @@ impl<S: Sampled> Branch for SampledBranch<S> {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         self.observe_hours(block, observed, check)
     }
 

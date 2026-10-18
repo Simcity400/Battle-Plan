@@ -1,13 +1,14 @@
 use super::*;
 use crate::effect_description::tests::{Fixture, fresh};
 use crate::scripted_text::EventScope;
-use replay::{frame::TableView, rows::*};
+use replay_data::rows::*;
+use replay_frame::frame::TableView;
 
 fn fixture() -> Fixture {
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
-            seed: replay::rows::Recorded::Value(None),
+            seed: replay_data::rows::Recorded::Value(None),
             scope_kind: 1,
             scope_id: 100,
             entries: vec![ScriptVariableEntry {
@@ -25,7 +26,7 @@ fn fixture() -> Fixture {
 
 #[test]
 fn persistent_arithmetic_keeps_unchanged_prefix_without_rng_seed() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     for seed in [
@@ -51,7 +52,7 @@ fn persistent_arithmetic_keeps_unchanged_prefix_without_rng_seed() {
 
 #[test]
 fn persistent_arithmetic_only_describes_authored_tooltips() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     for operation in [
@@ -79,7 +80,7 @@ fn persistent_arithmetic_only_describes_authored_tooltips() {
 #[allow(clippy::field_reassign_with_default)]
 #[test]
 fn tooltip_evaluates_right_before_left_and_repeats_temp_rhs() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     let TableView::Complete(TableRows::CountryAppearance(rows)) =
@@ -97,10 +98,10 @@ fn tooltip_evaluates_right_before_left_and_repeats_temp_rhs() {
     *fixture.frame.tables[TableId::ReservedCountryNaming.index()] = TableView::Unavailable {
         reason: "unused alias country lists not sampled".into(),
     };
-    let mut names = installed_content::key_names::KeyNames::default();
+    let mut names = installed_content_core::key_names::KeyNames::default();
     names.countries = [b"AAA".to_vec()].into();
     names.aliases = [b"ali".to_vec()].into();
-    fixture.aliases = Arc::new(installed_content::tag_aliases::parse(
+    fixture.aliases = Arc::new(installed_content_core::tag_aliases::parse(
         &[(
             "common/country_tag_aliases/synthetic.txt",
             b"ALI={original_tag=AAA set_temp_variable={n=9}}".as_slice(),
@@ -119,7 +120,7 @@ fn tooltip_evaluates_right_before_left_and_repeats_temp_rhs() {
 
 #[test]
 fn temporary_scalars_execute_before_tooltip_in_one_session() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let out = fixture.render(
@@ -147,7 +148,7 @@ fn temporary_scalars_execute_before_tooltip_in_one_session() {
 
 #[test]
 fn effect_division_reads_if_zero_from_tls_even_for_nonzero_divisors() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let out = fixture.render(
@@ -177,7 +178,7 @@ fn effect_division_reads_if_zero_from_tls_even_for_nonzero_divisors() {
 
 #[test]
 fn clamp_and_modulo_execute_but_empty_setters_do_not() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let out = fixture.render(
@@ -205,7 +206,7 @@ fn clamp_and_modulo_execute_but_empty_setters_do_not() {
 
 #[test]
 fn global_tooltip_target_replaces_in_order_and_cleans_up() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let mut graph = fresh();
@@ -237,7 +238,7 @@ fn global_tooltip_target_replaces_in_order_and_cleans_up() {
 
 #[test]
 fn known_noops_do_not_need_rng_or_supply_totals() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let out = fixture.render(
@@ -302,7 +303,7 @@ fn known_noops_do_not_need_rng_or_supply_totals() {
 
 #[test]
 fn format98_random_temp_uses_store_seed_and_keeps_one_tls_session() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     let TableView::Complete(TableRows::ScriptVariables(rows)) =
@@ -323,7 +324,8 @@ fn format98_random_temp_uses_store_seed_and_keeps_one_tls_session() {
             Ok(967)
         );
         let body =
-            installed_content::parser::parse(b"set_temp_variable_to_random={var=n min=2 max=4}").unwrap();
+            installed_content_core::parser::parse(b"set_temp_variable_to_random={var=n min=2 max=4}")
+                .unwrap();
         assert_eq!(renderer.group(&body.items, scopes, 0), "");
         assert_eq!(
             renderer.evaluator().unwrap().scoped_value(b"n", scopes),
@@ -392,7 +394,7 @@ fn format98_random_temp_uses_store_seed_and_keeps_one_tls_session() {
 
 #[test]
 fn format98_random_seed_uses_immediate_from_and_integer_flooring() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     let TableView::Complete(TableRows::ScriptVariables(rows)) =
@@ -420,7 +422,7 @@ fn format98_random_seed_uses_immediate_from_and_integer_flooring() {
                 .scoped_value(b"random_seed", scopes),
             Ok(1494)
         );
-        let body = installed_content::parser::parse(
+        let body = installed_content_core::parser::parse(
             b"set_temp_variable_to_random={var=n min=-2.25 max=3.75 integer=yes}",
         )
         .unwrap();
@@ -440,7 +442,7 @@ fn format98_random_seed_uses_immediate_from_and_integer_flooring() {
 
 #[test]
 fn format98_variable_rng_selects_state_character_and_global_stores() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
@@ -492,7 +494,7 @@ fn format98_variable_rng_selects_state_character_and_global_stores() {
 
 #[test]
 fn format98_random_seed_unavailable_or_old_records_refuse_without_losing_prefix() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     for seed in [Recorded::NotRecorded, Recorded::Value(None)] {
@@ -527,7 +529,7 @@ fn format98_random_seed_unavailable_or_old_records_refuse_without_losing_prefix(
 
 #[test]
 fn format98_supply_temps_use_stored_scalars_ceiling_and_content_minimum() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     for (kind, need, raw, expected) in [
@@ -555,7 +557,7 @@ fn format98_supply_temps_use_stored_scalars_ceiling_and_content_minimum() {
         );
         fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
             let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
-            let body = installed_content::parser::parse(script.as_bytes()).unwrap();
+            let body = installed_content_core::parser::parse(script.as_bytes()).unwrap();
             assert_eq!(renderer.group(&body.items, scopes, 0), "");
             assert_eq!(
                 renderer.evaluator().unwrap().scoped_value(b"n", scopes),
@@ -586,7 +588,7 @@ fn format98_supply_temps_use_stored_scalars_ceiling_and_content_minimum() {
 
 #[test]
 fn format98_supply_unavailable_and_old_scalars_keep_named_refusals() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     for unavailable in [false, true] {

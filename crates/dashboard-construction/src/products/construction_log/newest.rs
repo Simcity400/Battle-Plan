@@ -2,7 +2,7 @@
 use super::*;
 use dashboard_base::prepared::{frame_changes::FrameChangeTracker, query::progressive};
 use dashboard_text::metadata::{check_cancel, validate_campaign};
-use replay::frame::FrameDecoder;
+use replay_frame::frame::FrameDecoder;
 
 const TABLES: &[TableId] = &[
     TableId::Campaign,
@@ -278,7 +278,7 @@ mod tests {
         CIVILIAN, MOD_REACTOR, building_at, building_line, construction_frame,
     };
     use dashboard_core::test_fixtures::{CAMPAIGN, continuation_records, records};
-    use replay::rows::{ConstructionLineOutputRow, Recorded, TableRows};
+    use replay_data::{rows::ConstructionLineOutputRow, rows::Recorded, rows::TableRows};
 
     #[derive(Clone, Copy)]
     enum Extra {

@@ -2,17 +2,16 @@
 //! scopes it enters, and tag aliases.
 
 use super::*;
-use installed_content::{
+use installed_content_core::{
     buildings::Buildings, key_names::KeyNames, tag_aliases::TagAliases, trigger_keys::TriggerNames,
 };
-use replay::{
-    frame::{DecodedFrame, Metrics, TableView},
-    rows::{
-        CountryAppearanceRow, CountryCounterInputRow, CountryLinkRow, CountryRow, FactionMemberRow,
-        FocusRow, LexicalTokenRow, Recorded, ReservedCountryNamingRow, ScriptFlagRow, TableId,
-        TableRows, tables,
-    },
+use replay_data::{
+    rows::CountryAppearanceRow, rows::CountryCounterInputRow, rows::CountryLinkRow,
+    rows::CountryRow, rows::FactionMemberRow, rows::FocusRow, rows::LexicalTokenRow,
+    rows::Recorded, rows::ReservedCountryNamingRow, rows::ScriptFlagRow, rows::TableId,
+    rows::TableRows, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::TableView};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -206,14 +205,14 @@ fn with_world_traits<T>(
     roles: Result<&LeaderRoles, &str>,
     traits: Result<
         (
-            &installed_content::unit_leader::Traits,
-            &installed_content::leader_traits::LeaderTraits,
+            &installed_content_core::unit_leader::Traits,
+            &installed_content_core::leader_traits::LeaderTraits,
         ),
         &str,
     >,
     run: impl FnOnce(&World) -> T,
 ) -> T {
-    let aliases: Arc<TagAliases> = Arc::new(installed_content::tag_aliases::parse(
+    let aliases: Arc<TagAliases> = Arc::new(installed_content_core::tag_aliases::parse(
         &[("common/country_tag_aliases/a.txt", aliases.as_bytes())],
         &names(),
     ));
@@ -266,13 +265,13 @@ fn names() -> KeyNames {
     names
 }
 
-fn items(text: &str) -> Vec<installed_content::parser::Item> {
-    installed_content::triggers::read(text.as_bytes(), &names()).items
+fn items(text: &str) -> Vec<installed_content_core::parser::Item> {
+    installed_content_core::triggers::read(text.as_bytes(), &names()).items
 }
 
 #[test]
 fn faction_leader_scope_and_boolean_trigger_share_the_first_member() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = frame(
         &[
@@ -324,7 +323,7 @@ fn faction_leader_scope_and_boolean_trigger_share_the_first_member() {
 
 #[test]
 fn has_elections_reads_the_recorded_test_and_refuses_older_recordings_by_name() {
-    use replay::rows::PoliticsRow;
+    use replay_data::rows::PoliticsRow;
     let mut frame = frame(
         &[(100, 1, "GER", 1, "", ""), (200, 2, "SOV", 1, "", "")],
         &[],
@@ -361,19 +360,20 @@ fn has_elections_reads_the_recorded_test_and_refuses_older_recordings_by_name() 
 
 #[test]
 fn ruling_leader_traits_use_role_key_and_definition_identity() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{
-        CharacterRoleTraitRow, CountryLeaderRoleRow, PartyLeaderRow, PoliticalPartyRow,
+    use replay_data::{
+        rows::CharacterRoleTraitRow, rows::CountryLeaderRoleRow, rows::PartyLeaderRow,
+        rows::PoliticalPartyRow,
     };
     let root = std::env::temp_dir().join(format!("dashboard-ruling-trait-{}", std::process::id()));
     let file = root.join("common/country_leader/traits.txt");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, "leader_traits = { same = {} SAME = {} }").unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let traits = installed_content::leader_traits::read(&layers).unwrap().0;
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let traits = installed_content_core::leader_traits::read(&layers).unwrap().0;
     std::fs::remove_dir_all(root).unwrap();
-    let units = installed_content::unit_leader::Traits::default();
+    let units = installed_content_core::unit_leader::Traits::default();
     let mut frame = frame(&[(100, 0, "AAA", 1, "AAA", "")], &[]);
     *frame.tables[TableId::LexicalTokens.index()] =
         TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
@@ -401,13 +401,13 @@ fn ruling_leader_traits_use_role_key_and_definition_identity() {
                 character: 1,
                 country: 100,
                 ideology: -7,
-                current_ideology: replay::rows::Recorded::Value(Some(Some(99))),
+                current_ideology: replay_data::rows::Recorded::Value(Some(Some(99))),
             },
             CountryLeaderRoleRow {
                 character: 1,
                 country: 100,
                 ideology: 3,
-                current_ideology: replay::rows::Recorded::Value(Some(Some(99))),
+                current_ideology: replay_data::rows::Recorded::Value(Some(Some(99))),
             },
         ]));
     // Current ideology changed; neither it nor the party is the map key.
@@ -456,7 +456,7 @@ fn ruling_leader_traits_use_role_key_and_definition_identity() {
 
 #[test]
 fn default_event_scope_and_country_targets_follow_scope_masks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = frame(&[(100, 1, "AAA", 1, "AAA", "costume")], &[]);
     let roles = LeaderRoles::new(Vec::new());
@@ -500,7 +500,7 @@ fn default_event_scope_and_country_targets_follow_scope_masks() {
 
 #[test]
 fn unknown_pool_inputs_keep_dashboard_boolean_rules() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = frame(&[(100, 1, "AAA", 1, "AAA", "costume")], &[]);
     *frame.tables[TableId::CountryAppearance.index()] = TableView::Unavailable {
@@ -545,7 +545,7 @@ fn unknown_pool_inputs_keep_dashboard_boolean_rules() {
 /// last `if` added across it.
 #[test]
 fn only_loaded_children_count() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = frame(&countries(), &[]);
     with_world(&frame, "", Err("none"), |world| {
@@ -591,7 +591,7 @@ fn only_loaded_children_count() {
 /// would meet may be missing, so it is refused by name.
 #[test]
 fn a_check_all_alias_needs_the_whole_roster() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = frame(&countries(), &[]);
     let aliases = "SEL = { always = yes }";
@@ -618,7 +618,7 @@ fn a_check_all_alias_needs_the_whole_roster() {
 /// carry leaves such a trigger unknown.
 #[test]
 fn a_set_target_carries_nothing_it_was_entered_from() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = frame(&original_countries(), &[]);
     with_world(&frame, "", Err("none"), |world| {
@@ -642,10 +642,10 @@ fn a_set_target_carries_nothing_it_was_entered_from() {
 /// a unit leader as ROOT or PREV does not stop it.
 #[test]
 fn a_character_target_reads_only_this_country() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = frame(&countries(), &[]);
-    let roles = LeaderRoles::new(vec![installed_content::characters::LeaderTemplate {
+    let roles = LeaderRoles::new(vec![installed_content_core::characters::LeaderTemplate {
         path: "common/characters/GER.txt".into(),
         tag: "GER_rommel".into(),
         line: None,
@@ -672,7 +672,7 @@ fn a_character_target_reads_only_this_country() {
 /// refused by name, never followed until the stack overflows.
 #[test]
 fn a_fallback_cycle_is_refused_by_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = frame(&original_countries(), &[]);
     for aliases in [
@@ -692,7 +692,7 @@ fn a_fallback_cycle_is_refused_by_name() {
 /// the answer unknown.
 #[test]
 fn later_candidates_are_read_only_when_reached() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = frame(&original_countries(), &[]);
     let aliases = "ALI = { original_tag = GER country = SB1 } SB1 = { variable = global.foo }";
@@ -725,7 +725,7 @@ fn later_candidates_are_read_only_when_reached() {
 /// clearing, so it carries no character.
 #[test]
 fn a_candidate_scope_is_fresh() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = frame(&original_countries(), &[]);
     with_world(
@@ -754,7 +754,7 @@ fn a_candidate_scope_is_fresh() {
 /// conditional; loading refuses an alternative after an `else` it attached.
 #[test]
 fn conditionals_load_limits_and_alternative_chains() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = frame(&countries(), &[]);
     with_world(&frame, "", Err("none"), |world| {
@@ -809,10 +809,10 @@ fn conditionals_load_limits_and_alternative_chains() {
 /// rejected by the context trigger's mask.
 #[test]
 fn a_character_scope_is_named_by_the_templates() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = frame(&countries(), &[]);
-    let roles = LeaderRoles::new(vec![installed_content::characters::LeaderTemplate {
+    let roles = LeaderRoles::new(vec![installed_content_core::characters::LeaderTemplate {
         path: "common/characters/GER.txt".into(),
         tag: "GER_rommel".into(),
         line: None,
@@ -839,7 +839,7 @@ fn a_character_scope_is_named_by_the_templates() {
 /// hold; the combat scope's links are itself.
 #[test]
 fn a_link_through_a_link_is_its_scope_s_own() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = frame(&original_countries(), &[]);
     with_world(&frame, "", Err("none"), |world| {
@@ -878,7 +878,7 @@ fn a_link_through_a_link_is_its_scope_s_own() {
 /// Combat resets the country carrier, while tag has an explicit combat getter.
 #[test]
 fn combat_reset_clears_country_carrier_but_tag_reads_the_combat_country() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     struct Side;
     impl Combat for Side {
@@ -888,7 +888,7 @@ fn combat_reset_clears_country_carrier_but_tag_reads_the_combat_country() {
         fn trigger(
             &self,
             _: &str,
-            _: &installed_content::parser::Item,
+            _: &installed_content_core::parser::Item,
             _: Scope,
             _: &Evaluator,
         ) -> Option<Eval> {
@@ -948,7 +948,7 @@ fn original_countries() -> Vec<(u32, u32, &'static str, i32, &'static str, &'sta
 
 #[test]
 fn original_predicate_selects_both_countries_and_compares_raw_aliases() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = frame(
         &[(100, 1, "GER", 1, "SOV", ""), (200, 2, "SOV", 1, "", "")],
@@ -996,7 +996,7 @@ fn original_predicate_selects_both_countries_and_compares_raw_aliases() {
 
 #[test]
 fn original_predicate_uses_static_substitution_and_alias_dispatch() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let f = frame(
         &[
@@ -1017,7 +1017,7 @@ fn original_predicate_uses_static_substitution_and_alias_dispatch() {
 
 #[test]
 fn original_predicate_resolves_a_known_null_operand_through_reserved_original() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = frame(&original_countries(), &[]);
     if let TableView::Complete(TableRows::ReservedCountryNaming(rows)) =
@@ -1047,7 +1047,7 @@ fn original_predicate_resolves_a_known_null_operand_through_reserved_original() 
 
 #[test]
 fn reserved_world_owned_count_preserves_signed_values_and_independent_refusals() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = frame(&original_countries(), &[]);
     for count in [
@@ -1084,7 +1084,7 @@ fn reserved_world_owned_count_preserves_signed_values_and_independent_refusals()
 
 #[test]
 fn original_iterators_keep_bucket_order_duplicates_and_skip_resolved_zero() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = frame(
         &[(100, 1, "GER", 1, "GER", ""), (200, 2, "SOV", 1, "", "")],
@@ -1133,7 +1133,7 @@ fn original_iterators_keep_bucket_order_duplicates_and_skip_resolved_zero() {
 
 #[test]
 fn original_aliases_and_null_iterators_read_later_membership_only_when_reached() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = frame(&original_countries(), &[]);
     *f.tables[TableId::ReservedCountryNaming.index()] = TableView::Unavailable {
@@ -1203,7 +1203,7 @@ fn original_aliases_and_null_iterators_read_later_membership_only_when_reached()
 /// that used it.
 #[test]
 fn an_alias_is_the_first_candidate_whose_triggers_pass() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let aliases = "ALI = { original_tag = GER has_country_flag = x } \
                    PRV = { original_tag = GER PREV = { tag = SOV } }";
@@ -1230,7 +1230,7 @@ fn an_alias_is_the_first_candidate_whose_triggers_pass() {
 
 #[test]
 fn aliases_use_exact_bucket_and_physical_array_order_with_first_tie() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = frame(&original_countries(), &[101, 102]);
     let original = "ALI = { original_tag = GER has_country_flag = x }";
@@ -1282,7 +1282,7 @@ fn aliases_use_exact_bucket_and_physical_array_order_with_first_tie() {
 /// original tag or targets; `has_focus_tree` and `has_cosmetic_tag`.
 #[test]
 fn scores_fallbacks_and_every_country() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let aliases = "SOU = { original_tag = SOV country_score = { base = 1 \
                      modifier = { add = 2 has_cosmetic_tag = SOV_left_opposition exists = yes } } } \
@@ -1304,7 +1304,7 @@ fn scores_fallbacks_and_every_country() {
 /// an unavailable table is refused by name.
 #[test]
 fn an_event_target_alias_is_refused_by_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let aliases = "SB1 = { global_event_target = appeased }";
     let mut frame = frame(&countries(), &[]);
@@ -1328,7 +1328,7 @@ type Store<'a> = (u8, u32, &'a [(&'a str, i64)]);
 /// `frame` with `ScriptVariables` rows of `stores`, and state 64, owned by
 /// GER, in `States`.
 fn with_variables(mut frame: DecodedFrame, stores: &[Store<'_>]) -> DecodedFrame {
-    use replay::rows::{ScriptVariableEntry, ScriptVariablesRow, StateRow};
+    use replay_data::{rows::ScriptVariableEntry, rows::ScriptVariablesRow, rows::StateRow};
     let mut rows: Vec<ScriptVariablesRow> = stores
         .iter()
         .map(|(scope_kind, scope_id, entries)| {
@@ -1343,7 +1343,7 @@ fn with_variables(mut frame: DecodedFrame, stores: &[Store<'_>]) -> DecodedFrame
             ScriptVariablesRow {
                 scope_kind: *scope_kind,
                 scope_id: *scope_id,
-                seed: replay::rows::Recorded::Value(None),
+                seed: replay_data::rows::Recorded::Value(None),
                 entries,
             }
         })
@@ -1407,7 +1407,7 @@ fn variables_for(frame: DecodedFrame) -> DecodedFrame {
 /// as signed fixed5, `has_variable` tests the key.
 #[test]
 fn variables_read_the_recorded_stores_as_the_game_reads_them() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = variables_frame();
     let decided = |slot, trigger: &str| check(&frame, "", slot, trigger).decided();
@@ -1464,7 +1464,7 @@ fn variables_read_the_recorded_stores_as_the_game_reads_them() {
 /// a tag alias's variable and an array of states.
 #[test]
 fn stored_scopes_decode_where_a_scope_is_read() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = positive_variables_frame();
     let aliases = "SB1 = { variable = global.owner }";
@@ -1502,9 +1502,9 @@ fn stored_scopes_decode_where_a_scope_is_read() {
 
 #[test]
 fn recorded_builtin_opinion_uses_the_callback_scope_and_directed_sparse_relations() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::RelationOpinionRow;
+    use replay_data::rows::RelationOpinionRow;
 
     let tags: Vec<_> = (0..5000)
         .map(|id| {
@@ -1593,7 +1593,7 @@ fn recorded_builtin_opinion_uses_the_callback_scope_and_directed_sparse_relation
 
 #[test]
 fn recorded_builtin_faction_leader_encodes_first_member_and_requires_membership() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = frame(
         &[
@@ -1643,9 +1643,9 @@ fn recorded_builtin_faction_leader_encodes_first_member_and_requires_membership(
 
 #[test]
 fn recorded_builtin_owned_controlled_states_counts_aliases_and_requires_complete_inputs() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{ProvinceRow, StateRow};
+    use replay_data::{rows::ProvinceRow, rows::StateRow};
 
     let mut f = with_variables(
         frame(&original_countries(), &[]),
@@ -1731,7 +1731,7 @@ fn recorded_builtin_owned_controlled_states_counts_aliases_and_requires_complete
 /// targets without a registry, draws and unsupported temp writers are refused.
 #[test]
 fn runtime_only_operands_are_refused_by_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = variables_frame();
     *frame.tables[TableId::GlobalSavedEventTargets.index()] = TableView::Unavailable {
@@ -1774,7 +1774,7 @@ fn runtime_only_operands_are_refused_by_name() {
 /// last literal is exact, any other repeat is refused by name.
 #[test]
 fn repeated_mean_time_operands_are_exact_only_for_a_last_literal() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = variables_frame();
     with_world(&frame, "", Err("none"), |world| {
@@ -1783,7 +1783,7 @@ fn repeated_mean_time_operands_are_exact_only_for_a_last_literal() {
         let weight = |fields: &str| {
             // Mean-time modifiers own their operands before trigger loading.
             let text = format!("test = {{ base = {{ {fields} }} }}");
-            let database = installed_content::combat_tactics::parse(text.as_bytes(), &names());
+            let database = installed_content_core::combat_tactics::parse(text.as_bytes(), &names());
             assert!(
                 database.unsupported.is_empty(),
                 "{:?}",
@@ -1812,7 +1812,7 @@ fn repeated_mean_time_operands_are_exact_only_for_a_last_literal() {
 /// which evaluation then reads: after one, the temp is refused.
 #[test]
 fn an_injected_temp_after_an_unported_writer_is_refused() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = variables_frame();
     let scopes = Scopes {
@@ -1835,7 +1835,7 @@ fn an_injected_temp_after_an_unported_writer_is_refused() {
     });
 }
 
-fn set_saved(f: &mut DecodedFrame, rows: Vec<replay::rows::GlobalSavedEventTargetRow>) {
+fn set_saved(f: &mut DecodedFrame, rows: Vec<replay_data::rows::GlobalSavedEventTargetRow>) {
     *f.tables[TableId::GlobalSavedEventTargets.index()] = TableView::Complete(
         TableRows::from_rows::<tables::GlobalSavedEventTargets>(rows),
     );
@@ -1843,9 +1843,9 @@ fn set_saved(f: &mut DecodedFrame, rows: Vec<replay::rows::GlobalSavedEventTarge
 
 #[test]
 fn saved_entries_keep_empty_scope_masks_and_caller_clearing() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::GlobalSavedEventTargetRow as Row;
+    use replay_data::rows::GlobalSavedEventTargetRow as Row;
     let mut f = frame(&original_countries(), &[]);
     set_saved(
         &mut f,
@@ -1933,9 +1933,9 @@ fn saved_entries_keep_empty_scope_masks_and_caller_clearing() {
 
 #[test]
 fn an_unsaved_first_name_still_resolves_but_does_not_make_a_dead_target_valid() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::GlobalSavedEventTargetRow as Row;
+    use replay_data::rows::GlobalSavedEventTargetRow as Row;
     let mut f = frame(&countries(), &[]);
     for (country, expected) in [(100, Eval::True), (0, Eval::False)] {
         set_saved(
@@ -1959,9 +1959,9 @@ fn an_unsaved_first_name_still_resolves_but_does_not_make_a_dead_target_valid() 
 
 #[test]
 fn saved_globals_decide_scope_operands_aliases_and_cleared_names() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::GlobalSavedEventTargetRow;
+    use replay_data::rows::GlobalSavedEventTargetRow;
     let mut f = with_variables(
         frame(&original_countries(), &[]),
         &[(1, 100, &[("x", 5 * ONE)])],
@@ -2027,9 +2027,9 @@ fn saved_globals_decide_scope_operands_aliases_and_cleared_names() {
 }
 #[test]
 fn saved_target_aliases_append_id_before_parsing_dotted_values() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::GlobalSavedEventTargetRow;
+    use replay_data::rows::GlobalSavedEventTargetRow;
     let mut f = frame(&countries(), &[]);
     set_saved(
         &mut f,
@@ -2059,9 +2059,9 @@ fn saved_target_aliases_append_id_before_parsing_dotted_values() {
 
 #[test]
 fn first_duplicate_invalid_record_stops_global_lookup_and_state_wins_context() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::GlobalSavedEventTargetRow;
+    use replay_data::rows::GlobalSavedEventTargetRow;
     let mut f = frame(&countries(), &[]);
     let first = GlobalSavedEventTargetRow {
         ordinal: 0,
@@ -2099,9 +2099,9 @@ fn first_duplicate_invalid_record_stops_global_lookup_and_state_wins_context() {
 
 #[test]
 fn global_event_target_prefix_is_a_variable_operand_and_invalid_as_a_context_key() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::GlobalSavedEventTargetRow;
+    use replay_data::rows::GlobalSavedEventTargetRow;
     let mut f = frame(&countries(), &[]);
     set_saved(
         &mut f,
@@ -2128,10 +2128,10 @@ fn global_event_target_prefix_is_a_variable_operand_and_invalid_as_a_context_key
 
 #[test]
 fn saved_characters_select_leaders_for_contexts_and_characters_for_variables() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use super::saved_event_targets::{Reader, Selected as SavedSelection};
-    use replay::rows::GlobalSavedEventTargetRow;
+    use replay_data::rows::GlobalSavedEventTargetRow;
     let mut f = frame(&countries(), &[]);
     let leader = (9u64 << 32) | 1;
     set_saved(
@@ -2158,9 +2158,9 @@ fn saved_characters_select_leaders_for_contexts_and_characters_for_variables() {
 
 #[test]
 fn format99_has_ideology_reads_current_pointer_independently_of_map_key() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{CharacterRow, CountryLeaderRoleRow, Recorded};
+    use replay_data::{rows::CharacterRow, rows::CountryLeaderRoleRow, rows::Recorded};
     let mut frame = frame(&[(100, 1, "AAA", 1, "AAA", "")], &[]);
     *frame.tables[TableId::Characters.index()] =
         TableView::Complete(TableRows::Characters(vec![CharacterRow {
@@ -2181,7 +2181,7 @@ fn format99_has_ideology_reads_current_pointer_independently_of_map_key() {
             current_ideology: Recorded::Value(Some(Some(11))),
         }]));
     let names = TriggerNames {
-        counts: Some(installed_content::trigger_keys::CountTriggerNames {
+        counts: Some(installed_content_core::trigger_keys::CountTriggerNames {
             ideology_types: BTreeSet::from([b"synthetic_type".to_vec()]),
             ..Default::default()
         }),
@@ -2231,7 +2231,7 @@ fn format99_has_ideology_reads_current_pointer_independently_of_map_key() {
 
 #[test]
 fn in_array_uses_exact_fixed5_and_truncated_wrapping_length() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (length, wanted, expected) in [
         (190_000, "5", false),
@@ -2264,7 +2264,7 @@ fn in_array_uses_exact_fixed5_and_truncated_wrapping_length() {
 
 #[test]
 fn in_array_preserves_unused_index_fields_and_reads_tooltip_shorthand() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let f = with_variables(
         frame(&countries(), &[]),
@@ -2312,9 +2312,9 @@ fn in_array_preserves_unused_index_fields_and_reads_tooltip_shorthand() {
 
 #[test]
 fn country_flag_and_completed_focus_require_only_their_recorded_inputs() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::CompletedFocusRow;
+    use replay_data::rows::CompletedFocusRow;
     let mut healthy = frame(&countries(), &[100]);
     *healthy.tables[TableId::CompletedFocuses.index()] =
         TableView::Complete(TableRows::CompletedFocuses(vec![CompletedFocusRow {
@@ -2384,9 +2384,9 @@ fn country_flag_and_completed_focus_require_only_their_recorded_inputs() {
 
 #[test]
 fn continent_reads_the_retained_token_and_names_missing_operands() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{Recorded, StateRow};
+    use replay_data::{rows::Recorded, rows::StateRow};
     let mut f = frame(&countries(), &[]);
     *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![StateRow {
         id: 64,
@@ -2490,13 +2490,15 @@ fn continent_reads_the_retained_token_and_names_missing_operands() {
 
 #[test]
 fn country_leader_ideology_reads_the_recorded_first_leader_without_a_character() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[(
         "common/ideologies/synthetic.txt",
         "ideologies={mod_group={types={First_Subtype={} visible_subtype={}}}}",
     )]);
-    let ideologies = installed_content::ideologies::read(&cat.content.layers).unwrap().0;
+    let ideologies = installed_content_core::ideologies::read(&cat.content.layers)
+        .unwrap()
+        .0;
     let mut f = frame(&countries(), &[]);
     let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *f.tables[TableId::CountryAppearance.index()]
@@ -2548,7 +2550,7 @@ fn country_leader_ideology_reads_the_recorded_first_leader_without_a_character()
 
 #[test]
 fn in_array_stops_before_a_second_alias_index_and_evaluates_length_once() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let f = with_variables(
         frame(&original_countries(), &[]),
@@ -2578,14 +2580,16 @@ fn in_array_stops_before_a_second_alias_index_and_evaluates_length_once() {
 
 #[test]
 fn country_government_and_numeric_original_keep_local_table_admission() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{PoliticalPartyRow, PoliticsRow};
+    use replay_data::{rows::PoliticalPartyRow, rows::PoliticsRow};
     let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[(
         "common/ideologies/synthetic.txt",
         "ideologies={mod_group={} other_group={}}",
     )]);
-    let ideologies = installed_content::ideologies::read(&cat.content.layers).unwrap().0;
+    let ideologies = installed_content_core::ideologies::read(&cat.content.layers)
+        .unwrap()
+        .0;
     let dlcs = BTreeSet::new();
     let names = TriggerNames::default();
     let aliases = Arc::new(TagAliases::default());
@@ -2767,7 +2771,7 @@ fn country_government_and_numeric_original_keep_local_table_admission() {
 
 #[test]
 fn missing_state_content_refuses_only_state_predicates_that_read_it() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let f = with_variables(frame(&original_countries(), &[]), &[]);
     let dlcs = BTreeSet::new();
@@ -2796,14 +2800,16 @@ fn missing_state_content_refuses_only_state_predicates_that_read_it() {
 
 #[test]
 fn government_id_and_scope_resolution_reuses_the_full_5000_country_input() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{PoliticalPartyRow, PoliticsRow};
+    use replay_data::{rows::PoliticalPartyRow, rows::PoliticsRow};
     let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[(
         "common/ideologies/synthetic.txt",
         "ideologies={mod_group={} other_group={}}",
     )]);
-    let ideologies = installed_content::ideologies::read(&cat.content.layers).unwrap().0;
+    let ideologies = installed_content_core::ideologies::read(&cat.content.layers)
+        .unwrap()
+        .0;
     let tags: Vec<_> = (0..5000)
         .map(|id| {
             format!(
@@ -2888,9 +2894,9 @@ fn government_id_and_scope_resolution_reuses_the_full_5000_country_input() {
 
 #[test]
 fn roster_visibility_keeps_country_and_selected_character_without_changing_other_callers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{CharacterRow, UnitLeaderRow};
+    use replay_data::{rows::CharacterRow, rows::UnitLeaderRow};
     let mut frame = frame(&countries(), &[101]);
     let row = UnitLeaderRow {
         id: 5,
@@ -2933,7 +2939,7 @@ fn roster_visibility_keeps_country_and_selected_character_without_changing_other
         value: 1,
         ..Default::default()
     });
-    let roles = LeaderRoles::new(vec![installed_content::characters::LeaderTemplate {
+    let roles = LeaderRoles::new(vec![installed_content_core::characters::LeaderTemplate {
         path: "common/characters/mod.txt".into(),
         tag: "mod_commander".into(),
         line: Some(4),
@@ -2962,8 +2968,8 @@ fn roster_visibility_keeps_country_and_selected_character_without_changing_other
 /// (binary searched or indexed), then that in the owner's scope.
 #[test]
 fn leader_visibility_steps_decide_as_the_roster_check() {
-    use installed_content::characters::LeaderTemplate;
-    use replay::rows::{CharacterRow, UnitLeaderRow};
+    use installed_content_core::characters::LeaderTemplate;
+    use replay_data::{rows::CharacterRow, rows::UnitLeaderRow};
     let path = "common/characters/mod.txt";
     let mut frame = frame(&countries(), &[101]);
     *frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(
@@ -3109,10 +3115,10 @@ fn hours_reading_one_lexer_table_share_its_folds() {
 /// hour whose claims changed does not confirm a reused result.
 #[test]
 fn claimed_by_on_a_warmed_world_records_the_claims_it_read() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::triggers::inputs::{Key, capture};
-    use replay::rows::StateCoreRow;
+    use replay_data::rows::StateCoreRow;
     let with_claims = |claims: Vec<u32>| {
         let mut f = with_variables(frame(&original_countries(), &[]), &[]);
         *f.tables[TableId::StateCores.index()] =
@@ -3150,10 +3156,10 @@ fn claimed_by_on_a_warmed_world_records_the_claims_it_read() {
 /// confirm a reused result.
 #[test]
 fn invasion_preparation_on_a_warmed_world_records_its_table() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::triggers::inputs::capture;
-    use replay::rows::InvasionPreparationRow;
+    use replay_data::rows::InvasionPreparationRow;
     let with_progress = |progress| {
         let mut f = with_variables(frame(&original_countries(), &[]), &[]);
         *f.tables[TableId::InvasionPreparations.index()] =
@@ -3185,9 +3191,9 @@ fn invasion_preparation_on_a_warmed_world_records_its_table() {
 /// evaluated nothing.
 #[test]
 fn claimed_by_tests_the_states_recorded_claims_by_canonical_slot() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{Recorded, StateCoreRow};
+    use replay_data::{rows::Recorded, rows::StateCoreRow};
     let mut f = with_variables(frame(&original_countries(), &[]), &[]);
     let TableView::Complete(TableRows::CountryLinks(links)) =
         &mut *f.tables[TableId::CountryLinks.index()]
@@ -3199,7 +3205,7 @@ fn claimed_by_tests_the_states_recorded_claims_by_canonical_slot() {
         id: 110,
         canonical_slot: 1,
     });
-    let claims = |f: &mut replay::frame::DecodedFrame, claims: Recorded<Vec<u32>>| {
+    let claims = |f: &mut replay_frame::frame::DecodedFrame, claims: Recorded<Vec<u32>>| {
         *f.tables[TableId::StateCores.index()] =
             TableView::Complete(TableRows::StateCores(vec![StateCoreRow {
                 state: 64,
@@ -3209,7 +3215,7 @@ fn claimed_by_tests_the_states_recorded_claims_by_canonical_slot() {
             }]));
     };
     claims(&mut f, vec![110].into());
-    let state = |f: &replay::frame::DecodedFrame, body: &str| {
+    let state = |f: &replay_frame::frame::DecodedFrame, body: &str| {
         let dlcs = BTreeSet::new();
         let names = TriggerNames::default();
         let aliases = Arc::new(TagAliases::default());

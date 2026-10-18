@@ -174,7 +174,9 @@ fn double_taps_and_button_presses_are_reported_once() {
                 ..GamepadState::default()
             },
         );
-        input.frame(window(&[], true, start + Duration::from_millis(at))).pad
+        input
+            .frame(window(&[], true, start + Duration::from_millis(at)))
+            .pad
     };
     let south = GamepadButton::South.bit();
     assert!(!press(&mut input, south, 1000).double_tapped(GamepadButton::South));
@@ -188,7 +190,12 @@ fn double_taps_and_button_presses_are_reported_once() {
 }
 
 /// A key event with its place on the keyboard.
-fn placed(key: egui::Key, physical: egui::Key, pressed: bool, modifiers: egui::Modifiers) -> egui::Event {
+fn placed(
+    key: egui::Key,
+    physical: egui::Key,
+    pressed: bool,
+    modifiers: egui::Modifiers,
+) -> egui::Event {
     egui::Event::Key {
         key,
         physical_key: Some(physical),
@@ -203,8 +210,18 @@ fn keys_are_held_by_their_place_on_the_keyboard() {
     let mut input = Input::default();
     let now = Instant::now();
     // Shift+= arrives as Plus; with Shift released first, the key comes up as Equals.
-    let down = placed(egui::Key::Plus, egui::Key::Equals, true, egui::Modifiers::SHIFT);
-    let up = placed(egui::Key::Equals, egui::Key::Equals, false, egui::Modifiers::NONE);
+    let down = placed(
+        egui::Key::Plus,
+        egui::Key::Equals,
+        true,
+        egui::Modifiers::SHIFT,
+    );
+    let up = placed(
+        egui::Key::Equals,
+        egui::Key::Equals,
+        false,
+        egui::Modifiers::NONE,
+    );
     let frame = input.frame(window(&[down], true, now));
     assert!(frame.held(egui::Key::Equals) && frame.pressed == [egui::Key::Equals]);
     assert!(input.frame(window(&[up], true, now)).held.is_empty());
@@ -217,7 +234,11 @@ fn keys_are_held_by_their_place_on_the_keyboard() {
         placed(egui::Key::Z, egui::Key::W, false, egui::Modifiers::NONE),
         placed(egui::Key::Z, egui::Key::W, true, egui::Modifiers::NONE),
     ];
-    assert!(input.frame(window(&tap, true, now)).double_tapped(egui::Key::W));
+    assert!(
+        input
+            .frame(window(&tap, true, now))
+            .double_tapped(egui::Key::W)
+    );
     // A key the window places nowhere is held by what it means.
     let frame = input.frame(window(&[key(egui::Key::Space, true)], true, now));
     assert!(frame.held(egui::Key::Space));

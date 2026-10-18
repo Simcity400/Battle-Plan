@@ -1,15 +1,13 @@
 use crate::test_fixtures::{PRODUCTION_HOUR, equipment_types, production_frame};
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{CountryLinkRow, CountryRow, TableId, TableRows},
-};
+use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 #[test]
 fn equipment_icon_warnings_name_every_refused_technology() {
     let refused: Vec<_> = (0..9).map(|entry| format!("technology_{entry}")).collect();
     let content = crate::products::equipment_icon::IconContent::from_parts(
         Default::default(),
-        installed_content::technology::Enablers {
+        installed_content_core::technology::Enablers {
             refused: refused.clone(),
             ..Default::default()
         },
@@ -28,11 +26,9 @@ fn equipment_icon_warnings_name_every_refused_technology() {
 #[test]
 fn equipment_icons_keep_null_archetype_fallbacks() {
     use super::{Icon, IconContent, IconHour, variant_icon};
-    use installed_content::{
-        equipment_graphics,
-        technology::{Enabler, Enablers},
-    };
-    use replay::rows::VariantDefinitionRow;
+    use installed_content_core::{technology::Enabler, technology::Enablers};
+    use installed_content_equipment_graphics::equipment_graphics;
+    use replay_data::rows::VariantDefinitionRow;
 
     let units = equipment_types(&[br#"
         equipments = {
@@ -146,8 +142,8 @@ fn equipment_icons_keep_null_archetype_fallbacks() {
 #[test]
 fn equipment_icons_distinguish_real_empty_names_from_null_archetypes() {
     use super::{Icon, IconContent, IconHour, variant_icon};
-    use installed_content::equipment_graphics;
-    use replay::rows::VariantDefinitionRow;
+    use installed_content_equipment_graphics::equipment_graphics;
+    use replay_data::rows::VariantDefinitionRow;
 
     // A real empty name retains its registered hash, distinct from the null sentinel.
     // Archetype/family references read strings, not token ids.
@@ -191,7 +187,7 @@ fn equipment_icons_distinguish_real_empty_names_from_null_archetypes() {
 #[test]
 fn authored_equipment_icons_keep_null_archetype_candidates() {
     use super::{Icon, IconContent};
-    use installed_content::technology::{Enabler, Enablers};
+    use installed_content_core::{technology::Enabler, technology::Enablers};
 
     let content = IconContent::from_parts(
         equipment_types(&[b"equipments = { bare_type = { } }"]).unwrap(),
@@ -230,14 +226,12 @@ fn authored_equipment_icons_keep_null_archetype_candidates() {
 
 #[test]
 fn equipment_icons_follow_the_production_rows_rule() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::equipment_icon::{Icon, IconContent, IconHour, variant_icon};
-    use installed_content::{
-        equipment_graphics,
-        technology::{Enabler, Enablers},
-    };
-    use replay::rows::{PoliticalPartyRow, PoliticsRow, VariantDefinitionRow};
+    use installed_content_core::{technology::Enabler, technology::Enablers};
+    use installed_content_equipment_graphics::equipment_graphics;
+    use replay_data::{rows::PoliticalPartyRow, rows::PoliticsRow, rows::VariantDefinitionRow};
     let units = equipment_types(&[br#"
         equipments = {
             tanks = { is_archetype = yes type = armor }
@@ -286,7 +280,7 @@ fn equipment_icons_follow_the_production_rows_rule() {
     *frame.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(
             [11, 21]
-                .map(|country| replay::rows::CountryAppearanceRow {
+                .map(|country| replay_data::rows::CountryAppearanceRow {
                     country,
                     ..Default::default()
                 })
@@ -474,11 +468,11 @@ fn equipment_icons_follow_the_production_rows_rule() {
     let mut cultured = frame.clone();
     *cultured.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(vec![
-            replay::rows::CountryAppearanceRow {
+            replay_data::rows::CountryAppearanceRow {
                 country: 11,
                 ..Default::default()
             },
-            replay::rows::CountryAppearanceRow {
+            replay_data::rows::CountryAppearanceRow {
                 country: 21,
                 graphical_culture_2d: b"western".to_vec(),
                 ..Default::default()
@@ -527,16 +521,16 @@ fn equipment_icons_follow_the_production_rows_rule() {
     ));
     *dynamic.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(vec![
-            replay::rows::CountryAppearanceRow {
+            replay_data::rows::CountryAppearanceRow {
                 country: 11,
                 ..Default::default()
             },
-            replay::rows::CountryAppearanceRow {
+            replay_data::rows::CountryAppearanceRow {
                 country: 31,
                 name_tag: b"AAA".to_vec(),
                 ..Default::default()
             },
-            replay::rows::CountryAppearanceRow {
+            replay_data::rows::CountryAppearanceRow {
                 country: 41,
                 ..Default::default()
             },
@@ -573,11 +567,12 @@ fn equipment_icons_follow_the_production_rows_rule() {
 /// overrides with its own texture; a type the content does not know is refused.
 #[test]
 fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::equipment_icon::{Icon, IconContent, IconHour, variant_icon};
-    use installed_content::{ResolvedLayers, equipment_graphics, technology};
-    use replay::rows::{PoliticalPartyRow, PoliticsRow, VariantDefinitionRow};
+    use installed_content_core::{ResolvedLayers, technology};
+    use installed_content_equipment_graphics::equipment_graphics;
+    use replay_data::{rows::PoliticalPartyRow, rows::PoliticsRow, rows::VariantDefinitionRow};
     let root = std::env::temp_dir().join(format!(
         "hoi4_dashboard_modded_icons_{}_{:?}",
         std::process::id(),
@@ -621,9 +616,9 @@ fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
         std::fs::write(file, text).unwrap();
     }
     let layers = ResolvedLayers::from_folders(&[(&vanilla, &[][..]), (&modded, &[][..])]).unwrap();
-    let sprites = installed_content::gfx::read(&layers).unwrap();
+    let sprites = installed_content_gfx::gfx::read(&layers).unwrap();
     let content = IconContent::from_parts(
-        installed_content::equipment::Database::load_complete(&layers).unwrap(),
+        installed_content_core::equipment::Database::load_complete(&layers).unwrap(),
         technology::read_enablers(&layers).unwrap(),
         equipment_graphics::Content::from_texts(
             &[],

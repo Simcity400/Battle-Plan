@@ -1,11 +1,9 @@
 //! Dynamic hovers of the active naval combat summary.
 
-use installed_content::localisation::{Argument, Localisation};
-use installed_content::unit_leader::SubUnits;
-use replay::{
-    frame::DecodedFrame,
-    rows::{NavalCombatSideDetails, tables},
-};
+use installed_content_core::unit_leader::SubUnits;
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use replay_data::{rows::NavalCombatSideDetails, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::io;
 use viewer_foundation::table_access::{Available, TokenNames};
 use viewer_foundation::tooltip_text::country_localised;
@@ -146,9 +144,9 @@ fn screening_description(
     carrier: bool,
     census: &Census,
     screening: &Screening,
-    defines: &installed_content::naval_combat_defines::Defines,
+    defines: &installed_content_naval_combat_defines::naval_combat_defines::Defines,
     correction: &str,
-    static_modifier: Result<&installed_content::modifiers::Modifiers, String>,
+    static_modifier: Result<&installed_content_core::modifiers::Modifiers, String>,
     definitions: Result<&Definitions<'_>, String>,
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -277,7 +275,7 @@ fn screening_description(
 fn positioning_description(
     terms: super::naval_positioning::Terms,
     sources: impl FnOnce(&mut String) -> Result<(), String>,
-    defines: &installed_content::naval_combat_defines::Defines,
+    defines: &installed_content_naval_combat_defines::naval_combat_defines::Defines,
     icons: &dyn TextIcons,
     loc: &Localisation,
 ) -> Result<String, String> {
@@ -445,9 +443,9 @@ pub(super) fn flag_description(
     by_type.sort_by_key(|source| source.damage);
     for source in by_type {
         let token = if source.token == 0 {
-            installed_content::tokens::Token::Rejected
+            installed_content_core::tokens::Token::Rejected
         } else {
-            installed_content::tokens::Token::register(
+            installed_content_core::tokens::Token::register(
                 tokens
                     .name(source.token)
                     .map_err(|error| error.to_string())?
@@ -484,7 +482,7 @@ fn weapon_description(
     side: &NavalCombatSideDetails,
     opponent: &NavalCombatSideDetails,
     weapon: usize,
-    piercing: Option<&installed_content::naval_combat_defines::Defines>,
+    piercing: Option<&installed_content_naval_combat_defines::naval_combat_defines::Defines>,
     icons: &dyn TextIcons,
     loc: &Localisation,
 ) -> Result<String, String> {
@@ -595,7 +593,7 @@ fn side_hovers(
     side: &str,
     value: &NavalCombatSideDetails,
     opponent: &NavalCombatSideDetails,
-    defines: Option<&installed_content::naval_combat_defines::Defines>,
+    defines: Option<&installed_content_naval_combat_defines::naval_combat_defines::Defines>,
 ) {
     let path = format!("header_container/{side}_wnd");
     for (index, (widget, key)) in WEAPON_HOVERS.into_iter().enumerate() {
@@ -639,14 +637,14 @@ fn screening_inputs<'a>(
     id: u64,
     side: u8,
     detail: &NavalCombatSideDetails,
-    ships: Option<&[replay::rows::NavalCombatShipRow]>,
+    ships: Option<&[replay_data::rows::NavalCombatShipRow]>,
     models: &Available<'_, tables::ShipModels>,
-    defines: Option<&'a installed_content::naval_combat_defines::Defines>,
+    defines: Option<&'a installed_content_naval_combat_defines::naval_combat_defines::Defines>,
 ) -> Result<
     (
         Census,
         Screening,
-        &'a installed_content::naval_combat_defines::Defines,
+        &'a installed_content_naval_combat_defines::naval_combat_defines::Defines,
     ),
     String,
 > {
@@ -692,10 +690,10 @@ fn positioning_hover(
     id: u64,
     name: &str,
     side: usize,
-    detail: &replay::rows::NavalCombatDetailsRow,
+    detail: &replay_data::rows::NavalCombatDetailsRow,
     terms: Option<super::naval_positioning::Terms>,
     trees: &super::naval_trees::Sources<'_>,
-    defines: Option<&installed_content::naval_combat_defines::Defines>,
+    defines: Option<&installed_content_naval_combat_defines::naval_combat_defines::Defines>,
     icons: &dyn TextIcons,
     loc: &Localisation,
 ) {
@@ -761,23 +759,25 @@ pub(super) fn bind(
     let dense = (dense_rows.is_complete() && wings.is_complete())
         .then(|| super::naval_air_groups::DenseBases::new(dense_rows.rows(), wings.rows()))
         .flatten();
-    let position_terms =
-        if replay::fixed_layout::validate_recording(frame, replay::fixed_layout::NAVAL_POSITIONING)
-            .is_ok()
-        {
-            super::naval_positioning::positioning_terms_values(
-                detail,
-                ships.is_complete().then_some(ships.rows()),
-                keyed_models,
-                bases.is_complete().then_some(bases.rows()),
-                live_ships.is_complete().then_some(live_ships.rows()),
-                dense,
-                &icons.naval_air_groups,
-                icons.naval_defines.as_ref(),
-            )
-        } else {
-            [None; 2]
-        };
+    let position_terms = if replay_derive::fixed_layout::validate_recording(
+        frame,
+        replay_derive::fixed_layout::NAVAL_POSITIONING,
+    )
+    .is_ok()
+    {
+        super::naval_positioning::positioning_terms_values(
+            detail,
+            ships.is_complete().then_some(ships.rows()),
+            keyed_models,
+            bases.is_complete().then_some(bases.rows()),
+            live_ships.is_complete().then_some(live_ships.rows()),
+            dense,
+            &icons.naval_air_groups,
+            icons.naval_defines.as_ref(),
+        )
+    } else {
+        [None; 2]
+    };
     for (side, name) in ["left", "right"].into_iter().enumerate() {
         // The game returns false before selecting a stat when both
         // primary country references are empty.

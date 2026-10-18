@@ -1,12 +1,9 @@
 use super::*;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{
-        CountryCounterInputRow, ShipRow, TableRows, TaskForceCounterInputRow, TaskForceMissionRow,
-        TaskForceRow,
-    },
-    rows::{NavalMissionLedgerRow, TableId},
+use replay_data::{
+    rows::CountryCounterInputRow, rows::NavalMissionLedgerRow, rows::ShipRow, rows::TableId,
+    rows::TableRows, rows::TaskForceCounterInputRow, rows::TaskForceMissionRow, rows::TaskForceRow,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 use viewer_foundation::map::native_effects::Effect;
 use viewer_foundation::map::native_effects::synthetic;
 use viewer_foundation::map::native_text::Font;
@@ -187,7 +184,7 @@ fn frame(pride: Option<u64>, ships: bool) -> DecodedFrame {
         ]
         .into_iter()
         .map(
-            |(region, task_forces)| replay::rows::NavalMissionLedgerRow {
+            |(region, task_forces)| replay_data::rows::NavalMissionLedgerRow {
                 owner: 100,
                 region,
                 task_forces,
@@ -208,7 +205,7 @@ fn frame(pride: Option<u64>, ships: bool) -> DecodedFrame {
     if let Some(ship) = pride {
         set(TableRows::CountryCounterInputs(vec![
             CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
+                forward_visibility: replay_data::rows::Recorded::NotRecorded,
                 country: 100,
                 pride_of_the_fleet: ship,
                 owned_state_count: 1,
@@ -306,13 +303,13 @@ fn pride_order_uses_last_counted_registration_across_countries_and_repeats() {
     *frame.tables[TableId::CountryCounterInputs.index()] =
         TableView::Complete(TableRows::CountryCounterInputs(vec![
             CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
+                forward_visibility: replay_data::rows::Recorded::NotRecorded,
                 country: 100,
                 pride_of_the_fleet: PRIDE_SHIP,
                 ..Default::default()
             },
             CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
+                forward_visibility: replay_data::rows::Recorded::NotRecorded,
                 country: 200,
                 pride_of_the_fleet: other_ship,
                 ..Default::default()
@@ -467,7 +464,7 @@ fn synthetic_with(from: &str, to: &str) -> String {
 /// monospace font, white with `R` red.
 struct Res {
     font: Font,
-    localisation: installed_content::localisation::Localisation,
+    localisation: installed_content_localisation::localisation::Localisation,
     text_colors: native::fonts::TextColors,
     undefined: Vec<&'static str>,
     vertical: Vec<&'static str>,
@@ -561,7 +558,7 @@ impl native_gui::Resources for Res {
     fn font(&self, _: &[u8]) -> Option<&Font> {
         Some(&self.font)
     }
-    fn localisation(&self) -> &installed_content::localisation::Localisation {
+    fn localisation(&self) -> &installed_content_localisation::localisation::Localisation {
         &self.localisation
     }
     fn text_colors(&self) -> &native::fonts::TextColors {
@@ -617,7 +614,7 @@ fn kinds(count: usize) -> Vec<MissionEntry> {
 
 #[test]
 fn f3_fading_strike_and_invasion_keep_last_unknown_count_until_rewritten() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let source = synthetic_with(
         "name = \"naval_mission_mapicon_entry\"",
@@ -840,7 +837,7 @@ fn places(source: &str, count: usize) -> Vec<[i32; 2]> {
 /// from its saved position by half the displayed entries' total width.
 #[test]
 fn entries_stand_where_the_code_moves_content_and_the_list() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let list = r#"position = { x = 0 y = 0 }
 				size = { x = 241 y = 50 }"#;
@@ -871,7 +868,7 @@ fn entries_stand_where_the_code_moves_content_and_the_list() {
 /// `first_on_top` paints the first entry last, on top; where each stands is unchanged.
 #[test]
 fn first_on_top_reverses_the_paint_order_only() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let source = synthetic_with("spacing = 2.0", "spacing = 2.0 first_on_top = yes");
     let painted = buttons(&source, &kinds(3));
@@ -893,7 +890,7 @@ fn first_on_top_reverses_the_paint_order_only() {
 /// Root margins inset the content coordinates used to place content and its entries.
 #[test]
 fn root_margins_reach_the_entries() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let source = synthetic_with(
         "name = \"naval_mission_mapicon\"",
@@ -906,7 +903,7 @@ fn root_margins_reach_the_entries() {
 /// Root clipping reaches the entries its list holds.
 #[test]
 fn a_clipping_root_clips_the_entries() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let source = synthetic_with(
         "name = \"naval_mission_mapicon\"",
@@ -920,7 +917,7 @@ fn a_clipping_root_clips_the_entries() {
 /// Percentage-sized content evaluates within the root's content rectangle.
 #[test]
 fn a_percentage_content_lays_out_in_the_root() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let source = synthetic_with(
         "name = \"naval_mission_mapicon\"",
@@ -937,7 +934,7 @@ fn a_percentage_content_lays_out_in_the_root() {
 /// A hidden `content` hides its entries only: the root's own artwork still draws.
 #[test]
 fn a_hidden_content_keeps_the_roots_artwork() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let source = synthetic_with(
         "name = \"naval_mission_mapicon\"",
@@ -960,7 +957,7 @@ fn a_hidden_content_keeps_the_roots_artwork() {
 /// at zero and the list at its constructed position.
 #[test]
 fn an_icon_without_shown_kinds_draws_its_root() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let with_art = SYNTHETIC_MISSION_GUI.replacen(
         "OverlappingElementsBoxType = {",
@@ -1027,7 +1024,7 @@ fn sprite_frame(part: &native_gui::Part) -> u32 {
 /// in the authored 24-pixel box at (5, 23), and shows pride while hiding alert and efficiency.
 #[test]
 fn the_synthetic_entry_draws_the_code_selected_children_at_authored_positions() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut report = CounterReport::default();
     let layout = laid_entry(&fixture_entry(2, Ok(None)), &Res::new(), &mut report);
@@ -1064,7 +1061,7 @@ fn the_synthetic_entry_draws_the_code_selected_children_at_authored_positions() 
 /// string bound with its reset; an undecided count, pride or alert is hidden and counted.
 #[test]
 fn counts_colour_and_undecided_children() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let res = Res::new();
     let mut harness = Harness::new(SYNTHETIC_MISSION_GUI);
@@ -1122,7 +1119,7 @@ fn counts_colour_and_undecided_children() {
 /// Undefined runtime sprite names retain the button's authored drawable and count by name.
 #[test]
 fn an_undefined_kind_sprite_keeps_the_authored_one() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut report = CounterReport::default();
     let res = Res::new().without("GFX_mapicon_naval_invasion_support");
@@ -1148,7 +1145,7 @@ fn an_undefined_kind_sprite_keeps_the_authored_one() {
 /// Replaced sprites lose authored rotation; selecting the current sprite retains it.
 #[test]
 fn a_replaced_kind_sprite_drops_the_authored_rotation() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let source = synthetic_with(
         "quadTextureSprite = \"GFX_synthetic_mission_button\"",
@@ -1173,7 +1170,7 @@ fn a_replaced_kind_sprite_drops_the_authored_rotation() {
 /// A mod's progress-bar button takes mission frame 2 as its value.
 #[test]
 fn a_progress_button_takes_frame_two_as_its_value() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut res = Res::new();
     res.progress.push("GFX_mapicon_naval_mission_strike_force");
@@ -1194,7 +1191,7 @@ fn a_progress_button_takes_frame_two_as_its_value() {
 /// Vertical frame strips sample down the texture; button frame 2 selects the second row.
 #[test]
 fn a_vertical_kind_strip_draws_its_second_row() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut res = Res::new();
     res.vertical.push("GFX_mapicon_naval_mission_strike_force");
@@ -1216,7 +1213,7 @@ fn a_vertical_kind_strip_draws_its_second_row() {
 /// as a whole and retains context_aware_tooltip for the tooltip.
 #[test]
 fn native_reader_keys_keep_the_entrys_later_children() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let source = synthetic_with(
         "iconType = {
@@ -1238,7 +1235,7 @@ fn native_reader_keys_keep_the_entrys_later_children() {
 /// Mission entries support text in scaled containers.
 #[test]
 fn a_text_in_a_scaled_entry_container_draws() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let source = synthetic_with(
         "iconType = {
@@ -1265,11 +1262,11 @@ fn a_text_in_a_scaled_entry_container_draws() {
 /// Inline icons reached through a mission window's localised text join its sprite assets.
 #[test]
 fn inline_icons_in_mission_texts_are_acquired() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let source = synthetic_with("text = \"100%\"", "text = \"EFFICIENCY_KEY\"");
     let windows = windows_of(&source);
-    let localisation: installed_content::localisation::Localisation =
+    let localisation: installed_content_localisation::localisation::Localisation =
         [("EFFICIENCY_KEY".to_owned(), "£mission_icon 5".to_owned())]
             .into_iter()
             .collect();
@@ -1283,7 +1280,7 @@ fn inline_icons_in_mission_texts_are_acquired() {
 /// control nested in a container.
 #[test]
 fn modded_forms_lay_out_rather_than_being_refused() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let right = synthetic_with("format = left", "format = right");
     assert_eq!(places(&right, 2).len(), 2);
@@ -1335,7 +1332,7 @@ fn drawn_buttons(harness: &mut Harness, entries: &[MissionEntry]) -> Vec<String>
 /// because Show does not stop it.
 #[test]
 fn an_outgoing_entry_draws_until_its_hide_ends() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (extra, listed) in [
         ("fade_type = linear fade_time = 1000", 2.0),
@@ -1382,7 +1379,7 @@ fn an_outgoing_entry_draws_until_its_hide_ends() {
 /// next owner. The round-robin cursor returns to the freed slot after other slots fill.
 #[test]
 fn an_entry_hidden_by_its_roots_ended_fade_keeps_that_frames_clock() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let source = entry_with(
         "iconType = { name = \"anim\" spriteType = \"GFX_anim\" position = { x = 0 y = 0 } }",
@@ -1453,7 +1450,7 @@ fn gaps(harness: &mut Harness, what: &str) -> usize {
 /// repair it only with a decided write.
 #[test]
 fn an_undecided_pride_leaves_its_entry_unknown_until_a_decided_write() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let res = Res::new();
     let mut harness = Harness::new(SYNTHETIC_MISSION_GUI);
@@ -1481,7 +1478,7 @@ fn an_undecided_pride_leaves_its_entry_unknown_until_a_decided_write() {
 /// the list's place ([`LIST_PLACE`]).
 #[test]
 fn a_slot_allocated_after_a_divergence_leaves_what_an_update_may_keep_unknown() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     const MOVED: &str = "its pool slot may not be the game's";
     let res = Res::new();
@@ -1534,7 +1531,7 @@ fn a_slot_allocated_after_a_divergence_leaves_what_an_update_may_keep_unknown() 
 /// without transitions become known immediately.
 #[test]
 fn a_mission_windows_unknown_transition_settles_as_the_other_naval_windows_do() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fading = synthetic_with(
         "name = \"naval_mission_mapicon\"",
@@ -1609,7 +1606,7 @@ fn a_mission_windows_unknown_transition_settles_as_the_other_naval_windows_do() 
 /// built again, though later updates make all their calls.
 #[test]
 fn a_frame_that_stops_withholds_every_icon_until_rebuilt() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     const STOPPED: &str = "its frame does not update";
     let res = Res::new();
@@ -1668,7 +1665,7 @@ fn a_frame_that_stops_withholds_every_icon_until_rebuilt() {
 /// until reconstruction; later successful updates cannot repair that failure.
 #[test]
 fn a_structural_refusal_withholds_the_icon_and_its_entries_until_rebuilt() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     const REFUSED: &str = "its update does not apply";
     let res = Res::new();
@@ -1730,7 +1727,7 @@ fn a_structural_refusal_withholds_the_icon_and_its_entries_until_rebuilt() {
 /// nothing, so entries removed first remain withheld throughout their Hide transition.
 #[test]
 fn a_list_placement_refusal_withholds_the_entries_until_they_are_placed_again() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     const UNPLACED: &str = "its place in";
     let root = "name = \"naval_mission_mapicon\"";
@@ -1770,7 +1767,7 @@ fn a_list_placement_refusal_withholds_the_entries_until_they_are_placed_again() 
 /// counted kinds take frame 2.
 #[test]
 fn unlisted_records_take_the_code_writes_over_no_registration() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let none: [MissionEntry; 0] = [];
     let red_zero = "\u{11}R0%\u{11}!";
@@ -1818,7 +1815,7 @@ fn unlisted_records_take_the_code_writes_over_no_registration() {
 /// selects the pool cursor's slot and shows it, restarting a fading root's fade.
 #[test]
 fn crossing_the_cutoff_erases_and_shows_again() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let res = Res::new();
     let two = kinds(2);
@@ -1888,7 +1885,7 @@ fn crossing_the_cutoff_erases_and_shows_again() {
 /// their icons without a refusal count.
 #[test]
 fn a_region_out_of_view_is_reached_until_its_provinces_are_clean() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let provinces = |region: u32| -> &'static [u32] {
         match region {
@@ -1963,7 +1960,7 @@ fn a_region_out_of_view_is_reached_until_its_provinces_are_clean() {
 /// Moving windows request frames from their first zero-duration tick until movement settles.
 #[test]
 fn a_moving_root_keeps_frames_coming_until_it_settles() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // After the root's `position`, which the reader also takes as its show position.
     let content = "\t\tcontainerWindowType = {\n\t\t\tname = \"content\"";
@@ -1990,7 +1987,7 @@ fn a_moving_root_keeps_frames_coming_until_it_settles() {
 /// and fade on their own clocks.
 #[test]
 fn descendants_and_percentage_roots_run_on_the_instances() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let source = synthetic_with(
         "name = \"naval_mission_mapicon\"",
@@ -2026,7 +2023,7 @@ fn descendants_and_percentage_roots_run_on_the_instances() {
 /// uninitialized callback storage and is refused by name and counted.
 #[test]
 fn a_fixed_window_entry_is_refused_by_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let source = SYNTHETIC_MISSION_GUI.replacen(
         "containerWindowType = {\n\t\tname = \"naval_mission_mapicon_entry\"",
@@ -2061,7 +2058,7 @@ fn a_fixed_window_entry_is_refused_by_name() {
 /// are hidden because only naval mode supplies their counts.
 #[test]
 fn political_mode_keeps_the_empty_grids_and_hides_the_counted_containers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let modded = synthetic_with(
         "name = \"unit_grid\"",
@@ -2096,7 +2093,7 @@ fn political_mode_keeps_the_empty_grids_and_hides_the_counted_containers() {
 /// The modes that fill a grid or count a container name the inputs no recording holds.
 #[test]
 fn naval_modes_name_the_inputs_they_need() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let windows = windows_of(SYNTHETIC_MISSION_GUI);
     let windows = MissionWindows::find(&windows).unwrap();
@@ -2128,7 +2125,7 @@ fn naval_modes_name_the_inputs_they_need() {
 /// unanchored icons and undefined sprites are named and counted.
 #[test]
 fn gaps_and_unanchored_icons_are_named_and_counted() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let windows = windows_of("");
     let Err(reason) = MissionWindows::find(&windows).map(|_| ()) else {

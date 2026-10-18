@@ -4,7 +4,7 @@ use crate::read_accounting::{
     fixtures::{copies, read},
     *,
 };
-use replay::rows::TableId;
+use replay_data::rows::TableId;
 
 #[test]
 fn executor_completion_preserves_exact_counts_on_workers_callers_and_panics() {

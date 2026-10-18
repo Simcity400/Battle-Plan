@@ -19,6 +19,8 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
+type RouteElementId<M> = fn(&M, usize) -> Result<u32, &'static str>;
+
 /// The live bad-efficiency threshold define, i64 fixed5.
 pub const BAD_EFFICIENCY_THRESHOLD_RVA: usize = 0x331_9500;
 
@@ -1271,24 +1273,23 @@ pub fn read_route(
         row.source_state = state_id(word(ROUTE_FROM))?;
         row.destination_state = state_id(word(ROUTE_TO))?;
     }
-    let (ends, list, element_id): (_, _, fn(&_, usize) -> Result<u32, &'static str>) =
-        if kind == NAVAL {
-            (
-                [word(ROUTE_FROM_PORT), word(ROUTE_TO_PORT)],
-                ROUTE_SEA_REGIONS,
-                |memory, region| {
-                    read::<u32>(memory, at(region, REGION_ID)?).ok_or("sea region id unreadable")
-                },
-            )
-        } else {
-            (
-                [word(ROUTE_FROM), word(ROUTE_TO)],
-                ROUTE_LAND_STATES,
-                |memory, state| {
-                    read::<u32>(memory, at(state, cstate::ID)?).ok_or("route state id unreadable")
-                },
-            )
-        };
+    let (ends, list, element_id): (_, _, RouteElementId<_>) = if kind == NAVAL {
+        (
+            [word(ROUTE_FROM_PORT), word(ROUTE_TO_PORT)],
+            ROUTE_SEA_REGIONS,
+            |memory, region| {
+                read::<u32>(memory, at(region, REGION_ID)?).ok_or("sea region id unreadable")
+            },
+        )
+    } else {
+        (
+            [word(ROUTE_FROM), word(ROUTE_TO)],
+            ROUTE_LAND_STATES,
+            |memory, state| {
+                read::<u32>(memory, at(state, cstate::ID)?).ok_or("route state id unreadable")
+            },
+        )
+    };
     let elements = Array::from_header(
         header[list..list + 16]
             .try_into()

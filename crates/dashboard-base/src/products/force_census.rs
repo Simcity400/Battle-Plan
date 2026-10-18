@@ -4,10 +4,8 @@ use crate::{
     metadata::{CountryKeys, tagged_countries},
     products::country_history::Identity,
 };
-use replay::{
-    frame::{DecodedFrame, TableUpdate, ViewIdentity},
-    rows::{DeltaRow, TableId, tables},
-};
+use replay_data::{rows::DeltaRow, rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::TableUpdate, frame::ViewIdentity};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     io,
@@ -18,7 +16,7 @@ type TaggedIdentity = (Vec<u8>, Option<Identity>);
 #[derive(Default)]
 pub struct Countries {
     from: Option<(ViewIdentity, ViewIdentity)>,
-    at: Option<(replay::BranchId, replay::Hour)>,
+    at: Option<(replay_data::BranchId, replay_data::Hour)>,
     rows: usize,
     pub tags: Vec<TaggedIdentity>,
     owners: HashMap<u32, u32>,
@@ -229,11 +227,8 @@ pub fn changed_ids(
 mod tests {
     use super::*;
     use crate::{prepared::frame_changes::FrameChangeTracker, test_fixtures::scale_frame};
-    use replay::{
-        format::FormatVersion,
-        frame::{FrameDecoder, FrameEncoder, TableView},
-        rows::TableRows,
-    };
+    use replay_data::{format::FormatVersion, rows::TableRows};
+    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder, frame::TableView};
     use std::sync::Arc;
 
     #[test]

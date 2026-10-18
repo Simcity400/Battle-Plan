@@ -11,7 +11,8 @@ use dashboard_base::{
     },
 };
 use dashboard_core::config::LoadContext;
-use replay::{frame::DecodedFrame, rows::TableId};
+use replay_data::rows::TableId;
+use replay_frame::frame::DecodedFrame;
 use serde_json::{Value, json};
 use std::{cell::RefCell, io, sync::atomic::AtomicBool};
 

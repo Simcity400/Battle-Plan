@@ -1,7 +1,8 @@
 //! Native invalidation, not a load-success detector. A new occurrence starts
 //! at the next existing hourly boundary; its first observer interval is partial.
 use crate::hook::{Hook, Registers, Tap, TapSafety};
-use engine::{Memory, memory::read, world_lifetime_sites as native};
+use engine_mutations::world_lifetime_sites as native;
+use engine_native::{Memory, memory::read};
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},

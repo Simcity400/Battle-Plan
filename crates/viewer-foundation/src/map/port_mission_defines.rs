@@ -19,7 +19,7 @@ pub struct Defines {
 }
 
 impl Defines {
-    pub fn read(d: &installed_content::defines::Defines) -> Self {
+    pub fn read(d: &installed_content_core::defines::Defines) -> Self {
         let score = (|| {
             let keys = [
                 "AGGRESSION_HEAVY_GUN_EFFICIENCY_ON_HEAVY_SHIPS",

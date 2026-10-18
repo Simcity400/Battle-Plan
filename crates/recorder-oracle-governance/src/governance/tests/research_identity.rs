@@ -56,7 +56,7 @@ fn check(
         }
         slots.push(ResearchSlotRow {
             country: id,
-            database_index: replay::rows::Recorded::Value(6),
+            database_index: replay_data::rows::Recorded::Value(6),
             technology_handle: handle,
             technology_present: 1,
             research_speed_raw: 100_000,

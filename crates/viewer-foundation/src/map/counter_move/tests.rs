@@ -2,7 +2,7 @@ use super::*;
 use crate::map::province_map::WATER_HEIGHT;
 use crate::movement_timing::Etas;
 use crate::movement_timing::MovementContent;
-use installed_content::movement::{Neighbour, ProvinceTerrain};
+use installed_content_core::{movement::Neighbour, movement::ProvinceTerrain};
 
 const W: f32 = 5632.0;
 /// The height [`Motion::new`]'s flat field samples.
@@ -443,10 +443,10 @@ fn native_stack_kind_uses_viewer_animation_and_native_neighbor_ordinal() {
 /// must not take the standstill fallback of a route content cannot place.
 #[test]
 fn routes_mark_which_stack_kinds_are_native() {
-    use replay::{
-        frame::{DecodedFrame, Metrics, TableView},
-        rows::{DivisionMovementRow, DivisionRow, TableId, TableRows},
+    use replay_data::{
+        rows::DivisionMovementRow, rows::DivisionRow, rows::TableId, rows::TableRows,
     };
+    use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::TableView};
     let mut frame = DecodedFrame {
         branch: 1,
         hour: 0,
@@ -501,11 +501,11 @@ fn routes_mark_which_stack_kinds_are_native() {
     // below still cannot place it.
     let timing = MovementContent {
         map: MovementMap::from_parts(&[(1, LAND, Vec::new()), (9, LAND, Vec::new())]),
-        defines: replay::eta_derive::Defines {
+        defines: replay_derive::eta_derive::Defines {
             outer_scale: 100_000,
             ..Default::default()
         },
-        rail: Ok(installed_content::movement::RailMovementDefines {
+        rail: Ok(installed_content_core::movement::RailMovementDefines {
             speed: [0; 4],
             maximum_level: 0,
         }),
@@ -515,7 +515,7 @@ fn routes_mark_which_stack_kinds_are_native() {
     // Stateless provinces: no infrastructure term.
     *frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(
         [1, 9]
-            .map(|id| replay::rows::ProvinceRow {
+            .map(|id| replay_data::rows::ProvinceRow {
                 id,
                 ..Default::default()
             })
@@ -555,14 +555,14 @@ fn cold_stack_uses_alternate_route_and_requires_complete_geometry() {
         (3, LAND, land(&[1])),
     ]);
     let anchor = |id| Some([id as f32, 0.0, 0.0]);
-    let mut row = replay::rows::DivisionMovementRow {
+    let mut row = replay_data::rows::DivisionMovementRow {
         path: vec![2],
         path_total: 1,
         alternate_path: vec![3],
         alternate_total: 1,
         ..Default::default()
     };
-    let kind = |row: &replay::rows::DivisionMovementRow,
+    let kind = |row: &replay_data::rows::DivisionMovementRow,
                 anchor: &dyn Fn(u32) -> Option<[f32; 3]>| {
         UnitRoute::division(row).stack_kind(1, &map, anchor)
     };
@@ -594,7 +594,7 @@ const SEA: ProvinceTerrain = ProvinceTerrain { flags: 0, index: 1 };
 
 #[test]
 fn a_task_force_takes_the_class1_kinds_and_its_port_slot() {
-    use replay::rows::TaskForceMapMotionRow as Row;
+    use replay_data::rows::TaskForceMapMotionRow as Row;
     // 1 is a land (port) province and 6 sea, each with neighbours 2, 3, 4 in native order.
     let map = MovementMap::from_parts(&[
         (1, LAND, land(&[2, 3, 4])),
@@ -626,7 +626,7 @@ fn a_task_force_takes_the_class1_kinds_and_its_port_slot() {
 
 #[test]
 fn a_railway_gun_takes_the_class13_kinds() {
-    use replay::rows::RailwayGunCounterInputRow as Row;
+    use replay_data::rows::RailwayGunCounterInputRow as Row;
     // 1 is land and 6 sea, each with neighbours 2, 3, 4 in that native order.
     let map = MovementMap::from_parts(&[
         (1, LAND, land(&[2, 3, 4])),
@@ -691,7 +691,7 @@ fn a_railway_gun_takes_the_class13_kinds() {
 
 #[test]
 fn a_railway_gun_stands_and_moves_on_its_own_slot_unless_it_snaps() {
-    use replay::rows::RailwayGunCounterInputRow as Row;
+    use replay_data::rows::RailwayGunCounterInputRow as Row;
     let map = MovementMap::from_parts(&[(1, LAND, land(&[2])), (2, LAND, land(&[1]))]);
     let values = flat(100);
     let world = RouteWorld {
@@ -773,10 +773,8 @@ fn a_division_moves_to_its_settled_point_and_a_snapped_one_stands() {
 
 #[test]
 fn counter_action_route_idle_uses_native_signed_counts() {
-    use replay::{
-        frame::{DecodedFrame, Metrics, TableView},
-        rows::{DivisionMovementRow, TableId, TableRows},
-    };
+    use replay_data::{rows::DivisionMovementRow, rows::TableId, rows::TableRows};
+    use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::TableView};
     let mut frame = DecodedFrame {
         branch: 1,
         hour: 0,

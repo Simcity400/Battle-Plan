@@ -12,7 +12,10 @@ const RULES: &[u8] = b"adjacency_rule = { name = A icon = 7 offset = { 1 0 -2 } 
     adjacency_rule = { name = E icon = 11 offset = { 1 2 } }";
 
 fn fixture(cutoff: Result<f32, String>) -> AdjacencyIcons {
-    AdjacencyIcons::of(&installed_content::adjacency_rules::parse(RULES).unwrap(), cutoff)
+    AdjacencyIcons::of(
+        &installed_content_core::adjacency_rules::parse(RULES).unwrap(),
+        cutoff,
+    )
 }
 
 fn camera(height: f32) -> Camera {
@@ -106,7 +109,7 @@ fn icons_show_in_the_navy_supply_and_resources_modes_below_the_cutoff() {
 #[test]
 fn the_icon_stands_at_the_province_position_plus_its_offset() {
     let icons = AdjacencyIcons::of(
-        &installed_content::adjacency_rules::parse(
+        &installed_content_core::adjacency_rules::parse(
             b"adjacency_rule = { name = A icon = 7 offset = { 1 0 -2 } }",
         )
         .unwrap(),
@@ -136,7 +139,8 @@ fn the_icon_stands_at_the_province_position_plus_its_offset() {
 #[test]
 fn a_province_without_a_position_is_counted() {
     let icons = AdjacencyIcons::of(
-        &installed_content::adjacency_rules::parse(b"adjacency_rule = { name = A icon = 99 }").unwrap(),
+        &installed_content_core::adjacency_rules::parse(b"adjacency_rule = { name = A icon = 99 }")
+            .unwrap(),
         Ok(1700.),
     );
     let prepared = prepare(&icons, Stock::Resources, 300.);

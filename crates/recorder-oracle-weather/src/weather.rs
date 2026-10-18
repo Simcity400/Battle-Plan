@@ -6,15 +6,17 @@ use std::{
     io,
 };
 
-use installed_content::weather::{
-    GROUND_SNOW_MODIFIERS, MUD_MODIFIER, ProvinceModifierRules, TEMPERATURE_MODIFIERS,
-};
 use installed_content_save::{Decimal, Save};
-use replay::{
-    frame::DecodedFrame,
-    modifier_registry::Registry,
-    rows::{ClockState, ProvinceWeatherModifiers, Recorded, TemperatureRecord, tables},
+use installed_content_weather::{
+    weather::GROUND_SNOW_MODIFIERS, weather::MUD_MODIFIER, weather::ProvinceModifierRules,
+    weather::TEMPERATURE_MODIFIERS,
 };
+use replay_data::{
+    rows::ClockState, rows::ProvinceWeatherModifiers, rows::Recorded, rows::TemperatureRecord,
+    rows::tables,
+};
+use replay_derive::modifier_registry::Registry;
+use replay_frame::frame::DecodedFrame;
 
 use super::{Report, complete, invalid};
 
@@ -26,7 +28,7 @@ pub struct ProvinceModifierContent {
     /// The mud, thermal and ground snow modifiers and every name a saved
     /// province's list holds, by name as written: each one's effective
     /// definition (an absent one is empty), or why the stack cannot give it.
-    pub statics: BTreeMap<String, Result<installed_content::modifiers::Modifiers, String>>,
+    pub statics: BTreeMap<String, Result<installed_content_core::modifiers::Modifiers, String>>,
     /// Each place the static modifier reading leaves the text; the values
     /// follow the game's reading.
     pub notes: Vec<String>,
@@ -35,8 +37,8 @@ pub struct ProvinceModifierContent {
 impl ProvinceModifierContent {
     /// The stack's rules and every static modifier `saved`'s weather
     /// provinces can name.
-    pub fn read(layers: &installed_content::ResolvedLayers, saved: &Save) -> io::Result<Self> {
-        let rules = installed_content::weather::province_modifier_rules(layers)?;
+    pub fn read(layers: &installed_content_core::ResolvedLayers, saved: &Save) -> io::Result<Self> {
+        let rules = installed_content_weather::weather::province_modifier_rules(layers)?;
         let mut names: BTreeSet<&str> = TEMPERATURE_MODIFIERS
             .into_iter()
             .chain(GROUND_SNOW_MODIFIERS)
@@ -52,7 +54,7 @@ impl ProvinceModifierContent {
             );
         }
         let names: Vec<&str> = names.into_iter().collect();
-        let blocks = installed_content::static_modifiers::read_blocks(layers, &names)?;
+        let blocks = installed_content_core::static_modifiers::read_blocks(layers, &names)?;
         let statics = names
             .iter()
             .zip(blocks.blocks)
@@ -77,7 +79,7 @@ impl ProvinceModifierContent {
 pub fn compare(
     frame: &DecodedFrame,
     saved: &Save,
-    temperature: Result<&replay::temperature::Content, String>,
+    temperature: Result<&replay_data::temperature::Content, String>,
     province_modifiers: Result<&ProvinceModifierContent, String>,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -107,7 +109,7 @@ pub fn compare(
 fn compare_provinces(
     frame: &DecodedFrame,
     saved: &Save,
-    temperature: Result<&replay::temperature::Content, String>,
+    temperature: Result<&replay_data::temperature::Content, String>,
     province_modifiers: Result<&ProvinceModifierContent, String>,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -118,7 +120,7 @@ fn compare_provinces(
     let unrecorded = rows
         .iter()
         .all(|row| matches!(row.temperature.record(), Ok(TemperatureRecord::NotRecorded)));
-    let temperatures = replay::temperature::Memo::default()
+    let temperatures = replay_data::temperature::Memo::default()
         .states(
             frame.branch,
             frame.hour,
@@ -139,7 +141,9 @@ fn compare_provinces(
     if let (false, Err(reason)) = (unrecorded, &temperatures) {
         report.failed_comparisons.insert(
             "WeatherProvinces.temperature".into(),
-            format!("WeatherProvinces.temperature refused: {reason}; no province's temperature compared"),
+            format!(
+                "WeatherProvinces.temperature refused: {reason}; no province's temperature compared"
+            ),
         );
     }
     let mut provinces = BTreeMap::new();
@@ -151,7 +155,7 @@ fn compare_provinces(
         // record's words; neither has a save counterpart.
         if matches!(row.clock.state(row.id), Ok(ClockState::NotRecorded)) {
             report.recorded(
-                &replay::rows::Recorded::<()>::NotRecorded,
+                &replay_data::rows::Recorded::<()>::NotRecorded,
                 "WeatherProvinces.clock",
                 format!("weather province {}.clock", row.id),
             );
@@ -199,13 +203,15 @@ fn compare_provinces(
             // The game always emits temperature, even
             // when zero. Absence is malformed/missing evidence, not zero.
             let recorded = match &temperatures {
-                _ if unrecorded => Some(replay::rows::Recorded::NotRecorded),
+                _ if unrecorded => Some(replay_data::rows::Recorded::NotRecorded),
                 // The derivation holds one state per dense recorded slot.
                 Ok(values) => Some(
                     values
                         .get(actual.id as usize)
                         .copied()
-                        .ok_or_else(|| invalid("derived temperatures do not cover every recorded province"))?
+                        .ok_or_else(|| {
+                            invalid("derived temperatures do not cover every recorded province")
+                        })?
                         .into(),
                 ),
                 // Failed once above; nothing to compare.
@@ -250,9 +256,12 @@ fn compare_provinces(
                             .iter()
                             .map(|entry| (entry.key, entry.value))
                             .collect();
-                        let rebuilt = rebuild.expected(expected, actual.permanent_snow).and_then(
-                            |rebuilt| Ok((rebuild.saved_part_holds(expected, &entries)?, rebuilt)),
-                        );
+                        let rebuilt =
+                            rebuild
+                                .expected(expected, actual.permanent_snow)
+                                .and_then(|rebuilt| {
+                                    Ok((rebuild.saved_part_holds(expected, &entries)?, rebuilt))
+                                });
                         match rebuilt {
                             Ok((Fit::One, _)) => compared_modifiers += 1,
                             // Uncovered: distinct fitting states leave the list's part
@@ -351,7 +360,7 @@ impl<'a> ModifierRebuild<'a> {
     /// uncompared, one failed comparison, and the comparison is incomplete.
     fn prepare(
         frame: &DecodedFrame,
-        rows: &[replay::rows::WeatherProvinceRow],
+        rows: &[replay_data::rows::WeatherProvinceRow],
         content: Result<&'a ProvinceModifierContent, String>,
         report: &mut Report,
     ) -> Option<Self> {
@@ -423,7 +432,7 @@ impl<'a> ModifierRebuild<'a> {
     fn added(
         registry: &Registry<'_>,
         name: &str,
-        block: &'a installed_content::modifiers::Modifiers,
+        block: &'a installed_content_core::modifiers::Modifiers,
         names: &mut BTreeMap<u32, &'a str>,
     ) -> Result<Vec<(u32, i64)>, String> {
         let mut entries = Vec::new();
@@ -440,8 +449,7 @@ impl<'a> ModifierRebuild<'a> {
                 entries.push((definition.index, value.value));
             }
         }
-        let empty =
-            !eligible && block.tooltip_table().is_empty() && block.children.is_empty();
+        let empty = !eligible && block.tooltip_table().is_empty() && block.children.is_empty();
         Ok(if empty { Vec::new() } else { entries })
     }
 

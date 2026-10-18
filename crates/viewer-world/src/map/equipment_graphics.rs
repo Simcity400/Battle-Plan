@@ -1,13 +1,13 @@
 //! Authored equipment graphic pools, shared with the dashboard through
-//! [`installed_content::equipment_graphics`]; the viewer's model bridge and legacy ladders
+//! [`installed_content_equipment_graphics::equipment_graphics`]; the viewer's model bridge and legacy ladders
 //! stay here. The pool rules and native evidence live in that shared module.
-pub use installed_content::equipment_graphics::*;
+pub use installed_content_equipment_graphics::equipment_graphics::*;
 use std::cell::RefCell;
 pub mod bridge;
 pub mod context;
 pub mod legacy;
 
-use installed_content::parser::Item;
+use installed_content_core::parser::Item;
 use std::collections::BTreeMap;
 
 /// Per-hour memo view; native selects anew on every lookup.

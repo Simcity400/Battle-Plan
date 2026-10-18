@@ -1,7 +1,7 @@
 mod support {
     pub mod unit_world;
 }
-use engine::{
+use engine_native::{
     cair_base, cair_wing, carmy, cfleet, cship, ctask_force, memory::ReadCounts, walk::Outcome,
 };
 use support::unit_world::{self as fixture, Shape};
@@ -138,7 +138,7 @@ fn run(shape: Shape, timed: bool) {
 #[test]
 #[ignore = "release unit scaling benchmark"]
 fn unit_scale_combat() {
-    use engine::cland_combat;
+    use engine_native::cland_combat;
     for shape in fixture::shapes() {
         let world = fixture::build_with_activity(shape, true);
         let memory = world.live();

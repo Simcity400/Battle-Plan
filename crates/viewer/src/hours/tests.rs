@@ -61,14 +61,12 @@ fn playing_finishes_in_flight_hours_at_or_before_the_playhead() {
 }
 
 /// The row size `sized_frame` fills its `Countries` table with.
-const ROW: u64 = std::mem::size_of::<replay::rows::CountryRow>() as u64;
+const ROW: u64 = std::mem::size_of::<replay_data::rows::CountryRow>() as u64;
 
 /// A decoded hour whose `Countries` table holds `rows` rows.
 fn sized_frame(hour: Hour, rows: usize) -> Current {
-    use replay::{
-        frame::{DecodedFrame, Metrics, TableView},
-        rows::{CountryRow, TableId, TableRows},
-    };
+    use replay_data::{rows::CountryRow, rows::TableId, rows::TableRows};
+    use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::TableView};
     let mut tables = std::array::from_fn(|_| TableView::Unavailable {
         reason: "not needed".into(),
     });
@@ -464,7 +462,8 @@ fn the_decode_lane_decodes_wanted_hours_ahead_and_serves_any_other() {
 #[test]
 fn source_worker_seed_attaches_committed_checkpoints_and_clear_keeps_exact_hour_ownership() {
     use dashboard_base::prepared_map::{Builder, Position, Progress, selected_tables};
-    use replay::{frame::FrameDecoder, rows::TableId};
+    use replay_data::rows::TableId;
+    use replay_frame::frame::FrameDecoder;
     let path = std::env::temp_dir().join(format!(
         "native-checkpoint-worker-{}.battleplan",
         uuid::Uuid::new_v4()
@@ -533,7 +532,7 @@ fn source_worker_seed_attaches_committed_checkpoints_and_clear_keeps_exact_hour_
     // The map's nuclear impacts survive checkpoint restoration.
     let strikes = |current: &Current| match current {
         Current::Frame(frame) => frame
-            .complete::<replay::rows::tables::NuclearStrikes>()
+            .complete::<replay_data::rows::tables::NuclearStrikes>()
             .map(|rows| rows.iter().map(|row| row.id).collect::<Vec<_>>())
             .map_err(|error| error.to_string()),
         Current::Gap { reason, .. } => Err(reason.clone()),
@@ -551,7 +550,7 @@ fn source_worker_seed_attaches_committed_checkpoints_and_clear_keeps_exact_hour_
         let table = rows.table();
         assert_eq!(
             *ordinary.tables[table.index()],
-            replay::frame::TableView::Complete(rows),
+            replay_frame::frame::TableView::Complete(rows),
             "{table:?}"
         );
         assert_eq!(

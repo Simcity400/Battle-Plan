@@ -1,5 +1,6 @@
 //! Minimal border-conflict operands. All joins borrow owned captures.
-use engine::{Memory, ccountry, cprovince, cstate, ctechnology_status, walk::Outcome};
+use engine_native::{Memory, ccountry, cprovince, cstate, walk::Outcome};
+use engine_research::ctechnology_status;
 
 pub(super) fn needed(flags: &[cstate::FlagRow]) -> bool {
     flags.iter().any(|row| row.border_conflict_active != 0)

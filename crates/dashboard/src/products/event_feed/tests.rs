@@ -3,11 +3,9 @@ use crate::{
     SourceKey,
     test_fixtures::{CAMPAIGN, records, scale_frame, source},
 };
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::*,
-};
+use replay::container::Replay;
+use replay_data::rows::*;
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 pub(super) fn frame(hour: i32, count: u32) -> DecodedFrame {
     let mut frame = scale_frame(1, hour, count);
@@ -118,7 +116,7 @@ fn researched(sample: &mut DecodedFrame, level: i32, fresh: bool) {
                 level,
                 researched: u8::from(level > 0),
                 classifier: if level > 0 {
-                    engine::ctechnology::CLASSIFIER_COMPLETED
+                    engine_research::ctechnology::CLASSIFIER_COMPLETED
                 } else {
                     0
                 },
@@ -246,14 +244,14 @@ fn assert_faction_names_match_topic(literals: [&str; 2], expected: [&str; 2]) {
 
 #[test]
 fn event_feed_faction_template_names_match_topic_at_join_and_dissolution() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_faction_names_match_topic(["", ""], ["First mod pact", "Second mod pact"]);
 }
 
 #[test]
 fn event_feed_faction_stored_literals_match_topic_without_key_translation() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_faction_names_match_topic(
         ["Stored", "Changed stored name"],
@@ -306,7 +304,7 @@ fn event_feed_faction_name_refusal_is_counted_once_for_join_and_leave() {
 
 #[test]
 fn event_feed_mod_focus_and_law_keep_content_artwork_without_technology_events() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -441,7 +439,7 @@ fn event_feed_mod_focus_and_law_keep_content_artwork_without_technology_events()
 
 #[test]
 fn event_feed_content_load_failure_retains_the_named_parser_reason() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[(
         "common/defines/mod.lua",
@@ -496,7 +494,7 @@ fn event_feed_ruling_advisor_and_project_share_topic_derivations_and_missing_law
                 local_id: 0,
                 definition_id: 8,
                 started: 1,
-                state: replay::rows::ProjectState {
+                state: replay_data::rows::ProjectState {
                     current_offset: if hour == 102 { 0xe8 } else { 0x18 },
                     ..Default::default()
                 },
@@ -591,7 +589,7 @@ fn event_feed_excludes_recorded_technology_completions_but_keeps_other_milestone
                 local_id: 0,
                 definition_id: 8,
                 started: 1,
-                state: replay::rows::ProjectState {
+                state: replay_data::rows::ProjectState {
                     current_offset: if hour == 102 { 0xe8 } else { 0x18 },
                     ..Default::default()
                 },
@@ -736,7 +734,7 @@ fn event_feed_exact_dates_keep_discovery_hour_and_sampled_changes_are_upper_boun
                 TableView::Complete(TableRows::RelationTuples(vec![RelationTupleRow {
                     owner_country: 100_000,
                     target_country: 100_001,
-                    type_id: engine::cguarantee_relation::TYPE,
+                    type_id: engine_native::cguarantee_relation::TYPE,
                     first_country: 100_000,
                     second_country: 100_001,
                     start_hour: 101,
@@ -983,7 +981,7 @@ fn event_feed_nuclear_increase_uses_positive_displayed_stockpile_without_drop_in
 
 #[test]
 fn event_feed_nuclear_strike_names_launcher_and_owner_at_its_impact_hour() {
-    use replay::event_feed_rows::EventFeedCountry;
+    use replay_data::event_feed_rows::EventFeedCountry;
     let country = |index: u32| EventFeedCountry {
         reference: 100_000 + index,
         id: 100_000 + index,
@@ -1052,11 +1050,11 @@ fn event_feed_nuclear_strike_names_launcher_and_owner_at_its_impact_hour() {
         *sample.tables[TableId::LexicalTokens.index()] =
             TableView::Complete(TableRows::LexicalTokens(vec![
                 LexicalTokenRow {
-                    token: engine::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN,
+                    token: engine_native::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN,
                     literal: b"nuclear_bomb".to_vec(),
                 },
                 LexicalTokenRow {
-                    token: engine::raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN,
+                    token: engine_native::raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN,
                     literal: b"thermonuclear_bomb".to_vec(),
                 },
             ]));
@@ -1096,9 +1094,10 @@ fn event_feed_nuclear_strike_names_launcher_and_owner_at_its_impact_hour() {
 /// pair without one keeps its derived row.
 #[test]
 fn event_feed_native_war_end_replaces_the_derived_peace_row_of_its_pair_only() {
-    use replay::event_feed_rows::{
-        EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow,
-        EventFeedSource,
+    use replay_data::{
+        event_feed_rows::EventFeedCountry, event_feed_rows::EventFeedCounts,
+        event_feed_rows::EventFeedCoverage, event_feed_rows::EventFeedEvent,
+        event_feed_rows::EventFeedHistoryRow, event_feed_rows::EventFeedSource,
     };
     let country = |index: u32| EventFeedCountry {
         reference: 100_000 + index,

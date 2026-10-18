@@ -20,7 +20,7 @@
 use super::walks::decode_input;
 use super::*;
 use dashboard_base::prepared::series;
-use replay::codec::Decoder;
+use replay_data::codec::Decoder;
 use std::{collections::BTreeMap, sync::Arc};
 
 /// Inputs between published points.

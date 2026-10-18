@@ -220,7 +220,7 @@ fn summary_tail(
 /// never proof that its amount is unnamed or that an earlier entry became zero.
 fn at_frame(
     frame: &DecodedFrame,
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
 ) -> io::Result<TensionReply> {
     let mut scan = Scan::default();
     scan.refresh_holders(frame, true, true);
@@ -490,8 +490,11 @@ mod tests {
 
     fn contributor_lookup_work(count: u32) {
         use dashboard_base::test_fixtures::{file_source, replay};
-        use replay::frame::TableView;
-        use replay::rows::{CountryLinkRow, CountryRow, TableRows, ThreatCountryAggregateRow};
+        use replay_data::{
+            rows::CountryLinkRow, rows::CountryRow, rows::TableRows,
+            rows::ThreatCountryAggregateRow,
+        };
+        use replay_frame::frame::TableView;
         let mut frame = tension_frame(100, true, 100, &[], &[]);
         *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
             (0..count)
@@ -565,7 +568,7 @@ mod tests {
     fn summary_reasks_reuse_keyframes_and_keep_absent_contributors_unknown() {
         use dashboard_base::test_fixtures::{file_source, replay};
         let first = tension_frame(100, true, 100, &[(7, 6000), (9, 4000)], &[]);
-        let current = at_frame(&first, replay::format::FormatVersion::CURRENT).unwrap();
+        let current = at_frame(&first, replay_data::format::FormatVersion::CURRENT).unwrap();
         let named = current
             .countries
             .iter()
@@ -617,7 +620,7 @@ mod tests {
     fn frame_contributions_match_preparation_and_disappeared_names_stay_pending() {
         let first = tension_frame(100, true, 100, &[(7, 6000), (9, 4000)], &[]);
         let last = tension_frame(101, false, 100, &[(7, 6000), (9, 4000)], &[]);
-        let format = replay::format::FormatVersion::CURRENT;
+        let format = replay_data::format::FormatVersion::CURRENT;
         let mut prepared = Scan::default();
         prepared.observe(format, &first).unwrap();
         prepared.observe(format, &last).unwrap();

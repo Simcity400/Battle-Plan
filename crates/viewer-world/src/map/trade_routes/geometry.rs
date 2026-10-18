@@ -5,12 +5,11 @@
 
 use super::{LAND_ROUTE, NAVAL_ROUTE, NO_ROUTE};
 use dashboard_core::protocol::PlanKind;
-use installed_content::{
-    adjacencies::SEA_CROSSING,
-    province_geometry::ProvinceGeometry,
-    province_graph::{ProvinceGraph, heap_pop, heap_push},
+use installed_content_core::{
+    adjacencies::SEA_CROSSING, province_geometry::ProvinceGeometry, province_graph::ProvinceGraph,
+    province_graph::heap_pop, province_graph::heap_push,
 };
-use replay::rows::TradeRouteRow;
+use replay_data::rows::TradeRouteRow;
 use std::collections::{BTreeMap, BTreeSet};
 use viewer_foundation::map::{
     province_map::HeightField,

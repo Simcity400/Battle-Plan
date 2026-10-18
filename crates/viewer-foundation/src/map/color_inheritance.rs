@@ -1,12 +1,9 @@
 //! Recorded country colour sources shared by political fill and counters.
 use super::tables::{Available, rows};
 use crate::errors::invalid;
-use installed_content::map::MapData;
-use replay::{
-    Hour,
-    frame::DecodedFrame,
-    rows::{SubjectRow, tables},
-};
+use installed_content_core::map::MapData;
+use replay_data::{Hour, rows::SubjectRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -157,7 +154,10 @@ pub fn inheritance(
 }
 
 /// Why an incomplete table's missing row is no evidence; `None` when the table is complete.
-fn table_gap<T: replay::rows::TableSchema>(table: &Available<'_, T>, name: &str) -> Option<String> {
+fn table_gap<T: replay_data::rows::TableSchema>(
+    table: &Available<'_, T>,
+    name: &str,
+) -> Option<String> {
     match table {
         Available::Complete(_) => None,
         Available::Truncated { missing, .. } => {

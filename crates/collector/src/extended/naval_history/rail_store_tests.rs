@@ -11,14 +11,12 @@ use crate::{
     rail_changes::{Changes, Counts, Target, Watches},
     sampled_verify::{Check, ROTATION},
 };
-use engine::{
-    cbuilding,
-    crailway_manager::{
-        self as manager, BuildingOutcomes, RailCarry, fresh_inputs::RailwayBuildingRow,
-        selected_inputs::GrowingLevels,
-    },
-    memory::SliceMemory,
-    province_definition, railway_mutations,
+use engine_mutations::railway_mutations;
+use engine_native::{cbuilding, memory::SliceMemory, province_definition};
+use engine_railways::{
+    crailway_manager as manager, crailway_manager::BuildingOutcomes, crailway_manager::RailCarry,
+    crailway_manager::fresh_inputs::RailwayBuildingRow,
+    crailway_manager::selected_inputs::GrowingLevels,
 };
 use std::cell::RefCell;
 
@@ -213,12 +211,12 @@ fn world() -> Vec<u8> {
     let mut bytes = vec![0; SIZE];
     word(
         &mut bytes,
-        GAME_STATE + engine::cgame_state::RAIL_MANAGER,
+        GAME_STATE + engine_native::cgame_state::RAIL_MANAGER,
         MANAGER,
     );
     header(
         &mut bytes,
-        GAME_STATE + engine::cgame_state::PROVINCES,
+        GAME_STATE + engine_native::cgame_state::PROVINCES,
         PROVINCE_TABLE,
         SLOTS,
     );
@@ -493,7 +491,7 @@ fn a_hooked_write_reads_only_its_batch() {
 
     // A building write of province 3's status, forwarded by the building
     // family: the rest of batch 0 is carried per info.
-    drop(rails.mark_building(engine::cbuilding_status::PROVINCE_FLAG, 3));
+    drop(rails.mark_building(engine_native::cbuilding_status::PROVINCE_FLAG, 3));
     set_health(&mut bytes, 3, 3, 2, 7_000_000);
     let after = hour(&bytes, &mut store);
     assert_eq!(batches_read(&after.reads), vec![0]);

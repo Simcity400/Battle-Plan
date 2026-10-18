@@ -2,7 +2,7 @@
 //!
 //! Format 42 stopped recording province neighbour entries, terrain flags and
 //! terrain ordinals: the replay derives them from the content stack with
-//! `installed_content::movement::MovementMap`. This command reads the running game's
+//! `installed_content_core::movement::MovementMap`. This command reads the running game's
 //! own province definitions once, read-only, and compares every stored field
 //! with that derivation on the same content stack. The comparison runs only
 //! after the game's own successful mounts prove that stack's load order. It
@@ -16,18 +16,13 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use engine::{
-    PINNED_BUILD,
-    build::hash_executable,
-    capture_text::Owned as Descriptor,
-    cdlc_manager::{self, mounts_match},
-    province_definition::{MovementCensus, read_movement_census},
-    walk::Outcome,
+use engine_dlc::{cdlc_manager, cdlc_manager::mounts_match};
+use engine_executable::{build::PINNED_BUILD, build::hash_executable};
+use engine_native::{
+    capture_text::Owned as Descriptor, province_definition::MovementCensus,
+    province_definition::read_movement_census, walk::Outcome,
 };
-use installed_content::{
-    content::{GatherOptions, gather},
-    movement::MovementMap,
-};
+use installed_content_core::{content::GatherOptions, content::gather, movement::MovementMap};
 use serde_json::{Value, json};
 
 use crate::windows::{self, Process, ProcessMemory};
@@ -81,7 +76,7 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
         .path
         .file_name()
         .ok_or("game executable has no name")?;
-    engine::executable_tables::initialize_executable(&process.path)
+    engine_executable::executable_tables::initialize_executable(&process.path)
         .map_err(|error| format!("Cannot prepare game tables: {error}"))?;
     let base = windows::modules(pid)?
         .into_iter()
@@ -123,7 +118,7 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
         &mounts,
         &content.expected_mounts,
     )?;
-    let defines = installed_content::defines::read(&content.layers).map_err(|e| e.to_string())?;
+    let defines = installed_content_core::defines::read(&content.layers).map_err(|e| e.to_string())?;
     let map = MovementMap::read(&content.layers, &defines)
         .map_err(|e| format!("movement map refused: {e}"))?;
     let census =
@@ -423,12 +418,12 @@ fn compare(census: &MovementCensus, map: &MovementMap) -> Report {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{
-        cgame_state, cprovince, cterrain_type,
-        province_definition::{self as definition, MovementDefinition},
-        province_neighbour::{self as neighbour, Record},
+    use engine_native::{
+        cgame_state, cprovince, cterrain_type, province_definition as definition,
+        province_definition::MovementDefinition, province_neighbour as neighbour,
+        province_neighbour::Record,
     };
-    use installed_content::movement::{Neighbour, ProvinceTerrain};
+    use installed_content_core::{movement::Neighbour, movement::ProvinceTerrain};
 
     fn record(id: u32, kind: u8, flag: u8, distance: i64, crossing: [i32; 2]) -> Record {
         Record {
@@ -815,7 +810,7 @@ mod tests {
         assert_eq!(compare(&read, &map()).total(), 0);
         // An unmapped address is a failed read, not zeroes.
         let mut byte = [0];
-        assert!(!engine::Memory::copy(
+        assert!(!engine_native::Memory::copy(
             &ProcessMemory(&process.handle),
             8,
             &mut byte

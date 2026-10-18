@@ -1,6 +1,6 @@
 //! Passive finalization and inspection use the same codecs as the collector.
 
-use replay::identity::IdentityCodec;
+use replay_data::identity::IdentityCodec;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -9,15 +9,19 @@ use std::{
 };
 
 use replay::{
-    BranchId, Hour, SessionId,
-    branches::{Gap, Parentage},
-    container::{RecoveryNote, Replay, SeekResult},
-    format::FormatVersion,
-    frame::{DecodedFrame, Frame, FrameDecoder, TABLE_COUNT, TableUpdate, TableView},
-    identity::{Identity, SessionStart, Verification, is_campaign_uuid},
-    rows::{TableId, TableRows, tables},
-    spool::{ControlRecord, Record, RecordReader, Recovery, recover_reader},
-    witness::{TerminalWitness, WITNESS_BYTES, WITNESS_FILE_NAME},
+    container::RecoveryNote, container::Replay, container::SeekResult, spool::ControlRecord,
+    spool::Record, spool::RecordReader, spool::Recovery, spool::recover_reader,
+};
+use replay_data::rows::TABLE_COUNT;
+use replay_data::{
+    BranchId, Hour, SessionId, format::FormatVersion, identity::Identity, identity::SessionStart,
+    identity::Verification, identity::is_campaign_uuid, rows::TableId, rows::TableRows,
+    rows::tables,
+};
+use replay_data::{witness::TerminalWitness, witness::WITNESS_BYTES, witness::WITNESS_FILE_NAME};
+use replay_frame::{
+    branches::Gap, branches::Parentage, frame::DecodedFrame, frame::Frame, frame::FrameDecoder,
+    frame::TableUpdate, frame::TableView,
 };
 
 use crate::windows;
@@ -117,7 +121,7 @@ fn finalization_metadata(mut record: Record) -> std::io::Result<Record> {
         for table in TableId::ALL {
             if !matches!(table, TableId::Campaign | TableId::Clock) {
                 frame.tables[table.index()] = TableUpdate::Unavailable {
-                    reason: engine::allocation::string("finalization metadata only")?,
+                    reason: engine_allocation::string("finalization metadata only")?,
                 };
             }
         }
@@ -175,14 +179,16 @@ impl FinalizationFrames {
                 if (frame.branch, frame.hour, frame.keyframe)
                     != (expected.branch, expected.hour, expected.keyframe)
                 {
-                    return Err(replay::codec::invalid(
+                    return Err(replay_data::codec::invalid(
                         "spool frame differs from recovered metadata",
                     ));
                 }
                 return Ok(frame);
             }
         }
-        Err(replay::codec::invalid("recovered spool frame is missing"))
+        Err(replay_data::codec::invalid(
+            "recovered spool frame is missing",
+        ))
     }
 }
 
@@ -221,7 +227,7 @@ pub fn read_failure_witness(session_dir: &Path) -> Result<Option<TerminalWitness
             })?;
             let session_start: Vec<u8> = serde_json::from_value(config["session_start"].clone())
                 .map_err(|error| failure(&config_path, error))?;
-            let mut decoder = replay::codec::Decoder::new(&session_start);
+            let mut decoder = replay_data::codec::Decoder::new(&session_start);
             let session =
                 SessionStart::decode(&mut decoder).map_err(|error| failure(&config_path, error))?;
             decoder
@@ -1200,7 +1206,7 @@ fn apply_failure_witness(
                 if branch.session != witness.session {
                     return Err("failure witness does not match the spool branch session".into());
                 }
-                if current_branch.map(|previous: &replay::branches::BranchStart| previous.id)
+                if current_branch.map(|previous: &replay_frame::branches::BranchStart| previous.id)
                     != Some(branch.id)
                 {
                     current_signal = None;
@@ -1669,7 +1675,7 @@ pub fn inspect(path: &Path) -> Result<()> {
 
 /// Every recorded map event, and each family's intervals by coverage.
 fn print_map_events(path: &Path, replay: &Replay) -> Result<()> {
-    use replay::rows::{MapEventFamily, MapEventPayload, TableId, tables};
+    use replay_data::{rows::MapEventFamily, rows::MapEventPayload, rows::TableId, rows::tables};
     let selected = [TableId::MapEvents];
     let mut complete = [0_usize; MapEventFamily::COUNT];
     let mut incomplete: [BTreeMap<String, usize>; MapEventFamily::COUNT] = Default::default();
@@ -1887,7 +1893,7 @@ fn print_identity(label: &str, identity: &Identity) {
         identity.recorder_version,
         hex(&identity.collector_hash)
     );
-    if identity.coverage_policy == replay::identity::COVERAGE_POLICY_VERSION {
+    if identity.coverage_policy == replay_data::identity::COVERAGE_POLICY_VERSION {
         println!(
             "coverage: descriptor plus map, common, history, events, localisation, interface, gfx/flags, gfx/interface, gfx/texticons, gfx/leaders, gfx/fonts, gfx/FX, gfx/posteffect_volumes.txt and every .asset and .gfx descriptor below gfx; integrated DLC and Tweaker UI roots are included in the vanilla hash under their install-relative paths; music, sound, video, loading screens, launcher, crash reporter and logs excluded"
         );
@@ -2199,8 +2205,8 @@ fn print_throughput<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::branches::{BranchReason, BranchStart};
     use replay::spool::recover_prefix;
+    use replay_frame::{branches::BranchReason, branches::BranchStart};
 
     #[test]
     fn a_session_without_campaign_segments_has_no_spool() {
@@ -2224,10 +2230,8 @@ mod tests {
     }
 
     fn long_finalization_records(promote_hour: Option<i32>) -> Vec<Record> {
-        use replay::{
-            frame::FrameEncoder,
-            rows::{ClockRow, LexicalTokenRow},
-        };
+        use replay_data::{rows::ClockRow, rows::LexicalTokenRow};
+        use replay_frame::frame::FrameEncoder;
         let mut base = crate::test_support::allocation_records();
         let Record::Frame(first) = &base[2] else {
             unreachable!()
@@ -2729,7 +2733,7 @@ mod tests {
         };
         changed.tables[TableId::LexicalTokens.index()] =
             TableUpdate::Snapshot(TableRows::LexicalTokens(vec![
-                replay::rows::LexicalTokenRow {
+                replay_data::rows::LexicalTokenRow {
                     token: 0,
                     literal: b"different captured value".to_vec(),
                 },
@@ -3759,7 +3763,7 @@ mod tests {
         let mut segments = vec![(
             0,
             Recovery {
-                format: Some(replay::format::FormatVersion::CURRENT),
+                format: Some(replay_data::format::FormatVersion::CURRENT),
                 records,
                 valid_bytes: 1,
                 damage: None,
@@ -3893,10 +3897,8 @@ mod tests {
 
     #[test]
     fn character_lines_filter_by_token_or_name_and_resolve_the_template_tag() {
-        use replay::{
-            frame::Metrics,
-            rows::{CharacterRow, LexicalTokenRow},
-        };
+        use replay_data::{rows::CharacterRow, rows::LexicalTokenRow};
+        use replay_frame::frame::Metrics;
         let mut frame = DecodedFrame {
             branch: 1,
             hour: 1,
@@ -3998,18 +4000,15 @@ mod tests {
 
     #[test]
     fn repeat_finalization_compares_values_and_allows_a_fresh_continuation() {
-        use replay::{
-            branches::{BranchReason, BranchStart},
-            frame::Metrics,
-            rows::{CampaignRow, ClockRow},
-        };
+        use replay_data::{rows::CampaignRow, rows::ClockRow};
+        use replay_frame::{branches::BranchReason, branches::BranchStart, frame::Metrics};
         let id = b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a6".to_vec();
         let session = Record::SessionStart(SessionStart {
             id: 1,
             process_id: 2,
             process_start_time: 3,
             qpc_frequency: 100,
-            sample_boundary: replay::identity::SampleBoundary::EndOfHour,
+            sample_boundary: replay_data::identity::SampleBoundary::EndOfHour,
             identity: Identity {
                 game_version: "synthetic".into(),
                 exe_hash: [1; 32],
@@ -4042,7 +4041,7 @@ mod tests {
                     // Each hour's map-event interval runs from the previous hour
                     // to this frame's hour, so consecutive frames continue it.
                     TableId::MapEvents => TableUpdate::Snapshot(TableRows::MapEvents(vec![
-                        replay::rows::MapEventsRow {
+                        replay_data::rows::MapEventsRow {
                             from_hour: hour - 1,
                             to_hour: hour,
                             ..Default::default()
@@ -4063,9 +4062,9 @@ mod tests {
                     },
                     TableId::EventFeedHistory => {
                         TableUpdate::Snapshot(TableRows::EventFeedHistory(vec![
-                            replay::rows::EventFeedHistoryRow {
+                            replay_data::rows::EventFeedHistoryRow {
                                 read_hour: hour,
-                                coverage: replay::event_feed_rows::EventFeedCoverage::Complete,
+                                coverage: replay_data::event_feed_rows::EventFeedCoverage::Complete,
                                 counts: Some(Default::default()),
                                 ..Default::default()
                             },
@@ -4100,7 +4099,7 @@ mod tests {
             vec![(
                 0,
                 Recovery {
-                    format: Some(replay::format::FormatVersion::CURRENT),
+                    format: Some(replay_data::format::FormatVersion::CURRENT),
                     records,
                     valid_bytes: 0,
                     damage: None,

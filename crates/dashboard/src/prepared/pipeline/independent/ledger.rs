@@ -52,11 +52,9 @@ use crate::{
     },
     products::{politics_content::PoliticsContent, politics_ledger::prepared},
 };
-use replay::{
-    container::{Replay, SeekResult},
-    frame::DecodedFrame,
-    rows::TableId,
-};
+use replay::{container::Replay, container::SeekResult};
+use replay_data::rows::TableId;
+use replay_frame::frame::DecodedFrame;
 use std::{
     any::Any,
     io,
@@ -97,7 +95,7 @@ pub(in crate::prepared::pipeline) const PARALLEL: &str = "politics_ledger.parall
 
 /// The tables the ledger's observer reads: its native tables, the census and
 /// capture coverage, the holders' and items' naming tables
-/// (`installed_content::country_names::TABLES` and the government, war and dictionary
+/// (`installed_content_country_names::country_names::TABLES` and the government, war and dictionary
 /// operands of a country's look), and the shared trigger kit an item's text
 /// evaluates at its event hour (`triggers::RECORDED_TABLES`).
 fn tables() -> &'static [TableId] {
@@ -129,7 +127,7 @@ fn tables() -> &'static [TableId] {
             TableId::IndustrialOrganisations,
             TableId::States,
         ];
-        tables.extend(installed_content::country_names::TABLES);
+        tables.extend(installed_content_country_names::country_names::TABLES);
         tables.extend_from_slice(crate::triggers::RECORDED_TABLES);
         tables.sort_unstable();
         tables.dedup();
@@ -194,7 +192,7 @@ impl LedgerBranch {
     /// resumes it, then bind the content and the recording, as the walk does
     /// at every block.
     fn prepare(&mut self, block: &Block<'_>) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope("fold binds", None);
+        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
         if std::mem::take(&mut self.resume)
             && let Some(frame) = before(block)?
         {
@@ -218,7 +216,7 @@ impl LedgerBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         self.prepare(block)?;
         let mut fold = facts.map(prepared::BlockFold::new);
         let format = block.replay.format;
@@ -233,7 +231,7 @@ impl LedgerBranch {
         let read = block.read_alone(
             tables(),
             |raw, frame| {
-                let _cpu = ::replay::cpu::scope("fold driver", None);
+                let _cpu = ::replay_frame::cpu::scope("fold driver", None);
                 let changes = tracker.observe_updates(frame, raw, format);
                 if stopped {
                     return Ok(());
@@ -248,7 +246,7 @@ impl LedgerBranch {
                     ledger.parallel_hours(),
                 );
                 let result = {
-                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     match fold.as_mut() {
                         Some(fold) => ledger.observe_folded(frame, &changes, &running, fold),
                         None => ledger.observe(frame, &changes, &running),
@@ -324,9 +322,9 @@ impl Branch for LedgerBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<(Folded, Option<i32>)> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         let facts = {
-            let _cpu = ::replay::cpu::scope("fold facts", None);
+            let _cpu = ::replay_frame::cpu::scope("fold facts", None);
             facts
                 .downcast::<prepared::BlockFacts>()
                 .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -341,7 +339,7 @@ impl Branch for LedgerBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         self.observe_hours(block, None, observed, check)
     }
 

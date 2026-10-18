@@ -26,11 +26,12 @@ use dashboard_text::{
     identity::character_script_token,
     metadata::{slot_read, tagged_countries, validate_campaign},
 };
-use installed_content::{localisation::Argument, special_projects::Catalog};
-use replay::{
-    frame::{DecodedFrame, ViewIdentity},
-    rows::{CountryLinkRow, ProjectHistoryRow, ProjectRow, TableId, tables},
+use installed_content_core::special_projects::Catalog;
+use installed_content_localisation::localisation::Argument;
+use replay_data::{
+    rows::CountryLinkRow, rows::ProjectHistoryRow, rows::ProjectRow, rows::TableId, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
 use std::collections::VecDeque;
@@ -251,7 +252,7 @@ fn country_key(catalogue: &Catalogue, tag: &str, key: &str) -> String {
 /// A nonempty authored icon wins even if missing.
 /// The fallback uses the GFX_ prefix.
 fn icon_key(
-    project: &installed_content::special_projects::Project,
+    project: &installed_content_core::special_projects::Project,
     token: &str,
     tag: Option<&str>,
     has: impl Fn(&str) -> Result<bool, String>,
@@ -341,7 +342,7 @@ impl Content {
 
     fn name(
         &self,
-        definition: &installed_content::special_projects::Project,
+        definition: &installed_content_core::special_projects::Project,
         token: &str,
         tag: &str,
         slot: u32,
@@ -408,7 +409,7 @@ impl Content {
 }
 
 fn project_name_key<'a>(
-    definition: &'a installed_content::special_projects::Project,
+    definition: &'a installed_content_core::special_projects::Project,
     token: &'a str,
 ) -> &'a str {
     definition
@@ -632,7 +633,7 @@ fn resolve_person(
             frame.complete::<tables::CharacterPortraits>().ok(),
             id,
             4,
-            replay::rows::PORTRAIT_LARGE,
+            replay_data::rows::PORTRAIT_LARGE,
         );
         let art = content.map_or_else(
             || Err("Content is unavailable.".into()),
@@ -776,7 +777,7 @@ struct DefinitionLook {
     info: Arc<ProjectPresentation>,
     warnings: BTreeMap<String, usize>,
     refusals: catalogue::Refusals,
-    scoped: Option<(installed_content::special_projects::Project, String)>,
+    scoped: Option<(installed_content_core::special_projects::Project, String)>,
 }
 #[derive(Default)]
 struct Naming {
@@ -895,7 +896,7 @@ struct Builder {
         not(any(test, feature = "test-support")),
         expect(dead_code, reason = "read only by the recording oracle in tests")
     )]
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
     episodes: Vec<ProjectEpisode>,
     /// Matching episodes survive unrecorded hours, but their runs do not.
     open: BTreeMap<(u32, u32), usize>,
@@ -1405,7 +1406,7 @@ impl Builder {
 }
 
 /// Scope selection after plain localisation expands aliases; literal dollars need no frame.
-fn needs_scope(loc: &installed_content::localisation::Localisation, key: &str) -> bool {
+fn needs_scope(loc: &installed_content_localisation::localisation::Localisation, key: &str) -> bool {
     loc.localise(key.as_bytes())
         .is_ok_and(|text| text.contains('['))
 }
@@ -1719,10 +1720,8 @@ mod history_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, SharedView, TableView},
-        rows::{CountryLinkRow, CountryRow, TableRows},
-    };
+    use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableRows};
+    use replay_frame::{frame::Metrics, frame::SharedView, frame::TableView};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -1902,7 +1901,7 @@ mod tests {
                     definition_id: 8,
                     started: 1,
                     program_reference: (12_u64 << 32) | 83,
-                    state: replay::rows::ProjectState {
+                    state: replay_data::rows::ProjectState {
                         current_offset: 0x18,
                         ..Default::default()
                     },
@@ -1922,8 +1921,8 @@ mod tests {
         // country is read when a hooked writer marks it or after the daily
         // pass, and carried otherwise. No hour waits for a daily slot.
         assert_eq!(
-            replay::cadence::cadence(TableId::Projects),
-            replay::cadence::Cadence::Sliced
+            replay_data::cadence::cadence(TableId::Projects),
+            replay_data::cadence::Cadence::Sliced
         );
         let mut builder = Builder::default();
         builder.observe(&frame(99, false, 1), "mod tag", None);
@@ -1985,7 +1984,7 @@ mod tests {
             TableView::Complete(TableRows::Projects(vec![project.clone()]));
         *sample.tables[TableId::ProjectPrograms.index()] =
             TableView::Complete(TableRows::ProjectPrograms(vec![
-                replay::rows::ProjectProgramRow {
+                replay_data::rows::ProjectProgramRow {
                     id: 12,
                     owner: 5,
                     scientist: (73_u64 << 32) | 73,
@@ -1993,10 +1992,12 @@ mod tests {
                 },
             ]));
         *sample.tables[TableId::Characters.index()] =
-            TableView::Complete(TableRows::Characters(vec![replay::rows::CharacterRow {
-                id: 73,
-                ..Default::default()
-            }]));
+            TableView::Complete(TableRows::Characters(vec![
+                replay_data::rows::CharacterRow {
+                    id: 73,
+                    ..Default::default()
+                },
+            ]));
         let mut builder = Builder::default();
         builder.observe(&sample, "mod tag", None);
         sample.hour = 101;
@@ -2032,17 +2033,19 @@ mod tests {
             TableView::Complete(TableRows::Projects(vec![project]));
         *sample.tables[TableId::ProjectPrograms.index()] =
             TableView::Complete(TableRows::ProjectPrograms(vec![
-                replay::rows::ProjectProgramRow {
+                replay_data::rows::ProjectProgramRow {
                     id: 12,
                     scientist: (73_u64 << 32) | 73,
                     ..Default::default()
                 },
             ]));
         *sample.tables[TableId::Characters.index()] =
-            TableView::Complete(TableRows::Characters(vec![replay::rows::CharacterRow {
-                id: 73,
-                ..Default::default()
-            }]));
+            TableView::Complete(TableRows::Characters(vec![
+                replay_data::rows::CharacterRow {
+                    id: 73,
+                    ..Default::default()
+                },
+            ]));
         let mut builder = Builder::default();
         builder.observe(&sample, "mod tag", None);
         sample.hour = 101;
@@ -2060,7 +2063,7 @@ mod tests {
         assert_eq!(builder.people[info.scientist as usize].id, None);
         *sample.tables[TableId::ProjectPrograms.index()] =
             TableView::Complete(TableRows::ProjectPrograms(vec![
-                replay::rows::ProjectProgramRow {
+                replay_data::rows::ProjectProgramRow {
                     id: 12,
                     scientist: 0,
                     ..Default::default()
@@ -2199,7 +2202,7 @@ mod tests {
 
     #[test]
     fn recorded_mod_stack_adds_projects_and_overrides_names_and_icons() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let guard = TempRoot::new("mod");
         let root = &guard.0;
@@ -2252,7 +2255,8 @@ mod tests {
             std::fs::write(file, text).unwrap();
         }
         let layers =
-            installed_content::ResolvedLayers::from_folders(&[(&base, &[][..]), (&over, &[][..])]).unwrap();
+            installed_content_core::ResolvedLayers::from_folders(&[(&base, &[][..]), (&over, &[][..])])
+                .unwrap();
         let catalog = Catalog::read(&layers).unwrap();
         assert!(catalog.warnings.is_empty(), "{:?}", catalog.warnings);
         assert!(catalog.projects.contains_key("mod_project"));
@@ -2265,7 +2269,7 @@ mod tests {
             catalog.projects["base_project"].name.as_deref(),
             Some("mod_name")
         );
-        let loc = installed_content::localisation::read(&layers, "english").unwrap();
+        let loc = installed_content_localisation::localisation::read(&layers, "english").unwrap();
         assert_eq!(
             catalogue::localised(&loc, "mod_name", View::Plain).unwrap(),
             "Renamed by mod"
@@ -2280,7 +2284,7 @@ mod tests {
             .unwrap(),
             "Mod count +4"
         );
-        let sprites = installed_content::gfx::read(&layers).unwrap();
+        let sprites = installed_content_gfx::gfx::read(&layers).unwrap();
         let key = icon_key(
             &catalog.projects["base_project"],
             "base_project",
@@ -2315,7 +2319,7 @@ mod tests {
         let mut sample = frame(100, true, 1);
         *sample.tables[TableId::LexicalTokens.index()] =
             TableView::Complete(TableRows::LexicalTokens(vec![
-                replay::rows::LexicalTokenRow {
+                replay_data::rows::LexicalTokenRow {
                     token: 8,
                     literal: b"base_project".to_vec(),
                 },
@@ -2337,7 +2341,8 @@ mod tests {
         )
         .unwrap();
         let refused_layers =
-            installed_content::ResolvedLayers::from_folders(&[(&base, &[][..]), (&over, &[][..])]).unwrap();
+            installed_content_core::ResolvedLayers::from_folders(&[(&base, &[][..]), (&over, &[][..])])
+                .unwrap();
         let refused = Catalog::read(&refused_layers).unwrap();
         assert!(
             refused.projects["base_project"]
@@ -2358,7 +2363,7 @@ mod tests {
     fn native_progress_completion_and_history_count_are_distinct_from_saved_flags() {
         let mut project = ProjectRow {
             completed: 1,
-            state: replay::rows::ProjectState {
+            state: replay_data::rows::ProjectState {
                 not_completed: 1,
                 current_offset: 0x18,
                 prototype_progress: 37,
@@ -2404,7 +2409,7 @@ mod tests {
     }
     #[test]
     fn icon_lookup_does_not_mask_a_missing_authored_icon() {
-        let mut project = installed_content::special_projects::Project::default();
+        let mut project = installed_content_core::special_projects::Project::default();
         assert_eq!(
             icon_key(&project, "mod_project", Some("tag with spaces"), |key| Ok(
                 key == "GFX_tag with spaces_mod_project"

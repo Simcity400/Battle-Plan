@@ -5,10 +5,10 @@ use serde_json::{Value, json};
 use std::sync::{Arc, atomic::AtomicBool};
 
 fn source_with_content(
-    frames: Vec<replay::frame::DecodedFrame>,
+    frames: Vec<replay_frame::frame::DecodedFrame>,
     root: &Path,
 ) -> (Source, LoadContext) {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for settings metadata tests");
     crate::test_fixtures::source_with_content(frames, root)
 }
@@ -55,7 +55,7 @@ fn load_product(
     serde_json::from_str(&reply).unwrap()
 }
 
-fn with_identity(identity: replay::identity::Identity) -> Source {
+fn with_identity(identity: replay_data::identity::Identity) -> Source {
     let mut input = crate::test_fixtures::records(1, vec![source(1, 100, Some(1))]);
     let replay::spool::Record::SessionStart(session) = &mut input[0] else {
         unreachable!()

@@ -2,7 +2,7 @@ use super::art::art_at;
 use super::*;
 use crate::products::Product;
 use crate::test_fixtures::{CAMPAIGN, continuation_records, records, scale_frame, scale_tag};
-use replay::rows::{CountryLinkRow, CountryRow, FocusRow, TableRows};
+use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::FocusRow, rows::TableRows};
 use std::sync::Arc;
 
 impl FocusAccumulator {
@@ -312,7 +312,11 @@ fn chain_dates_order_segments_and_gain_match_focus_history() {
     let tags: std::collections::BTreeSet<_> = prepared
         .frames
         .iter()
-        .flat_map(|frame| frame.complete::<replay::rows::tables::Countries>().unwrap())
+        .flat_map(|frame| {
+            frame
+                .complete::<replay_data::rows::tables::Countries>()
+                .unwrap()
+        })
         .map(|country| String::from_utf8(country.tag.clone()).unwrap())
         .collect();
     for tag in tags {
@@ -829,10 +833,10 @@ fn a_shared_tag_is_the_higher_country_id() {
 /// reads no recording; one with a dynamic token reads its hour once.
 #[test]
 fn focus_art_matches_hourly_presentation_and_reads_frames_only_for_dynamic_tokens() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::catalogue::texture_tests::{png_bytes, texture_catalogue};
-    use installed_content::image::Rgba8Image;
+    use installed_content_image::Rgba8Image;
     let definitions = format!(
         "focus_tree={{{} focus={{id=a_static text=static_title icon=GFX_mod_true}} focus={{id=b_refused text=static_title icon=GFX_missing}}}}",
         (0..12)
@@ -979,14 +983,14 @@ fn focus_art_matches_hourly_presentation_and_reads_frames_only_for_dynamic_token
                         .collect(),
                 ));
             *decoded.tables[TableId::Clock.index()] =
-                TableView::Complete(TableRows::Clock(vec![replay::rows::ClockRow {
+                TableView::Complete(TableRows::Clock(vec![replay_data::rows::ClockRow {
                     hour,
                     seed: 900 + hour,
                     ..Default::default()
                 }]));
             *decoded.tables[TableId::PowerBalances.index()] =
                 TableView::Complete(TableRows::PowerBalances(vec![
-                    replay::rows::PowerBalanceRow {
+                    replay_data::rows::PowerBalanceRow {
                         balance: b"balance".to_vec(),
                         active_range: b"active".to_vec(),
                         ..Default::default()
@@ -994,7 +998,7 @@ fn focus_art_matches_hourly_presentation_and_reads_frames_only_for_dynamic_token
                 ]));
             *decoded.tables[TableId::PowerBalanceMembers.index()] =
                 TableView::Complete(TableRows::PowerBalanceMembers(vec![
-                    replay::rows::PowerBalanceMemberRow {
+                    replay_data::rows::PowerBalanceMemberRow {
                         country: 9001,
                         ..Default::default()
                     },
@@ -1015,7 +1019,7 @@ fn focus_art_matches_hourly_presentation_and_reads_frames_only_for_dynamic_token
     )
     .unwrap();
     let content = ContentOptions {
-        options: installed_content::ResolveOptions {
+        options: installed_content_core::ResolveOptions {
             game_dir: folders[0].0.clone(),
             user_dir: folders[0].0.join("user"),
             cache_dir: folders[0].0.join("cache"),

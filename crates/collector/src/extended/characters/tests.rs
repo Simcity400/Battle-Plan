@@ -1,5 +1,5 @@
 use super::*;
-use engine::{cgame_state, cunit_leader_trait, memory::SliceMemory};
+use engine_native::{cgame_state, cunit_leader_trait, memory::SliceMemory};
 use std::cell::Cell;
 
 pub(super) fn fixture_capacities() -> Capacities {
@@ -50,12 +50,12 @@ fn tooltip_key_capacity_tracks_keys_instead_of_payload_bytes() {
         ..Default::default()
     };
     captured.advisors.rows.outcome = Outcome::Rows { len: 1 };
-    let TableView::Complete(replay::rows::TableRows::AdvisorRoles(rows)) =
+    let TableView::Complete(replay_data::rows::TableRows::AdvisorRoles(rows)) =
         captured.advisors_table()
     else {
         panic!("advisor keys lost");
     };
-    let replay::rows::Recorded::Value(Some(keys)) = &rows[0].tooltip_keys else {
+    let replay_data::rows::Recorded::Value(Some(keys)) = &rows[0].tooltip_keys else {
         panic!("advisor tooltip keys refused");
     };
     assert_eq!(keys, &[key, Vec::new()]);
@@ -65,7 +65,7 @@ fn tooltip_key_capacity_tracks_keys_instead_of_payload_bytes() {
 pub(super) const SECOND_ADVISOR: usize = 0x8c60;
 
 pub(super) fn two_advisor_fixture(same_character: bool) -> Vec<u8> {
-    use engine::{character_advisor_node as node, msvc_tree_node as tree};
+    use engine_native::{character_advisor_node as node, msvc_tree_node as tree};
     let mut bytes = characters_test_kit::mapped_fixture();
     let first_node = characters_test_kit::ADV_NODE;
     let second_node = 0x8c00;
@@ -414,7 +414,7 @@ fn advisor_raw_copy_keeps_fresh_ordered_modifier_entries_and_owned_bytes() {
         data,
         65,
     );
-    bytes.resize(0x9000 + 65 * engine::modifier_entry::STRIDE, 0);
+    bytes.resize(0x9000 + 65 * engine_native::modifier_entry::STRIDE, 0);
     for index in 0..65 {
         put(&mut bytes, data + index * 16, (index as u32).to_le_bytes());
         put(
@@ -468,12 +468,12 @@ fn advisor_projection_refuses_partial_modifier_entries() {
     let mut captured = Captured::with_capacities(&small_capacities());
     captured.advisors.rows.rows[0] = cadvisor::Row {
         character: 1,
-        modifier_len: engine::modifier_entry::STRIDE,
+        modifier_len: engine_native::modifier_entry::STRIDE,
         modifier_recorded: true,
         ..Default::default()
     };
     captured.advisors.rows.outcome = Outcome::Rows { len: 1 };
-    captured.advisors.bytes.len = engine::modifier_entry::STRIDE;
+    captured.advisors.bytes.len = engine_native::modifier_entry::STRIDE;
     captured.advisors.bytes.first[..4].copy_from_slice(&77_u32.to_le_bytes());
     captured.advisors.bytes.first[8..16].copy_from_slice(&i64::MIN.to_le_bytes());
     let TableView::Complete(TableRows::AdvisorRoles(rows)) = captured.advisors_table() else {
@@ -1246,7 +1246,10 @@ fn template_identities_are_read_once_per_pointer_and_again_after_a_reload() {
             None,
         );
         captured.install_family(active, results);
-        captured.fail_character_tables(active.map(|value| !value), replay::cadence::SKIPPED_REASON);
+        captured.fail_character_tables(
+            active.map(|value| !value),
+            replay_data::cadence::SKIPPED_REASON,
+        );
         captured
     };
     // One hour of the part-zero job as the pool runs it: copy, decode,
@@ -1399,7 +1402,10 @@ fn template_identities_are_read_once_per_pointer_and_again_after_a_reload() {
             None,
         );
         expected.install_family(active, results);
-        expected.fail_character_tables(active.map(|value| !value), replay::cadence::SKIPPED_REASON);
+        expected.fail_character_tables(
+            active.map(|value| !value),
+            replay_data::cadence::SKIPPED_REASON,
+        );
         kit::assert_matches_direct(&captured, &expected);
         assert!(
             matches!(
@@ -1875,7 +1881,7 @@ fn shared_roster_keeps_traits_when_scalar_capacity_is_exhausted() {
     // The oracle-only experience publishes its tombstone.
     assert_eq!(
         leader_row(&units[0], &names).experience,
-        replay::rows::RetiredI64::default()
+        replay_data::rows::RetiredI64::default()
     );
     assert_eq!(leader_row(&units[0], &names).inherited_text_a, b"saved1");
     assert_eq!(leader_row(&units[0], &names).inherited_text_b, b"other1");
@@ -2060,7 +2066,8 @@ fn unrelated_portrait_bytes_are_not_read() {
 
 #[test]
 fn active_abilities_count_every_row_and_token_past_capacity_for_one_growth_step() {
-    use engine::{cability, cgame_state};
+    use engine_land_inputs::cability;
+    use engine_native::cgame_state;
     const COUNTRIES: u32 = 5000;
     const GAME_STATE: usize = 0x1000;
     const CTAB: usize = 0x10000;
@@ -2158,15 +2165,15 @@ fn active_abilities_count_every_row_and_token_past_capacity_for_one_growth_step(
     // view: a fixed number of guarded calls per live country and per
     // ability record, whatever the viewer's country. The hourly pack's cost
     // on the roster view is pinned in `active_abilities`.
-    engine::read_counts::ReadCounts::take_current();
+    engine_native::read_counts::ReadCounts::take_current();
     let second = walk_abilities(
-        &engine::read_counts::CountedMemory::new(memory),
+        &engine_native::read_counts::CountedMemory::new(memory),
         0,
         GAME_STATE,
         &mut rows,
         &mut arena,
     );
-    let with_records = engine::read_counts::ReadCounts::take_current();
+    let with_records = engine_native::read_counts::ReadCounts::take_current();
     assert_eq!(second.outcome, Outcome::Rows { len: total });
     assert_eq!(
         (second.bytes_len, second.required_bytes),
@@ -2186,16 +2193,16 @@ fn active_abilities_count_every_row_and_token_past_capacity_for_one_growth_step(
         bytes: &bytes,
     };
     let empty = walk_abilities(
-        &engine::read_counts::CountedMemory::new(memory),
+        &engine_native::read_counts::CountedMemory::new(memory),
         0,
         GAME_STATE,
         &mut rows,
         &mut arena,
     );
-    let countries_only = engine::read_counts::ReadCounts::take_current();
+    let countries_only = engine_native::read_counts::ReadCounts::take_current();
     assert_eq!(empty.outcome, Outcome::Rows { len: 0 });
     let calls =
-        |counts: engine::read_counts::ReadCounts| counts.copy_calls + counts.scattered_calls;
+        |counts: engine_native::read_counts::ReadCounts| counts.copy_calls + counts.scattered_calls;
     // Over raw memory: two registry reads, eight per country
     // (authentication and the array header), three per record without
     // caster or region; a caster and a region add their own identity reads.
@@ -2417,7 +2424,7 @@ fn cost_tree(bytes: &mut [u8], field: usize, head: usize, node: usize, stride: u
 }
 
 pub(crate) fn cost_fixture() -> Vec<u8> {
-    use engine::{character_advisor_node, character_leader_node};
+    use engine_native::{character_advisor_node, character_leader_node};
     // Include the appended leader-ideology and advisor tooltip-key fields without crossing another
     // synthetic object's allocation.
     let mut bytes = vec![0; 0x32000];
@@ -2851,7 +2858,7 @@ fn split_capacities() -> Capacities {
 #[test]
 fn operative_codenames_match_raw_and_typed_capture_with_heap_faults_and_growth() {
     use super::characters_test_kit as kit;
-    use engine::cname_group_member as naming;
+    use engine_native::cname_group_member as naming;
     let mut bytes = kit::mapped_fixture();
     // The third fixture leader overlaps unit one's expanded operative tail.
     put(
@@ -2939,7 +2946,8 @@ fn operative_codenames_match_raw_and_typed_capture_with_heap_faults_and_growth()
             && row.codename_reason == Some("unit leader codename byte capacity exceeded")
     }));
     assert!(split.units.rows.rows[..2].iter().all(|row| {
-        leader_row(row, &split.units.bytes.first).codename == replay::rows::Recorded::Value(None)
+        leader_row(row, &split.units.bytes.first).codename
+            == replay_data::rows::Recorded::Value(None)
     }));
     assert_eq!(
         leader_row(&split.units.rows.rows[1], &split.units.bytes.first).inherited_text_a,
@@ -3044,7 +3052,7 @@ fn shared_trait_definitions_are_read_once_charged_and_fresh_after_recycling() {
     let mut job = small_wave_job();
     for value in [b'x', b'y'] {
         bytes[DEFINITION + cunit_leader_trait::TOKEN] = value;
-        let source = engine::memory::CountedMemory::new(WaveMemory::new(&bytes, None));
+        let source = engine_native::memory::CountedMemory::new(WaveMemory::new(&bytes, None));
         let native = read_accounting::Capture::new();
         let report = copy_characters_refresh(&source, context, &mut job);
         assert!(report.raw_ok);
@@ -3105,7 +3113,7 @@ fn shared_skills_keep_current_rows_native_costs_and_recycled_freshness() {
             kit::SKILL0 + cunit_leader_skill::LEVEL,
             level.to_le_bytes(),
         );
-        let source = engine::memory::CountedMemory::new(WaveMemory::new(&bytes, None));
+        let source = engine_native::memory::CountedMemory::new(WaveMemory::new(&bytes, None));
         let native = read_accounting::Capture::new();
         let report = copy_characters_refresh(&source, context, &mut job);
         let counts = native.finish();
@@ -3313,7 +3321,7 @@ fn army_formation_suffix_is_fresh_in_prepared_copy_and_preserves_prefix_on_fault
         );
         assert_eq!(
             leader_row(row, &decoded.units.bytes.first).formation_reference,
-            replay::rows::Recorded::Value((!blocked).then_some(reference))
+            replay_data::rows::Recorded::Value((!blocked).then_some(reference))
         );
         let reads = source.reads.borrow();
         assert_eq!(
@@ -3391,10 +3399,10 @@ fn characters_copy_sizes_cover_documented_read_set() {
     // tree nodes and skill entries. Alignment follows the engine layout.
     use super::characters_test_kit as kit;
     use super::{CharactersCopyContext, CharactersJob};
-    use engine::Memory;
+    use engine_native::Memory;
     use std::collections::BTreeSet;
     struct Recorder<'a> {
-        inner: engine::memory::SliceMemory<'a>,
+        inner: engine_native::memory::SliceMemory<'a>,
         sizes: std::cell::RefCell<BTreeSet<usize>>,
     }
     impl Memory for Recorder<'_> {
@@ -4110,7 +4118,7 @@ fn failed_character_refresh_preserves_capacity() {
     assert_eq!(
         captured.leaders.rows.outcome,
         Outcome::Unavailable {
-            reason: replay::cadence::SKIPPED_REASON,
+            reason: replay_data::cadence::SKIPPED_REASON,
         }
     );
     assert_eq!(captured.allocated_bytes(), bytes);
@@ -4382,7 +4390,7 @@ fn character_family_matches_raw_and_typed_at_every_hour() {
     for blocked in [None, Some(private[0]), Some(private[2])] {
         for hour in 0..24 {
             let active = std::array::from_fn(|index| {
-                replay::cadence::should_walk(TABLES[index], hour, false)
+                replay_data::cadence::should_walk(TABLES[index], hour, false)
             });
             let typed_memory = WaveMemory::new(&bytes, blocked);
             let mut typed = Captured::with_capacities(&capacities);
@@ -4406,7 +4414,7 @@ fn character_family_matches_raw_and_typed_at_every_hour() {
             decoded.decode_characters_payload(IMAGE, &job, &mut [0; 5]);
             characters_test_kit::assert_matches_direct(&decoded, &typed);
             assert_eq!(decoded.character_activity(), active);
-            // Roster, roles and traits are all hourly (replay::cadence).
+            // Roster, roles and traits are all hourly (replay_data::cadence).
             assert_eq!(active, [true; N]);
         }
     }

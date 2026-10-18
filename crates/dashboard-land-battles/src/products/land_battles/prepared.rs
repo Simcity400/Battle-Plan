@@ -4,7 +4,7 @@ use dashboard_base::prepared::series;
 use serde_json::Value;
 
 impl Census {
-    pub fn new(format: replay::format::FormatVersion) -> Self {
+    pub fn new(format: replay_data::format::FormatVersion) -> Self {
         Self {
             format,
             ..Self::default()

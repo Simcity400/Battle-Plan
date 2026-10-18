@@ -1,16 +1,15 @@
 use super::super::lexical_tokens;
 use super::*;
-use installed_content::parser;
+use installed_content_core::parser;
 use installed_content_save::Decimal;
-use replay::{
-    frame::TableView,
-    rows::{
-        ArmyUpgradeDeliveryRow, ArmyUpgradeGroupRow, ArmyUpgradeProducedRow, ArmyUpgradeRequestRow,
-        CountryRow, IndustrialOrganisationHistoryRow, IndustrialOrganisationRow, LexicalTokenRow,
-        ProductionLineOutputRow, Recorded, TableId, TableRows, VariantDefinitionRow,
-        VariantModuleRow, VariantStatsRow, VariantUpgradeRow,
-    },
+use replay_data::{
+    rows::ArmyUpgradeDeliveryRow, rows::ArmyUpgradeGroupRow, rows::ArmyUpgradeProducedRow,
+    rows::ArmyUpgradeRequestRow, rows::CountryRow, rows::IndustrialOrganisationHistoryRow,
+    rows::IndustrialOrganisationRow, rows::LexicalTokenRow, rows::ProductionLineOutputRow,
+    rows::Recorded, rows::TableId, rows::TableRows, rows::VariantDefinitionRow,
+    rows::VariantModuleRow, rows::VariantStatsRow, rows::VariantUpgradeRow,
 };
+use replay_frame::frame::TableView;
 
 /// A frame of the line output self-check: whether it read the lines'
 /// slot, its ProductionLineOutput rows `(line, variant, organisation, units)`
@@ -76,11 +75,12 @@ fn output_frame(
 
 /// One branch of `frames` as a replay, for the checks that walk it.
 fn output_replay(frames: Vec<DecodedFrame>) -> Replay {
-    use replay::{
-        branches::{BranchReason, BranchStart, Parentage},
-        frame::FrameEncoder,
-        identity::{Identity, Roster, SessionStart, Verification},
-        spool::Record,
+    use replay::spool::Record;
+    use replay_data::{
+        identity::Identity, identity::Roster, identity::SessionStart, identity::Verification,
+    };
+    use replay_frame::{
+        branches::BranchReason, branches::BranchStart, branches::Parentage, frame::FrameEncoder,
     };
     let mut records = vec![
         Record::SessionStart(SessionStart {
@@ -88,7 +88,7 @@ fn output_replay(frames: Vec<DecodedFrame>) -> Replay {
             process_id: 1,
             process_start_time: 1,
             qpc_frequency: 10_000_000,
-            sample_boundary: replay::identity::SampleBoundary::EndOfHour,
+            sample_boundary: replay_data::identity::SampleBoundary::EndOfHour,
             identity: Identity {
                 game_version: "synthetic".into(),
                 exe_hash: [1; 32],
@@ -127,12 +127,12 @@ fn output_replay(frames: Vec<DecodedFrame>) -> Replay {
             }
         }
         *frame.tables[TableId::Clock.index()] =
-            TableView::Complete(TableRows::Clock(vec![replay::rows::ClockRow {
+            TableView::Complete(TableRows::Clock(vec![replay_data::rows::ClockRow {
                 hour: frame.hour,
                 ..Default::default()
             }]));
         *frame.tables[TableId::Campaign.index()] =
-            TableView::Complete(TableRows::Campaign(vec![replay::rows::CampaignRow {
+            TableView::Complete(TableRows::Campaign(vec![replay_data::rows::CampaignRow {
                 id: b"campaign".to_vec(),
             }]));
         records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
@@ -461,10 +461,10 @@ military_deployment_conveyor={
 type DeploymentContext = (
     production::Pack,
     Vec<CountryRow>,
-    Vec<replay::rows::DeploymentConveyorRow>,
-    Vec<replay::rows::DeploymentLineRow>,
-    Vec<replay::rows::DeploymentManpowerRow>,
-    Vec<replay::rows::DeploymentEquipmentRow>,
+    Vec<replay_data::rows::DeploymentConveyorRow>,
+    Vec<replay_data::rows::DeploymentLineRow>,
+    Vec<replay_data::rows::DeploymentManpowerRow>,
+    Vec<replay_data::rows::DeploymentEquipmentRow>,
 );
 
 fn deployment_context() -> DeploymentContext {
@@ -478,7 +478,7 @@ fn deployment_context() -> DeploymentContext {
     let conveyor = (433_u64 << 32) | 64;
     let line = (7066_u64 << 32) | 63;
     let untrained = (7067_u64 << 32) | 63;
-    let conveyors = vec![replay::rows::DeploymentConveyorRow {
+    let conveyors = vec![replay_data::rows::DeploymentConveyorRow {
         handle: conveyor,
         country: 9,
         ordinal: 0,
@@ -492,7 +492,7 @@ fn deployment_context() -> DeploymentContext {
         exile_country: None,
     }];
     let lines = vec![
-        replay::rows::DeploymentLineRow {
+        replay_data::rows::DeploymentLineRow {
             handle: untrained,
             conveyor,
             country: 9,
@@ -511,7 +511,7 @@ fn deployment_context() -> DeploymentContext {
             custom_flag_a: 1,
             custom_flag_b: 0,
         },
-        replay::rows::DeploymentLineRow {
+        replay_data::rows::DeploymentLineRow {
             handle: line,
             conveyor,
             country: 9,
@@ -531,14 +531,14 @@ fn deployment_context() -> DeploymentContext {
             custom_flag_b: 0,
         },
     ];
-    let manpower = vec![replay::rows::DeploymentManpowerRow {
+    let manpower = vec![replay_data::rows::DeploymentManpowerRow {
         line,
         side: 0,
         ordinal: 0,
         source_country: 9,
         amount: 10_620,
     }];
-    let equipment = vec![replay::rows::DeploymentEquipmentRow {
+    let equipment = vec![replay_data::rows::DeploymentEquipmentRow {
         line,
         ordinal: 0,
         variant_handle: (5553_u64 << 32) | 70,
@@ -548,17 +548,17 @@ fn deployment_context() -> DeploymentContext {
 }
 
 fn deployment_frame(
-    conveyors: Vec<replay::rows::DeploymentConveyorRow>,
-    lines: Vec<replay::rows::DeploymentLineRow>,
-    manpower: Vec<replay::rows::DeploymentManpowerRow>,
-    equipment: Vec<replay::rows::DeploymentEquipmentRow>,
-    licenses: Vec<replay::rows::ProductionLicenseRow>,
-    records: Vec<replay::rows::ProductionLicenseRecordRow>,
+    conveyors: Vec<replay_data::rows::DeploymentConveyorRow>,
+    lines: Vec<replay_data::rows::DeploymentLineRow>,
+    manpower: Vec<replay_data::rows::DeploymentManpowerRow>,
+    equipment: Vec<replay_data::rows::DeploymentEquipmentRow>,
+    licenses: Vec<replay_data::rows::ProductionLicenseRow>,
+    records: Vec<replay_data::rows::ProductionLicenseRecordRow>,
 ) -> DecodedFrame {
     let mut frame = DecodedFrame {
         branch: 1,
         hour: 22,
-        metrics: replay::frame::Metrics::default(),
+        metrics: replay_frame::frame::Metrics::default(),
         tables: std::array::from_fn(|_| TableView::Unavailable {
             reason: "outside deployment comparison".into(),
         })
@@ -598,7 +598,7 @@ fn equipment_rosters_compare_in_saved_order_and_absent_foreign_is_empty() {
         ..Default::default()
     }];
     let links: BTreeMap<u32, &CountryRow> = countries.iter().map(|row| (row.id, row)).collect();
-    let row = |roster_kind, ordinal, id: u64| replay::rows::AvailableEquipmentVariantRow {
+    let row = |roster_kind, ordinal, id: u64| replay_data::rows::AvailableEquipmentVariantRow {
         country: 9,
         roster_kind,
         ordinal,
@@ -626,18 +626,18 @@ fn licences_and_the_deployment_queue_compare_exactly_against_a_real_save_shape()
     conveyors[0].name.extend_from_slice(b"\0tail");
     let links: BTreeMap<u32, &CountryRow> = countries.iter().map(|row| (row.id, row)).collect();
     let licenses = vec![
-        replay::rows::ProductionLicenseRow {
+        replay_data::rows::ProductionLicenseRow {
             country: 9,
             ordinal: 0,
             variant: (5061_u64 << 32) | 70,
         },
-        replay::rows::ProductionLicenseRow {
+        replay_data::rows::ProductionLicenseRow {
             country: 9,
             ordinal: 1,
             variant: (90_u64 << 32) | 70,
         },
     ];
-    let records = vec![replay::rows::ProductionLicenseRecordRow {
+    let records = vec![replay_data::rows::ProductionLicenseRecordRow {
         owner: 9,
         ordinal: 0,
         giver: 9,
@@ -698,7 +698,7 @@ fn changed_words_missing_rows_and_unresolved_roles_are_all_reported() {
         lines,
         manpower,
         equipment,
-        vec![replay::rows::ProductionLicenseRow {
+        vec![replay_data::rows::ProductionLicenseRow {
             country: 9,
             ordinal: 0,
             variant: (5061_u64 << 32) | 70,
@@ -734,7 +734,7 @@ fn changed_words_missing_rows_and_unresolved_roles_are_all_reported() {
 fn every_licence_record_field_can_differ_on_its_own() {
     let (saved, countries, ..) = deployment_context();
     let links: BTreeMap<u32, &CountryRow> = countries.iter().map(|row| (row.id, row)).collect();
-    let good = replay::rows::ProductionLicenseRecordRow {
+    let good = replay_data::rows::ProductionLicenseRecordRow {
         owner: 9,
         ordinal: 0,
         giver: 9,
@@ -752,7 +752,7 @@ fn every_licence_record_field_can_differ_on_its_own() {
         operand_raw: 100_000,
         equipment: vec![(5061_u64 << 32) | 70],
     };
-    type Change = fn(&mut replay::rows::ProductionLicenseRecordRow);
+    type Change = fn(&mut replay_data::rows::ProductionLicenseRecordRow);
     let mutate: [(&str, Change); 6] = [
         ("lended_cic", |row| row.lended_cic += 1),
         ("required_cic", |row| row.required_cic += 1),
@@ -864,7 +864,7 @@ military_deployment_conveyor={
     let links: BTreeMap<u32, &CountryRow> = countries.iter().map(|row| (row.id, row)).collect();
     let tokens: TokenNames<'_> = [(7_u32, b"infantry".as_slice())].into_iter().collect();
     let conveyors = vec![
-        replay::rows::DeploymentConveyorRow {
+        replay_data::rows::DeploymentConveyorRow {
             handle: (1_u64 << 32) | 64,
             country: 9,
             ordinal: 0,
@@ -877,7 +877,7 @@ military_deployment_conveyor={
             name: b"A".to_vec(),
             exile_country: Some(10),
         },
-        replay::rows::DeploymentConveyorRow {
+        replay_data::rows::DeploymentConveyorRow {
             handle: (2_u64 << 32) | 64,
             country: 9,
             ordinal: 1,
@@ -969,7 +969,7 @@ military_deployment_conveyor={
     let links: BTreeMap<u32, &CountryRow> = countries.iter().map(|row| (row.id, row)).collect();
     let tokens: TokenNames<'_> = [(7_u32, b"infantry".as_slice())].into_iter().collect();
     let conveyor = (1_u64 << 32) | 64;
-    let conveyors = vec![replay::rows::DeploymentConveyorRow {
+    let conveyors = vec![replay_data::rows::DeploymentConveyorRow {
         handle: conveyor,
         country: 9,
         ordinal: 0,
@@ -983,7 +983,7 @@ military_deployment_conveyor={
         exile_country: None,
     }];
     let lines = vec![
-        replay::rows::DeploymentLineRow {
+        replay_data::rows::DeploymentLineRow {
             handle: (10_u64 << 32) | 63,
             conveyor,
             country: 9,
@@ -996,7 +996,7 @@ military_deployment_conveyor={
             custom_flag_b: 1,
             ..Default::default()
         },
-        replay::rows::DeploymentLineRow {
+        replay_data::rows::DeploymentLineRow {
             handle: (11_u64 << 32) | 63,
             conveyor,
             country: 9,
@@ -1337,7 +1337,7 @@ fn efficiency_averages_the_saved_prefix_clamped_by_the_recorded_maximum() {
 #[test]
 fn modifier_oracle_compares_every_saved_factory_occurrence_and_keeps_runtime_operands_as_limitations()
  {
-    use replay::rows::ProductionLineModifiersRow;
+    use replay_data::rows::ProductionLineModifiersRow;
     let saved = production::parse(
         &parser::parse(
             br#"countries={MAK={production={military_lines={
@@ -1519,7 +1519,7 @@ fn lexical_writers_keep_exact_bytes_and_scope_unproved_nul_literals() {
 /// names match under the lexer's fold.
 #[test]
 fn variant_archetypes_follow_the_content_equipment_types() {
-    let (equipment, _) = installed_content::equipment::fixture::load(&[(
+    let (equipment, _) = installed_content_core::equipment::fixture::load(&[(
         "common/units/equipment/planes.txt",
         "equipments = {
             airframe = { is_archetype = yes }
@@ -1583,9 +1583,9 @@ fn variant_archetypes_follow_the_content_equipment_types() {
 /// oracle found each "absent from the content" before the expansion.
 #[test]
 fn duplicated_archetype_variants_of_the_live_save_match_the_content() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (equipment, _) = installed_content::equipment::fixture::load(&[
+    let (equipment, _) = installed_content_core::equipment::fixture::load(&[
         (
             "common/units/equipment/plane_airframes.txt",
             "equipments = {
@@ -2124,10 +2124,8 @@ fn typed_army_upgrades_compare_priority_progress_and_ordered_produced_amounts() 
 
 #[test]
 fn staggered_off_hours_skips_variants_and_prints_refresh_hour() {
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{TableId, TableRows},
-    };
+    use replay_data::{rows::TableId, rows::TableRows};
+    use replay_frame::{frame::Metrics, frame::TableView};
     let frame = DecodedFrame {
         branch: 1,
         hour: 0,
@@ -2151,7 +2149,7 @@ fn staggered_off_hours_skips_variants_and_prints_refresh_hour() {
         report
             .limitations
             .keys()
-            .any(|reason| reason.contains(replay::cadence::STAGGER_LIMITATION)),
+            .any(|reason| reason.contains(replay_data::cadence::STAGGER_LIMITATION)),
         "{:?}",
         report.limitations.keys()
     );

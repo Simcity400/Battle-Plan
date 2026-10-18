@@ -2,7 +2,7 @@
 //! from that hour's block read on the progress its first hour starts from.
 use super::*;
 use crate::prepared::series::Reader;
-use replay::container::{BlockChange, BlockIndex};
+use replay::{container::BlockChange, container::BlockIndex};
 
 fn country_reader<'a>(
     store: &'a store::Store,
@@ -129,7 +129,7 @@ pub fn sampled_hour(
     let frames = progressive::read_window(
         source,
         branch,
-        hour.saturating_sub(replay::cadence::STAGGER_PERIOD),
+        hour.saturating_sub(replay_data::cadence::STAGGER_PERIOD),
         hour,
         &READ_TABLES,
         cancelled,
@@ -159,7 +159,7 @@ pub fn sampled_hour(
         branch,
         hour,
         TableId::Focus,
-        replay::cadence::STAGGER_PERIOD,
+        replay_data::cadence::STAGGER_PERIOD,
         &[TableId::Focus],
         cancelled,
     )?;

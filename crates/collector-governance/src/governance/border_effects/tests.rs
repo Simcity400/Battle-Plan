@@ -1,10 +1,11 @@
 use super::super::*;
-use engine::{
-    border_effect_demand, cdecision, cgame_state, cland_border_war_combat as combat,
-    cland_border_war_combatant as side, cland_combat, cland_combatant, cpdx_array,
-    creference_registry as registry, ctargeted_decision as targeted, event_namespace,
-    memory::{CountedMemory, ReadCounts},
-    reference_bucket as bucket,
+use engine_decisions::{
+    border_effect_demand, cdecision, ctargeted_decision as targeted, event_namespace,
+};
+use engine_native::{
+    cgame_state, cland_border_war_combat as combat, cland_border_war_combatant as side,
+    cland_combat, cland_combatant, cpdx_array, creference_registry as registry,
+    memory::CountedMemory, memory::ReadCounts, reference_bucket as bucket,
 };
 use std::{cell::Cell, collections::BTreeMap, time::Instant};
 
@@ -316,7 +317,7 @@ fn demand_and_matching_seed_faults_withhold_only_decisions() {
                 .filter(|(index, _)| *index != 8 && *index != 9)
                 .all(|(_, outcome)| *outcome
                     == Outcome::Unavailable {
-                        reason: replay::cadence::SKIPPED_REASON
+                        reason: replay_data::cadence::SKIPPED_REASON
                     })
         );
     }

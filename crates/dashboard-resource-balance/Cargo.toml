@@ -16,12 +16,13 @@ slow-tests = []
 test-support = ["dashboard-base/test-support"]
 
 [dependencies]
+replay.workspace = true
+engine-production.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
 dashboard-base.workspace = true
 dashboard-core.workspace = true
 dashboard-text.workspace = true
-engine.workspace = true
-installed-content.workspace = true
-replay.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
 store = { path = "../store" }

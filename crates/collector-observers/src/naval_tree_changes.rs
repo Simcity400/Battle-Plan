@@ -1,9 +1,9 @@
 //! Allocation-free notifications from the native writers of the two naval hover trees
 //! NavalModifierTrees carries: a country's modifier tree (`ccountry::MODIFIER_ACCUMULATOR`) and a
-//! commander's ([`engine::naval_tree_mutations`]). A detour only notifies the shared watch registry
+//! commander's ([`engine_mutations::naval_tree_mutations`]). A detour only notifies the shared watch registry
 //! ([`WatchRegistry`]) for the CCountry or CUnitLeader its first argument names, counts its site
 //! and calls the original; it never changes game behaviour. This family patches only the commander
-//! sites: the two country sites belong to families that already patch them and forward Each call 
+//! sites: the two country sites belong to families that already patch them and forward Each call
 //! ([`forwarded`]): country modifier recalculation to country_input_changes, country appearance
 //! reset to politics. The family observes only while its own patches and both forwarders are
 //! enabled ([`forwarder`]). Receivers are the countries and commanders a naval tree capture
@@ -29,11 +29,9 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{
-    Memory,
-    naval_modifier_trees::RawNode,
-    naval_tree_mutations::{COUNTRY_SITES, MUTATIONS},
-};
+use engine_mutations::{naval_tree_mutations::COUNTRY_SITES, naval_tree_mutations::MUTATIONS};
+use engine_native::Memory;
+use engine_naval_history::naval_modifier_trees::RawNode;
 use std::{
     collections::HashMap,
     ops::Range,
@@ -372,7 +370,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "naval_tree_changes")
             && MUTATIONS[COUNTRY_SITES..].iter().all(|site| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             let callbacks: [usize; PATCHED_SITES] = [

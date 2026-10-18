@@ -18,7 +18,7 @@ pub struct Defines {
 }
 
 impl Defines {
-    pub fn read(defines: &installed_content::defines::Defines) -> io::Result<Self> {
+    pub fn read(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
         let value = |name| {
             defines
                 .int32("NNavy", name)

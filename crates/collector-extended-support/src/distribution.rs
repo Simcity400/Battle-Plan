@@ -62,7 +62,7 @@ impl Distribution {
     }
 
     pub fn record_ns(&mut self, ns: u64) {
-        if engine::allocation::reserve(&mut self.samples_ns, 1).is_err() {
+        if engine_allocation::reserve(&mut self.samples_ns, 1).is_err() {
             return;
         }
         self.total_ns = self.total_ns.saturating_add(ns);
@@ -77,7 +77,7 @@ impl Distribution {
         }
         let mut scratch = self.scratch.borrow_mut();
         scratch.clear();
-        engine::allocation::reserve(&mut scratch, self.samples_ns.len())?;
+        engine_allocation::reserve(&mut scratch, self.samples_ns.len())?;
         scratch.extend_from_slice(&self.samples_ns);
         let result = exact_percentiles(&mut scratch);
         self.cached.set(Some(result));

@@ -376,10 +376,11 @@ fn gaps_and_missing_reads_end_attribution_and_absence_proves_zero() {
     observe(&mut scan, &absent);
     assert_eq!(latest(&scan).total_raw.as_deref(), Some("0"));
     let mut missing = held_frame(28, 0, Vec::new());
-    missing.tables[TableId::CountryCommandPower.index()] = replay::frame::TableView::Unavailable {
-        reason: "synthetic gap".into(),
-    }
-    .into();
+    missing.tables[TableId::CountryCommandPower.index()] =
+        replay_frame::frame::TableView::Unavailable {
+            reason: "synthetic gap".into(),
+        }
+        .into();
     observe(&mut scan, &missing);
     assert!(latest(&scan).total_raw.is_none());
     assert!(latest(&scan).holders.is_empty());

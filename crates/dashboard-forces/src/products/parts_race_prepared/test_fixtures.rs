@@ -4,7 +4,7 @@ use super::*;
 use dashboard_base::test_fixtures::{
     CAMPAIGN, continuation_records, records, scale_frame, scale_tag,
 };
-use replay::rows::*;
+use replay_data::rows::*;
 use std::{path::PathBuf, sync::Arc};
 
 pub fn frame(hour: i32, count: u32) -> DecodedFrame {
@@ -162,7 +162,7 @@ pub struct Fixture {
 }
 impl Fixture {
     pub fn new() -> Self {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root =
             std::env::temp_dir().join(format!("forces-progressive-{}", uuid::Uuid::new_v4()));

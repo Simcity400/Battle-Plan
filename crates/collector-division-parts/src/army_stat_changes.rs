@@ -1,7 +1,7 @@
 //! Allocation-free notifications from the native writers of every division's stat block
 //! (`cunit::STAT_BLOCK`) whose attack operands and maxima DivisionStatus records, and of its name
 //! member (`carmy_combat_inputs::NAME_GROUP_MEMBER`), whose span and cached-name lookup cache it
-//! records ([`engine::army_stat_mutations`]). A detour only notifies the shared marking watch
+//! records ([`engine_mutations::army_stat_mutations`]). A detour only notifies the shared marking watch
 //! registry ([`WatchRegistry::marking`]) for the `CArmy` or member its first argument names, or
 //! starts an epoch for the country-wide name refresh, counts the call and calls the original; it
 //! never changes game behaviour. The writers run on the game thread and on the TBB workers of the
@@ -12,7 +12,8 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{Memory, army_stat_mutations::MUTATIONS};
+use engine_mutations::army_stat_mutations::MUTATIONS;
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -250,7 +251,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "army_stat_changes")
             && MUTATIONS.iter().all(|site| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [

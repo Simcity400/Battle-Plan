@@ -2,13 +2,14 @@
 //! cached name (`DivisionStatus.name`) and a wing's its recorded stored name
 //! (`AirWings.name`); the raid's own naming operands answer recordings without them.
 use super::{content::Content, rules::Text};
-use engine::{cname_group_member as member, raid_tooltip_operands::*};
-use installed_content::localisation::Argument as Arg;
-use installed_content::localisation::Localisation;
-use replay::{
-    frame::DecodedFrame,
-    rows::{DivisionStatusRow, RaidRow, RaidTooltipOperandRow, Recorded, tables},
+use engine_native::{cname_group_member as member, raid_tooltip_operands::*};
+use installed_content_localisation::localisation::Argument as Arg;
+use installed_content_localisation::localisation::Localisation;
+use replay_data::{
+    rows::DivisionStatusRow, rows::RaidRow, rows::RaidTooltipOperandRow, rows::Recorded,
+    rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use viewer_foundation::tooltip_text::localise;
 
 pub struct Name<'a> {
@@ -343,7 +344,7 @@ mod tests {
         ] {
             put::<tables::AirWings>(
                 &mut frame,
-                vec![replay::rows::AirWingRow {
+                vec![replay_data::rows::AirWingRow {
                     id: raid.air_wing,
                     name,
                     ..Default::default()
@@ -364,7 +365,7 @@ mod tests {
         }
         put::<tables::AirWings>(
             &mut frame,
-            vec![replay::rows::AirWingRow {
+            vec![replay_data::rows::AirWingRow {
                 id: raid.air_wing,
                 name: Recorded::Value(Some(b"Stored".to_vec())),
                 ..Default::default()

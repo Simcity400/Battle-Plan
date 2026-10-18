@@ -1,10 +1,10 @@
 use super::{RecordedPortrait, leader_portrait};
 use dashboard_base::test_fixtures::{CAMPAIGN, ownership_frame, records};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{CharacterPortrait, CharacterPortraitRow, TableId, TableRows},
+use replay::container::Replay;
+use replay_data::{
+    rows::CharacterPortrait, rows::CharacterPortraitRow, rows::TableId, rows::TableRows,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::sync::atomic::AtomicBool;
 
 #[test]
@@ -69,7 +69,7 @@ pub(super) fn party_frame(
     election: i32,
 ) -> DecodedFrame {
     let mut frame = ownership_frame(1, hour, 44);
-    let party = |id: u32, token: &str, popularity: i64| replay::rows::PoliticalPartyRow {
+    let party = |id: u32, token: &str, popularity: i64| replay_data::rows::PoliticalPartyRow {
         country: 9001,
         id,
         popularity,
@@ -83,7 +83,7 @@ pub(super) fn party_frame(
         party(1, "democratic", democratic),
         party(2, "fascism", fascism),
         // Another country's party is never GER's.
-        replay::rows::PoliticalPartyRow {
+        replay_data::rows::PoliticalPartyRow {
             country: 44,
             id: 1,
             popularity: 1,
@@ -96,7 +96,7 @@ pub(super) fn party_frame(
     *frame.tables[TableId::PoliticalParties.index()] =
         TableView::Complete(TableRows::PoliticalParties(parties));
     *frame.tables[TableId::Politics.index()] =
-        TableView::Complete(TableRows::Politics(vec![replay::rows::PoliticsRow {
+        TableView::Complete(TableRows::Politics(vec![replay_data::rows::PoliticsRow {
             country: 9001,
             last_election: election,
             ..Default::default()
@@ -157,7 +157,7 @@ fn party_history_follows_popularity_ruling_changes_and_elections() {
 
 #[test]
 fn party_history_all_country_scan_keeps_every_country_and_segment_for_each_country() {
-    use replay::rows::{CountryLinkRow, CountryRow, PoliticalPartyRow};
+    use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::PoliticalPartyRow};
     let make = |hour, changed: bool| {
         let mut frame = ownership_frame(1, hour, 44);
         let countries: Vec<_> = (1..=4)
@@ -326,7 +326,7 @@ fn party_history_topic_counts_invalid_non_ruling_tokens_without_recounting_each_
             .find(|row| row.country == 9001 && row.is_ruling == 0)
             .unwrap()
             .token = vec![0xff];
-        rows.push(replay::rows::PoliticalPartyRow {
+        rows.push(replay_data::rows::PoliticalPartyRow {
             country: 9001,
             id: 3,
             ..Default::default()
@@ -348,10 +348,10 @@ fn party_history_feed_extends_unchanged_views_and_only_stores_changed_names() {
     let mut initial = party_frame(100, 1, 2, "fascism", 10);
     *initial.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(vec![
-            replay::rows::CountryAppearanceRow {
+            replay_data::rows::CountryAppearanceRow {
                 country: 9001,
-                original_tag_reference: replay::rows::Recorded::Value(Some(55)),
-                original_tag: replay::rows::Recorded::Value(Some(b"mod_original".to_vec())),
+                original_tag_reference: replay_data::rows::Recorded::Value(Some(55)),
+                original_tag: replay_data::rows::Recorded::Value(Some(b"mod_original".to_vec())),
                 ..Default::default()
             },
         ]));
@@ -362,7 +362,7 @@ fn party_history_feed_extends_unchanged_views_and_only_stores_changed_names() {
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *renamed.tables[TableId::CountryAppearance.index()]
     {
-        rows[0].original_tag = replay::rows::Recorded::Value(Some(b"mod_renamed".to_vec()));
+        rows[0].original_tag = replay_data::rows::Recorded::Value(Some(b"mod_renamed".to_vec()));
     }
     let replay =
         Replay::from_records(CAMPAIGN.into(), &[records(1, vec![initial, next, renamed])]).unwrap();
@@ -481,7 +481,10 @@ fn party_history_topic_combines_table_and_identity_gaps_in_hour_order() {
 
 #[test]
 fn widget_party_names_resolve_party_aliases_exact_empty_and_reserved_tags_lazily() {
-    use replay::rows::{CountryAppearanceRow, CountryLinkRow, Recorded, ReservedCountryNamingRow};
+    use replay_data::{
+        rows::CountryAppearanceRow, rows::CountryLinkRow, rows::Recorded,
+        rows::ReservedCountryNamingRow,
+    };
     let mut initial = party_frame(100, 1, 2, "fascism", 10);
     if let TableView::Complete(TableRows::CountryLinks(rows)) =
         &mut *initial.tables[TableId::CountryLinks.index()]
@@ -594,11 +597,8 @@ fn widget_party_names_resolve_party_aliases_exact_empty_and_reserved_tags_lazily
 fn check_party_country_delta_work(count: u32) {
     use super::TopicInputs;
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use replay::{
-        format::FormatVersion,
-        frame::{FrameDecoder, FrameEncoder},
-        rows::{CountryLinkRow, CountryRow},
-    };
+    use replay_data::{format::FormatVersion, rows::CountryLinkRow, rows::CountryRow};
+    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
     use std::sync::Arc;
     let format = FormatVersion::CURRENT;
     let mut frame = dashboard_base::test_fixtures::source(1, 100, None);

@@ -2,7 +2,7 @@
 //! drawing.
 
 use super::*;
-use replay::rows::{ActiveAbilityRow, RailwayGunCounterInputRow};
+use replay_data::{rows::ActiveAbilityRow, rows::RailwayGunCounterInputRow};
 use viewer_foundation::map::gui_resources::count_noted;
 use viewer_foundation::map::gui_resources::refused_cause;
 use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
@@ -726,7 +726,7 @@ pub(super) struct CounterTables<'a> {
     /// [`hq_portraits`].
     pub(super) portraits: &'a BTreeMap<u64, counter_order::Portrait>,
     /// `ArmyIconInputs` by division.
-    pub(super) icon_inputs: &'a BTreeMap<u64, replay::rows::ArmyIconInputRow>,
+    pub(super) icon_inputs: &'a BTreeMap<u64, replay_data::rows::ArmyIconInputRow>,
 }
 
 /// One division's `DivisionStatus` row, plus the one `DivisionMovement` byte the glyphs need.
@@ -744,7 +744,7 @@ pub(super) struct DivisionStatus {
     pub(super) supply_ratio: i64,
     /// Attrition-presence predicate ([`DivisionStatusRow::has_attrition`]).
     ///
-    /// [`DivisionStatusRow::has_attrition`]: replay::rows::DivisionStatusRow::has_attrition
+    /// [`DivisionStatusRow::has_attrition`]: replay_data::rows::DivisionStatusRow::has_attrition
     pub(super) attrition: bool,
     pub(super) exercising: u8,
     /// `DivisionStatus.has_order`; `None` without a row.
@@ -1604,11 +1604,11 @@ fn add_railway_guns(
                     name,
                     timing: viewer_foundation::map::counter_hovers::land::Timing {
                         next: movement.and_then(|content| {
-                            replay::eta_derive::railway_gun_first_edge(
+                            replay_derive::eta_derive::railway_gun_first_edge(
                                 gun,
                                 |id| {
                                     content.map.terrain(id).map(|terrain| {
-                                        replay::eta_derive::ProvinceOperands {
+                                        replay_derive::eta_derive::ProvinceOperands {
                                             terrain_flags: terrain.flags,
                                             ..Default::default()
                                         }
@@ -1643,8 +1643,8 @@ pub(super) const LAND_KIND: u32 = 0;
 pub(super) fn admitted_divisions<'a>(
     bounds: &'a BTreeMap<u32, Bounds>,
     admission: &'a Admission,
-    divisions: &'a [replay::rows::DivisionRow],
-) -> impl Iterator<Item = &'a replay::rows::DivisionRow> {
+    divisions: &'a [replay_data::rows::DivisionRow],
+) -> impl Iterator<Item = &'a replay_data::rows::DivisionRow> {
     divisions
         .iter()
         .filter(move |division| admission.admits_province(bounds, division.province))
@@ -2799,7 +2799,7 @@ mod tests {
     fn attrition_comes_from_the_recorded_value_against_its_threshold() {
         let mut frame = test_frame(3);
         let row =
-            |division, attrition_value, attrition_threshold| replay::rows::DivisionStatusRow {
+            |division, attrition_value, attrition_threshold| replay_data::rows::DivisionStatusRow {
                 division,
                 attrition_value,
                 attrition_threshold,
@@ -2807,7 +2807,7 @@ mod tests {
             };
         test_put(
             &mut frame,
-            replay::rows::TableRows::DivisionStatus(vec![
+            replay_data::rows::TableRows::DivisionStatus(vec![
                 row(1, 1, 0),
                 row(2, 5_000, 5_000),
                 row(3, 0, 0),
@@ -2823,7 +2823,7 @@ mod tests {
 
     #[test]
     fn columns_keep_the_native_grid_origin_and_viewport_item_offsets() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let document = native::read(
             br#"guiTypes={
@@ -2860,7 +2860,7 @@ mod tests {
 
     #[test]
     fn unsupported_column_parent_terms_refuse_every_affected_plate_by_name() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = gui::fixture();
         for fields in [

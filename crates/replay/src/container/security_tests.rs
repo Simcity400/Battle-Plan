@@ -12,11 +12,11 @@ fn with_allocations_denied<T>(read: impl FnOnce() -> T) -> T {
     impl Drop for Reset {
         fn drop(&mut self) {
             DENY_ALLOCATIONS.set(false);
-            engine::allocation::set_stop_hook(None);
+            engine_allocation::set_stop_hook(None);
         }
     }
     // These fault tests run in isolated child processes because the hook is global.
-    engine::allocation::set_stop_hook(Some(allocations_denied));
+    engine_allocation::set_stop_hook(Some(allocations_denied));
     DENY_ALLOCATIONS.set(true);
     let _reset = Reset;
     read()
@@ -216,7 +216,7 @@ fn selected_seek_preserves_allocation_errors_from_wire_and_reconstruction() {
                 ..Default::default()
             }]));
         let recording = Replay::from_records(CAMPAIGN.into(), &[captured]).unwrap();
-        engine::allocation::set_stop_hook(Some(allocations_denied));
+        engine_allocation::set_stop_hook(Some(allocations_denied));
         let mut checks = 0;
         if mode == "wire" {
             DENY_ALLOCATIONS.set(true);
@@ -229,7 +229,7 @@ fn selected_seek_preserves_allocation_errors_from_wire_and_reconstruction() {
             Ok(())
         });
         DENY_ALLOCATIONS.set(false);
-        engine::allocation::set_stop_hook(None);
+        engine_allocation::set_stop_hook(None);
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::OutOfMemory);
         assert!(matches!(
             recording

@@ -1,4 +1,4 @@
-//! The naval hovers' source trees as text ([`replay::naval_trees`]).
+//! The naval hovers' source trees as text ([`replay_data::naval_trees`]).
 //!
 //! Append each side source's modifier breakdown
 //! text into the caller's string (scale ONE, precision 2, depth -1, the
@@ -17,15 +17,13 @@
 //! Labels are stored native text: they show as stored in the recording's language and
 //! through their recovered keys in another ([`super::naval_labels`]).
 use super::naval_labels::RecordedLabels;
-use installed_content::localisation::Localisation;
-use replay::{
-    frame::DecodedFrame,
-    naval_trees::{self, SideSource, Trees},
-    rows::{
-        ModifierBreakdownNode, ModifierDefinitionRow, NavalCombatShipRow, NavalCombatSideDetails,
-        tables,
-    },
+use installed_content_localisation::localisation::Localisation;
+use replay_data::{
+    naval_trees, naval_trees::SideSource, naval_trees::Trees, rows::ModifierBreakdownNode,
+    rows::ModifierDefinitionRow, rows::NavalCombatShipRow, rows::NavalCombatSideDetails,
+    rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 use viewer_foundation::table_access::{Available, rows};
 #[cfg(test)]
@@ -45,8 +43,10 @@ pub(super) struct Sources<'a> {
 
 impl<'a> Sources<'a> {
     pub(super) fn read(frame: &'a DecodedFrame, labels: &'a RecordedLabels) -> io::Result<Self> {
-        let layout =
-            replay::fixed_layout::validate_recording(frame, replay::fixed_layout::NAVAL_TREES);
+        let layout = replay_derive::fixed_layout::validate_recording(
+            frame,
+            replay_derive::fixed_layout::NAVAL_TREES,
+        );
         let trees = match rows::<tables::NavalModifierTrees>(frame)? {
             Available::Complete(rows) => layout.and_then(|()| {
                 Trees::new(rows).ok_or_else(|| "NavalModifierTrees is out of key order".to_owned())
@@ -72,7 +72,7 @@ impl<'a> Sources<'a> {
     /// Test seam: sources from rows already in hand.
     #[cfg(test)]
     pub(super) fn from_parts(
-        trees: Result<&'a [replay::rows::NavalModifierTreeRow], String>,
+        trees: Result<&'a [replay_data::rows::NavalModifierTreeRow], String>,
         definitions: &'a [ModifierDefinitionRow],
         labels: &'a RecordedLabels,
     ) -> Self {
@@ -269,9 +269,9 @@ pub(super) fn breakdown(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{
-        NavalCombatSummaryInputs, NavalModifierKeyTree, NavalModifierTreeRow,
-        NavalShipModifierSource, NavalShipWeaponContext,
+    use replay_data::{
+        rows::NavalCombatSummaryInputs, rows::NavalModifierKeyTree, rows::NavalModifierTreeRow,
+        rows::NavalShipModifierSource, rows::NavalShipWeaponContext,
     };
 
     fn leaf(value: i64, name: &[u8]) -> Vec<ModifierBreakdownNode> {

@@ -1299,7 +1299,7 @@ pub fn walk(
 ///
 /// `select` names the owners (native country IDs) this walk reads: the
 /// relations are read once a day, one owner slice per hour
-/// (`replay::cadence::Cadence::Sliced`). An unselected owner is not read and
+/// (`replay_data::cadence::Cadence::Sliced`). An unselected owner is not read and
 /// has no rows; every country still counts toward the matrix bound check, and
 /// the baseline keeps an unselected owner's rows and marks for its own slice.
 #[allow(clippy::too_many_arguments)]

@@ -5,9 +5,9 @@
 
 use super::*;
 use crate::extended::naval_history::naval_test_kit as kit;
-use engine::{
+use engine_native::{
     Memory, batch_fallback, carmy, carmy_group, corders_group, corders_group_member, cunit,
-    memory::{RecordLayout, RecordSources, SliceMemory},
+    memory::RecordLayout, memory::RecordSources, memory::SliceMemory,
 };
 use std::cell::{Cell, RefCell};
 
@@ -21,7 +21,7 @@ thread_local! {
 /// each member and child entry, host identity and backlink is its own take.
 pub(super) fn copy_oob_root_serial(
     job: &mut NavalJob,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     pointer: usize,
 ) -> bool {
@@ -90,13 +90,15 @@ pub(super) fn copy_oob_root_serial(
             if offset == corders_group::HQ_PROVIDER {
                 // Provider is a member pointer: host identity span
                 // plus group backlink, like member_unit.
-                if let Some(unit) = target.checked_sub(engine::corders_group_member::HOST_OFFSET) {
+                if let Some(unit) =
+                    target.checked_sub(engine_native::corders_group_member::HOST_OFFSET)
+                {
                     let _ = nspan(log, memory, Some(unit), 32, OOB_MASK);
                 }
                 let _ = nspan(
                     log,
                     memory,
-                    target.checked_add(engine::corders_group_member::GROUP),
+                    target.checked_add(engine_native::corders_group_member::GROUP),
                     8,
                     OOB_MASK,
                 );
@@ -124,7 +126,7 @@ pub(super) fn copy_oob_root_serial(
         };
         // Host identity span (vtable/class/secondary/handle 32 bytes)
         // at the embedded base, plus group backlink at the member.
-        let unit = match member.checked_sub(engine::corders_group_member::HOST_OFFSET) {
+        let unit = match member.checked_sub(engine_native::corders_group_member::HOST_OFFSET) {
             Some(unit) => unit,
             None => continue,
         };
@@ -132,7 +134,7 @@ pub(super) fn copy_oob_root_serial(
         let _ = nspan(
             log,
             memory,
-            member.checked_add(engine::corders_group_member::GROUP),
+            member.checked_add(engine_native::corders_group_member::GROUP),
             8,
             OOB_MASK,
         );
@@ -147,7 +149,7 @@ pub(super) fn copy_oob_root_serial(
         let children_header = match nspan(
             log,
             memory,
-            pointer.checked_add(engine::carmy_group::MEMBER_DATA),
+            pointer.checked_add(engine_native::carmy_group::MEMBER_DATA),
             16,
             OOB_MASK,
         ) {
@@ -399,11 +401,11 @@ type Keyed = std::collections::BTreeMap<(usize, u32), Vec<(bool, u32, Vec<u8>)>>
 /// The air theatre tables as the decode leaves them.
 type Air = (
     Outcome,
-    Vec<engine::cair_theatre::Row>,
+    Vec<engine_native::cair_theatre::Row>,
     Outcome,
-    Vec<engine::cair_group::Row>,
+    Vec<engine_native::cair_group::Row>,
     Outcome,
-    Vec<engine::cair_group::MemberRow>,
+    Vec<engine_native::cair_group::MemberRow>,
 );
 
 /// What one pass leaves: the decoded tables, the theatre name arena and

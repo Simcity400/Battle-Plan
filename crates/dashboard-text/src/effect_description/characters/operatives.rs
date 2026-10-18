@@ -138,7 +138,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if country_key == "captured_by" {
             // Use the stored definite country name, then capitalise it
             // with the shared text case operation.
-            country = installed_content::localisation::crt_case_text(&country, true, true);
+            country = installed_content_localisation::localisation::crt_case_text(&country, true, true);
         }
         self.char_native_text(
             loc,
@@ -201,7 +201,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.char_native_text(
             if field(children(item), "all")
                 .and_then(|item| item.value.scalar())
-                .and_then(installed_content::parser::read_bool)
+                .and_then(installed_content_core::parser::read_bool)
                 .unwrap_or(false)
             {
                 b"EFFECT_FREE_RANDOM_OPERATIVE_ALL"
@@ -217,7 +217,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     // Both the integer reader and evaluator narrow to i32.
     fn char_operative_days(&self, item: &Item, scopes: Scopes) -> Result<i32, String> {
         let operand = item.value.scalar().unwrap_or_default();
-        match installed_content::crt::scan_i32(operand).stored() {
+        match installed_content_core::crt::scan_i32(operand).stored() {
             Some(days) => Ok(days),
             None => Ok((self.scoped_value(operand, scopes)? / 100_000) as i32),
         }
@@ -283,18 +283,18 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     fn char_event_tooltip(&self, item: &Item, scopes: Scopes) -> Result<Option<String>, String> {
         let Some(text) = field(children(item), "tooltip")
             .and_then(|item| item.value.read_string())
-            .filter(|text| !installed_content::parser::c_string(text).is_empty())
+            .filter(|text| !installed_content_core::parser::c_string(text).is_empty())
         else {
             return Ok(None);
         };
-        let text = std::str::from_utf8(installed_content::parser::c_string(text))
+        let text = std::str::from_utf8(installed_content_core::parser::c_string(text))
             .map_err(|_| "event tooltip is not UTF-8")?;
         let mut text = self.expanded(text, scopes)?;
         text.push('\n');
         Ok(Some(text))
     }
 
-    fn char_event(&self, item: &Item) -> Result<Arc<installed_content::events::Event>, String> {
+    fn char_event(&self, item: &Item) -> Result<Arc<installed_content_events::events::Event>, String> {
         let id = item
             .value
             .scalar()
@@ -330,7 +330,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     fn char_event_title(
         &self,
-        event: &installed_content::events::Event,
+        event: &installed_content_events::events::Event,
         at: usize,
     ) -> Result<String, String> {
         let evaluator = self.evaluator()?;

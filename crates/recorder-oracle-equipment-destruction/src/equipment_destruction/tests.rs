@@ -1,11 +1,10 @@
 use super::*;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{
-        CountryLinkRow, CountryRow, DivisionDeletionDisposition, DivisionEquipmentDeletionRow,
-        DivisionRow, EquipmentDestructionRow, TableId, TableRows, VariantDefinitionRow,
-    },
+use replay_data::{
+    rows::CountryLinkRow, rows::CountryRow, rows::DivisionDeletionDisposition,
+    rows::DivisionEquipmentDeletionRow, rows::DivisionRow, rows::EquipmentDestructionRow,
+    rows::TableId, rows::TableRows, rows::VariantDefinitionRow,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 
 const OWNER: u32 = 4999;
 const ALIAS: u32 = 2_000_001;
@@ -826,18 +825,20 @@ fn unknown_queue_provenance_first_interval_refuses_identity_and_zero_claims() {
 }
 
 fn history_replay(branches: Vec<Vec<(DecodedFrame, bool)>>) -> Replay {
-    use replay::{
-        branches::{BranchReason, BranchStart, Gap, Parentage},
+    use replay::spool::Record;
+    use replay_data::{
+        identity::Identity, identity::Roster, identity::SessionStart, identity::Verification,
+    };
+    use replay_frame::{
+        branches::BranchReason, branches::BranchStart, branches::Gap, branches::Parentage,
         frame::FrameEncoder,
-        identity::{Identity, Roster, SessionStart, Verification},
-        spool::Record,
     };
     let mut records = vec![Record::SessionStart(SessionStart {
         id: 1,
         process_id: 1,
         process_start_time: 1,
         qpc_frequency: 10_000_000,
-        sample_boundary: replay::identity::SampleBoundary::EndOfHour,
+        sample_boundary: replay_data::identity::SampleBoundary::EndOfHour,
         identity: Identity {
             game_version: "synthetic".into(),
             exe_hash: [1; 32],
@@ -882,12 +883,12 @@ fn history_replay(branches: Vec<Vec<(DecodedFrame, bool)>>) -> Replay {
             }
             next_hour = frame.hour + 1;
             *frame.tables[TableId::Clock.index()] =
-                TableView::Complete(TableRows::Clock(vec![replay::rows::ClockRow {
+                TableView::Complete(TableRows::Clock(vec![replay_data::rows::ClockRow {
                     hour: frame.hour,
                     ..Default::default()
                 }]));
             *frame.tables[TableId::Campaign.index()] =
-                TableView::Complete(TableRows::Campaign(vec![replay::rows::CampaignRow {
+                TableView::Complete(TableRows::Campaign(vec![replay_data::rows::CampaignRow {
                     id: b"synthetic-history".to_vec(),
                 }]));
             records.push(Record::Frame(encoder.encode(frame, keyframe).unwrap()));

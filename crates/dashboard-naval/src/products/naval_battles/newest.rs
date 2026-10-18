@@ -48,10 +48,8 @@ use dashboard_base::prepared::{
     newest::{Outcome, Report, Tried, Unproven},
     series,
 };
-use replay::{
-    container::{BlockChange, TableFields},
-    rows::NavalResultSourceRow,
-};
+use replay::{container::BlockChange, container::TableFields};
+use replay_data::rows::NavalResultSourceRow;
 use serde_json::Value;
 
 /// What is saved beside a newest window's page.

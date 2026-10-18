@@ -1,8 +1,8 @@
 //! Current resolved native joins; never part of the saved accounting history.
 use super::*;
 use dashboard_base::prepared::frame_changes::{FrameChanges, field_mask};
-use replay::frame::{SharedView, TableView};
-use replay::rows::{DeltaRow, TableSchema};
+use replay_data::{rows::DeltaRow, rows::TableSchema};
+use replay_frame::{frame::SharedView, frame::TableView};
 use std::sync::LazyLock;
 
 /// Each country's row positions in table order.
@@ -202,7 +202,7 @@ fn shift_deadlines(
     shifted: &[(u32, i32, i32)],
     hour: i32,
 ) {
-    let _cpu = ::replay::cpu::scope_phase("politics_ledger:capture_windows");
+    let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:capture_windows");
     let Some(&(.., first, _)) = shifted.first() else {
         return;
     };
@@ -269,7 +269,7 @@ impl WindowAdvance {
     }
 
     fn shift(&self, deadlines: &mut BTreeMap<i32, BTreeSet<u32>>, hour: i32, carried: bool) {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:window_expiry_changes");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:window_expiry_changes");
         let before = hour
             .checked_sub(1)
             .expect("a window continued the prior hour");
@@ -344,7 +344,7 @@ fn advance_deadlines(
     hour: i32,
     carried: bool,
 ) {
-    let _cpu = ::replay::cpu::scope_phase("politics_ledger:expiry_changes");
+    let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:expiry_changes");
     if advanced.is_empty() {
         return;
     }
@@ -1163,7 +1163,7 @@ impl Inputs {
         self.countries_changed = false;
         let links = read(TableId::CountryLinks);
         let coverage_read = read(TableId::PoliticsCaptureCoverage);
-        let capture_cpu = ::replay::cpu::scope_phase("politics_ledger:capture_join");
+        let capture_cpu = ::replay_frame::cpu::scope_phase("politics_ledger:capture_join");
         for &key in coverage.1 {
             let raw = key as u32;
             if let Some(old) = self.witnesses.remove(&raw) {
@@ -1275,7 +1275,7 @@ impl Inputs {
                 .chain(power.1.iter().copied())
                 .map(|key| (key >> 64) as u32)
                 .collect();
-            let _cpu = ::replay::cpu::scope_phase("politics_ledger:join_power");
+            let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:join_power");
             let old = self.power.clone();
             for row in replaced_rows(
                 held::<tables::CountryPowerChanges>(&old),
@@ -1372,7 +1372,7 @@ impl Inputs {
             .chain(costs.1.iter().copied())
             .map(|key| (key >> 32) as u32)
             .collect();
-        let cpu = ::replay::cpu::scope_phase("politics_ledger:join_daily");
+        let cpu = ::replay_frame::cpu::scope_phase("politics_ledger:join_daily");
         if self.daily_changed {
             let old = self.daily.clone();
             for row in replaced_rows(
@@ -1419,7 +1419,7 @@ impl Inputs {
             }
         }
         drop(cpu);
-        let cpu = ::replay::cpu::scope_phase("politics_ledger:join_costs");
+        let cpu = ::replay_frame::cpu::scope_phase("politics_ledger:join_costs");
         if self.costs_changed {
             let old = self.costs.clone();
             for row in replaced_rows(
@@ -1520,7 +1520,7 @@ impl Inputs {
         if !self.identity_countries.is_empty() {
             self.reread_additions(self.identity_countries.clone());
         }
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:accounting_rows");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:accounting_rows");
         self.accounting = Some([
             accounting_positions(
                 self.power(),
@@ -1705,7 +1705,7 @@ impl Inputs {
     /// as each hour's join from its changed rows moves them.
     pub(super) fn materialize_advance(&mut self) {
         if let Some((window, through)) = self.window.take() {
-            let _cpu = ::replay::cpu::scope_phase("politics_ledger:window_witnesses");
+            let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:window_witnesses");
             for &(raw, width) in &window.captures {
                 #[cfg(test)]
                 {

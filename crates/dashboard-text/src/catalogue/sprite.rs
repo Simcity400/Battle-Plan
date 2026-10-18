@@ -1,6 +1,7 @@
 //! Native Up-state sprite draw at a newly shown drawable's time zero.
 use super::*;
-use installed_content::{gui::native::sprites::FrameAnimation, image::dds};
+use installed_content_core::gui::native::sprites::FrameAnimation;
+use installed_content_image::dds;
 
 pub(super) fn frame(
     layers: &ResolvedLayers,
@@ -184,7 +185,7 @@ fn frame_offset(plain: &Plain, step: [f32; 2], frame: u32) -> [f32; 2] {
     [x as f32 * step[0], y as f32 * step[1]]
 }
 
-fn active_at_rest(data: &installed_content::gui::native::sprites::AnimationData) -> bool {
+fn active_at_rest(data: &installed_content_core::gui::native::sprites::AnimationData) -> bool {
     // Each record starts at (start=-1,last=0). The first draw enters Up (1),
     // starting records triggered by its bit.
     (data.trigger_frames == 0 || data.trigger_frames & 2 != 0)
@@ -227,7 +228,7 @@ fn optional(
 
 /// Animation values at t=0 and BlendFactor=1; scrolling, rotating, pulsing.
 fn at_rest(
-    data: &installed_content::gui::native::sprites::AnimationData,
+    data: &installed_content_core::gui::native::sprites::AnimationData,
     size: [u32; 2],
     overlay: [i32; 2],
 ) -> [f32; 17] {
@@ -298,7 +299,7 @@ fn at_rest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content::gui::native::sprites::AnimationData;
+    use installed_content_core::gui::native::sprites::AnimationData;
 
     #[test]
     #[cfg_attr(

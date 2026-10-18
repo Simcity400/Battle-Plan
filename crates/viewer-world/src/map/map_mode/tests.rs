@@ -1,15 +1,14 @@
 use super::*;
-use installed_content::map::{CountryColors, ProvinceDefinition};
-use installed_content::scripted_map_modes;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{
-        BuildingRow, CapitulationRow, CountryAppearanceRow, CountryCounterInputRow, CountryLinkRow,
-        CountryRow, FactionMemberRow, FactionRow, IntelNetworkRow, LexicalTokenRow, PlayerRow,
-        ProvinceRow, Recorded, ResearchTechnologyRow, StateRow, SubjectRow, TableId, TableRows,
-        TechnologyDefinitionRow,
-    },
+use installed_content_core::scripted_map_modes;
+use installed_content_core::{map::CountryColors, map::ProvinceDefinition};
+use replay_data::{
+    rows::BuildingRow, rows::CapitulationRow, rows::CountryAppearanceRow,
+    rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryRow, rows::FactionMemberRow,
+    rows::FactionRow, rows::IntelNetworkRow, rows::LexicalTokenRow, rows::PlayerRow,
+    rows::ProvinceRow, rows::Recorded, rows::ResearchTechnologyRow, rows::StateRow,
+    rows::SubjectRow, rows::TableId, rows::TableRows, rows::TechnologyDefinitionRow,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 
 /// The shipped defines' values.
 fn defines() -> ModeDefines {
@@ -55,7 +54,7 @@ fn defines() -> ModeDefines {
 fn content(scripted: MapModes) -> Content {
     Content {
         defines: defines(),
-        ideologies: Arc::new(installed_content::ideologies::Ideologies::default()),
+        ideologies: Arc::new(installed_content_core::ideologies::Ideologies::default()),
         category_colors: BTreeMap::from([
             (b"town".to_vec(), Ok(Some([0.0, 200.0 / 255.0, 0.0, 1.0]))),
             (b"rural".to_vec(), Ok(None)),
@@ -866,7 +865,7 @@ fn scripted_modes_delegate_game_layers_and_refuse_colour_scripts() {
 
 #[test]
 fn colour_scripts_paint_each_target_their_callback_colours() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use dashboard_text::triggers::{ContentFacts, World};
     let mut modes = MapModes::default();
@@ -894,7 +893,7 @@ fn colour_scripts_paint_each_target_their_callback_colours() {
     .unwrap();
     let content = content(modes);
     let frame = frame();
-    let names = installed_content::trigger_keys::TriggerNames {
+    let names = installed_content_core::trigger_keys::TriggerNames {
         scripted: Default::default(),
         counts: Some(Default::default()),
     };
@@ -959,7 +958,7 @@ fn colour_scripts_paint_each_target_their_callback_colours() {
 
 #[test]
 fn colour_borders_keep_their_colour_until_their_provinces_change() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use colour_script::{Border, LayerState, TargetId, borders, refreshes};
     use dashboard_text::triggers::{ContentFacts, World};
@@ -973,7 +972,7 @@ fn colour_borders_keep_their_colour_until_their_provinces_change() {
     let layer = modes.get("held").unwrap().top.clone();
     let content = content(modes);
     let (frame, map) = (frame(), map());
-    let names = installed_content::trigger_keys::TriggerNames {
+    let names = installed_content_core::trigger_keys::TriggerNames {
         scripted: Default::default(),
         counts: Some(Default::default()),
     };
@@ -1215,7 +1214,7 @@ fn enabling_technologies_cap_the_maximum_by_the_controllers_completed_ones() {
         ("unrelated", None),
     ];
     let roads = infrastructure::for_tests("roads", 5, true, Some(technologies), Vec::new());
-    let completed = engine::ctechnology::CLASSIFIER_COMPLETED;
+    let completed = engine_research::ctechnology::CLASSIFIER_COMPLETED;
     let research = |country, database_index, classifier| ResearchTechnologyRow {
         country,
         database_index,
@@ -1419,7 +1418,7 @@ fn each_recorded_declaration_of_a_repeated_technology_gives_its_own_unlock() {
     // Two declarations of `t`: the first enables level 3, the second level 4.
     let technologies = vec![("t", Some(3)), ("t", Some(4))];
     let roads = infrastructure::for_tests("roads", 5, true, Some(technologies), Vec::new());
-    let completed = engine::ctechnology::CLASSIFIER_COMPLETED;
+    let completed = engine_research::ctechnology::CLASSIFIER_COMPLETED;
     let research = |country, database_index| ResearchTechnologyRow {
         country,
         database_index,

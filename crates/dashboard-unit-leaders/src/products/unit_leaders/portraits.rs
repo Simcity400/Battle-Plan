@@ -57,15 +57,18 @@ pub(super) fn artwork(
         .ok()
         .map(|i| &holders[i])
         .ok_or("Character portrait holder not recorded")?;
-    let category = if row.kind == engine::cunit_leader::KIND_NAVY {
+    let category = if row.kind == engine_native::cunit_leader::KIND_NAVY {
         PORTRAIT_NAVY
     } else {
         PORTRAIT_ARMY
     };
-    let entry =
-        replay::rows::portrait_entry(&holder.portraits, category, replay::rows::PORTRAIT_LARGE)
-            .filter(|e| e.is_set != 0)
-            .ok_or("The game generates this portrait from unrecorded inputs")?;
+    let entry = replay_data::rows::portrait_entry(
+        &holder.portraits,
+        category,
+        replay_data::rows::PORTRAIT_LARGE,
+    )
+    .filter(|e| e.is_set != 0)
+    .ok_or("The game generates this portrait from unrecorded inputs")?;
     politics.recorded_portrait_sized(entry.kind, &entry.identity, edge)
 }
 
@@ -73,7 +76,7 @@ pub fn check_content(
     politics: &politics_content::PoliticsContent,
 ) -> Vec<dashboard_core::findings::Finding> {
     use dashboard_core::findings::{Finding, Kind};
-    use installed_content::characters::{Authored, PORTRAIT_SIZES};
+    use installed_content_core::{characters::Authored, characters::PORTRAIT_SIZES};
     let mut findings = Vec::new();
     for token in politics.characters.declared_tokens() {
         let portraits = match politics.characters.portraits(token) {

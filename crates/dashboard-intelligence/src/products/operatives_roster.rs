@@ -15,8 +15,9 @@ use dashboard_text::{
     catalogue::BoundedRefusals,
     metadata::{IdentityTrack, link_slot},
 };
-use replay::rows::{
-    CharacterOperativeRow, CountryLinkRow, CountryRow, OperativeMembershipRow, TableId, tables,
+use replay_data::{
+    rows::CharacterOperativeRow, rows::CountryLinkRow, rows::CountryRow,
+    rows::OperativeMembershipRow, rows::TableId, rows::tables,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -29,7 +30,9 @@ use ts_rs::TS;
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::validate_campaign;
 #[cfg(any(test, feature = "test-support"))]
-use replay::{container::Replay, frame::FrameDecoder};
+use replay::container::Replay;
+#[cfg(any(test, feature = "test-support"))]
+use replay_frame::frame::FrameDecoder;
 
 #[cfg(any(test, feature = "test-support"))]
 mod oracle;
@@ -297,7 +300,7 @@ impl Held {
                 .ok_or("The captured operative's country identity is unknown at this hour")
                 .and_then(|identity| names.name(identity));
             let input = (
-                hour.wrapping_sub(engine::cdate::HOUR_EPOCH) / 24,
+                hour.wrapping_sub(engine_native::cdate::HOUR_EPOCH) / 24,
                 name.map(str::to_owned).map_err(str::to_owned),
             );
             if self.captured_input.as_ref() == Some(&input) {
@@ -306,7 +309,7 @@ impl Held {
             let status = content.captured_status(
                 self.value
                     .captured_hour
-                    .unwrap_or(engine::cgame_date::NULL_RAW_HOUR),
+                    .unwrap_or(engine_native::cgame_date::NULL_RAW_HOUR),
                 hour,
                 input.1.as_ref().ok().map(String::as_str),
             );
@@ -338,7 +341,7 @@ impl Held {
 
 fn operative_values(
     content: Option<&super::operative_content::OperativeContent>,
-    frame: &replay::frame::DecodedFrame,
+    frame: &replay_frame::frame::DecodedFrame,
     row: &OperativeMembershipRow,
     character: Option<u32>,
     operation_token: Option<&str>,
@@ -409,7 +412,7 @@ fn operative_values(
     }
     let captured = Some(operative_rows::captured(row.assignment));
     let capture_known =
-        captured == Some(true) && row.captured_hour != engine::cgame_date::NULL_RAW_HOUR;
+        captured == Some(true) && row.captured_hour != engine_native::cgame_date::NULL_RAW_HOUR;
     Ok(OperativeRosterValues {
         name: name.name,
         unnamed: name.unnamed,
@@ -737,7 +740,7 @@ impl Scan {
         }
     }
 
-    fn observe_operations(&mut self, frame: &replay::frame::DecodedFrame) -> io::Result<()> {
+    fn observe_operations(&mut self, frame: &replay_frame::frame::DecodedFrame) -> io::Result<()> {
         let Self {
             operation_read_hour,
             operations,
@@ -783,7 +786,7 @@ impl Scan {
     #[allow(clippy::too_many_arguments)]
     fn observe_indices(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         content: Option<&super::operative_content::OperativeContent>,
         selected_identities: Option<&BTreeSet<(u32, u32)>>,
         indices: Option<&BTreeSet<usize>>,
@@ -1311,7 +1314,7 @@ fn character_links(
     result
 }
 
-fn operation_name(frame: &replay::frame::DecodedFrame, id: u64) -> Option<&str> {
+fn operation_name(frame: &replay_frame::frame::DecodedFrame, id: u64) -> Option<&str> {
     let operations = frame.complete::<tables::Operations>().ok()?;
     let operation = operations
         .binary_search_by_key(&id, |row| row.id)

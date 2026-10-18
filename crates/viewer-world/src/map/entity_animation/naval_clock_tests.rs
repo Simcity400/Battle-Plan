@@ -684,7 +684,7 @@ fn played_child_uses_own_phase_while_unplayed_child_copies_raw_parent_phase() {
 
 #[test]
 fn propagated_missing_child_state_is_noop_for_ordinary_native_nodes() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut rig = with_child(stage_rig(false));
     rig.nodes[0].clips[0]
@@ -713,7 +713,7 @@ fn propagated_missing_child_state_is_noop_for_ordinary_native_nodes() {
 
 #[test]
 fn naval_parent_entry_forces_same_child_while_ordinary_packet_suppresses_it() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut rig = with_child(stage_rig(false));
     rig.nodes[0].native = Some(Arc::new(native_source()));

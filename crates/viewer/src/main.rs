@@ -53,7 +53,7 @@ use {
     viewer_world::map::political,
 };
 // names
-use replay::{BranchId, Hour};
+use replay_data::{BranchId, Hour};
 use std::{
     collections::BTreeSet,
     ffi::OsString,
@@ -1124,7 +1124,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         config.user_dir = path.clone();
     }
     if config.resolve_options().is_ok()
-        && let Err(error) = engine::executable_tables::initialize(&config.game_dir)
+        && let Err(error) = engine_executable::executable_tables::initialize(&config.game_dir)
     {
         config_error = Some(format!("Game tables: {error}"));
     }
@@ -1557,7 +1557,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let mode = crate::app::picker::mode_hover(
                 &options.map_mode,
                 document.map_modes.defines.opinion_thresholds(),
-                || document.map_modes.infrastructure.hover_level(frame, province),
+                || {
+                    document
+                        .map_modes
+                        .infrastructure
+                        .hover_level(frame, province)
+                },
             );
             // The hover's air statistics wait for the roster history worker, as the
             // interactive hover does through its wake: ask again until nothing is pending.

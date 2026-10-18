@@ -21,7 +21,7 @@ pub(super) fn cancel(cancelled: &AtomicBool) -> io::Result<()> {
 
 fn equipment_part(
     raw: &str,
-    units: Option<&installed_content::equipment::Database>,
+    units: Option<&installed_content_core::equipment::Database>,
     localise: &impl Fn(&str) -> Option<String>,
     refusals: &mut BTreeSet<String>,
 ) -> AirForcePart {
@@ -105,7 +105,7 @@ pub(super) struct Parts {
 pub(super) fn reply(
     scanned: &ScannedAir,
     params: &AirForceParams,
-    units: Option<&installed_content::equipment::Database>,
+    units: Option<&installed_content_core::equipment::Database>,
     localise: impl Fn(&str) -> Option<String>,
     warnings: Vec<String>,
     cancelled: &AtomicBool,
@@ -117,7 +117,7 @@ pub(super) fn reply(
 pub(super) fn reply_cached(
     scanned: &ScannedAir,
     params: &AirForceParams,
-    units: Option<&installed_content::equipment::Database>,
+    units: Option<&installed_content_core::equipment::Database>,
     localise: impl Fn(&str) -> Option<String>,
     warnings: Vec<String>,
     cancelled: &AtomicBool,
@@ -145,7 +145,7 @@ pub(super) fn reply_cached(
 pub(super) fn selected(
     scanned: &ScannedAir,
     params: &AirForceParams,
-    units: Option<&installed_content::equipment::Database>,
+    units: Option<&installed_content_core::equipment::Database>,
     localise: impl Fn(&str) -> Option<String>,
     mut warnings: Vec<String>,
     cancelled: &AtomicBool,

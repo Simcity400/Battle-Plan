@@ -14,9 +14,11 @@ use dashboard_base::prepared::{
     prepass::{Extract, Family, Folded},
 };
 use replay::{
-    container::{BlockIndex, QuietHours, Replay, TableFields},
-    format::FormatVersion,
-    rows::{CountryAppearanceRow, ProvinceRow, RaidCountryRow, StateRow, TableRows},
+    container::BlockIndex, container::QuietHours, container::Replay, container::TableFields,
+};
+use replay_data::{
+    format::FormatVersion, rows::CountryAppearanceRow, rows::ProvinceRow, rows::RaidCountryRow,
+    rows::StateRow, rows::TableRows,
 };
 use std::{any::Any, ops::Range};
 
@@ -243,9 +245,9 @@ pub fn fold(
     observed: &mut kept::Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let facts = {
-        let _cpu = ::replay::cpu::scope("fold facts", None);
+        let _cpu = ::replay_frame::cpu::scope("fold facts", None);
         facts
             .downcast::<BlockFacts>()
             .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -276,7 +278,7 @@ pub fn observe_block(
     observed: &mut kept::Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let mut tracker = FrameChangeTracker::new();
     let mut reached = None;
     let mut stopped = false;
@@ -285,14 +287,14 @@ pub fn observe_block(
         index,
         TABLES,
         |raw, frame| {
-            let _cpu = ::replay::cpu::scope("fold driver", None);
+            let _cpu = ::replay_frame::cpu::scope("fold driver", None);
             let changes = tracker.observe_updates(frame, std::sync::Arc::new(raw), replay.format);
             if stopped {
                 return Ok(());
             }
             reached = Some(frame.hour);
             let result = {
-                let _cpu = ::replay::cpu::scope("fold observe", None);
+                let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                 prepared.observe_changed(frame, replay.format, content, &changes)
             };
             match observed(frame.hour, result) {

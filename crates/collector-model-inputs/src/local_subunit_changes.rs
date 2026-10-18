@@ -1,6 +1,6 @@
 //! Allocation-free notifications from the native writers of each country's
 //! local sub-unit clones and their requirements
-//! ([`engine::local_subunit_mutations`]). A detour only notifies the shared
+//! ([`engine_mutations::local_subunit_mutations`]). A detour only notifies the shared
 //! watch registry ([`WatchRegistry`]) for the `CDeploymentStatus` its
 //! arguments name, counts its site and calls the original; it never changes
 //! game behaviour. Receivers are the deployment statuses a CountryLocalSubunits
@@ -11,10 +11,11 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{
-    Memory,
-    local_subunit_mutations::{BONUS_LIST, CLONE_COUNT, MUTATIONS, Receiver},
+use engine_mutations::{
+    local_subunit_mutations::BONUS_LIST, local_subunit_mutations::CLONE_COUNT,
+    local_subunit_mutations::MUTATIONS, local_subunit_mutations::Receiver,
 };
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -237,7 +238,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "local_subunit_changes")
             && MUTATIONS.iter().all(|(site, _)| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [

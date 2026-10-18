@@ -931,7 +931,7 @@ fn root_out_factors_are_the_owner_and_operative_effective_values() {
 #[test]
 fn root_out_nationality_follows_the_active_resistance_country_or_the_target() {
     // Raw nationality 2 is an alias of the target country 1.
-    let mut bytes = root_out(1, 0, 0, &[2]);
+    let bytes = root_out(1, 0, 0, &[2]);
     assert_eq!(root_out_operands(&bytes).2, Some(1));
     // A target the nationalities do not hold.
     let mut bytes = root_out(0, 0, 0, &[2]);

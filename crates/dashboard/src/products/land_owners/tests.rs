@@ -1,10 +1,7 @@
 use crate::test_fixtures::{CAMPAIGN, ownership_frame, records, scale_frame};
-use replay::{
-    container::Replay,
-    frame::{TableUpdate, TableView},
-    rows::{TableId, TableRows},
-    spool::Record,
-};
+use replay::{container::Replay, spool::Record};
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::{frame::TableUpdate, frame::TableView};
 use std::sync::atomic::AtomicBool;
 
 #[test]
@@ -14,7 +11,7 @@ fn land_owners_shared_changes_skip_unchanged_rosters_and_bound_one_changed_row()
         frame_changes::FrameChangeTracker,
         observer_tests::{self, Work},
     };
-    let format = replay::format::FormatVersion::default();
+    let format = replay_data::format::FormatVersion::default();
     let first = scale_frame(1, 100, 5_000);
     let work = observer_tests::scaled_work(10, |hours| {
         let mut scan = Scan::default();
@@ -77,7 +74,7 @@ fn land_owners_shared_changes_skip_unchanged_rosters_and_bound_one_changed_row()
 fn land_owners_shared_driver_work_is_flat_over_retained_alias_history() {
     use super::Scan;
     use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    let format = replay::format::FormatVersion::default();
+    let format = replay_data::format::FormatVersion::default();
     let work = observer_tests::scaled_work(10, |history| {
         let mut scan = Scan::default();
         let mut tracker = FrameChangeTracker::new();
@@ -112,7 +109,7 @@ fn land_owners_shared_driver_work_is_flat_over_retained_alias_history() {
 fn land_owners_changed_country_operands_skip_state_rows_and_keep_shortened_tag_order() {
     use super::Scan;
     use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let work = observer_tests::scaled_work(10, |history| {
         let mut scan = Scan::default();
         let mut tracker = FrameChangeTracker::new();
@@ -166,7 +163,7 @@ fn land_owners_changed_country_operands_skip_state_rows_and_keep_shortened_tag_o
 fn land_owners_link_refresh_uses_retained_owners_and_country_keys_after_resume() {
     use super::Scan;
     use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let mut read = ownership_frame(1, 100, 11);
     let mut prepared = Scan::default();
     let mut oracle = Scan::default();
@@ -214,7 +211,7 @@ fn land_owners_link_refresh_uses_retained_owners_and_country_keys_after_resume()
     oracle.observe(&read, None, None).unwrap();
     assert_eq!(
         prepared.work.row_visits - before.row_visits,
-        read.complete::<replay::rows::tables::CountryLinks>()
+        read.complete::<replay_data::rows::tables::CountryLinks>()
             .unwrap()
             .len(),
         "only changed link rows are visited"
@@ -283,24 +280,24 @@ fn land_owners_name_countries_in_the_given_language_and_fall_back_to_tags() {
     let mut frame = ownership_frame(1, 100, 44);
     *frame.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(vec![
-            replay::rows::CountryAppearanceRow {
+            replay_data::rows::CountryAppearanceRow {
                 country: 44,
                 ..Default::default()
             },
         ]));
     *frame.tables[TableId::Politics.index()] =
-        TableView::Complete(TableRows::Politics(vec![replay::rows::PoliticsRow {
+        TableView::Complete(TableRows::Politics(vec![replay_data::rows::PoliticsRow {
             country: 44,
             ..Default::default()
         }]));
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
-    let localisation: installed_content::localisation::Localisation =
+    let localisation: installed_content_localisation::localisation::Localisation =
         [("FRA".to_owned(), "France".to_owned())]
             .into_iter()
             .collect();
     let result = crate::land_owners(&replay, Some(&localisation), &AtomicBool::new(false)).unwrap();
     assert_eq!(result.countries[0].name, "France");
-    let untranslated = installed_content::localisation::Localisation::default();
+    let untranslated = installed_content_localisation::localisation::Localisation::default();
     let result = crate::land_owners(&replay, Some(&untranslated), &AtomicBool::new(false)).unwrap();
     assert_eq!(result.countries[0].name, "FRA");
     assert!(result.warnings.iter().any(|w| w.contains("show their tag")));
@@ -368,7 +365,7 @@ fn land_owners_report_dangling_owners_and_missing_country_identity() {
 fn land_owners_keep_partial_positive_evidence_and_do_not_reuse_lost_baselines() {
     let mut partial = ownership_frame(1, 102, 66);
     *partial.tables[TableId::States.index()] = TableView::Truncated {
-        rows: TableRows::States(vec![replay::rows::StateRow {
+        rows: TableRows::States(vec![replay_data::rows::StateRow {
             id: 1,
             owner: 66,
             controller: 55,
@@ -496,7 +493,7 @@ fn land_owners_prepared_recording_state_matches_after_two_commits_resume_append_
     let mut tracker = FrameChangeTracker::new();
     for (commit, frames) in batches.into_iter().enumerate() {
         for frame in &frames {
-            let changes = tracker.observe(frame, replay::format::FormatVersion::CURRENT);
+            let changes = tracker.observe(frame, replay_data::format::FormatVersion::CURRENT);
             scan.observe(frame, None, Some(&changes)).unwrap();
         }
         inputs.push(records(frames[0].branch, frames));
@@ -552,7 +549,7 @@ fn land_owners_prepared_five_thousand_countries_retains_no_hour_history() {
     let fixture = Fixture::new();
     let mut scan = Scan::default();
     let mut tracker = FrameChangeTracker::new();
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let mut read = scale_frame(2, 90, 5000);
     scan.observe(&read, None, Some(&tracker.observe(&read, format)))
         .unwrap();

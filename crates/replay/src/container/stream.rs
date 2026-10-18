@@ -29,9 +29,9 @@ pub struct ReplayStream {
 
 impl ReplayStream {
     pub fn new(tables: &[TableId]) -> io::Result<Self> {
-        let mut selected = engine::allocation::collect_vec(tables.iter().copied())?;
+        let mut selected = engine_allocation::collect_vec(tables.iter().copied())?;
         if !selected.contains(&TableId::Campaign) {
-            engine::allocation::reserve(&mut selected, 1)?;
+            engine_allocation::reserve(&mut selected, 1)?;
             selected.push(TableId::Campaign);
         }
         Ok(Self {
@@ -290,9 +290,9 @@ impl Replay {
         mut check: impl FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
         check()?;
-        let mut selected = engine::allocation::collect_vec(tables.iter().copied())?;
+        let mut selected = engine_allocation::collect_vec(tables.iter().copied())?;
         if !selected.contains(&TableId::Campaign) {
-            engine::allocation::reserve(&mut selected, 1)?;
+            engine_allocation::reserve(&mut selected, 1)?;
             selected.push(TableId::Campaign);
         }
         reconstruct_block(
@@ -328,9 +328,9 @@ impl Replay {
                 check,
             );
         }
-        let mut selected = engine::allocation::collect_vec(tables.iter().copied())?;
+        let mut selected = engine_allocation::collect_vec(tables.iter().copied())?;
         if !selected.contains(&TableId::Campaign) {
-            engine::allocation::reserve(&mut selected, 1)?;
+            engine_allocation::reserve(&mut selected, 1)?;
             selected.push(TableId::Campaign);
         }
         let frames = self.read_block_recorded_selected(index, &selected)?;
@@ -368,9 +368,9 @@ impl Replay {
         mut check: impl FnMut() -> io::Result<()>,
     ) -> io::Result<bool> {
         check()?;
-        let mut selected = engine::allocation::collect_vec(tables.iter().copied())?;
+        let mut selected = engine_allocation::collect_vec(tables.iter().copied())?;
         if !selected.contains(&TableId::Campaign) {
-            engine::allocation::reserve(&mut selected, 1)?;
+            engine_allocation::reserve(&mut selected, 1)?;
             selected.push(TableId::Campaign);
         }
         let mut chosen = [false; TABLE_COUNT];

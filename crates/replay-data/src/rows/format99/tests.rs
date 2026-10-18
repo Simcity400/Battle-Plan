@@ -201,7 +201,7 @@ fn format99_appends_leave_format98_prefixes_and_values_available() {
             id: u32::MAX,
             reference_type: 4713,
             category: 1,
-            kind: engine::cunit_leader::KIND_ARMY,
+            kind: engine_native::cunit_leader::KIND_ARMY,
             formation_reference: Recorded::Value(Some(u64::MAX)),
             ..Default::default()
         },
@@ -405,7 +405,7 @@ fn format99_ability_operands_preserve_null_and_signed_values() {
             id: 7,
             reference_type: 4713,
             category: 0,
-            kind: engine::cunit_leader::KIND_ARMY,
+            kind: engine_native::cunit_leader::KIND_ARMY,
             formation_reference: Recorded::Value(formation_reference),
             ..Default::default()
         });

@@ -1,7 +1,10 @@
 use super::*;
 use crate::test_fixtures::source;
-use replay::frame::{FrameDecoder, FrameEncoder, READ_TIME_NOT_RECORDED, TableUpdate, TableView};
-use replay::rows::{TableRows, tables};
+use replay_data::{rows::TableRows, rows::tables};
+use replay_frame::{
+    frame::FrameDecoder, frame::FrameEncoder, frame::READ_TIME_NOT_RECORDED, frame::TableUpdate,
+    frame::TableView,
+};
 
 #[test]
 fn consumers_of_the_same_hour_share_its_supplying_read_batch() {
@@ -238,7 +241,8 @@ fn frame_changes_keep_shared_slot_reads_separate_from_own_reads_and_row_changes(
             if anchor == TableId::CountryIntel {
                 return None;
             }
-            let replay::cadence::Cadence::Daily(slot) = replay::cadence::cadence_in(anchor, format)
+            let replay_data::cadence::Cadence::Daily(slot) =
+                replay_data::cadence::cadence_in(anchor, format)
             else {
                 return None;
             };
@@ -247,15 +251,15 @@ fn frame_changes_keep_shared_slot_reads_separate_from_own_reads_and_row_changes(
                 .find(|companion| {
                     *companion != anchor
                         && *companion != TableId::CountryIntel
-                        && replay::cadence::cadence_in(*companion, format)
-                            == replay::cadence::Cadence::Daily(slot)
+                        && replay_data::cadence::cadence_in(*companion, format)
+                            == replay_data::cadence::Cadence::Daily(slot)
                 })
                 .map(|companion| (anchor, companion, slot))
         })
         .expect("the recorded cadence has shared daily slots");
     let mut observed = source(
         1,
-        (slot as i32 + 1) % replay::cadence::STAGGER_PERIOD,
+        (slot as i32 + 1) % replay_data::cadence::STAGGER_PERIOD,
         Some(7),
     );
     observed.metrics.table_ns[TableId::CountryIntel.index()] = READ_TIME_NOT_RECORDED;
@@ -283,7 +287,7 @@ fn frame_changes_give_each_changed_table_exactly_its_recorded_delta_rows() {
     let mut tracker = FrameChangeTracker::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::new();
-    let mut observe = |input: replay::frame::DecodedFrame, keyframe: bool| {
+    let mut observe = |input: replay_frame::frame::DecodedFrame, keyframe: bool| {
         let wire = encoder.encode(input, keyframe).unwrap();
         let decoded = decoder.advance(&wire).unwrap().clone();
         let changes = tracker.observe_updates(&decoded, std::sync::Arc::new(wire), format);
@@ -369,7 +373,7 @@ fn frame_changes_name_each_tables_changes_for_trigger_inputs() {
 
 #[test]
 fn snapshot_comparison_selects_changed_added_and_deleted_ordered_keys() {
-    use replay::rows::LexicalTokenRow;
+    use replay_data::rows::LexicalTokenRow;
     let row = |token, literal: &[u8]| LexicalTokenRow {
         token,
         literal: literal.to_vec(),

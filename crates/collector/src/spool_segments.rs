@@ -10,10 +10,11 @@
 //! encoded again in place, which reports its error.
 
 use crate::spool_phases::{HELPER, Phase};
-use replay::{
-    BranchId, Hour,
-    frame::{FrameEncoder, FrameInput, TABLE_COUNT, TableInput, TableSegment, TableView},
-    rows::TableId,
+use replay_data::rows::TABLE_COUNT;
+use replay_data::{BranchId, Hour, rows::TableId};
+use replay_frame::{
+    frame::FrameEncoder, frame::FrameInput, frame::TableInput, frame::TableSegment,
+    frame::TableView,
 };
 use std::sync::{
     Mutex, PoisonError,
@@ -108,10 +109,8 @@ pub(crate) fn encode(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::Metrics,
-        rows::{StateRow, TableRows},
-    };
+    use replay_data::{rows::StateRow, rows::TableRows};
+    use replay_frame::frame::Metrics;
 
     fn frame(hour: Hour, owner: u32) -> FrameInput {
         let mut frame = FrameInput {
@@ -139,7 +138,7 @@ mod tests {
                 ),
                 TableId::Provinces => TableRows::Provinces(
                     (0..500)
-                        .map(|id| replay::rows::ProvinceRow {
+                        .map(|id| replay_data::rows::ProvinceRow {
                             id,
                             owner: owner + id % 7,
                             ..Default::default()
@@ -148,7 +147,7 @@ mod tests {
                 ),
                 _ => TableRows::Countries(
                     (1..=3)
-                        .map(|id| replay::rows::CountryRow {
+                        .map(|id| replay_data::rows::CountryRow {
                             id,
                             canonical_slot: id,
                             tag: b"TAG".to_vec(),

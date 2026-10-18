@@ -522,7 +522,7 @@ pub(super) fn observe_holds(
     scan: &mut Scanned,
     content: Option<&PoliticsContent>,
 ) {
-    let _cpu = ::replay::cpu::scope_phase("politics_ledger:accounting_holds");
+    let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:accounting_holds");
     let mut holds = std::mem::take(&mut scan.holds);
     let native = Arc::clone(&scan.inputs);
     let countries_known = frame.complete::<tables::Countries>().is_ok();

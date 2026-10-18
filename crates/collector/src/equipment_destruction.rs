@@ -2,8 +2,9 @@
 //! pool difference. Try-locks never wait on a game thread; overlap, refusal,
 //! overflow or a lost drain refuses its interval until a clean hourly boundary.
 use crate::hook::Hook;
-type Clock = engine::cgame_state::Clock<u64>;
-use engine::{Memory, equipment_destruction as native, equipment_entry};
+type Clock = engine_native::cgame_state::Clock<u64>;
+use engine_events::equipment_destruction as native;
+use engine_native::{Memory, equipment_entry};
 use native::SiteId;
 mod queue_index;
 mod transfers;
@@ -471,7 +472,7 @@ pub fn lost_drain() {
 /// A failed sizing observation skips growth and counts a prepare failure; it
 /// cannot lose a recorded event or invalidate the existing branch observation.
 pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
-    engine::allocation::advisory(|| prepare_storage(memory, base, countries));
+    engine_allocation::advisory(|| prepare_storage(memory, base, countries));
 }
 
 fn prepare_storage(memory: &impl Memory, base: usize, countries: usize) {
@@ -559,16 +560,16 @@ fn prepare_storage(memory: &impl Memory, base: usize, countries: usize) {
     let credits = Credits::try_new(queued_bound, pool_bound);
     let indexes = FixedIndex::try_new(queued_bound)
         .and_then(|queued| FixedIndex::try_new(queued_bound).map(|by_army| (queued, by_army)));
-    if engine::allocation::reserve_exact(&mut entries, events).is_err()
+    if engine_allocation::reserve_exact(&mut entries, events).is_err()
         || indexes.is_err()
         || credits.is_err()
-        || engine::allocation::reserve_exact(&mut net, net_bound).is_err()
-        || engine::allocation::reserve_exact(&mut armies, army_bound).is_err()
-        || engine::allocation::reserve_exact(&mut before, pool_bound).is_err()
-        || engine::allocation::reserve_exact(&mut after, pool_bound).is_err()
-        || engine::allocation::reserve_exact(&mut held, pool_bound).is_err()
-        || engine::allocation::reserve_exact(&mut reserves, army_bound).is_err()
-        || engine::allocation::reserve_exact(&mut raw, raw_bytes).is_err()
+        || engine_allocation::reserve_exact(&mut net, net_bound).is_err()
+        || engine_allocation::reserve_exact(&mut armies, army_bound).is_err()
+        || engine_allocation::reserve_exact(&mut before, pool_bound).is_err()
+        || engine_allocation::reserve_exact(&mut after, pool_bound).is_err()
+        || engine_allocation::reserve_exact(&mut held, pool_bound).is_err()
+        || engine_allocation::reserve_exact(&mut reserves, army_bound).is_err()
+        || engine_allocation::reserve_exact(&mut raw, raw_bytes).is_err()
     {
         PREPARE_FAILURES.fetch_add(1, Ordering::Relaxed);
         return;
@@ -828,12 +829,12 @@ fn refuse_boundary(transition: bool, load: bool) {
 
 #[cfg(test)]
 pub fn drain(output: &mut [Entry]) -> Result<usize, &'static str> {
-    drain_buffer(engine::walk::Buffer::Fixed(output))
+    drain_buffer(engine_native::walk::Buffer::Fixed(output))
 }
 pub fn drain_growing(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
-    drain_buffer(engine::walk::Buffer::Growing(output))
+    drain_buffer(engine_native::walk::Buffer::Growing(output))
 }
-fn drain_buffer(mut output: engine::walk::Buffer<'_, Entry>) -> Result<usize, &'static str> {
+fn drain_buffer(mut output: engine_native::walk::Buffer<'_, Entry>) -> Result<usize, &'static str> {
     DRAINS.fetch_add(1, Ordering::Relaxed);
     if UNHOOKED.get().is_some() || !ENABLED.load(Ordering::SeqCst) {
         return Err("equipment destruction hooks unavailable (see status unhooked)");
@@ -1115,7 +1116,7 @@ fn army_receiver(site: SiteId, receiver: usize) -> Result<Option<usize>, &'stati
         | SiteId::CapitulationEscapeLoss
         | SiteId::ScriptedEquipmentFraction => Ok(Some(
             receiver
-                .checked_sub(engine::carmy::EQUIPMENT_POOL)
+                .checked_sub(engine_native::carmy::EQUIPMENT_POOL)
                 .ok_or("army equipment pool address underflow")?,
         )),
         _ => Ok(None),
@@ -1173,7 +1174,7 @@ fn pool_before(
         }?;
         let pool = match site {
             SiteId::Land | SiteId::Paradrop | SiteId::SetExiled => receiver
-                .checked_add(engine::carmy::EQUIPMENT_POOL)
+                .checked_add(engine_native::carmy::EQUIPMENT_POOL)
                 .ok_or("army equipment pool address overflow")?,
             SiteId::VolunteerReturnLoss
             | SiteId::CapitulationEscapeLoss
@@ -1279,7 +1280,7 @@ fn observe_pool(
 }
 
 fn measure_pool(site: SiteId, receiver: usize, cause: native::Cause, original: impl FnOnce()) {
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     match army_receiver(site, receiver).and_then(|army| whole_merge_transfer(&memory, base, army)) {
         Ok(true) => {
@@ -1425,14 +1426,14 @@ fn variant_before(
     variant: usize,
 ) -> Result<Option<(u32, u64, i64)>, &'static str> {
     let army = pool
-        .checked_sub(engine::carmy::EQUIPMENT_POOL)
+        .checked_sub(engine_native::carmy::EQUIPMENT_POOL)
         .ok_or("attrition army address underflow")?;
     let context = active_deletion_context(memory, base, army)?;
     if transferred_source(store, memory, base, army, context)? {
         return Ok(None);
     }
     let country = army_observation_owner(memory, army, context)?;
-    let design = engine::cequipment_variant::identity(memory, base, variant)?;
+    let design = engine_native::cequipment_variant::identity(memory, base, variant)?;
     let before = variant_amount(memory, base, pool, variant, &mut store.raw)?;
     Ok(Some((country, design, before)))
 }
@@ -1478,13 +1479,13 @@ unsafe extern "system-unwind" fn attrition(pool: usize, variant: usize, quantity
         || crate::allocation::failed()
     {
         revoke_active_observation();
-        skipped_credit_mutation(pool.checked_sub(engine::carmy::EQUIPMENT_POOL));
+        skipped_credit_mutation(pool.checked_sub(engine_native::carmy::EQUIPMENT_POOL));
         run();
         return;
     }
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
-    let army = pool.checked_sub(engine::carmy::EQUIPMENT_POOL);
+    let army = pool.checked_sub(engine_native::carmy::EQUIPMENT_POOL);
     match whole_merge_transfer(&memory, base, army) {
         Ok(true) => {
             run();
@@ -1724,7 +1725,7 @@ unsafe extern "system-unwind" fn delete(
     let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize) =
         unsafe { std::mem::transmute(ORIGINAL[SiteId::Delete as usize].load(Ordering::Acquire)) };
     let context = if recording() {
-        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
         match deletion_context(&memory, BASE.load(Ordering::Relaxed), state, unit, caller) {
             Ok(context) => context,
             Err(reason) => {
@@ -1765,7 +1766,7 @@ fn return_before(
     pool: usize,
 ) -> Result<Option<ReturnedPoolContext>, &'static str> {
     let army = pool
-        .checked_sub(engine::carmy::EQUIPMENT_POOL)
+        .checked_sub(engine_native::carmy::EQUIPMENT_POOL)
         .ok_or("returned army address underflow")?;
     let context = DELETION.get().filter(|context| context.army == army);
     if context.is_some_and(|context| context.ignored) {
@@ -1878,8 +1879,8 @@ fn return_after(
     #[cfg(test)]
     tests::return_revision_overlap(
         2,
-        reserves - engine::cproduction_status::STOCKPILE_POOL,
-        army + engine::carmy::EQUIPMENT_POOL,
+        reserves - engine_native::cproduction_status::STOCKPILE_POOL,
+        army + engine_native::carmy::EQUIPMENT_POOL,
     );
     // Keep the revision observed before reads, including first-head creation.
     // A concurrent rejected callback must never supply a new certified basis.
@@ -1920,7 +1921,7 @@ fn skipped_credit_mutation(army: Option<usize>) {
             .map(|context| context.handle)
             .or_else(|| {
                 native::army_identity(
-                    &unsafe { engine::memory::LiveMemory::new() },
+                    &unsafe { engine_native::memory::LiveMemory::new() },
                     BASE.load(Ordering::Relaxed),
                     army,
                 )
@@ -1948,7 +1949,7 @@ unsafe fn returned_at(site: SiteId, reserves: usize, pool: usize) {
     let admitted = Cell::new(false);
     let run = || {
         if !admitted.get() {
-            skipped_credit_mutation(pool.checked_sub(engine::carmy::EQUIPMENT_POOL));
+            skipped_credit_mutation(pool.checked_sub(engine_native::carmy::EQUIPMENT_POOL));
         }
         _call.run(|| unsafe { original(reserves, pool) })
     };
@@ -1956,7 +1957,7 @@ unsafe fn returned_at(site: SiteId, reserves: usize, pool: usize) {
         run();
         return;
     }
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     observe_native(
         site,
@@ -2044,7 +2045,7 @@ fn observe_deleted(
     }
     let pool = context
         .army
-        .checked_add(engine::carmy::EQUIPMENT_POOL)
+        .checked_add(engine_native::carmy::EQUIPMENT_POOL)
         .ok_or("deleted army equipment pool address overflow")?;
     let mut len = 0;
     let rows = snapshot(memory, base, pool, &mut store.before, 0)?;
@@ -2093,7 +2094,7 @@ unsafe extern "system-unwind" fn division_free(army: usize, flags: usize) -> usi
     let mut direct_scope = None;
     if recording() {
         if DELETION.get().is_none_or(|context| context.army != army) {
-            let memory = unsafe { engine::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native::memory::LiveMemory::new() };
             let base = BASE.load(Ordering::Relaxed);
             let context = (|| {
                 if native::cleanup(&memory, base)? || native::fake_intel_division(&memory, army)? {
@@ -2135,7 +2136,7 @@ unsafe extern "system-unwind" fn division_free(army: usize, flags: usize) -> usi
             context.observed = true;
             DELETION.set(Some(context));
             let result = if let Ok(mut store) = STORE.try_lock() {
-                let memory = unsafe { engine::memory::LiveMemory::new() };
+                let memory = unsafe { engine_native::memory::LiveMemory::new() };
                 observe_deleted(&mut store, &memory, BASE.load(Ordering::Relaxed), context)
             } else {
                 OVERLAPS.fetch_add(1, Ordering::Relaxed);
@@ -2159,7 +2160,7 @@ unsafe extern "system-unwind" fn division_free(army: usize, flags: usize) -> usi
             enabled
                 .then(|| {
                     native::army_identity(
-                        &unsafe { engine::memory::LiveMemory::new() },
+                        &unsafe { engine_native::memory::LiveMemory::new() },
                         BASE.load(Ordering::Relaxed),
                         army,
                     )
@@ -2187,7 +2188,7 @@ unsafe extern "system-unwind" fn division_free(army: usize, flags: usize) -> usi
         && context.is_some_and(|context| {
             context.merge_source
                 && native::army_identity(
-                    &unsafe { engine::memory::LiveMemory::new() },
+                    &unsafe { engine_native::memory::LiveMemory::new() },
                     BASE.load(Ordering::Relaxed),
                     army,
                 ) == Ok(context.handle)
@@ -2280,7 +2281,7 @@ unsafe extern "system-unwind" fn queue(state: usize, unit: usize, caller: usize)
     let original: unsafe extern "system-unwind" fn(usize, usize) =
         unsafe { std::mem::transmute(ORIGINAL[SiteId::Queue as usize].load(Ordering::Acquire)) };
     if recording() {
-        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Relaxed);
         let result = (|| {
             let classified = caller
@@ -2375,7 +2376,7 @@ unsafe fn transfer_roster(
     let original: unsafe extern "system-unwind" fn(usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[site as usize].load(Ordering::Acquire)) };
     let pending = if recording() {
-        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
         transfer_before(&memory, BASE.load(Ordering::Relaxed), army, disposition)
     } else {
         Ok(None)
@@ -2543,7 +2544,7 @@ fn merge_before(
     let mut len = 0;
     for &army in &store.armies[..armies] {
         let pool = army
-            .checked_add(engine::carmy::EQUIPMENT_POOL)
+            .checked_add(engine_native::carmy::EQUIPMENT_POOL)
             .ok_or("merge pool address overflow")?;
         let rows = snapshot(memory, base, pool, &mut store.before[sources..], sources)?;
         let handle = native::army_identity(memory, base, army)?;
@@ -2744,7 +2745,7 @@ fn merge_after(
         return Err("merge survivor changed handle");
     }
     let pool = survivor
-        .checked_add(engine::carmy::EQUIPMENT_POOL)
+        .checked_add(engine_native::carmy::EQUIPMENT_POOL)
         .ok_or("merge pool address overflow")?;
     let rows = snapshot(memory, base, pool, &mut store.after, 0)?;
     for row in &store.after[..rows] {
@@ -2832,7 +2833,7 @@ unsafe extern "system-unwind" fn merge(argument: usize) {
         run();
         return;
     }
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     let _scope = WholeMergeScope::enter();
     observe_native(
@@ -2856,10 +2857,10 @@ fn verify_sites(
         .into_iter()
         .filter(|site| site.id.is_supplemental() == supplemental)
     {
-        if engine::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+        if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
             use std::fmt::Write;
             let mut reason = String::new();
-            engine::allocation::reserve_string(&mut reason, site.name.len() + 96)
+            engine_allocation::reserve_string(&mut reason, site.name.len() + 96)
                 .map_err(|_| Cow::Borrowed("collector allocation failed"))?;
             write!(
                 reason,
@@ -2932,7 +2933,7 @@ impl Hooks {
                 .iter()
                 .filter(|site| site.id.is_supplemental() == supplemental)
                 .count();
-            let mut hooks = engine::allocation::vec(count)
+            let mut hooks = engine_allocation::vec(count)
                 .map_err(|_| Cow::Borrowed("collector allocation failed"))?;
             for site in native::SITES
                 .into_iter()
@@ -2985,7 +2986,10 @@ impl Hooks {
         self.publication_attempted |= enabled;
         if !enabled {
             crate::wing_changes::observe_kills(false);
-            crate::nuclear_strikes::forwarder(replay::rows::NuclearStrikePart::Equipment, false);
+            crate::nuclear_strikes::forwarder(
+                replay_data::rows::NuclearStrikePart::Equipment,
+                false,
+            );
             ENABLED.store(false, Ordering::SeqCst);
             SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
             let original = set_sites_enabled(&mut self.original, false);
@@ -3014,7 +3018,7 @@ impl Hooks {
         );
         // The land and air sites forward a strike's pool changes.
         crate::nuclear_strikes::forwarder(
-            replay::rows::NuclearStrikePart::Equipment,
+            replay_data::rows::NuclearStrikePart::Equipment,
             ENABLED.load(Ordering::SeqCst),
         );
         let supplemental_enabled =

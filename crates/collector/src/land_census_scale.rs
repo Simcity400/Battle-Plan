@@ -3,7 +3,7 @@ use crate::{
     division_census::Census, extended::division_land::Captured,
     unit_scale_tests::fixture as unit_world,
 };
-use engine::{carmy, carmy_manpower_values, walk::Outcome};
+use engine_native::{carmy, carmy_manpower_values, walk::Outcome};
 
 fn run(countries: usize) {
     let count = countries * 10;
@@ -37,7 +37,7 @@ fn run(countries: usize) {
         bytes[0x788..0x78c].copy_from_slice(&0x8000_0001u32.to_le_bytes());
         bytes[0x78c..0x790].copy_from_slice(&(-7i32).to_le_bytes());
     }
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let mut census = Census::new();
     // Follow the production demand/growth path. Reserving only
     // division sources does not size the independently retained roster slots.
@@ -63,8 +63,9 @@ fn run(countries: usize) {
     verify(&land, count);
 }
 fn verify(land: &Captured, count: usize) {
-    let replay::frame::TableView::Complete(replay::rows::TableRows::DivisionLandInputs(rows)) =
-        land.table()
+    let replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::DivisionLandInputs(
+        rows,
+    )) = land.table()
     else {
         panic!("complete shared census must produce complete land input rows")
     };
@@ -72,7 +73,7 @@ fn verify(land: &Captured, count: usize) {
     // The grace the census holds is DivisionStatus's record, never a land copy.
     assert_eq!(
         rows[count - 1].remaining_grace,
-        replay::rows::RetiredI64::default()
+        replay_data::rows::RetiredI64::default()
     );
     assert_eq!(rows[count - 1].manpower.len(), 2);
     assert_eq!(rows[count - 1].manpower[1].amount, -7);

@@ -14,12 +14,11 @@ use std::{
     io,
 };
 
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        ArmyOrderPlanRow, FleetCounterInputRow, OrdersGroupRow, TaskForceCounterInputRow, tables,
-    },
+use replay_data::{
+    rows::ArmyOrderPlanRow, rows::FleetCounterInputRow, rows::OrdersGroupRow,
+    rows::TaskForceCounterInputRow, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 use crate::map::tables::rows;
 

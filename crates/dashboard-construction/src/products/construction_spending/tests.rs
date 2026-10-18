@@ -4,11 +4,9 @@ use crate::products::construction_log::tests::{
     railway_line, spending_line, timed_scan,
 };
 use dashboard_core::test_fixtures::{CAMPAIGN, records};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{ConstructionLineOutputRow, TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::ConstructionLineOutputRow, rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::{path::Path, sync::atomic::AtomicBool};
 
 fn output(line: u64, construction_raw: i64, repair_raw: i64) -> ConstructionLineOutputRow {
@@ -214,13 +212,13 @@ fn construction_output_never_joins_a_reset_or_hides_ownerless_final_lines() {
     ignore = "slow: runs in the full suite (--features slow-tests)"
 )]
 fn construction_output_reads_only_at_cadence_and_accounts_for_5000_country_owners() {
-    use replay::rows::{CountryLinkRow, CountryRow};
-    let replay::cadence::Cadence::Daily(slot) =
-        replay::cadence::cadence(TableId::BuildingConstruction)
+    use replay_data::{rows::CountryLinkRow, rows::CountryRow};
+    let replay_data::cadence::Cadence::Daily(slot) =
+        replay_data::cadence::cadence(TableId::BuildingConstruction)
     else {
         panic!("daily queue");
     };
-    let hour = 1000 * replay::cadence::STAGGER_PERIOD + slot as i32;
+    let hour = 1000 * replay_data::cadence::STAGGER_PERIOD + slot as i32;
     let frame = |at| {
         let countries = (1..=5000_u32)
             .map(|id| CountryRow {
@@ -237,7 +235,7 @@ fn construction_output_reads_only_at_cadence_and_accounts_for_5000_country_owner
             })
             .collect();
         let lines = (1..=5000_u32)
-            .map(|id| replay::rows::BuildingConstructionRow {
+            .map(|id| replay_data::rows::BuildingConstructionRow {
                 id: u64::from(id),
                 country: id,
                 ..building_line(u64::from(id), id, 1, 0, 1)
@@ -273,7 +271,7 @@ fn construction_output_reads_only_at_cadence_and_accounts_for_5000_country_owner
 
 #[test]
 fn construction_spending_groups_a_mod_building_type_named_from_the_mod_layer() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{
         construction_log::{ContentView, names_in, tests::timed_scan as scan},
@@ -331,9 +329,10 @@ fn construction_spending_groups_a_mod_building_type_named_from_the_mod_layer() {
         br#"state = { id = 900 name = "STATE_900" }"#,
     );
     let layers =
-        installed_content::ResolvedLayers::from_folders(&[(&base, &[][..]), (&modded, &[][..])]).unwrap();
-    let sprites = installed_content::gfx::read(&layers).unwrap();
-    let guis = installed_content::gui::native::read_layers(&layers).unwrap();
+        installed_content_core::ResolvedLayers::from_folders(&[(&base, &[][..]), (&modded, &[][..])])
+            .unwrap();
+    let sprites = installed_content_gfx::gfx::read(&layers).unwrap();
+    let guis = installed_content_core::gui::native::read_layers(&layers).unwrap();
     let gui_decode = Ok(Default::default());
     let texts = BTreeMap::from([
         ("industrial_complex", "Civilian Factory"),
@@ -353,7 +352,7 @@ fn construction_spending_groups_a_mod_building_type_named_from_the_mod_layer() {
     // mod's reactor in the mod's state.
     let replay = construction_frames(150, |hour, read| {
         let line = |id: u64, state: u32, building_type: u32, produced: i64| {
-            replay::rows::BuildingConstructionRow {
+            replay_data::rows::BuildingConstructionRow {
                 created_hour: 110,
                 produced,
                 building_type,
@@ -569,7 +568,7 @@ fn a_branch_ending_in_a_recorded_gap_leaves_open_projects_unread_through_it() {
         })
         .collect();
     let mut replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
-    replay.gaps.push(replay::branches::Gap {
+    replay.gaps.push(replay_frame::branches::Gap {
         branch: 1,
         first_hour: 124,
         last_hour: 150,

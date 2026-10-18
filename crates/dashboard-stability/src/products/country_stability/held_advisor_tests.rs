@@ -5,7 +5,7 @@ use dashboard_base::{
     products::politics_content::PoliticsContent,
 };
 use dashboard_text::identity::built_template;
-use replay::rows::{CharacterRow, LexicalTokenRow};
+use replay_data::{rows::CharacterRow, rows::LexicalTokenRow};
 use std::sync::Arc;
 
 /// An advisor role the character's instances disagree on is the role
@@ -14,7 +14,7 @@ use std::sync::Arc;
 /// Both keys and dynamic tag tokens use folded lookup.
 #[test]
 fn a_disagreeing_advisor_is_its_holders_template() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
         (

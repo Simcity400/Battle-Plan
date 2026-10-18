@@ -1,8 +1,8 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{BuildingConstructionRow, BuildingRow, RailwayConstructionRow, TableRows},
+use replay_data::{
+    rows::BuildingConstructionRow, rows::BuildingRow, rows::RailwayConstructionRow, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 fn frame(hour: i32, amount: i64, produced: i64, level: i16, railway: bool) -> DecodedFrame {
     let mut frame = DecodedFrame {
         branch: 1,
@@ -67,11 +67,12 @@ fn output(frame: &mut DecodedFrame) -> &mut ConstructionLineOutputRow {
     &mut rows[0]
 }
 fn replay_of(frames: Vec<DecodedFrame>) -> Replay {
-    use replay::{
-        branches::{BranchReason, BranchStart, Parentage},
-        frame::FrameEncoder,
-        identity::{Identity, Roster, SessionStart, Verification},
-        spool::Record,
+    use replay::spool::Record;
+    use replay_data::{
+        identity::Identity, identity::Roster, identity::SessionStart, identity::Verification,
+    };
+    use replay_frame::{
+        branches::BranchReason, branches::BranchStart, branches::Parentage, frame::FrameEncoder,
     };
     let mut records = vec![
         Record::SessionStart(SessionStart {
@@ -79,7 +80,7 @@ fn replay_of(frames: Vec<DecodedFrame>) -> Replay {
             process_id: 1,
             process_start_time: 1,
             qpc_frequency: 10_000_000,
-            sample_boundary: replay::identity::SampleBoundary::EndOfHour,
+            sample_boundary: replay_data::identity::SampleBoundary::EndOfHour,
             identity: Identity {
                 game_version: "synthetic".into(),
                 exe_hash: [1; 32],
@@ -116,12 +117,12 @@ fn replay_of(frames: Vec<DecodedFrame>) -> Replay {
             }
         }
         *frame.tables[TableId::Clock.index()] =
-            TableView::Complete(TableRows::Clock(vec![replay::rows::ClockRow {
+            TableView::Complete(TableRows::Clock(vec![replay_data::rows::ClockRow {
                 hour: frame.hour,
                 ..Default::default()
             }]));
         *frame.tables[TableId::Campaign.index()] =
-            TableView::Complete(TableRows::Campaign(vec![replay::rows::CampaignRow {
+            TableView::Complete(TableRows::Campaign(vec![replay_data::rows::CampaignRow {
                 id: b"campaign".to_vec(),
             }]));
         records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
@@ -142,7 +143,7 @@ fn checked(frames: &[DecodedFrame]) -> Report {
         super::complete::<tables::ConstructionLineOutput>(frame)
             .unwrap()
             .iter()
-            .any(|row| matches!(row.count_reset, replay::rows::Recorded::NotRecorded))
+            .any(|row| matches!(row.count_reset, replay_data::rows::Recorded::NotRecorded))
     }) {
         return report;
     }
@@ -197,7 +198,7 @@ fn quantity_decreases_without_target_growth_or_ownership_transfer_fail() {
 
 #[test]
 fn ownership_transfer_verifies_count_reset_and_unexplained_decrease_fails() {
-    use replay::rows::{CountryLinkRow, StateRow};
+    use replay_data::{rows::CountryLinkRow, rows::StateRow};
     let mut frames = [frame(100, 0, 0, 1, false), frame(124, 0, 0, 1, false)];
     for (index, f) in frames.iter_mut().enumerate() {
         let TableView::Complete(TableRows::BuildingConstruction(rows)) =
@@ -207,7 +208,7 @@ fn ownership_transfer_verifies_count_reset_and_unexplained_decrease_fails() {
         };
         rows[0].country = 11;
         rows[0].amount = if index == 0 { 1 } else { 0 };
-        output(f).count_reset = replay::rows::Recorded::Value(index as i64);
+        output(f).count_reset = replay_data::rows::Recorded::Value(index as i64);
         *f.tables[TableId::States.index()] =
             TableView::Complete(TableRows::States(vec![StateRow {
                 id: 7,
@@ -257,7 +258,7 @@ fn ownership_transfer_verifies_count_reset_and_unexplained_decrease_fails() {
                     unreachable!()
                 };
                 rows[0].amount = if index == 0 { 1 + completed } else { 0 };
-                output(f).count_reset = replay::rows::Recorded::Value(index as i64);
+                output(f).count_reset = replay_data::rows::Recorded::Value(index as i64);
             }
             output(&mut frames[1]).construction_raw = i64::from(completed) * 1_000_000;
             let report = checked(&frames);
@@ -278,7 +279,7 @@ fn ownership_transfer_verifies_count_reset_and_unexplained_decrease_fails() {
             // Readable historical prefixes still check exact native progress
             // and cost debits, including completion followed by a reset.
             for f in &mut frames {
-                output(f).count_reset = replay::rows::Recorded::NotRecorded;
+                output(f).count_reset = replay_data::rows::Recorded::NotRecorded;
             }
             assert!(checked(&frames).differences.is_empty());
             output(&mut frames[1]).construction_raw += 1;
@@ -290,7 +291,7 @@ fn ownership_transfer_verifies_count_reset_and_unexplained_decrease_fails() {
     output(&mut frames[1]).construction_raw = 0;
     let mut historical = original.clone();
     for f in &mut historical {
-        output(f).count_reset = replay::rows::Recorded::NotRecorded;
+        output(f).count_reset = replay_data::rows::Recorded::NotRecorded;
     }
     for owner in [11, 12, 0, u32::MAX, 999] {
         let mut frames = historical.clone();
@@ -399,8 +400,8 @@ fn script_target_growth_does_not_spend_the_waiting_lines_ic() {
 }
 #[test]
 fn output_reads_follow_the_daily_slot_and_forced_refresh_not_the_timing_anchor() {
-    let slot = match replay::cadence::cadence(TableId::ConstructionLineOutput) {
-        replay::cadence::Cadence::Daily(slot) => i32::try_from(slot).unwrap(),
+    let slot = match replay_data::cadence::cadence(TableId::ConstructionLineOutput) {
+        replay_data::cadence::Cadence::Daily(slot) => i32::try_from(slot).unwrap(),
         _ => panic!("construction output must share the construction census slot"),
     };
     for rail in [false, true] {
@@ -615,7 +616,7 @@ fn linked_instant_and_missing_repair_operands_are_named_limitations() {
 
 #[test]
 fn native_completion_self_check_refuses_live_or_future_outcomes() {
-    use replay::rows::{ConstructionCompletion, Recorded};
+    use replay_data::{rows::ConstructionCompletion, rows::Recorded};
     let mut f = frame(124, 35, 35, 1, true);
     output(&mut f).ended = true;
     output(&mut f).completion = Recorded::Value(Some(ConstructionCompletion {
@@ -786,7 +787,7 @@ fn a_completion_beside_a_net_count_rise_is_inferred_and_certified_the_same_way()
 
 #[test]
 fn no_count_addition_is_inferred_beside_a_count_reset_or_an_ownership_transfer() {
-    use replay::rows::{CountryLinkRow, StateRow};
+    use replay_data::{rows::CountryLinkRow, rows::StateRow};
     let base = || {
         let mut frames = [
             frame(100, 0, 900_000, 1, false),
@@ -800,7 +801,7 @@ fn no_count_addition_is_inferred_beside_a_count_reset_or_an_ownership_transfer()
     // the completion is not reinterpreted as an addition.
     let mut frames = base();
     for (index, f) in frames.iter_mut().enumerate() {
-        output(f).count_reset = replay::rows::Recorded::Value(index as i64);
+        output(f).count_reset = replay_data::rows::Recorded::Value(index as i64);
     }
     let report = checked(&frames);
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);

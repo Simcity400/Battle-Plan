@@ -3,7 +3,7 @@ use super::*;
 struct Menu;
 impl Memory for Menu {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        if address != engine::cgame_state::SINGLETON_RVA || output.len() != 8 {
+        if address != engine_native::cgame_state::SINGLETON_RVA || output.len() != 8 {
             return false;
         }
         output.fill(0);
@@ -156,7 +156,7 @@ fn failed_live_hint_is_counted_and_retains_full_original_burst_pressure() {
     let before = serde_json::to_value(demand::status()).unwrap()["failed_observations"]
         .as_u64()
         .unwrap();
-    let missing = engine::memory::SliceMemory {
+    let missing = engine_native::memory::SliceMemory {
         base: 0,
         bytes: &[],
     };

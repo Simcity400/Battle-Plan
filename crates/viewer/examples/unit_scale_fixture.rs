@@ -1,11 +1,10 @@
 //! Synthetic performance input from a supplied recording; not a native fidelity oracle.
-use replay::{
-    branches::BranchReason,
-    container::{Replay, SeekResult},
-    frame::{FrameEncoder, TableView},
-    rows::{CountryLinkRow, LandCombatRow, LandCombatSideRow, TableId, TableRows},
-    spool::Record,
+use replay::{container::Replay, container::SeekResult, spool::Record};
+use replay_data::{
+    rows::CountryLinkRow, rows::LandCombatRow, rows::LandCombatSideRow, rows::TableId,
+    rows::TableRows,
 };
+use replay_frame::{branches::BranchReason, frame::FrameEncoder, frame::TableView};
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs, io,
@@ -115,7 +114,7 @@ fn main() -> io::Result<()> {
     }
     .into();
 
-    use replay::rows::RowCodec;
+    use replay_data::rows::RowCodec;
     let mut division_copies = BTreeMap::<u64, Vec<u64>>::new();
     let mut ship_copies = BTreeMap::<u64, Vec<u64>>::new();
     let mut wing_copies = BTreeMap::<u64, Vec<u64>>::new();

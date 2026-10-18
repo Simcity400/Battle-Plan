@@ -5,7 +5,7 @@ use crate::map::{
     native_gui::{self, Layout, Resources, SpriteInfo, SpriteKind, Texture},
     sprites::SpriteSheet,
 };
-use installed_content::gui::native;
+use installed_content_core::gui::native;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -20,7 +20,7 @@ pub struct Fixture {
     pub sheets: BTreeMap<Vec<u8>, SpriteSheet>,
     progress: BTreeMap<Vec<u8>, ([i32; 2], SpriteSheet)>,
     font: crate::map::native_text::Font,
-    localisation: installed_content::localisation::Localisation,
+    localisation: installed_content_localisation::localisation::Localisation,
     text_colors: native::fonts::TextColors,
     /// Missing sheets may name a session-registered text sprite; looking it up refuses.
     pub session_sprites: bool,
@@ -125,7 +125,7 @@ impl Resources for Fixture {
         Some(&self.font)
     }
 
-    fn localisation(&self) -> &installed_content::localisation::Localisation {
+    fn localisation(&self) -> &installed_content_localisation::localisation::Localisation {
         &self.localisation
     }
 
@@ -282,8 +282,8 @@ pub fn test_tga_rgba8(width: u16, height: u16) -> Vec<u8> {
     tga
 }
 
-pub fn test_frame(hour: i32) -> replay::frame::DecodedFrame {
-    use replay::frame::{DecodedFrame, Metrics, TableView};
+pub fn test_frame(hour: i32) -> replay_frame::frame::DecodedFrame {
+    use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::TableView};
 
     DecodedFrame {
         branch: 1,
@@ -298,9 +298,9 @@ pub fn test_frame(hour: i32) -> replay::frame::DecodedFrame {
     }
 }
 
-pub fn test_put(frame: &mut replay::frame::DecodedFrame, rows: replay::rows::TableRows) {
+pub fn test_put(frame: &mut replay_frame::frame::DecodedFrame, rows: replay_data::rows::TableRows) {
     let index = rows.table().index();
-    frame.tables[index] = replay::frame::TableView::Complete(rows).into();
+    frame.tables[index] = replay_frame::frame::TableView::Complete(rows).into();
 }
 
 pub mod allegiance;
@@ -321,7 +321,7 @@ pub mod localisation;
 pub mod unit_types;
 
 /// The same ordered equipment documents consumed by model and counter fixtures.
-pub fn equipment_from_documents(documents: &[&[u8]]) -> installed_content::equipment::Database {
+pub fn equipment_from_documents(documents: &[&[u8]]) -> installed_content_core::equipment::Database {
     let paths: Vec<String> = (0..documents.len())
         .map(|index| format!("common/units/equipment/{index:03}.txt"))
         .collect();
@@ -330,7 +330,7 @@ pub fn equipment_from_documents(documents: &[&[u8]]) -> installed_content::equip
         .zip(documents)
         .map(|(path, text)| (path.as_str(), std::str::from_utf8(text).unwrap()))
         .collect();
-    let (equipment, _) = installed_content::equipment::fixture::load(&files);
+    let (equipment, _) = installed_content_core::equipment::fixture::load(&files);
     assert!(equipment.lost.is_none(), "{:?}", equipment.lost);
     equipment
 }

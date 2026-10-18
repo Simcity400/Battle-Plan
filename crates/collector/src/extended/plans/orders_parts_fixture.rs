@@ -1,8 +1,9 @@
 //! Nonempty Orders/ChildFronts/Fronts differential fixture; synthetic content.
 use crate::extended::bench_world::{Heap, World};
-use engine::{
-    carmy, carmy_group, ccontroller_area, ccountry, cdiplomacy_status, cfront, cfront_section,
-    cgame_state, corder_instance as order, corders_group as group, corders_group_member, cprovince,
+use engine_land_inputs::{cfront, cfront_section};
+use engine_native::{
+    carmy, carmy_group, ccontroller_area, ccountry, cdiplomacy_status, cgame_state,
+    corder_instance as order, corders_group as group, corders_group_member, cprovince,
     creference_registry as registry, cstate, ctheatre, cunit, reference_bucket as bucket,
 };
 

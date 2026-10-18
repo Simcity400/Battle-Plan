@@ -4,4 +4,6 @@ Synthetic country worlds, native-address selections and guarded-call traces shar
 
 [engine-research](../engine-research/README.md) and [engine-focus](../engine-focus/README.md) use it as a development dependency. Shared rules live in [AGENTS.md](../../AGENTS.md).
 
-The single fixture source is [test_kit.rs](../engine/src/governance_batch/test_kit.rs). The package includes it through its module path; collector tests include that same path through engine. Research and focus use this package with `test-support`. Each test binary retains its original fixture and counter identity.
+The single fixture source is [kit.rs](src/kit.rs). Research, focus and collector
+governance tests use this package with `test-support`; no consumer compiles a
+source file from another crate. The default library has no fixture dependencies.

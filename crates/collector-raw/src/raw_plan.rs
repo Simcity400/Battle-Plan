@@ -1,6 +1,8 @@
 //! Bounded discovery traces for fresh raw acquisition with exact read occurrences.
 
-use engine::read_plan::{Control, Hint, PreparedPlan, Read};
+use engine_native::{
+    read_plan::Control, read_plan::Hint, read_plan::PreparedPlan, read_plan::Read,
+};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static ATTEMPTS: AtomicU64 = AtomicU64::new(0);
@@ -56,17 +58,17 @@ pub struct Observations {
 
 impl Observations {
     pub fn new(controls: usize, bytes: usize) -> Self {
-        engine::allocation::advisory(|| Self::try_new(controls, bytes))
+        engine_allocation::advisory(|| Self::try_new(controls, bytes))
     }
 
     fn try_new(controls: usize, bytes: usize) -> Self {
         let mut control_rows = Vec::new();
         let mut expected = Vec::new();
         let mut hints = Vec::new();
-        if engine::allocation::reserve_exact(&mut control_rows, controls).is_ok()
-            && engine::allocation::reserve_exact(&mut expected, bytes).is_ok()
+        if engine_allocation::reserve_exact(&mut control_rows, controls).is_ok()
+            && engine_allocation::reserve_exact(&mut expected, bytes).is_ok()
         {
-            let _ = engine::allocation::reserve_exact(&mut hints, controls);
+            let _ = engine_allocation::reserve_exact(&mut hints, controls);
         }
         Self {
             active: false,
@@ -143,19 +145,19 @@ impl Observations {
     }
 
     pub fn grow_for_next(&mut self) {
-        engine::allocation::advisory(|| self.grow_hints());
+        engine_allocation::advisory(|| self.grow_hints());
     }
 
     fn grow_hints(&mut self) {
         if self.required_controls > self.controls.capacity() {
             let additional = self.required_controls - self.controls.len();
-            if engine::allocation::reserve_exact(&mut self.controls, additional).is_err() {
+            if engine_allocation::reserve_exact(&mut self.controls, additional).is_err() {
                 return;
             }
         }
         if self.required_bytes > self.expected.capacity() {
             let additional = self.required_bytes - self.expected.len();
-            let _ = engine::allocation::reserve_exact(&mut self.expected, additional);
+            let _ = engine_allocation::reserve_exact(&mut self.expected, additional);
         }
     }
 }
@@ -328,7 +330,7 @@ impl<const N: usize> CapturePlan<N> {
         raw_bytes: [u64; N],
         len: usize,
     ) {
-        if engine::allocation::advisory(|| self.try_prepare(observations, has_bulk, raw_bytes, len))
+        if engine_allocation::advisory(|| self.try_prepare(observations, has_bulk, raw_bytes, len))
             .is_err()
         {
             // A failed compilation never installs partial geometry.
@@ -348,7 +350,7 @@ impl<const N: usize> CapturePlan<N> {
         let started = std::time::Instant::now();
         if self.sealed && observations.eligible && !self.requests.is_empty() {
             let mut reads = Vec::new();
-            engine::allocation::reserve_exact(&mut reads, self.requests.len())?;
+            engine_allocation::reserve_exact(&mut reads, self.requests.len())?;
             reads.extend(self.requests.iter().map(|request| Read {
                 address: request.address,
                 destination_offset: request.start,
@@ -357,17 +359,17 @@ impl<const N: usize> CapturePlan<N> {
             let (controls, expected) = compact_controls(&self.requests, observations, len)?;
             let hints = checked_copy(&observations.hints)?;
             let plan = PreparedPlan::try_new(reads, controls, expected, len)
-                .map_err(engine::allocation::allocation_error)?;
+                .map_err(engine_allocation::allocation_error)?;
             let plan = match plan {
                 Some(plan) => plan
                     .try_with_hints(hints)
-                    .map_err(engine::allocation::allocation_error)?,
+                    .map_err(engine_allocation::allocation_error)?,
                 None => None,
             };
             if let Some(plan) = plan {
                 let requests = checked_copy(&self.requests)?;
                 let mut spans = Vec::new();
-                engine::allocation::reserve_exact(&mut spans, requests.len())?;
+                engine_allocation::reserve_exact(&mut spans, requests.len())?;
                 spans.extend(
                     requests
                         .iter()
@@ -383,7 +385,7 @@ impl<const N: usize> CapturePlan<N> {
                 );
                 let first_source_read = requests.iter().position(|request| request.len != 0);
                 let mut frontiers = Vec::new();
-                engine::allocation::reserve_exact(&mut frontiers, plan.controls().len())?;
+                engine_allocation::reserve_exact(&mut frontiers, plan.controls().len())?;
                 frontiers.extend(plan.controls().iter().map(|control| control.after_reads));
                 frontiers.dedup();
                 self.compiled = Some(Compiled {
@@ -408,7 +410,7 @@ impl<const N: usize> CapturePlan<N> {
         }
         if observations.after_reads > self.requests.capacity() {
             let additional = observations.after_reads - self.requests.len();
-            engine::allocation::reserve_exact(&mut self.requests, additional)?;
+            engine_allocation::reserve_exact(&mut self.requests, additional)?;
         }
         observations.grow_for_next();
         self.sealed = false;
@@ -460,12 +462,12 @@ fn compact_controls(
         ));
     }
     let mut checked = Vec::new();
-    engine::allocation::reserve_exact(&mut checked, len)?;
+    engine_allocation::reserve_exact(&mut checked, len)?;
     checked.resize(len, 0_u8);
     let mut controls = Vec::new();
-    engine::allocation::reserve_exact(&mut controls, observations.controls.len())?;
+    engine_allocation::reserve_exact(&mut controls, observations.controls.len())?;
     let mut expected = Vec::new();
-    engine::allocation::reserve_exact(&mut expected, observations.expected.len())?;
+    engine_allocation::reserve_exact(&mut expected, observations.expected.len())?;
     for control in &observations.controls {
         let covered = &mut checked[control.offset..control.offset + control.len];
         if !covered.contains(&0) {
@@ -489,7 +491,7 @@ fn compact_controls(
 
 fn checked_copy<T: Copy>(source: &[T]) -> std::io::Result<Vec<T>> {
     let mut rows = Vec::new();
-    engine::allocation::reserve_exact(&mut rows, source.len())?;
+    engine_allocation::reserve_exact(&mut rows, source.len())?;
     rows.extend_from_slice(source);
     Ok(rows)
 }
@@ -522,7 +524,7 @@ pub fn allocation_exercise() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{Memory, memory::SliceMemory, read_plan::Outcome};
+    use engine_native::{Memory, memory::SliceMemory, read_plan::Outcome};
 
     #[test]
     fn redundant_checks_keep_the_first_failure_frontier_and_fresh_unchecked_payload() {

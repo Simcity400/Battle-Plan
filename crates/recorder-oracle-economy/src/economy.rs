@@ -3,10 +3,8 @@
 use std::{collections::BTreeMap, io};
 
 use installed_content_save::{Save, economy};
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryResourceRow, CountryRow, tables},
-};
+use replay_data::{rows::CountryResourceRow, rows::CountryRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::{Report, TokenNames, compare_text, complete, equal, invalid, required_country_tag};
 
@@ -903,12 +901,12 @@ fn compare_fuel(
 /// (`award_day`); the per-update source witness the retired window held, which
 /// only this comparison read, is not recorded, so no saved history slot is
 /// compared with an applied update.
-fn report_fuel_award_witness(row: &replay::rows::CountryFuelRow, report: &mut Report) {
+fn report_fuel_award_witness(row: &replay_data::rows::CountryFuelRow, report: &mut Report) {
     let reason = match &row.award_day {
-        replay::rows::Recorded::Value(_) => {
+        replay_data::rows::Recorded::Value(_) => {
             "applied fuel updates are recorded as day sums; their per-update source witness, which only the save comparison read, is not recorded"
         }
-        replay::rows::Recorded::NotRecorded => {
+        replay_data::rows::Recorded::NotRecorded => {
             "applied fuel source and recipient history not recorded"
         }
     };
@@ -979,7 +977,7 @@ fn compare_fuel_consumers(
 /// The logistics status series LogisticsEquipment reads: stock and balance.
 const LOGISTICS_STOCK_SERIES: u32 = 15;
 const LOGISTICS_BALANCE_SERIES: u32 = 16;
-/// Records of the daily window the reader accepts (engine::cloop_history).
+/// Records of the daily window the reader accepts (engine_air_history::cloop_history).
 const LOGISTICS_DAILY_RECORDS: i32 = 30;
 
 /// LogisticsEquipment against each country's saved `logistics` history.
@@ -995,7 +993,8 @@ fn compare_logistics(
     tokens: &TokenNames<'_>,
     report: &mut Report,
 ) -> io::Result<()> {
-    let mut actual: BTreeMap<&[u8], Vec<&replay::rows::LogisticsEquipmentRow>> = BTreeMap::new();
+    let mut actual: BTreeMap<&[u8], Vec<&replay_data::rows::LogisticsEquipmentRow>> =
+        BTreeMap::new();
     for row in complete::<tables::LogisticsEquipment>(frame)? {
         let tag = required_country_tag(row.country, links)?;
         actual.entry(tag).or_default().push(row);
@@ -1085,7 +1084,7 @@ fn compare_logistics(
                 row.balance_raw,
                 *balance,
             );
-            if matches!(row.available_raw, replay::rows::Recorded::Value(None)) {
+            if matches!(row.available_raw, replay_data::rows::Recorded::Value(None)) {
                 report.limitation("available_raw is unsaved and no matching native write operand is retained at this read", format!("{label}.available_raw"));
             }
             count += 1;
@@ -1200,15 +1199,13 @@ fn compare_purchases(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content::parser;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{
-            CountryExperienceRow, CountryFuelConsumerRow, CountryFuelRow, CountryResourceRow,
-            HubMotorizationRow, LexicalTokenRow, ResourceDefinitionRow, ResourceExchangeRow,
-            TableId, TableRows,
-        },
+    use installed_content_core::parser;
+    use replay_data::{
+        rows::CountryExperienceRow, rows::CountryFuelConsumerRow, rows::CountryFuelRow,
+        rows::CountryResourceRow, rows::HubMotorizationRow, rows::LexicalTokenRow,
+        rows::ResourceDefinitionRow, rows::ResourceExchangeRow, rows::TableId, rows::TableRows,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     /// A `fuel_status` body in the writer's layout: the scalars,
     /// three consumers, the pending entry and 24 ring entries. Ring entry `i`
@@ -1916,7 +1913,7 @@ mod tests {
 
     #[test]
     fn applied_fuel_day_sums_report_their_unrecorded_witness_as_a_limitation() {
-        use replay::rows::{FuelAwardDay, Recorded};
+        use replay_data::{rows::FuelAwardDay, rows::Recorded};
         let row = CountryFuelRow {
             country_instance: Recorded::Value(Some(7)),
             award_day: Recorded::Value(FuelAwardDay {
@@ -1948,7 +1945,7 @@ mod tests {
         )
         .unwrap();
         let country = CountryRow {
-            border_land_doctrine_level: replay::rows::Recorded::Value(None),
+            border_land_doctrine_level: replay_data::rows::Recorded::Value(None),
             id: 11,
             canonical_slot: 7,
             tag: b"GER".to_vec(),
@@ -2232,7 +2229,7 @@ mod tests {
             air_experience=0.00021 air_experience_daily=0.00024 num_armies_for_training=1.00003
         }}}"#).unwrap().items).unwrap();
         let country = CountryRow {
-            border_land_doctrine_level: replay::rows::Recorded::Value(None),
+            border_land_doctrine_level: replay_data::rows::Recorded::Value(None),
             id: 11,
             canonical_slot: 7,
             tag: b"GER".to_vec(),
@@ -2358,7 +2355,7 @@ mod tests {
 
     #[test]
     fn logistics_oracle_compares_the_current_daily_record_and_the_computed_countries() {
-        use replay::rows::LogisticsEquipmentRow;
+        use replay_data::rows::LogisticsEquipmentRow;
         let history = format!(
             "history={{ {} {} }}",
             logistics_series(15, "145075 0 2017.5"),
@@ -2374,7 +2371,7 @@ mod tests {
         )
         .unwrap();
         let country = |id, tag: &[u8]| CountryRow {
-            border_land_doctrine_level: replay::rows::Recorded::Value(None),
+            border_land_doctrine_level: replay_data::rows::Recorded::Value(None),
             id,
             canonical_slot: id,
             tag: tag.to_vec(),
@@ -2394,7 +2391,7 @@ mod tests {
             token: 0x5000 + archetype,
             balance_raw,
             stock_raw,
-            available_raw: replay::rows::Recorded::NotRecorded,
+            available_raw: replay_data::rows::Recorded::NotRecorded,
         };
         let matching = vec![
             row(11, 0, -11_200_000, 14_507_500_000),
@@ -2429,10 +2426,10 @@ mod tests {
         );
         let mut observed = matching.clone();
         for row in &mut observed {
-            row.available_raw = replay::rows::Recorded::Value(Some(0));
+            row.available_raw = replay_data::rows::Recorded::Value(Some(0));
         }
         assert!(run(observed.clone()).1.differences.is_empty());
-        observed[1].available_raw = replay::rows::Recorded::Value(None);
+        observed[1].available_raw = replay_data::rows::Recorded::Value(None);
         let report = run(observed).1;
         assert!(report.differences.is_empty());
         assert!(

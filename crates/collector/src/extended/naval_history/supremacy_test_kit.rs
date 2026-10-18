@@ -1,5 +1,5 @@
 use super::{Capacities, Captured, SupremacyCopyContext, SupremacyCopyReport, SupremacyJob};
-use engine::{Memory, memory::SliceMemory, walk::Outcome};
+use engine_native::{Memory, memory::SliceMemory, walk::Outcome};
 
 pub(crate) const BASE: usize = 0;
 pub(crate) const GAME_STATE: usize = 0x1000;
@@ -23,10 +23,8 @@ fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
 }
 
 pub(crate) fn fixture() -> Vec<u8> {
-    use engine::{
-        cdominance_values, cgame_state, cnaval_region_dominance, cstrategic_region,
-        naval_dominance_entry,
-    };
+    use engine_native::{cgame_state, cstrategic_region};
+    use engine_naval_history::{cdominance_values, cnaval_region_dominance, naval_dominance_entry};
     let mut bytes = vec![0; 0x4000];
     header(
         &mut bytes,
@@ -124,7 +122,7 @@ pub(crate) fn mod_fixture(count: usize) -> Vec<u8> {
     bytes.resize(data + count * 0x50, 0);
     header(
         &mut bytes,
-        DOMINANCE + engine::cnaval_region_dominance::ENTRIES,
+        DOMINANCE + engine_naval_history::cnaval_region_dominance::ENTRIES,
         data,
         count as u32,
     );
@@ -136,11 +134,11 @@ pub(crate) fn mod_fixture(count: usize) -> Vec<u8> {
 
 pub(crate) struct Split {
     pub outcome: Outcome,
-    pub rows: Vec<engine::cnaval_region_dominance::Row>,
+    pub rows: Vec<engine_naval_history::cnaval_region_dominance::Row>,
 }
 
 fn collect_typed(memory: &impl Memory, cap: usize) -> Split {
-    use engine::cnaval_region_dominance;
+    use engine_naval_history::cnaval_region_dominance;
     let mut capacities = Capacities::fixture();
     capacities.rows[0] = cap;
     let mut captured = Captured::with_capacities(&capacities);

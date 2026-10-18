@@ -1,5 +1,5 @@
 use super::*;
-use engine::{carmy_group, memory::SliceMemory};
+use engine_native::{carmy_group, memory::SliceMemory};
 
 const GROUP: usize = 0x30000;
 const FLAG: usize = GROUP + corders_group::IS_ARMY_GROUP;

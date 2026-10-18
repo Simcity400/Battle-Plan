@@ -2,7 +2,7 @@
 
 use super::{ActivityDefines, CounterDefines, IntelDefines, OperationState};
 use crate::map::raids::tooltips::intel as counter;
-use replay::rows::{OperationRow, RaidIntelInputRow};
+use replay_data::{rows::OperationRow, rows::RaidIntelInputRow};
 use viewer_foundation::map::native_text::COLOR;
 
 /// One whole in fixed5.
@@ -164,7 +164,7 @@ pub fn root_out_stacked(operatives: &[(u64, i64)], factor: i64) -> Vec<(u64, i64
 
 /// Whole days since `start`, each hour's day truncated from the game's epoch.
 pub fn elapsed_days(start: i32, hour: i32) -> i32 {
-    let day = |hour: i32| hour.wrapping_sub(replay::day_night::EPOCH) / 24;
+    let day = |hour: i32| hour.wrapping_sub(replay_data::day_night::EPOCH) / 24;
     day(hour).wrapping_sub(day(start))
 }
 
@@ -244,12 +244,12 @@ pub fn preparation(row: &OperationRow) -> Result<i64, String> {
 
 /// Whole percent of a fixed5 fraction.
 pub fn percent(value: i64) -> String {
-    installed_content::fixed5::fixed5_percent(value, 0, true)
+    installed_content_core::fixed5::fixed5_percent(value, 0, true)
 }
 
 /// Whole percent of a fixed5 value already in percent.
 pub fn percent_points(value: i64) -> String {
-    installed_content::fixed5::fixed5_percent(value, 0, false)
+    installed_content_core::fixed5::fixed5_percent(value, 0, false)
 }
 
 /// `text` in the colour `code`.

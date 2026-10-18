@@ -26,7 +26,7 @@ fn custom_sea_grid_keeps_active_template_order_and_signed_words() {
 
 #[test]
 fn modifier_tooltip_weather_grid_keeps_native_order_and_hover_description() {
-    use replay::rows::ModifierDefinitionRow;
+    use replay_data::rows::ModifierDefinitionRow;
     use viewer_foundation::tooltip_text::NoIcons;
     let weather = WeatherRegionRow {
         heavy_rain: 1,
@@ -76,7 +76,7 @@ fn modifier_tooltip_weather_grid_keeps_native_order_and_hover_description() {
 
 #[test]
 fn terrain_hover_uses_recorded_region_then_province_modifier_sources() {
-    use replay::rows::{ModifierDefinitionRow, NavalShipModifierTerm};
+    use replay_data::{rows::ModifierDefinitionRow, rows::NavalShipModifierTerm};
     use viewer_foundation::tooltip_text::NoIcons;
     let definitions_rows = [
         ModifierDefinitionRow {
@@ -321,8 +321,8 @@ fn torpedo_counter_sums_current_attack_before_truncating_to_177() {
 
 #[test]
 fn carrier_penalty_uses_opponent_silhouette_and_actual_multiplier() {
-    use replay::rows::{NavalCombatPlane, ShipCounterInputs};
-    let defines = installed_content::naval_combat_defines::Defines {
+    use replay_data::{rows::NavalCombatPlane, rows::ShipCounterInputs};
+    let defines = installed_content_naval_combat_defines::naval_combat_defines::Defines {
         summary_fixed: [0; 14],
         summary_integer: [0, 0, 80],
         silhouette_planes: [10, 5, 16, 3, 4, 7],
@@ -434,7 +434,7 @@ fn carrier_laurel_has_native_alpha_and_hides_on_missing_inputs() {
 }
 #[test]
 fn opposing_silhouette_rounds_each_forward_group() {
-    let defines = installed_content::naval_combat_defines::Defines {
+    let defines = installed_content_naval_combat_defines::naval_combat_defines::Defines {
         summary_fixed: [0; 14],
         summary_integer: [0; 3],
         silhouette_planes: [10, 5, 0, 0, 0, 0],
@@ -484,7 +484,7 @@ fn pride_bonus_follows_the_pride_ship_task_force_and_country_alias() {
         ..Default::default()
     };
     let countries = [CountryCounterInputRow {
-        forward_visibility: replay::rows::Recorded::NotRecorded,
+        forward_visibility: replay_data::rows::Recorded::NotRecorded,
         country: 8,
         pride_of_the_fleet: 29,
         ..Default::default()
@@ -535,7 +535,7 @@ fn pride_bonus_follows_the_pride_ship_task_force_and_country_alias() {
 }
 #[test]
 fn doctrine_weight_and_hq_maximum_are_not_flat_sums() {
-    use replay::rows::NavalShipModifierTerm;
+    use replay_data::rows::NavalShipModifierTerm;
     let value = |raw| {
         vec![NavalShipModifierTerm {
             key: 7,
@@ -580,7 +580,7 @@ fn doctrine_weight_and_hq_maximum_are_not_flat_sums() {
 /// `attrition` and `can_convert_from` read their own blocks.
 #[test]
 fn equipment_fields_are_read_as_their_readers_read_them() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use std::fs;
     let root = std::env::temp_dir().join(format!(
@@ -598,7 +598,7 @@ fn equipment_fields_are_read_as_their_readers_read_them() {
             odd = { lg_attack = 5 } } }",
     )
     .unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
     let (bound, misreads) = convoy_weapon_bound(&layers).unwrap();
     assert_eq!(bound, Ok([0, 25_000]));
     assert!(misreads.is_empty(), "{misreads:?}");
@@ -617,7 +617,7 @@ fn bound_of(text: &str) -> ConvoyBound {
     let path = root.join("common/units/equipment/convoys.txt");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, text).unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
     let bound = convoy_weapon_bound(&layers).unwrap();
     fs::remove_dir_all(&root).unwrap();
     bound
@@ -629,7 +629,7 @@ fn bound_of(text: &str) -> ConvoyBound {
 /// count limits skip unknown blocks; upgrade overrides read a value and return.
 #[test]
 fn equipment_fields_follow_their_value_readers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // Each field reader consumes exactly its own value, so every
     // field after them is still the convoy's: 0.25 and 0.5.
@@ -672,7 +672,7 @@ fn equipment_fields_follow_their_value_readers() {
 /// one, else the archetype's, names found without case.
 #[test]
 fn a_long_archetype_chain_links_in_load_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // `base` is no convoy, and a type goes one step only, so only the
     // convoys below carry its 7, copied down 40 archetypes.
@@ -720,7 +720,7 @@ fn a_long_archetype_chain_links_in_load_order() {
 /// loop, which the game never leaves: refused, naming the loop.
 #[test]
 fn a_link_cycle_is_refused_by_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (bound, _) = bound_of(
         "equipments = { a = { type = convoy lg_attack = 0.25 } b = { parent = a }

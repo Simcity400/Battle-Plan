@@ -11,11 +11,10 @@ use crate::prepared::{
     prepass::{Extract, Family, Folded},
 };
 use replay::{
-    container::{BlockIndex, QuietHours, Replay, TableFields},
-    format::FormatVersion,
-    frame::DecodedFrame,
-    rows::TableId,
+    container::BlockIndex, container::QuietHours, container::Replay, container::TableFields,
 };
+use replay_data::{format::FormatVersion, rows::TableId};
+use replay_frame::frame::DecodedFrame;
 use std::{any::Any, io, ops::Range};
 
 pub(crate) static FAMILY: Family = Family {
@@ -105,9 +104,9 @@ pub(crate) fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let facts = {
-        let _cpu = ::replay::cpu::scope("fold facts", None);
+        let _cpu = ::replay_frame::cpu::scope("fold facts", None);
         facts
             .downcast::<Facts>()
             .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -118,7 +117,7 @@ pub(crate) fn fold(
         return Ok((Folded::Fast, None));
     };
     let result = {
-        let _cpu = ::replay::cpu::scope("fold observe", None);
+        let _cpu = ::replay_frame::cpu::scope("fold observe", None);
         index.fold_block(block.branch, *facts, check)
     };
     observed(last, result)?;
@@ -134,7 +133,7 @@ pub(crate) fn observe_block(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let mut reached = None;
     let mut stopped = false;
     let mut failure = None;
@@ -150,7 +149,7 @@ pub(crate) fn observe_block(
             #[cfg(test)]
             dashboard_base::prepared::kept::note_frames("focus", 1);
             let result = {
-                let _cpu = ::replay::cpu::scope("fold observe", None);
+                let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                 index.observe_hour(block.branch, bounds, frame, &mut || Ok(()))
             };
             match observed(frame.hour, result) {

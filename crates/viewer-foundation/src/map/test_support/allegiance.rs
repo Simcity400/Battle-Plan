@@ -1,9 +1,9 @@
 //! Recorded country and relation inputs shared by allegiance and grouping tests.
-use replay::{
-    Hour,
-    frame::{DecodedFrame, Metrics, TableView},
-    rows::{CountryLinkRow, FactionMemberRow, TableId, TableRows, WarRelationRow, tables},
+use replay_data::{
+    Hour, rows::CountryLinkRow, rows::FactionMemberRow, rows::TableId, rows::TableRows,
+    rows::WarRelationRow, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::TableView};
 use std::collections::BTreeMap;
 
 /// A concrete internal-calendar hour for the date arithmetic fixture.
@@ -26,11 +26,12 @@ pub(crate) fn frame(wars: Vec<WarRelationRow>, members: Vec<FactionMemberRow>) -
             })
             .collect(),
     ));
-    tables[TableId::LocalPlayer.index()] =
-        TableView::Complete(TableRows::LocalPlayer(vec![replay::rows::LocalPlayerRow {
+    tables[TableId::LocalPlayer.index()] = TableView::Complete(TableRows::LocalPlayer(vec![
+        replay_data::rows::LocalPlayerRow {
             country: 100,
             observer_country: 0,
-        }]));
+        },
+    ]));
     tables[TableId::WarRelations.index()] = TableView::Complete(TableRows::WarRelations(wars));
     tables[TableId::FactionMembers.index()] =
         TableView::Complete(TableRows::FactionMembers(members));
@@ -69,7 +70,7 @@ pub(crate) fn member(country: u32, faction: u64) -> FactionMemberRow {
     }
 }
 
-pub fn native_frame(rows: Vec<replay::rows::CountryCounterInputRow>) -> DecodedFrame {
+pub fn native_frame(rows: Vec<replay_data::rows::CountryCounterInputRow>) -> DecodedFrame {
     let mut frame = frame(
         vec![war(101, 102, 60_759_371, NO_END_HOUR)],
         vec![member(101, 7), member(102, 7)],
@@ -83,9 +84,9 @@ pub fn native_row(
     country: u32,
     targets: Vec<u32>,
     zero_war: [u8; 2],
-) -> replay::rows::CountryCounterInputRow {
-    replay::rows::CountryCounterInputRow {
-        forward_visibility: replay::rows::Recorded::NotRecorded,
+) -> replay_data::rows::CountryCounterInputRow {
+    replay_data::rows::CountryCounterInputRow {
+        forward_visibility: replay_data::rows::Recorded::NotRecorded,
         country,
         co_belligerents: Some(targets).into(),
         zero_war: Some(zero_war).into(),

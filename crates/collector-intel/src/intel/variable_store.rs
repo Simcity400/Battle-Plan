@@ -16,7 +16,7 @@
 //! destroyed only through the release, which moves the structure token; and the owners' roots
 //! (`ccountry::VARIABLES`, `cstate::VARIABLES`) are written only by Their constructors  (country
 //! construction, state construction), a character's store being embedded. Every writer of a store's
-//! nodes, header and seed is a hooked site ([`engine::script_variable_mutations`]), except a seed
+//! nodes, header and seed is a hooked site ([`engine_mutations::script_variable_mutations`]), except a seed
 //! change in an exception's unwinding, which the exception's token move covers; so an unmarked
 //! store's held rows, header and seed are a fresh read's, slot for slot. The hour publishes the
 //! held rows and reads afresh only the marked stores, its sampled slice's and the stores the held
@@ -49,12 +49,13 @@ use crate::{
     sampled_verify::{Check, ROTATION},
     variable_changes::{Changes, Counts, Taken},
 };
-use engine::{
-    Memory, allocation, ccountry, cgame_state,
-    cpdx_array::Array,
-    cstate,
-    cvariables::{self, HEADER, Row, Scope, ScopeRow, ScopeWalk, Store, VariableCarry},
-    walk::{Buffer, Outcome},
+use engine_allocation as allocation;
+use engine_native::{
+    Memory, ccountry, cgame_state, cpdx_array::Array, cstate, walk::Buffer, walk::Outcome,
+};
+use engine_scripts::{
+    cvariables, cvariables::HEADER, cvariables::Row, cvariables::Scope, cvariables::ScopeRow,
+    cvariables::ScopeWalk, cvariables::Store, cvariables::VariableCarry,
 };
 use std::ops::Range;
 
@@ -90,7 +91,7 @@ impl Witness {
         self.states.clear();
         let Some(global) = state
             .checked_add(cgame_state::GLOBAL_VARIABLES)
-            .and_then(|at| engine::read::<u64>(memory, at))
+            .and_then(|at| engine_native::read::<u64>(memory, at))
             .and_then(|pointer| usize::try_from(pointer).ok())
         else {
             return false;

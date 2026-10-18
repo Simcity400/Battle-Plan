@@ -1,5 +1,5 @@
 use super::{AirStatsCopyContext, AirStatsCopyReport, AirStatsJob, Capacities, Captured};
-use engine::{Memory, memory::SliceMemory, walk::Outcome};
+use engine_native::{Memory, memory::SliceMemory, walk::Outcome};
 
 pub(crate) const BASE: usize = 0x1400_0000;
 pub(crate) const GAME_STATE: usize = 0x10000;
@@ -44,7 +44,7 @@ fn history(
     values: usize,
     seed: i64,
 ) {
-    use engine::{
+    use engine_air_history::{
         cloop_history, cloop_history::air_stats, loop_history_record_fields, loop_history_window,
     };
     p64(bytes, history, (BASE + cloop_history::VTABLE_RVA) as u64);
@@ -95,7 +95,7 @@ fn history(
 }
 
 pub(crate) fn fixture() -> Vec<u8> {
-    use engine::{ccountry, cgame_state, cstrategic_air, cstrategic_air_manager};
+    use engine_native::{ccountry, cgame_state, cstrategic_air, cstrategic_air_manager};
     let mut bytes = vec![0; 0x82000];
     header(&mut bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 3);
     p64(&mut bytes, CTAB, 0);
@@ -146,7 +146,7 @@ pub(crate) fn set_first_value(bytes: &mut [u8], value: i64) {
 }
 
 pub(crate) fn set_yearly_capacity(bytes: &mut Vec<u8>, capacity: u32) {
-    use engine::loop_history_window;
+    use engine_air_history::loop_history_window;
     for (window, record) in [(WINDOW1, RECORD1), (WINDOW2, RECORD2)] {
         let slots = bytes.len();
         bytes.resize(slots + capacity as usize * 8, 0);
@@ -172,7 +172,7 @@ pub(crate) fn mod_fixture(count: usize) -> Vec<u8> {
     bytes.resize(data + count * 8, 0);
     header(
         &mut bytes,
-        AIR + engine::cstrategic_air::HISTORY_TABLE,
+        AIR + engine_native::cstrategic_air::HISTORY_TABLE,
         data,
         count as u32,
     );
@@ -188,11 +188,11 @@ pub(crate) fn memory(bytes: &[u8]) -> SliceMemory<'_> {
 
 pub(crate) struct Split {
     pub outcome: Outcome,
-    pub rows: Vec<engine::cloop_history::Row>,
+    pub rows: Vec<engine_air_history::cloop_history::Row>,
 }
 
 fn collect_typed(memory: &impl Memory, capacity: &Capacities) -> Split {
-    use engine::cloop_history;
+    use engine_air_history::cloop_history;
     let mut captured = Captured::with_capacities(capacity);
     let walked = cloop_history::walk(memory, BASE, GAME_STATE, &mut captured.statistics.rows);
     captured.statistics.outcome = super::bounded(walked, captured.statistics.rows.len());

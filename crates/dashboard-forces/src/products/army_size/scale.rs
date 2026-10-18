@@ -2,16 +2,16 @@
 //! years; fixture construction and encoding stay outside the measured interval.
 
 use super::*;
-use replay::{
-    branches::{BranchReason, BranchStart, Parentage},
-    frame::{DecodedFrame, FrameEncoder, Metrics, TableView},
-    identity::{Identity as ReplayIdentity, Roster, SampleBoundary, SessionStart, Verification},
-    rows::{
-        CampaignRow, CountryRow, DivisionCensusRow, DivisionLandInputsRow,
-        DivisionManpowerContributor, DivisionTemplateIconRow, LexicalTokenRow, TableRows,
-        TemplateSubunit,
-    },
-    spool::Record,
+use replay::spool::Record;
+use replay_data::{
+    identity::Identity as ReplayIdentity, identity::Roster, identity::SampleBoundary,
+    identity::SessionStart, identity::Verification, rows::CampaignRow, rows::CountryRow,
+    rows::DivisionCensusRow, rows::DivisionLandInputsRow, rows::DivisionManpowerContributor,
+    rows::DivisionTemplateIconRow, rows::LexicalTokenRow, rows::TableRows, rows::TemplateSubunit,
+};
+use replay_frame::{
+    branches::BranchReason, branches::BranchStart, branches::Parentage, frame::DecodedFrame,
+    frame::FrameEncoder, frame::Metrics, frame::TableView,
 };
 use std::{hint::black_box, time::Instant};
 
@@ -518,7 +518,7 @@ fn window_history(range: &HourSpan) -> Scan {
 fn army_size_scale_window_reply_sizes() {
     // The window is authored by the recording's keyframes, not this product.
     let last = FIRST_HOUR + YEARS * HOURS_PER_YEAR - 1;
-    let first = last - replay::KEYFRAME_INTERVAL as i32 + 1;
+    let first = last - replay_frame::KEYFRAME_INTERVAL as i32 + 1;
     let mut observations = vec![super::test_fixtures::frame(FIRST_HOUR)];
     observations.extend((first..=last).map(super::test_fixtures::frame));
     let source = super::tests::opened(observations);

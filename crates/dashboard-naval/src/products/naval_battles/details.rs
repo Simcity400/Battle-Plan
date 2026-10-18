@@ -2,30 +2,32 @@
 use super::Kind;
 #[cfg(any(test, feature = "test-support"))]
 use super::{branch_id, census};
+#[cfg(any(test, feature = "test-support"))]
+use crate::{products::ships_sunk, products::sinkings};
+#[cfg(any(test, feature = "test-support"))]
+use dashboard_base::source::Source;
 use dashboard_base::{
     catalogue,
     products::{Product, ReplyWarnings},
 };
+#[cfg(any(test, feature = "test-support"))]
+use dashboard_core::config::LoadContext;
 use dashboard_text::scripted_text;
-use replay::{
-    frame::DecodedFrame,
-    rows::{Recorded, tables},
-};
+#[cfg(any(test, feature = "test-support"))]
+use dashboard_text::{metadata::check_cancel, metadata::validate_campaign};
+#[cfg(any(test, feature = "test-support"))]
+use replay::container::Replay;
+#[cfg(any(test, feature = "test-support"))]
+use replay_data::rows::TableId;
+use replay_data::{rows::Recorded, rows::tables};
+use replay_frame::frame::DecodedFrame;
+#[cfg(any(test, feature = "test-support"))]
+use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
+#[cfg(any(test, feature = "test-support"))]
+use std::{collections::BTreeMap, collections::HashMap, sync::atomic::AtomicBool};
 use std::{collections::BTreeSet, io};
 use ts_rs::TS;
-#[cfg(any(test, feature = "test-support"))]
-use {
-    crate::products::{ships_sunk, sinkings},
-    dashboard_base::source::Source,
-    dashboard_core::config::LoadContext,
-    dashboard_text::metadata::{check_cancel, validate_campaign},
-    replay::{container::Replay, frame::FrameDecoder, rows::TableId},
-    std::{
-        collections::{BTreeMap, HashMap},
-        sync::atomic::AtomicBool,
-    },
-};
 
 pub struct NavalBattleDetails;
 
@@ -408,10 +410,10 @@ mod tests {
     use super::*;
     use dashboard_base::test_fixtures::source;
     use dashboard_text::catalogue::tests::folder_catalogue;
-    use replay::{
-        frame::TableView,
-        rows::{FleetRow, NavalCombatDetailsRow, TableRows, TaskForceRow},
+    use replay_data::{
+        rows::FleetRow, rows::NavalCombatDetailsRow, rows::TableRows, rows::TaskForceRow,
     };
+    use replay_frame::frame::TableView;
 
     #[test]
     fn fleet_labels_follow_exact_handles_in_native_order_and_refuse_missing_names() {
@@ -506,7 +508,7 @@ mod tests {
             (reference, 9, 19),
         ] {
             scan.ships.push(sinkings::ShipEvent {
-                entry: replay::rows::SunkShipEntry {
+                entry: replay_data::rows::SunkShipEntry {
                     battle,
                     sink_hour,
                     ..Default::default()

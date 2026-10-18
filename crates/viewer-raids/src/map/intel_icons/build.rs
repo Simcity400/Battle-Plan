@@ -2,10 +2,11 @@
 
 use super::values::{self, ONE};
 use super::*;
-use installed_content::country_names::CountryNames;
-use installed_content::localisation::Argument as Arg;
-use replay::rows::{
-    CharacterOperativeRow, PORTRAIT_LARGE, ProvinceRow, StrategicOperativeRow, portrait_entry,
+use installed_content_country_names::country_names::CountryNames;
+use installed_content_localisation::localisation::Argument as Arg;
+use replay_data::{
+    rows::CharacterOperativeRow, rows::PORTRAIT_LARGE, rows::ProvinceRow,
+    rows::StrategicOperativeRow, rows::portrait_entry,
 };
 use viewer_foundation::map::{color_inheritance::active_subject, directed_wars};
 use viewer_foundation::tooltip_text::localise;
@@ -654,7 +655,7 @@ impl<'h, 'f> Hour<'h, 'f> {
         &self,
         row: &OperativeMissionRow,
         shared: &Shared<'h, 'f>,
-    ) -> Result<Option<&'f replay::rows::IntelNetworkRow>, String> {
+    ) -> Result<Option<&'f replay_data::rows::IntelNetworkRow>, String> {
         let rows = shared.tables.networks.clone()?;
         let target = row
             .target_country
@@ -706,7 +707,7 @@ impl<'h, 'f> Hour<'h, 'f> {
                     .into_iter()
                     .find(|(handle, _)| *handle == row.id)
                     .ok_or("the operative is not among its target's recorded counteroperatives")?;
-                Ok(installed_content::fixed5::fixed5_to_string(contribution.1, 2))
+                Ok(installed_content_core::fixed5::fixed5_to_string(contribution.1, 2))
             }
             ROOT_OUT => {
                 let key = (
@@ -763,7 +764,7 @@ impl<'h, 'f> Hour<'h, 'f> {
                             .find(|entry| self.slot(entry.owner) == Some(owner))
                     })
                     .map_or(0, |entry| {
-                        replay::fixed_point::q15_to_fixed5(entry.acceptance)
+                        replay_data::fixed_point::q15_to_fixed5(entry.acceptance)
                     });
                 Ok(values::percent(share(acceptance, max)?))
             }
@@ -778,11 +779,11 @@ impl<'h, 'f> Hour<'h, 'f> {
                     .find(|inputs| self.slot(inputs.country) == Some(target))
                     .ok_or("the target country has no CountryStabilityInputs row")?;
                 let stability = share(
-                    replay::fixed_point::q15_to_fixed5(inputs.propaganda_stability_q15),
+                    replay_data::fixed_point::q15_to_fixed5(inputs.propaganda_stability_q15),
                     stability_max,
                 )?;
                 let war_support = share(
-                    replay::fixed_point::q15_to_fixed5(inputs.propaganda_war_support_q15),
+                    replay_data::fixed_point::q15_to_fixed5(inputs.propaganda_war_support_q15),
                     war_support_max,
                 )?;
                 Ok(values::percent(stability.min(war_support)))
@@ -935,7 +936,7 @@ impl<'h, 'f> Hour<'h, 'f> {
     pub fn definition(
         &self,
         row: &OperationRow,
-    ) -> Result<&'h installed_content::intelligence::Operation, String> {
+    ) -> Result<&'h installed_content_core::intelligence::Operation, String> {
         let spelling =
             super::super::raids::spelling(self.world, row.definition_token, "operation")?;
         self.assets
@@ -1002,7 +1003,7 @@ impl<'h, 'f> Hour<'h, 'f> {
 /// The running entry substitutes a green number as text. The content keeps
 /// control of the surrounding unit and colour; substitution names are case-sensitive.
 pub(super) fn running_duration_text(
-    localisation: &installed_content::localisation::Localisation,
+    localisation: &installed_content_localisation::localisation::Localisation,
     remaining: i32,
 ) -> Result<String, String> {
     let number = values::coloured('G', &remaining.to_string());

@@ -3,7 +3,7 @@ use crate::{
     hook::{Hook, TapSafety},
     output_log::Log,
 };
-use engine::Memory;
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::{
@@ -17,16 +17,16 @@ pub struct Site {
     pub rva: usize,
     pub sentinel: [u8; 16],
 }
-impl From<&engine::construction_ic_sites::Site> for Site {
-    fn from(site: &engine::construction_ic_sites::Site) -> Self {
+impl From<&engine_production::construction_ic_sites::Site> for Site {
+    fn from(site: &engine_production::construction_ic_sites::Site) -> Self {
         Self {
             rva: site.rva,
             sentinel: site.sentinel,
         }
     }
 }
-impl From<&engine::line_output_sites::HookSite> for Site {
-    fn from(site: &engine::line_output_sites::HookSite) -> Self {
+impl From<&engine_production::line_output_sites::HookSite> for Site {
+    fn from(site: &engine_production::line_output_sites::HookSite) -> Self {
         Self {
             rva: site.rva,
             sentinel: site.sentinel,
@@ -58,7 +58,7 @@ pub fn validate_sentinels(
     sentinel_error: &'static str,
 ) -> Result<(), &'static str> {
     for site in sites {
-        if engine::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+        if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
             return Err(sentinel_error);
         }
     }
@@ -120,7 +120,7 @@ impl<const N: usize> Hooks<N> {
             ready?;
             domain.base.store(base, Ordering::Relaxed);
             let mut hooks =
-                engine::allocation::vec(N).map_err(|_| "output hook allocation failed")?;
+                engine_allocation::vec(N).map_err(|_| "output hook allocation failed")?;
             let mut safety = safety.map(IntoIterator::into_iter);
             for (index, site) in sites.iter().enumerate() {
                 let hook = if let Some(safety) = safety.as_mut() {

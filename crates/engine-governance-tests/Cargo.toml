@@ -8,6 +8,9 @@ license.workspace = true
 
 [lib]
 doctest = false
+# This package supplies fixtures to the reader and collector suites.
+test = false
+bench = false
 
 [features]
 test-support = ["dep:engine-executable", "dep:engine-native", "dep:engine-research", "dep:engine-focus", "engine-native/batch-fallback-test-counts"]

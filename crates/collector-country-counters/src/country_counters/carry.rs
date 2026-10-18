@@ -42,10 +42,9 @@ use crate::{
     sampled_verify::Check,
     table_capture::Arena,
 };
-use engine::{
-    Memory, allocation,
-    ccountry::{self, CounterInputsRow, RosterSpan},
-    cpdx_array::Array,
+use engine_allocation as allocation;
+use engine_native::{
+    Memory, ccountry, ccountry::CounterInputsRow, ccountry::RosterSpan, cpdx_array::Array,
     walk::Outcome,
 };
 
@@ -264,7 +263,7 @@ impl CounterStore {
         let words = country
             .pointer
             .checked_add(WORDS)
-            .and_then(|at| engine::read::<[u8; WORDS_LEN]>(memory, at))
+            .and_then(|at| engine_native::read::<[u8; WORDS_LEN]>(memory, at))
             .map(|bytes| {
                 WORD_OFFSETS.map(|offset| {
                     let at = offset - WORDS;

@@ -1,0 +1,28 @@
+[package]
+name = "replay-derive"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+slow-tests = []
+
+[dependencies]
+engine-executable.workspace = true
+engine-fixed-layout.workspace = true
+engine-land-inputs.workspace = true
+engine-native.workspace = true
+engine-naval-history.workspace = true
+engine-production.workspace = true
+engine-railways.workspace = true
+engine-research.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
+
+[dev-dependencies]
+replay-data = { workspace = true, features = ["test-support"] }

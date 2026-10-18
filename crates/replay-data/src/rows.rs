@@ -9,7 +9,7 @@ pub use crate::nuclear_rows::*;
 pub use crate::peace_rows::*;
 use crate::value::{EncodeValue, Value};
 pub use combat_rows::*;
-use engine::allocation;
+use engine_allocation as allocation;
 pub use extended_rows::*;
 pub use land_rows::*;
 pub use modifier_breakdown_rows::*;
@@ -17,6 +17,8 @@ pub use naval_mission_rows::*;
 pub use politics_rows::*;
 pub use production_modifier_rows::*;
 use std::io;
+/// Number of registered recording tables, shared by rows and frame consumers.
+pub const TABLE_COUNT: usize = TableId::ALL.len();
 /// The sampled hour plus the engine's own monotonic allocation counters.
 ///
 /// Every counter is the value the save-header serializer prints for its
@@ -129,7 +131,7 @@ pub struct ProvinceRow {
     /// The province's controller area (compared and searched during route finding), as the id of
     /// its smallest member province, whose row holds its [`Self::area_node`]; zero for a null area.
     /// None is a capture refusal. The collector reads an area again only when a controller change
-    /// can have touched it (`engine::controller_areas`).
+    /// can have touched it (`engine_native::controller_areas`).
     pub controller_area: Recorded<Option<u32>>,
     /// The province's owner area labelled the same way; the route search reads only equality and
     /// null.

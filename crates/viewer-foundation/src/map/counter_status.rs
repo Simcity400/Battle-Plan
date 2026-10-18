@@ -21,7 +21,7 @@ pub struct SupplyThresholds {
 impl SupplyThresholds {
     /// `SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD`, `_LOW_THRESHOLD` and
     /// `_SHOW_THRESHOLD` through the native fixed-point getter.
-    pub fn read(defines: &installed_content::defines::Defines) -> std::io::Result<Self> {
+    pub fn read(defines: &installed_content_core::defines::Defines) -> std::io::Result<Self> {
         let value = |name| defines.fixed5("NGraphics", name);
         Ok(Self {
             very_low: value("SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD")?,

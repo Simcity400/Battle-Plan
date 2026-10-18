@@ -2,11 +2,9 @@ use super::*;
 use crate::prepared::series::{Accumulator, tests::Fixture};
 use crate::products::country_history::{CountryIdentityRun, HistoryScan, RecordedCountry};
 use crate::test_fixtures::{CAMPAIGN, records};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{CountryFactoriesRow, ProvinceRow, TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::CountryFactoriesRow, rows::ProvinceRow, rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 fn frame(hour: i32) -> DecodedFrame {
     let mut frame =

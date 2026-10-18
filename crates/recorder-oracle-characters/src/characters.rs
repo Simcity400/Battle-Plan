@@ -1,12 +1,10 @@
 //! Character and persistent-ability comparisons against native text serialization.
 
 use super::{Report, TokenNames, complete, invalid, required_country_tag};
-use installed_content::{leader_traits::LeaderTraits, parser::c_string};
+use installed_content_core::{leader_traits::LeaderTraits, parser::c_string};
 use installed_content_save::characters as saved;
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryRow, tables},
-};
+use replay_data::{rows::CountryRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -110,7 +108,7 @@ pub fn compare(
     report: &mut Report,
 ) -> io::Result<()> {
     let mut complete = true;
-    // Every table of the family is hourly (replay::cadence), so each is
+    // Every table of the family is hourly (replay_data::cadence), so each is
     // read at the oracle hour.
     if let Some(manager) = &pack.manager {
         complete &= report.attempt("Characters", |report| {
@@ -343,7 +341,7 @@ fn compare_advisors(
     let mut count = 0;
     let role_traits = frame.complete::<tables::CharacterRoleTraits>().map(|rows| {
         rows.iter()
-            .filter(|row| row.kind == replay::rows::CharacterRoleTraitRow::ADVISOR)
+            .filter(|row| row.kind == replay_data::rows::CharacterRoleTraitRow::ADVISOR)
             .map(|row| ((row.character, row.role), row))
             .collect::<BTreeMap<_, _>>()
     });
@@ -439,9 +437,9 @@ fn compare_advisors(
 
 /// The game rebuilds the advisor's keys from the current trait key sets.
 fn compare_advisor_tooltip_keys(
-    row: &replay::rows::AdvisorRoleRow,
+    row: &replay_data::rows::AdvisorRoleRow,
     keys: &[Vec<u8>],
-    trait_row: Result<Option<&replay::rows::CharacterRoleTraitRow>, &io::Error>,
+    trait_row: Result<Option<&replay_data::rows::CharacterRoleTraitRow>, &io::Error>,
     tokens: &TokenNames<'_>,
     traits: Result<&LeaderTraits, &str>,
     report: &mut Report,
@@ -539,7 +537,7 @@ fn compare_role_traits(
     country_leader_traits: Result<&LeaderTraits, &str>,
     report: &mut Report,
 ) -> io::Result<()> {
-    use replay::rows::CharacterRoleTraitRow as Row;
+    use replay_data::rows::CharacterRoleTraitRow as Row;
     let rows = complete::<tables::CharacterRoleTraits>(frame)?;
     let mut recorded = BTreeMap::<(u64, u8, u32), &Row>::new();
     for row in rows {
@@ -697,7 +695,7 @@ impl From<String> for Unnamed {
 /// otherwise the token whose literal equals it ignoring ASCII
 /// case.
 fn advisor_trait_names<'a>(
-    row: &replay::rows::CharacterRoleTraitRow,
+    row: &replay_data::rows::CharacterRoleTraitRow,
     tokens: &TokenNames<'_>,
     content: Result<&'a LeaderTraits, &str>,
 ) -> Result<Vec<&'a [u8]>, Unnamed> {
@@ -860,7 +858,7 @@ pub fn compare_codenames(
         let mut compared = 0;
         for row in complete::<tables::UnitLeaders>(frame)?
             .iter()
-            .filter(|row| engine::cunit_leader::has_codename(row.kind))
+            .filter(|row| engine_native::cunit_leader::has_codename(row.kind))
         {
             let label = format!("UnitLeaders {} codename", row.id);
             let Some(actual) =
@@ -896,7 +894,7 @@ pub fn compare_codenames(
 fn codename(
     report: &mut Report,
     label: &str,
-    actual: &replay::rows::NameOperands,
+    actual: &replay_data::rows::NameOperands,
     entry: Option<&installed_content_save::intel::OperativeEntry>,
 ) -> bool {
     let Some(entry) = entry else {
@@ -1023,7 +1021,7 @@ fn compare_leaders(
             expected.components,
         );
         // The army-leader writer writes `captured=yes` only for a set army leader byte.
-        if row.kind == engine::cunit_leader::KIND_ARMY {
+        if row.kind == engine_native::cunit_leader::KIND_ARMY {
             equal(
                 report,
                 format!("{label}.captured"),
@@ -1120,7 +1118,7 @@ fn compare_traits(
         count += 1;
         // The token writer formats reserved token 0x167 as fixed15 even in a trait
         // position. Its dictionary spelling is not the serialized value.
-        if row.token_id == engine::cpdx_lexer::FIXED15_TOKEN as i32 {
+        if row.token_id == engine_native::cpdx_lexer::FIXED15_TOKEN as i32 {
             formatted_tokens.push(key);
         } else {
             trait_token_value(

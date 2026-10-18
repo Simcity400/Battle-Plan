@@ -28,9 +28,9 @@ pub struct AirCountryRelationRow {
     pub other: u32,
 }
 impl AirCountryRelationRow {
-    pub const DONOR: u8 = engine::air_participant_vectors::DONOR;
-    pub const ALLY: u8 = engine::air_participant_vectors::ALLY;
-    pub const ENEMY: u8 = engine::air_participant_vectors::ENEMY;
+    pub const DONOR: u8 = engine_air_history::air_participant_vectors::DONOR;
+    pub const ALLY: u8 = engine_air_history::air_participant_vectors::ALLY;
+    pub const ENEMY: u8 = engine_air_history::air_participant_vectors::ENEMY;
 }
 typed_codec!(AirCountryRelationRow, 66, |row| (row.country as u128) << 34 | (row.kind as u128) << 32 | row.ordinal as u128,
  |key| Self { country: (key >> 34) as u32, kind: ((key >> 32) & 3) as u8, ordinal: key as u32, ..Default::default() },

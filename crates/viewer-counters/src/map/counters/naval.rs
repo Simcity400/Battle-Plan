@@ -117,7 +117,7 @@ pub(super) struct NavalCells {
 
 /// The per-hour ship operands the naval counters read.
 pub(super) struct ShipInputs<'a> {
-    pub(super) equipment: Result<&'a installed_content::equipment::Database, &'a str>,
+    pub(super) equipment: Result<&'a installed_content_core::equipment::Database, &'a str>,
     /// Task force to its ships in `ShipModels.counter.roster_ordinal` order, with `Ships.strength`.
     pub(super) rosters: BTreeMap<u64, Vec<counter_order::Hull<'a>>>,
     /// Task force to its strength and organisation ratios.
@@ -131,16 +131,16 @@ pub(super) struct ShipInputs<'a> {
 impl<'a> ShipInputs<'a> {
     /// `None` unless `Ships` and `ShipModels` are complete and every model carries counter inputs.
     pub(super) fn read(
-        ships: &'a [replay::rows::ShipRow],
-        models: &'a [replay::rows::ShipModelRow],
+        ships: &'a [replay_data::rows::ShipRow],
+        models: &'a [replay_data::rows::ShipModelRow],
         frame: &DecodedFrame,
         vision: &Vision,
-        equipment: Result<&'a installed_content::equipment::Database, &'a str>,
+        equipment: Result<&'a installed_content_core::equipment::Database, &'a str>,
     ) -> io::Result<Option<Self>> {
         if models.iter().any(|model| model.counter.is_none()) {
             return Ok(None);
         }
-        let by_ship: BTreeMap<u64, &replay::rows::ShipModelRow> =
+        let by_ship: BTreeMap<u64, &replay_data::rows::ShipModelRow> =
             models.iter().map(|model| (model.ship, model)).collect();
         let mut rosters: BTreeMap<u64, Vec<(u32, counter_order::Hull<'a>)>> = BTreeMap::new();
         let mut operands: BTreeMap<u64, Vec<[i64; 4]>> = BTreeMap::new();
@@ -206,7 +206,7 @@ impl<'a> ShipInputs<'a> {
     /// Whether a task force's first carrier, in roster order, has a carrier air base: the air
     /// map mode's test for drawing its counter. `None` when a ship before it lacks model operands.
     pub(super) fn carries_air_wings(&self, force: u64) -> Option<bool> {
-        let ships: Vec<&replay::rows::ShipModelRow> =
+        let ships: Vec<&replay_data::rows::ShipModelRow> =
             self.rosters.get(&force).map_or_else(Vec::new, |roster| {
                 roster.iter().map(|hull| hull.model).collect()
             });
@@ -242,7 +242,7 @@ impl<'a> ShipInputs<'a> {
         let per_force: Vec<BTreeSet<u32>> = members
             .iter()
             .map(|force| {
-                let ships: Vec<&replay::rows::ShipModelRow> =
+                let ships: Vec<&replay_data::rows::ShipModelRow> =
                     roster(force).iter().map(|hull| hull.model).collect();
                 counter_order::task_force_carrier(&ships, &base)
             })
@@ -265,7 +265,7 @@ impl<'a> ShipInputs<'a> {
 
 /// One admitted task force.
 pub(super) struct NavalUnit<'a> {
-    pub(super) force: &'a replay::rows::TaskForceRow,
+    pub(super) force: &'a replay_data::rows::TaskForceRow,
     /// The ordinal in its province's occupant array; zero without a recorded order.
     pub(super) ordinal: u32,
     pub(super) slot: u32,
@@ -303,7 +303,7 @@ pub(super) struct NavalContext<'a> {
     /// `TaskForces.mission` by task force.
     pub(super) missions: BTreeMap<u64, u32>,
     /// The recorded task forces, and whether that census is complete.
-    pub(super) forces: &'a [replay::rows::TaskForceRow],
+    pub(super) forces: &'a [replay_data::rows::TaskForceRow],
     /// The mission skip operands, shared with the ship models.
     pub(super) mission_skips: viewer_foundation::map::task_force_visual::MissionSkips,
     pub(super) forces_complete: bool,
@@ -315,7 +315,7 @@ pub(super) struct NavalContext<'a> {
 #[derive(Clone, Copy)]
 pub(super) struct NavalSources<'a> {
     pub(super) type_tints: &'a type_tint::Index,
-    pub(super) equipment: Result<&'a installed_content::equipment::Database, &'a str>,
+    pub(super) equipment: Result<&'a installed_content_core::equipment::Database, &'a str>,
     pub(super) vision: &'a Vision,
     pub(super) native: &'a NativeInputs,
     pub(super) country_ids: &'a BTreeMap<u32, u32>,
@@ -338,7 +338,7 @@ fn set_frame_argument(number: u32) -> i32 {
 /// signed frame argument. Missing reached politics or ideology data stays unknown.
 pub(super) fn ideology_frame(
     frame: &DecodedFrame,
-    ideologies: &installed_content::ideologies::Ideologies,
+    ideologies: &installed_content_core::ideologies::Ideologies,
     country_ids: &BTreeMap<u32, u32>,
     slot: u32,
 ) -> Result<Option<i32>, String> {
@@ -449,7 +449,7 @@ impl<'a> NavalContext<'a> {
     /// A task force the perspective is shown at all, as one counter member.
     pub(super) fn unit(
         &self,
-        force: &'a replay::rows::TaskForceRow,
+        force: &'a replay_data::rows::TaskForceRow,
         owner: &impl Fn(u32) -> Option<u32>,
         ordinal: u32,
         position: Option<counter_move::Position>,
@@ -666,7 +666,7 @@ impl<'a> NavalContext<'a> {
 /// One whose skip operands are unrecorded is refused by reason.
 fn stays_a_source(
     skips: &viewer_foundation::map::task_force_visual::MissionSkips,
-    force: &replay::rows::TaskForceRow,
+    force: &replay_data::rows::TaskForceRow,
     kind: u32,
     region: Option<u32>,
     report: &mut CounterReport,
@@ -1116,7 +1116,7 @@ enum PortAdmission<'a> {
 }
 
 fn port_admission<'a>(
-    force: &'a replay::rows::TaskForceRow,
+    force: &'a replay_data::rows::TaskForceRow,
     context: &NavalContext<'a>,
     order: &counter_order::RecordedOrder,
     docked: impl FnOnce() -> Result<bool, &'static str>,

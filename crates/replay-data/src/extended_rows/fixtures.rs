@@ -164,12 +164,13 @@ impl Fixture for AirLossEventRow {
             country: u32::sample(tick),
             region: u32::sample(tick + 1),
             native_cause: (tick % 7) as u32,
-            family_base: engine::air_loss_sites::FAMILY_BASES
-                [tick % engine::air_loss_sites::FAMILY_BASES.len()],
+            family_base: engine_air_history::air_loss_sites::FAMILY_BASES
+                [tick % engine_air_history::air_loss_sites::FAMILY_BASES.len()],
             credited_enemy: bool::sample(tick),
             amount_raw: tick as i64 + 1,
             opponent: Some(u32::sample(tick)),
-            daily_slot: (tick % engine::cloop_history::DAILY_WINDOW_CAPACITY as usize) as u32,
+            daily_slot: (tick % engine_air_history::cloop_history::DAILY_WINDOW_CAPACITY as usize)
+                as u32,
         }
     }
 }
@@ -787,7 +788,7 @@ impl Fixture for CountryProductionModifiersRow {
             factory_speed: [tick as i64; 4],
             retention: [tick as i64; 4],
             conversion_raw: tick as i64,
-            trees: engine::production_modifiers::KEYS
+            trees: engine_production::production_modifiers::KEYS
                 .into_iter()
                 .map(|key| ProductionModifierTree {
                     key,
@@ -1713,7 +1714,7 @@ impl Sample for OrderChildFront {
     fn sample(tick: usize) -> Self {
         Self {
             group: (u64::from(u32::sample(tick)) << 32)
-                | u64::from(engine::corders_group::REFERENCE_TYPE),
+                | u64::from(engine_native::corders_group::REFERENCE_TYPE),
             segment_start: i32::sample(tick),
             segment_end: i32::sample(tick + 1),
         }

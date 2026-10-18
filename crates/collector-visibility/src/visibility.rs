@@ -17,19 +17,15 @@ use crate::{
     table_conversion::{table, unavailable},
     world_input_changes::{self as changes, Changes, Domain, Held, Plan},
 };
-use engine::allocation::{copy_vec, owned_vec};
-use engine::{
-    Memory, crelation_status, cstrategic_navy, cweather_manager, visibility_inputs as native,
-    walk::Outcome,
+use engine_allocation::{copy_vec, owned_vec};
+use engine_native::{Memory, crelation_status, cstrategic_navy, cweather_manager, walk::Outcome};
+use engine_visibility::visibility_inputs as native;
+use replay_data::{
+    cadence::SKIPPED_REASON, cadence::should_walk, rows::CountryVisibilityRow, rows::CountryWarRow,
+    rows::LocalPlayerRow, rows::NavalRegionAccessRow, rows::RelationLinkRow,
+    rows::SimulationFeatureRow, rows::StateVisibilityRow, rows::TableId, rows::tables,
 };
-use replay::{
-    cadence::{SKIPPED_REASON, should_walk},
-    frame::TableView,
-    rows::{
-        CountryVisibilityRow, CountryWarRow, LocalPlayerRow, NavalRegionAccessRow, RelationLinkRow,
-        SimulationFeatureRow, StateVisibilityRow, TableId, tables,
-    },
-};
+use replay_frame::frame::TableView;
 use std::sync::{
     Mutex,
     atomic::{AtomicU64, Ordering::Relaxed},
@@ -44,12 +40,12 @@ static HELD_ACCESS: Mutex<Held<Vec<cstrategic_navy::AccessRow>>> =
 static HELD_VISIBILITY: Mutex<carry::Store> = Mutex::new(carry::Store::new());
 
 static RUNTIME_SCALAR_REFUSALS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
-static MOVEMENT_DEFINE_REFUSALS: [AtomicU64; engine::movement_defines::DEFINES.len()] =
-    [const { AtomicU64::new(0) }; engine::movement_defines::DEFINES.len()];
+static MOVEMENT_DEFINE_REFUSALS: [AtomicU64; engine_land_inputs::movement_defines::DEFINES.len()] =
+    [const { AtomicU64::new(0) }; engine_land_inputs::movement_defines::DEFINES.len()];
 /// Refused reads of each recorded movement define.
 pub fn movement_defines_data() -> impl serde::Serialize {
     crate::status::map(
-        engine::movement_defines::DEFINES
+        engine_land_inputs::movement_defines::DEFINES
             .into_iter()
             .enumerate()
             .map(|(index, define)| (define.name, MOVEMENT_DEFINE_REFUSALS[index].load(Relaxed))),
@@ -57,7 +53,7 @@ pub fn movement_defines_data() -> impl serde::Serialize {
 }
 pub fn runtime_scalars_data() -> impl serde::Serialize {
     crate::status::map(
-        engine::political_runtime_scalars::NAMES
+        engine_stability::political_runtime_scalars::NAMES
             .into_iter()
             .enumerate()
             .map(|(index, name)| (name, RUNTIME_SCALAR_REFUSALS[index].load(Relaxed))),
@@ -167,14 +163,14 @@ struct FeatureInputs {
     human_ai: u8,
     weather_suspend: Option<[u8; 2]>,
     instant_decisions: Option<u8>,
-    runtime_scalars: replay::rows::PoliticalRuntimeScalars,
-    movement_defines: replay::rows::MovementDefines,
+    runtime_scalars: replay_data::rows::PoliticalRuntimeScalars,
+    movement_defines: replay_data::rows::MovementDefines,
 }
 
 /// The recorded defines from one read of each live global; a refused leaf is `None`
 /// and counted.
-fn movement_defines(memory: &impl Memory, base: usize) -> replay::rows::MovementDefines {
-    let values = engine::movement_defines::capture(memory, base);
+fn movement_defines(memory: &impl Memory, base: usize) -> replay_data::rows::MovementDefines {
+    let values = engine_land_inputs::movement_defines::capture(memory, base);
     for (index, value) in values.iter().enumerate() {
         if value.is_err() {
             MOVEMENT_DEFINE_REFUSALS[index].fetch_add(1, Relaxed);
@@ -193,7 +189,7 @@ fn movement_defines(memory: &impl Memory, base: usize) -> replay::rows::Movement
         air_defense_reduction,
         out_of_supply_attrition,
     ] = values.map(Result::ok);
-    replay::rows::MovementDefines {
+    replay_data::rows::MovementDefines {
         out_of_supply_speed,
         retreat_speed,
         withdrawal_speed,
@@ -363,7 +359,8 @@ impl Captured {
             && let Some(held) = &held
         {
             let carried = held.carried(Domain::RegionAccess);
-            let ensured = engine::walk::Buffer::for_worker(rows, growing).ensure(carried.len());
+            let ensured =
+                engine_native::walk::Buffer::for_worker(rows, growing).ensure(carried.len());
             self.naval_access.outcome = match ensured {
                 Ok(_) if carried.len() <= rows.len() => {
                     rows[..carried.len()].copy_from_slice(carried);
@@ -381,7 +378,7 @@ impl Captured {
             memory,
             base,
             game_state,
-            engine::walk::Buffer::for_worker(rows, growing),
+            engine_native::walk::Buffer::for_worker(rows, growing),
         );
         self.naval_access.outcome = outcome;
         if let Some(held) = &mut held {
@@ -436,15 +433,16 @@ impl Captured {
             let started = qpc();
             match index {
                 0 => {
-                    let globals = engine::political_runtime_scalars::capture(memory, base, hour);
+                    let globals =
+                        engine_stability::political_runtime_scalars::capture(memory, base, hour);
                     let values = globals.values.map(|value| value.ok());
                     for (index, value) in globals.values.iter().enumerate() {
                         if value.is_err() {
                             RUNTIME_SCALAR_REFUSALS[index].fetch_add(1, Relaxed);
                         }
                     }
-                    let runtime_scalars = replay::rows::PoliticalRuntimeScalars {
-                        sample_hour: replay::rows::PacketHour::Host,
+                    let runtime_scalars = replay_data::rows::PoliticalRuntimeScalars {
+                        sample_hour: replay_data::rows::PacketHour::Host,
                         river_small: values[0],
                         river_large: values[1],
                         night: values[2],
@@ -491,7 +489,7 @@ impl Captured {
                             memory,
                             base,
                             game_state,
-                            engine::walk::Buffer::Growing(&mut self.countries.rows),
+                            engine_native::walk::Buffer::Growing(&mut self.countries.rows),
                             &Observer,
                             crate::sampled_verify::current(Observer.every(Table::Visibility)),
                             force_full,
@@ -502,7 +500,10 @@ impl Captured {
                             memory,
                             base,
                             game_state,
-                            engine::walk::Buffer::for_worker(&mut self.countries.rows, growing),
+                            engine_native::walk::Buffer::for_worker(
+                                &mut self.countries.rows,
+                                growing,
+                            ),
                         )
                     };
                 }
@@ -524,7 +525,7 @@ impl Captured {
                 ),
                 6 => {
                     self.local_player.outcome =
-                        match engine::cgame_state::local_player(memory, game_state) {
+                        match engine_native::cgame_state::local_player(memory, game_state) {
                             Ok(row) => {
                                 self.local_player.rows[0] = row;
                                 Outcome::Rows { len: 1 }
@@ -540,8 +541,10 @@ impl Captured {
                             game_state,
                             &mut self.links.rows,
                             crelation_status::WarBuffers {
-                                rows: engine::walk::Buffer::Growing(&mut self.wars.rows),
-                                countries: engine::walk::Buffer::Growing(&mut self.war_links.first),
+                                rows: engine_native::walk::Buffer::Growing(&mut self.wars.rows),
+                                countries: engine_native::walk::Buffer::Growing(
+                                    &mut self.war_links.first,
+                                ),
                             },
                             &mut self.resolver,
                             hour,
@@ -599,10 +602,10 @@ impl Captured {
                 |r| SimulationFeatureRow {
                     dlc_mask: r.dlc_mask,
                     human_ai: r.human_ai,
-                    weather_suspend: replay::rows::Recorded::Value(r.weather_suspend),
-                    instant_decisions: replay::rows::Recorded::Value(r.instant_decisions),
-                    runtime_scalars: replay::rows::Recorded::Value(r.runtime_scalars),
-                    movement_defines: replay::rows::Recorded::Value(r.movement_defines),
+                    weather_suspend: replay_data::rows::Recorded::Value(r.weather_suspend),
+                    instant_decisions: replay_data::rows::Recorded::Value(r.instant_decisions),
+                    runtime_scalars: replay_data::rows::Recorded::Value(r.runtime_scalars),
+                    movement_defines: replay_data::rows::Recorded::Value(r.movement_defines),
                 },
             ),
             table::<tables::CountryVisibility, _>(
@@ -625,14 +628,14 @@ impl Captured {
                     country: r.country,
                     target_index: r.target,
                     links: r.links,
-                    transport_subject: replay::rows::Recorded::Value(
+                    transport_subject: replay_data::rows::Recorded::Value(
                         r.transport_subject.and_then(Result::ok).map(|value| {
-                            replay::rows::TransportSubjectAccess {
-                                sample_hour: replay::rows::PacketHour::Host,
+                            replay_data::rows::TransportSubjectAccess {
+                                sample_hour: replay_data::rows::PacketHour::Host,
                                 complete_owner: value.complete_owner,
                                 target_raw: value.target_raw,
                                 subject: value.subject.map(|subject| {
-                                    replay::rows::ZeroSubjectInputs {
+                                    replay_data::rows::ZeroSubjectInputs {
                                         relation_type: subject.relation_type,
                                         parties: subject.parties,
                                     }
@@ -682,10 +685,10 @@ impl Captured {
             can_occupy_non_war: r.can_occupy_non_war,
             enemies_read: u8::from(r.enemies_read),
             enemies: owned_vec(copy_vec(span(r.enemies_start, r.enemies_len).unwrap())),
-            ordered: replay::rows::Recorded::Value(r.ordered.and_then(|(start, len)| {
+            ordered: replay_data::rows::Recorded::Value(r.ordered.and_then(|(start, len)| {
                 r.ordered_hour?;
-                Some(replay::rows::OrderedEnemyInputs {
-                    sample_hour: replay::rows::PacketHour::Host,
+                Some(replay_data::rows::OrderedEnemyInputs {
+                    sample_hour: replay_data::rows::PacketHour::Host,
                     entries: owned_vec(copy_vec(span(start, len)?)),
                 })
             })),

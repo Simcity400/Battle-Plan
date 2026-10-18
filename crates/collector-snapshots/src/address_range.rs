@@ -1,6 +1,6 @@
 //! Canonical native read ranges shared by raw copies and dependency traces.
 
-/// x86-64 canonical range check, identical to `engine::memory`'s gate.
+/// x86-64 canonical range check, identical to `engine_native::memory`'s gate.
 ///
 /// Duplicated (not imported) so this crate needs no new public engine API;
 /// the two implementations are proved equal by mirrored unit vectors in both

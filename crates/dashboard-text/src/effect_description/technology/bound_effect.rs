@@ -1,7 +1,7 @@
 //! tech_effect's ordinary tooltip body; the callback deliberately omits timing,
 //! requirements and the technology's prose.
 use super::*;
-use installed_content::{parser::c_string, tokens::Token};
+use installed_content_core::{parser::c_string, tokens::Token};
 
 impl Renderer<'_, '_, '_> {
     pub(in crate::effect_description) fn bound_technology_effect(
@@ -122,7 +122,7 @@ impl Renderer<'_, '_, '_> {
     // skipping unknown types and the DLC-locked floating-harbor category.
     pub(super) fn technology_enabled_equipment(
         &self,
-        template: &installed_content::technology::Definition,
+        template: &installed_content_core::technology::Definition,
     ) -> Result<Vec<usize>, String> {
         let catalog = self.technology_catalog()?;
         let mut equipment = Vec::new();
@@ -164,7 +164,7 @@ impl Renderer<'_, '_, '_> {
     fn technology_unlock_description(
         &mut self,
         out: &mut String,
-        template: &installed_content::technology::Definition,
+        template: &installed_content_core::technology::Definition,
         country: u32,
         scopes: Scopes,
     ) {
@@ -330,7 +330,7 @@ impl Renderer<'_, '_, '_> {
 
     fn technology_tactic_names(
         &self,
-        template: &installed_content::technology::Definition,
+        template: &installed_content_core::technology::Definition,
         scopes: Scopes,
     ) -> Result<String, String> {
         if template.tactics.is_empty() {
@@ -406,9 +406,9 @@ impl Renderer<'_, '_, '_> {
                 let operand = std::str::from_utf8(c_string(operand))
                     .map_err(|_| "sub-unit unlock name is not UTF-8")?;
                 let index = match database.get(operand) {
-                    installed_content::unit_leader::SubUnit::Index(index) => index,
-                    installed_content::unit_leader::SubUnit::Unknown => continue,
-                    installed_content::unit_leader::SubUnit::Uncertain(why) => return Err(why.into()),
+                    installed_content_core::unit_leader::SubUnit::Index(index) => index,
+                    installed_content_core::unit_leader::SubUnit::Unknown => continue,
+                    installed_content_core::unit_leader::SubUnit::Uncertain(why) => return Err(why.into()),
                 };
                 let name = database
                     .name(index)
@@ -437,7 +437,7 @@ impl Renderer<'_, '_, '_> {
     // is shared by technology and special-project module unlocks.
     pub(super) fn technology_module_allowed(
         &self,
-        equipment: &installed_content::equipment::Database,
+        equipment: &installed_content_core::equipment::Database,
         token: &[u8],
         country: u32,
     ) -> Result<bool, String> {

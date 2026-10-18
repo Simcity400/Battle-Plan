@@ -9,14 +9,13 @@
 
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
-use installed_content::image::native::Decode;
-use installed_content::{
-    ResolvedLayers, buildings::Buildings, image::dds, map::MapData, positions::BuildingPosition,
+use installed_content_core::{
+    ResolvedLayers, buildings::Buildings, map::MapData, positions::BuildingPosition,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{NavalBaseRow, ProvinceSupplyRow, RailEdgeRow, tables},
-};
+use installed_content_image::dds;
+use installed_content_image::native::Decode;
+use replay_data::{rows::NavalBaseRow, rows::ProvinceSupplyRow, rows::RailEdgeRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
@@ -102,7 +101,7 @@ pub struct RailDefines {
 }
 
 impl RailDefines {
-    pub fn load(defines: &installed_content::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
         let number = |name| defines.number("NGraphics", name).map(|value| value as f32);
         let levels = defines.number("NSupply", "MAX_RAILWAY_LEVEL")?;
         if !(1.0..=f64::from(u16::MAX)).contains(&levels) {
@@ -395,7 +394,7 @@ impl RailGeometry {
         map: &MapData,
         buildings: &[BuildingPosition],
         types: &Buildings,
-        rivers: &installed_content::image::IndexedImage,
+        rivers: &installed_content_image::IndexedImage,
         heights: &HeightField<'_>,
         defines: RailDefines,
     ) -> io::Result<Self> {
@@ -482,7 +481,7 @@ impl RailGeometry {
         let mut ports = BTreeMap::new();
         for p in buildings {
             // An ambiguous slot anchors nothing; MapBuildingAssets names it.
-            let Some(installed_content::buildings::Slot::Bucket(slot)) = types.slot(&p.kind) else {
+            let Some(installed_content_core::buildings::Slot::Bucket(slot)) = types.slot(&p.kind) else {
                 continue;
             };
             let id = at(p.x as i32, p.z as i32);
@@ -498,10 +497,10 @@ impl RailGeometry {
         for (&(a, b), boundary) in &mut boundaries {
             if !matches!(
                 map.definitions.get(&a).map(|d| d.kind),
-                Some(installed_content::map::ProvinceKind::Land)
+                Some(installed_content_core::map::ProvinceKind::Land)
             ) || !matches!(
                 map.definitions.get(&b).map(|d| d.kind),
-                Some(installed_content::map::ProvinceKind::Land)
+                Some(installed_content_core::map::ProvinceKind::Land)
             ) {
                 continue;
             }
@@ -1062,8 +1061,8 @@ impl Bridges {
     pub fn load(
         layers: &ResolvedLayers,
         decode: Decode,
-        defines: &installed_content::defines::Defines,
-        warnings: &mut Vec<installed_content::Diagnostic>,
+        defines: &installed_content_core::defines::Defines,
+        warnings: &mut Vec<installed_content_core::Diagnostic>,
     ) -> io::Result<Self> {
         let entities = [
             defines.text("NGraphics", "RAILWAY_BRIDGE_ENTITY")?,

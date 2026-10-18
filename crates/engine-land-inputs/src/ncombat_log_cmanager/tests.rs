@@ -731,7 +731,7 @@ fn combat_log_scale() {
     );
 }
 
-/// The recorder's slice of an owner (`replay::cadence::slice_of`: owner % 24).
+/// The recorder's slice of an owner (`replay_data::cadence::slice_of`: owner % 24).
 fn replay_slice(owner: u32) -> u32 {
     owner % 24
 }

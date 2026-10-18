@@ -6,7 +6,7 @@
 //! prove that no observed writer ran in between ([`WatchRegistry::quiet`]).
 //!
 //! This family patches the writers no other family does
-//! ([`engine::census_mutations`]); the advisor family forwards its map,
+//! ([`engine_mutations::census_mutations`]); the advisor family forwards its map,
 //! parser, merge and destructor sites and the country-leader map insert, and
 //! the roster family its scientist attach and clear ([`forwarded`]). The
 //! roster array writers move the roster domain's token, which a census carry
@@ -18,7 +18,8 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{Memory, census_mutations::MUTATIONS};
+use engine_mutations::census_mutations::MUTATIONS;
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -234,7 +235,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "census_changes")
             && MUTATIONS.iter().all(|site| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [

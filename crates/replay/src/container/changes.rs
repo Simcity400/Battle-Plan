@@ -186,10 +186,10 @@ impl QuietHours {
         metrics: Metrics,
         tables: impl Iterator<Item = (Option<Hour>, bool)>,
     ) -> io::Result<()> {
-        engine::allocation::reserve(&mut self.hours, 1)?;
-        engine::allocation::reserve(&mut self.metrics, 1)?;
-        engine::allocation::reserve(&mut self.sampled, self.tables.len())?;
-        engine::allocation::reserve(&mut self.rebuilt, self.tables.len())?;
+        engine_allocation::reserve(&mut self.hours, 1)?;
+        engine_allocation::reserve(&mut self.metrics, 1)?;
+        engine_allocation::reserve(&mut self.sampled, self.tables.len())?;
+        engine_allocation::reserve(&mut self.rebuilt, self.tables.len())?;
         self.hours.push(hour);
         self.metrics.push(metrics);
         for (sampled, rebuilt) in tables {

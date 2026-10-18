@@ -2,16 +2,16 @@ use super::*;
 use crate::scripted_text::{EventObject, EventScope, EventScopes, Link};
 use std::{cell::RefCell, rc::Rc};
 
-fn collection(text: &str) -> installed_content::collections::Collection {
-    let input = installed_content::parser::parse(format!("input={{{text}}}").as_bytes())
+fn collection(text: &str) -> installed_content_core::collections::Collection {
+    let input = installed_content_core::parser::parse(format!("input={{{text}}}").as_bytes())
         .unwrap()
         .items;
-    installed_content::collections::compile(&input[0], None).unwrap()
+    installed_content_core::collections::compile(&input[0], None).unwrap()
 }
 
 #[test]
 fn collection_selection_uses_order_limits_and_fresh_root_environment() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = frame(
         &[(100, 1, "AAA", 2, "", ""), (200, 2, "GER", 1, "", "")],
@@ -98,7 +98,7 @@ fn collection_selection_uses_order_limits_and_fresh_root_environment() {
 
 #[test]
 fn unrecorded_subjects_refuse_country_and_all_subjects() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = frame(
         &[(100, 1, "AAA", 2, "", ""), (200, 2, "GER", 1, "", "")],
@@ -109,7 +109,7 @@ fn unrecorded_subjects_refuse_country_and_all_subjects() {
     else {
         panic!("the fixture records CountryAppearance");
     };
-    rows[0].subjects = replay::rows::Recorded::NotRecorded;
+    rows[0].subjects = replay_data::rows::Recorded::NotRecorded;
     with_world(&f, "", Err("none"), |world| {
         let graph = Rc::new(RefCell::new(EventScopes::new(vec![EventScope::of(
             EventObject::Country(1),
@@ -131,9 +131,9 @@ fn unrecorded_subjects_refuse_country_and_all_subjects() {
 
 #[test]
 fn format98_collections_select_first_passing_owned_and_controlled_state() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::StateRow;
+    use replay_data::rows::StateRow;
     let mut f = frame(&[(100, 1, "AAA", 2, "", "")], &[]);
     *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
         StateRow {
@@ -151,7 +151,7 @@ fn format98_collections_select_first_passing_owned_and_controlled_state() {
     ]));
     *f.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(
         [7, 8]
-            .map(|id| replay::rows::ProvinceRow {
+            .map(|id| replay_data::rows::ProvinceRow {
                 id,
                 state: id,
                 ..Default::default()
@@ -163,8 +163,8 @@ fn format98_collections_select_first_passing_owned_and_controlled_state() {
     else {
         panic!("complete counters");
     };
-    rows[0].owned_states = replay::rows::Recorded::Value(Some(vec![8, 7]));
-    rows[0].controlled_states = replay::rows::Recorded::Value(Some(vec![7, 8]));
+    rows[0].owned_states = replay_data::rows::Recorded::Value(Some(vec![8, 7]));
+    rows[0].controlled_states = replay_data::rows::Recorded::Value(Some(vec![7, 8]));
     with_world(&f, "", Err("none"), |world| {
         let graph = Rc::new(RefCell::new(EventScopes::new(vec![EventScope::of(
             EventObject::Country(1),
@@ -205,7 +205,7 @@ fn format98_collections_select_first_passing_owned_and_controlled_state() {
     else {
         panic!("complete counters");
     };
-    rows[0].owned_states = replay::rows::Recorded::NotRecorded;
+    rows[0].owned_states = replay_data::rows::Recorded::NotRecorded;
     with_world(&f, "", Err("none"), |world| {
         let graph = Rc::new(RefCell::new(EventScopes::new(vec![EventScope::of(
             EventObject::Country(1),
@@ -224,9 +224,9 @@ fn format98_collections_select_first_passing_owned_and_controlled_state() {
 
 #[test]
 fn collection_constant_arrays_keep_content_order_and_default_seeds() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::StateRow;
+    use replay_data::rows::StateRow;
     let mut f = frame(
         &[(100, 1, "AAA", 2, "", ""), (200, 2, "GER", 1, "", "")],
         &[],
@@ -245,7 +245,7 @@ fn collection_constant_arrays_keep_content_order_and_default_seeds() {
             ..Default::default()
         },
     ]));
-    let constants = installed_content::script_constants::parse(&[("synthetic.txt", b"states={schema={any_key=yes array=state} group={8 7} invalid={0}} tags={schema={any_key=yes array=country} group={GER AAA}}")]);
+    let constants = installed_content_core::script_constants::parse(&[("synthetic.txt", b"states={schema={any_key=yes array=state} group={8 7} invalid={0}} tags={schema={any_key=yes array=country} group={GER AAA}}")]);
     let none = BTreeSet::new();
     let names = TriggerNames::default();
     let aliases = Arc::default();

@@ -4,13 +4,11 @@
 use std::cell::OnceCell;
 use viewer_foundation::map::air_range;
 
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        AceRangeInputRow, AirWingRow, ArmyOrderRow, CountryCommandPowerRow, OrdersGroupRow,
-        RaidCountryInputRow, TaskForceRow, tables,
-    },
+use replay_data::{
+    rows::AceRangeInputRow, rows::AirWingRow, rows::ArmyOrderRow, rows::CountryCommandPowerRow,
+    rows::OrdersGroupRow, rows::RaidCountryInputRow, rows::TaskForceRow, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 use super::transport_counts::{self, Origin, RegionGeometry};
 use {

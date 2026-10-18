@@ -2,18 +2,13 @@
 //! order, stamp neighbours and add radar/occupied-state terms with saturation, preserving addition
 //! order.
 
-use installed_content::{
-    ResolvedLayers,
-    map::{MapData, ProvinceKind},
-};
+use installed_content_core::{ResolvedLayers, map::MapData, map::ProvinceKind};
 use installed_content_save::naval_history::RailwayAdjacency;
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        CountryIntelRow, Recorded, RelationLinkRow, ReservedCountryNamingRow, ZeroSubjectInputs,
-        tables,
-    },
+use replay_data::{
+    rows::CountryIntelRow, rows::Recorded, rows::RelationLinkRow, rows::ReservedCountryNamingRow,
+    rows::ZeroSubjectInputs, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -37,7 +32,7 @@ impl FogContent {
     pub fn load(
         layers: &ResolvedLayers,
         map: &MapData,
-        defines: &installed_content::defines::Defines,
+        defines: &installed_content_core::defines::Defines,
     ) -> io::Result<Self> {
         Ok(Self {
             topology: Topology::read(layers, map)?,
@@ -106,7 +101,7 @@ pub struct Defines {
 }
 
 impl Defines {
-    pub fn load(defines: &installed_content::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
         let four = |name: &str| -> io::Result<[i64; 4]> {
             defines
                 .fixed5_array("NIntel", name)?
@@ -322,7 +317,7 @@ fn link(links: &BTreeMap<u32, u32>, raw: u32, what: &'static str) -> Result<u32,
     links.get(&raw).copied().ok_or(what)
 }
 
-fn complete<'a, T: replay::rows::TableSchema>(
+fn complete<'a, T: replay_data::rows::TableSchema>(
     frame: &'a DecodedFrame,
     name: &'static str,
 ) -> Result<&'a [T::Row], &'static str> {
@@ -743,8 +738,12 @@ fn map_intel_subject(
 ) -> Result<bool, &'static str> {
     let parties = match (subject.relation_type, subject.parties) {
         (None, None) => return Ok(false),
-        (Some(kind), None) if kind != engine::csubject_relation::TYPE_VALUE => return Ok(false),
-        (Some(kind), Some(parties)) if kind == engine::csubject_relation::TYPE_VALUE => parties,
+        (Some(kind), None) if kind != engine_native::csubject_relation::TYPE_VALUE => {
+            return Ok(false);
+        }
+        (Some(kind), Some(parties)) if kind == engine_native::csubject_relation::TYPE_VALUE => {
+            parties
+        }
         _ => return Err("visibility subject has inconsistent native branches"),
     };
     let matches = |party: Option<u32>| {
@@ -887,7 +886,7 @@ fn forward_visibility_shared(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
     owner: u32,
-    inputs: &Recorded<Option<replay::rows::ReverseZeroVisibilityInputs>>,
+    inputs: &Recorded<Option<replay_data::rows::ReverseZeroVisibilityInputs>>,
     military: bool,
 ) -> Result<bool, &'static str> {
     let cell = match inputs {
@@ -1414,13 +1413,12 @@ mod reverse_zero_tests;
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{
-            CountryRow, DivisionRow, FactionMemberRow, ProvinceRow, RadarCoverageRow,
-            SimulationFeatureRow, StateRow, StateVisibilityRow, TableId, TableRows, WarRelationRow,
-        },
+    use replay_data::{
+        rows::CountryRow, rows::DivisionRow, rows::FactionMemberRow, rows::ProvinceRow,
+        rows::RadarCoverageRow, rows::SimulationFeatureRow, rows::StateRow,
+        rows::StateVisibilityRow, rows::TableId, rows::TableRows, rows::WarRelationRow,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     /// Three countries (slots 1..=3, raw 101..=103), provinces 1..=5 with
     /// province 4 at sea; every input table complete and empty.
@@ -1478,7 +1476,7 @@ pub(crate) mod tests {
             vec![SimulationFeatureRow {
                 dlc_mask: 0x20,
                 human_ai: 0,
-                weather_suspend: replay::rows::Recorded::Value(None),
+                weather_suspend: replay_data::rows::Recorded::Value(None),
                 ..Default::default()
             }]
         );
@@ -1518,7 +1516,7 @@ pub(crate) mod tests {
         derive(frame, links, ours, content, &relations)
     }
 
-    fn set<T: replay::rows::TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
+    fn set<T: replay_data::rows::TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
         *frame.tables[T::ID.index()] = TableView::Complete(T::wrap(rows));
     }
 
@@ -1535,7 +1533,7 @@ pub(crate) mod tests {
 
     #[test]
     fn each_viewer_rebuilds_its_own_bytes_from_the_same_hour() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (frame, links, content) = fixture();
         assert_eq!(
@@ -1550,7 +1548,7 @@ pub(crate) mod tests {
 
     #[test]
     fn an_attache_shares_province_fog_one_way_but_not_unit_intel() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut frame, links, content) = fixture();
         set::<tables::RelationLinks>(
@@ -1573,7 +1571,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_war_vetoes_shared_intel_but_not_the_allied_rebuild() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut frame, links, content) = fixture();
         set::<tables::FactionMembers>(
@@ -1603,7 +1601,7 @@ pub(crate) mod tests {
 
     #[test]
     fn families_need_no_war_census_but_relations_do() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut frame, links, _) = fixture();
         set::<tables::FactionMembers>(
@@ -1631,7 +1629,7 @@ pub(crate) mod tests {
 
     #[test]
     fn reserved_faction_members_preserve_positive_families_and_unknown_links() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut frame, links, _) = fixture();
         assert!(!links.contains_key(&0));
@@ -1670,7 +1668,7 @@ pub(crate) mod tests {
 
     #[test]
     fn reveal_skip_radar_and_sea_targets_follow_the_native_order() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut frame, links, content) = fixture();
         let division = |reveal_skip| DivisionRow {
@@ -1699,7 +1697,7 @@ pub(crate) mod tests {
 
     #[test]
     fn an_occupied_owned_state_adds_its_network_term_and_absence_adds_none() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut frame, links, content) = fixture();
         set::<tables::States>(
@@ -1731,7 +1729,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_missing_input_is_named_instead_of_dropping_a_term() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut frame, links, mut content) = fixture();
         *frame.tables[TableId::RadarCoverage.index()] = TableView::Unavailable {
@@ -1748,7 +1746,7 @@ pub(crate) mod tests {
 
     #[test]
     fn cutoffs_keep_strict_thresholds_odd_tail_and_invalid_fraction() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (frame, links, content) = fixture();
         let relations = Relations::read(&frame, &links).unwrap();

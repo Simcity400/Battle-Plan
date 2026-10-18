@@ -14,10 +14,11 @@ use std::{
     io,
 };
 
-use replay::{
-    frame::DecodedFrame,
-    rows::{CharacterPortraitRow, LeaderPortraitRow, ShipModelRow, portrait_entry, tables},
+use replay_data::{
+    rows::CharacterPortraitRow, rows::LeaderPortraitRow, rows::ShipModelRow, rows::portrait_entry,
+    rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 use crate::map::tables::rows;
 
@@ -44,7 +45,7 @@ impl RecordedOrder {
     }
 
     /// Indexes the recorded occupant arrays; the first occurrence of a unit wins.
-    pub fn from_rows(provinces: &[replay::rows::ProvinceUnitOrderRow]) -> Self {
+    pub fn from_rows(provinces: &[replay_data::rows::ProvinceUnitOrderRow]) -> Self {
         let mut out = Self::default();
         for row in provinces {
             for (ordinal, unit) in row.mixed.iter().enumerate() {
@@ -139,7 +140,7 @@ pub struct Hull<'a> {
 pub fn better_hull(
     a: &Hull<'_>,
     b: &Hull<'_>,
-    equipment: Result<&installed_content::equipment::Database, &str>,
+    equipment: Result<&installed_content_core::equipment::Database, &str>,
 ) -> Result<bool, String> {
     let air = |hull: &Hull<'_>| {
         hull.model
@@ -166,7 +167,7 @@ pub fn better_hull(
 fn preferred_variant(
     a: &ShipModelRow,
     b: &ShipModelRow,
-    equipment: Result<&installed_content::equipment::Database, &str>,
+    equipment: Result<&installed_content_core::equipment::Database, &str>,
 ) -> Result<bool, String> {
     let (a, b) = (variant_packet(a)?, variant_packet(b)?);
     let definition = |index: Option<i32>| -> Result<(i32, Option<usize>), String> {
@@ -206,7 +207,7 @@ fn preferred_variant(
     if a_depth != b_depth {
         return Ok(a_depth > b_depth);
     }
-    let score = |packet: &replay::rows::HullVariantInputs| -> Result<i32, String> {
+    let score = |packet: &replay_data::rows::HullVariantInputs| -> Result<i32, String> {
         Ok(packet
             .module_count
             .ok_or("current variant module count is unreadable")?
@@ -239,7 +240,7 @@ fn preferred_variant(
             .ok_or("current variant organisation marker is unreadable")?)
 }
 
-fn variant_packet(model: &ShipModelRow) -> Result<&replay::rows::HullVariantInputs, String> {
+fn variant_packet(model: &ShipModelRow) -> Result<&replay_data::rows::HullVariantInputs, String> {
     model
         .hull_variant
         .require("ShipModels.hull_variant")?
@@ -255,7 +256,7 @@ fn variant_packet(model: &ShipModelRow) -> Result<&replay::rows::HullVariantInpu
 /// The game visits the archetype before its own effective categories. Following
 /// that order also refuses a broken/cyclic authored link before testing own bits.
 fn plane_definition(
-    equipment: &installed_content::equipment::Database,
+    equipment: &installed_content_core::equipment::Database,
     index: usize,
 ) -> Result<bool, String> {
     let mut chain = Vec::new();
@@ -275,7 +276,8 @@ fn plane_definition(
         }
     }
     Ok(chain.into_iter().rev().any(|index| {
-        equipment.category(&equipment.equipment[index]) & engine::cequipment_type::PLANE_MASK != 0
+        equipment.category(&equipment.equipment[index]) & engine_native::cequipment_type::PLANE_MASK
+            != 0
     }))
 }
 
@@ -295,7 +297,7 @@ pub enum HullIcon {
 /// the current hull only when [`better_hull`] holds.
 pub fn hull_icon<'a>(
     ships: impl IntoIterator<Item = Hull<'a>>,
-    equipment: Result<&installed_content::equipment::Database, &str>,
+    equipment: Result<&installed_content_core::equipment::Database, &str>,
 ) -> HullIcon {
     let mut best: Vec<Hull<'a>> = Vec::new();
     for ship in ships {
@@ -565,8 +567,9 @@ pub fn hq_portrait(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{
-        CharacterPortrait, HullVariantInputs, ProvinceUnitOrderRow, Recorded, ShipCounterInputs,
+    use replay_data::{
+        rows::CharacterPortrait, rows::HullVariantInputs, rows::ProvinceUnitOrderRow,
+        rows::Recorded, rows::ShipCounterInputs,
     };
 
     fn ship(
@@ -705,7 +708,7 @@ mod tests {
         }
     }
 
-    fn definition_index(database: &installed_content::equipment::Database, name: &[u8]) -> i32 {
+    fn definition_index(database: &installed_content_core::equipment::Database, name: &[u8]) -> i32 {
         database
             .equipment
             .iter()
@@ -716,7 +719,7 @@ mod tests {
 
     #[test]
     fn current_modded_parent_depth_resolves_equal_strength_before_later_fields() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let content = crate::map::test_support::equipment_from_documents(&[br"
             equipments = {
@@ -752,7 +755,7 @@ mod tests {
 
     #[test]
     fn current_raw_score_wraps_and_equal_scores_use_the_signed_marker() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let content = crate::map::test_support::equipment_from_documents(&[br"
             equipments = { mod_root = { is_archetype = yes type = destroyer } }
@@ -816,7 +819,7 @@ mod tests {
 
     #[test]
     fn left_recursive_plane_classification_uses_unsigned_versions_without_marker_fallthrough() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let content = crate::map::test_support::equipment_from_documents(&[br"
             equipments = {
@@ -919,7 +922,7 @@ mod tests {
             organisation_marker: Some(-5),
             ..null
         };
-        let mut incomplete = installed_content::equipment::Database::default();
+        let mut incomplete = installed_content_core::equipment::Database::default();
         incomplete.lost = Some("fixture definition gap".into());
         for equipment in [Err("absent content"), Ok(&incomplete)] {
             assert_eq!(
@@ -962,7 +965,7 @@ mod tests {
 
     #[test]
     fn null_and_real_definitions_keep_depth_and_left_plane_precedence() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let content = crate::map::test_support::equipment_from_documents(&[br"
             equipments = {

@@ -9,11 +9,12 @@ use crate::map::visibility::event_shared;
 use crate::tooltip_text::localise;
 use crate::tooltip_text::state_name;
 use crate::unit_handle::Unit;
-use installed_content::unit_path::{
-    CommonClass, CommonCombat, CommonMoveText, CommonMoveWorld, CommonUnit, NativeArmyOccupant,
-    selected_transport as transport,
+use installed_content_unit_path::{
+    unit_path::CommonClass, unit_path::CommonCombat, unit_path::CommonMoveText,
+    unit_path::CommonMoveWorld, unit_path::CommonUnit, unit_path::NativeArmyOccupant,
+    unit_path::selected_transport as transport,
 };
-use replay::frame::DecodedFrame;
+use replay_frame::frame::DecodedFrame;
 
 /// Exactly one borrowed frame/request lifetime. One directed Owner per
 /// receiver admits its immutable hour context once; no carried query cache.
@@ -44,8 +45,8 @@ impl<'w, 'a> Moves<'w, 'a> {
         province: u32,
     ) -> Fact<
         Option<(
-            &'a replay::rows::RailCooldownRow,
-            &'a replay::rows::RailwaySelectionInputs,
+            &'a replay_data::rows::RailCooldownRow,
+            &'a replay_data::rows::RailwaySelectionInputs,
         )>,
     > {
         let rows = self.table::<tables::RailCooldowns>()?;
@@ -189,7 +190,7 @@ impl<'w, 'a> Moves<'w, 'a> {
                 .get(target as usize)
                 .and_then(Option::as_ref)
                 .ok_or("transport actual-zero subject cell refused")?;
-            return replay::transport_subject_access::matches(
+            return replay_derive::transport_subject_access::matches(
                 cell.subject
                     .as_ref()
                     .ok_or("transport actual-zero subject pointer refused")?,
@@ -209,7 +210,7 @@ impl<'w, 'a> Moves<'w, 'a> {
                 .require("CountryCounterInputs.forward_visibility")?
                 .as_ref()
                 .ok_or("transport forward-zero subject access refused")?;
-            return replay::transport_subject_access::matches(
+            return replay_derive::transport_subject_access::matches(
                 packet
                     .subject
                     .as_ref()
@@ -222,11 +223,11 @@ impl<'w, 'a> Moves<'w, 'a> {
         }
         let rows = self.table::<tables::RelationLinks>()?;
         let Some(packet) =
-            replay::transport_subject_access::current(rows, actual, receiver, target, hour)?
+            replay_derive::transport_subject_access::current(rows, actual, receiver, target, hour)?
         else {
             return Ok(false);
         };
-        replay::transport_subject_access::matches(
+        replay_derive::transport_subject_access::matches(
             packet
                 .subject
                 .as_ref()
@@ -405,7 +406,7 @@ impl<'w, 'a> Moves<'w, 'a> {
     pub(super) fn common_gun(
         &self,
         handle: u64,
-    ) -> Fact<&'a replay::rows::RailwayGunCounterInputRow> {
+    ) -> Fact<&'a replay_data::rows::RailwayGunCounterInputRow> {
         let rows = self.table::<tables::RailwayGunCounterInputs>()?;
         let at = rows
             .binary_search_by_key(&handle, |row| row.gun)
@@ -423,7 +424,7 @@ impl<'w, 'a> Moves<'w, 'a> {
     }
 
     /// The node recorded on the row of the area's label province.
-    fn common_area_node(&self, label: u32) -> Fact<&'a replay::rows::ControllerAreaNode> {
+    fn common_area_node(&self, label: u32) -> Fact<&'a replay_data::rows::ControllerAreaNode> {
         if label == 0 || self.common_controller_area(label)? != label {
             return Err(format!(
                 "selected area {label} is not the controller area of its label province"
@@ -569,7 +570,7 @@ impl CommonMoveWorld for Moves<'_, '_> {
     fn controller_area(&self, province: u32) -> Fact<u32> {
         self.common_controller_area(province)
     }
-    fn area_node(&self, label: u32) -> Fact<installed_content::unit_path::AreaNode> {
+    fn area_node(&self, label: u32) -> Fact<installed_content_unit_path::unit_path::AreaNode> {
         let node = self.common_area_node(label)?;
         let first_land = node
             .first_land
@@ -583,7 +584,7 @@ impl CommonMoveWorld for Moves<'_, '_> {
                 .copied()
                 .ok_or_else(|| format!("selected area representative {first} has no nonsea index"))
         });
-        Ok(installed_content::unit_path::AreaNode {
+        Ok(installed_content_unit_path::unit_path::AreaNode {
             label,
             first_land_province: first_land,
             nonsea_index,
@@ -1026,7 +1027,7 @@ impl CommonMoveWorld for Moves<'_, '_> {
 /// No warning key, country-name ladder or state-name ladder is content-guessed.
 pub struct CommonText<'a> {
     pub frame: &'a DecodedFrame,
-    pub loc: &'a installed_content::localisation::Localisation,
+    pub loc: &'a installed_content_localisation::localisation::Localisation,
     pub recorded_language: &'a str,
     pub state_keys: &'a BTreeMap<u32, Fact<String>>,
 }
@@ -1037,8 +1038,14 @@ impl CommonMoveText for CommonText<'_> {
             self.loc,
             "TRANSPORT_NOT_ENOUGH",
             &[
-                ("FREE", installed_content::localisation::Argument::Int32(available)),
-                ("NEED", installed_content::localisation::Argument::Int32(required)),
+                (
+                    "FREE",
+                    installed_content_localisation::localisation::Argument::Int32(available),
+                ),
+                (
+                    "NEED",
+                    installed_content_localisation::localisation::Argument::Int32(required),
+                ),
             ],
         )
     }
@@ -1046,7 +1053,10 @@ impl CommonMoveText for CommonText<'_> {
         localise(
             self.loc,
             "NAVAL_TRANSPORT_INTERCEPT_WARNING",
-            &[("ATTR", installed_content::localisation::Argument::Fixed5(risk))],
+            &[(
+                "ATTR",
+                installed_content_localisation::localisation::Argument::Fixed5(risk),
+            )],
         )
     }
     fn transport_description(&self, convoys: i32, icon: bool) -> Fact<String> {
@@ -1057,14 +1067,20 @@ impl CommonMoveText for CommonText<'_> {
             } else {
                 "NAVAL_TRANSPORT_MOVE_DESC"
             },
-            &[("CONVOYS", installed_content::localisation::Argument::Int32(convoys))],
+            &[(
+                "CONVOYS",
+                installed_content_localisation::localisation::Argument::Int32(convoys),
+            )],
         )
     }
     fn days(&self, key: &str, days: i32) -> Fact<String> {
         localise(
             self.loc,
             key,
-            &[("DAYS", installed_content::localisation::Argument::Int32(days))],
+            &[(
+                "DAYS",
+                installed_content_localisation::localisation::Argument::Int32(days),
+            )],
         )
     }
     fn plain(&self, key: &str) -> Fact<String> {
@@ -1098,7 +1114,10 @@ impl CommonMoveText for CommonText<'_> {
         localise(
             self.loc,
             key,
-            &[("STATE", installed_content::localisation::Argument::Text(&name))],
+            &[(
+                "STATE",
+                installed_content_localisation::localisation::Argument::Text(&name),
+            )],
         )
     }
     fn owner(&self, key: &str, raw_owner: u32) -> Fact<String> {
@@ -1114,31 +1133,47 @@ impl CommonMoveText for CommonText<'_> {
                 .map_err(|_| "selected warning owner has no CountryLinks row")?;
             rows[at].canonical_slot
         };
-        let name =
-            installed_content::country_names::CountryNames::read_selected(self.frame, self.loc, [slot])
-                .name(slot)?;
+        let name = installed_content_country_names::country_names::CountryNames::read_selected(
+            self.frame,
+            self.loc,
+            [slot],
+        )
+        .name(slot)?;
         localise(
             self.loc,
             key,
-            &[("OWNER", installed_content::localisation::Argument::Text(&name))],
+            &[(
+                "OWNER",
+                installed_content_localisation::localisation::Argument::Text(&name),
+            )],
         )
     }
-    fn rule(&self, key: &str, rule: &installed_content::adjacency_rules::AdjacencyRule) -> Fact<String> {
+    fn rule(
+        &self,
+        key: &str,
+        rule: &installed_content_core::adjacency_rules::AdjacencyRule,
+    ) -> Fact<String> {
         // Use the reached adjacency rule's stored name key for localization.
         let name = self.plain(&rule.name)?;
         localise(
             self.loc,
             key,
-            &[("RULE_NAME", installed_content::localisation::Argument::Text(&name))],
+            &[(
+                "RULE_NAME",
+                installed_content_localisation::localisation::Argument::Text(&name),
+            )],
         )
     }
     fn warning(&self, key: &str, raw: i64) -> Fact<String> {
         // Bind `VAL` including its terminating NUL with precision zero.
-        let value = installed_content::fixed5::fixed5_to_string(raw, 0);
+        let value = installed_content_core::fixed5::fixed5_to_string(raw, 0);
         localise(
             self.loc,
             key,
-            &[("VAL", installed_content::localisation::Argument::Text(&value))],
+            &[(
+                "VAL",
+                installed_content_localisation::localisation::Argument::Text(&value),
+            )],
         )
     }
 }

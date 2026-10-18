@@ -1,7 +1,7 @@
 //! Witnessed changes from the country-group run and native-date builders.
 use super as country_groups;
 use super::{HourSpan, Scan as GroupScan};
-use replay::rows::TableId;
+use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -93,12 +93,12 @@ impl Prepared {
     pub fn observe_changed(
         &mut self,
         groups: &mut GroupScan,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         changes: &crate::prepared::frame_changes::FrameChanges,
         source: &crate::Source,
         context: &crate::products::LoadContext,
     ) -> io::Result<()> {
-        let _cpu = replay::cpu::scope("groups-read", None);
+        let _cpu = replay_frame::cpu::scope("groups-read", None);
         let Some((members, wars)) = groups.advance_changed(frame, changes)? else {
             return self.quiet(frame.hour, frame.hour);
         };
@@ -141,7 +141,7 @@ impl Prepared {
     pub fn observe(
         &mut self,
         groups: &mut GroupScan,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         source: &crate::Source,
         context: &crate::products::LoadContext,
     ) -> io::Result<()> {
@@ -158,7 +158,7 @@ impl Prepared {
     fn publish_changes(
         &mut self,
         groups: &mut GroupScan,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         source: &crate::Source,
         context: &crate::products::LoadContext,
         prior_members: Vec<(u64, usize)>,

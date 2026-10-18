@@ -19,7 +19,7 @@ impl Captured {
             &recorded,
             base,
             game_state,
-            engine::walk::Buffer::for_worker(
+            engine_native::walk::Buffer::for_worker(
                 &mut self.base_resources.rows,
                 job.log.worker_growth_enabled(),
             ),
@@ -31,15 +31,15 @@ impl Captured {
             base,
             game_state,
             cbuilding_production_line::BuffersBuffer {
-                buildings: engine::walk::Buffer::for_worker(
+                buildings: engine_native::walk::Buffer::for_worker(
                     &mut self.building_construction.rows,
                     job.log.worker_growth_enabled(),
                 ),
-                railways: engine::walk::Buffer::for_worker(
+                railways: engine_native::walk::Buffer::for_worker(
                     &mut self.railway_construction.rows,
                     job.log.worker_growth_enabled(),
                 ),
-                route_provinces: engine::walk::Buffer::for_worker(
+                route_provinces: engine_native::walk::Buffer::for_worker(
                     &mut self.routes.first,
                     job.log.worker_growth_enabled(),
                 ),
@@ -106,40 +106,40 @@ impl Captured {
             base,
             game_state,
             ccountry_occupation_status::BuffersBuffer {
-                settings: engine::walk::Buffer::for_worker(
+                settings: engine_native::walk::Buffer::for_worker(
                     &mut self.settings.rows,
                     job.log.worker_growth_enabled(),
                 ),
-                laws: engine::walk::Buffer::for_worker(
+                laws: engine_native::walk::Buffer::for_worker(
                     &mut self.laws.rows,
                     job.log.worker_growth_enabled(),
                 ),
-                group_laws: engine::walk::Buffer::for_worker(
+                group_laws: engine_native::walk::Buffer::for_worker(
                     &mut self.group_laws.rows,
                     job.log.worker_growth_enabled(),
                 ),
-                garrisons: engine::walk::Buffer::for_worker(
+                garrisons: engine_native::walk::Buffer::for_worker(
                     &mut self.garrisons.rows,
                     job.log.worker_growth_enabled(),
                 ),
-                manpower: engine::walk::Buffer::for_worker(
+                manpower: engine_native::walk::Buffer::for_worker(
                     &mut self.assigned_manpower.rows,
                     job.log.worker_growth_enabled(),
                 ),
-                reserve_manpower: engine::walk::Buffer::for_worker(
+                reserve_manpower: engine_native::walk::Buffer::for_worker(
                     &mut self.reserve_manpower.rows,
                     job.log.worker_growth_enabled(),
                 ),
-                names: engine::walk::Buffer::for_worker(
+                names: engine_native::walk::Buffer::for_worker(
                     &mut self.law_bytes.first,
                     job.log.worker_growth_enabled(),
                 ),
-                equipment: engine::walk::Buffer::for_worker(
+                equipment: engine_native::walk::Buffer::for_worker(
                     &mut self.equipment.first,
                     job.log.worker_growth_enabled(),
                 ),
             },
-            engine::walk::Buffer::for_worker(
+            engine_native::walk::Buffer::for_worker(
                 &mut self.occupied.first,
                 job.log.worker_growth_enabled(),
             ),
@@ -185,7 +185,7 @@ impl Captured {
             &recorded,
             base,
             game_state,
-            engine::walk::Buffer::for_worker(
+            engine_native::walk::Buffer::for_worker(
                 &mut self.resistance.rows,
                 job.log.worker_growth_enabled(),
             ),
@@ -196,7 +196,7 @@ impl Captured {
             &recorded,
             base,
             game_state,
-            engine::walk::Buffer::for_worker(
+            engine_native::walk::Buffer::for_worker(
                 &mut self.collaboration.rows,
                 job.log.worker_growth_enabled(),
             ),
@@ -303,7 +303,7 @@ impl ConstructionRestJob {
 
     /// Prepare only observed shortage and live census demand off-thread.
     pub fn grow(&mut self) {
-        engine::allocation::advisory(|| {
+        engine_allocation::advisory(|| {
             self.log.grow();
             let target = self
                 .census
@@ -481,7 +481,7 @@ fn copy_construction_roots(
         return None;
     }
     if log.worker_growth_enabled() {
-        engine::allocation::reserve_exact(census, countries.count.saturating_sub(1) as usize)
+        engine_allocation::reserve_exact(census, countries.count.saturating_sub(1) as usize)
             .ok()?;
     }
     let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
@@ -1387,10 +1387,11 @@ fn copy_garrison_equipment(
     garrison: usize,
     required: &mut usize,
 ) {
-    use engine::{
+    use engine_native::{
         allocation_equipment_row as allocation, cequipment_type as ty,
-        cequipment_variant_pool as pool, garrison_equipment_pool,
+        cequipment_variant_pool as pool,
     };
+    use engine_occupation::garrison_equipment_pool;
     let Some(requirements) = garrison.checked_add(cstate_garrison_data::REQUIRED_EQUIPMENT) else {
         return;
     };

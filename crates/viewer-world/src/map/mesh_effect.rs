@@ -1,5 +1,6 @@
 //! Native material admission, before a tree selects record zero of its LOD.
-use installed_content::{ResolvedLayers, image::native::Decode, mesh};
+use installed_content_core::{ResolvedLayers, mesh};
+use installed_content_image::native::Decode;
 use shader_pipeline::library::Library;
 use std::{io, sync::Arc};
 

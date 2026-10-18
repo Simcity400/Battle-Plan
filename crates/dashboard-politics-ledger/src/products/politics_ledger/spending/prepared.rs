@@ -4,7 +4,7 @@ use dashboard_base::prepared::frame_changes::FrameChanges;
 use dashboard_base::prepared::prepass::Extract;
 use dashboard_base::prepared::priority::{JobPriority, Level};
 use dashboard_base::prepared::series::{self, Accumulator, Reader, Run};
-use replay::rows::RowCodec;
+use replay_data::rows::RowCodec;
 
 mod keys;
 
@@ -80,7 +80,7 @@ pub struct Prepared {
     /// The daily table allocation `current_daily_keys` were read from: an
     /// hour holding it holds the same rows.
     #[serde(skip)]
-    daily_view: Option<replay::frame::ViewIdentity>,
+    daily_view: Option<replay_frame::frame::ViewIdentity>,
     #[serde(skip)]
     daily_complete: bool,
     #[cfg(test)]
@@ -694,7 +694,7 @@ impl Prepared {
         cancelled: &AtomicBool,
         fold: &mut BlockFold,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:observe_apply");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:observe_apply");
         cancelled_request(cancelled)?;
         let content = self.content.clone();
         let Some(joined) = fold.joined else {
@@ -733,7 +733,7 @@ impl Prepared {
                     .is_some_and(|(hour, _)| *hour <= frame.hour),
             )
         {
-            let _cpu = ::replay::cpu::scope_phase("politics_ledger:observe_window");
+            let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:observe_window");
             self.scan.advance(frame.hour)?;
             self.series.advance(frame.hour)?;
             self.metadata.first.get_or_insert(frame.hour);
@@ -761,7 +761,7 @@ impl Prepared {
         changes: &FrameChanges,
         advanced: &Arc<[(u32, i32)]>,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:observe_apply");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:observe_apply");
         self.scan.advance(frame.hour)?;
         self.series.advance(frame.hour)?;
         // The hour continues the last: every held value stays observed.
@@ -779,7 +779,7 @@ impl Prepared {
     /// After a block observed with [`Self::observe_folded`]: the captures it
     /// advanced reach the last hour they did.
     pub fn end_block(&mut self) {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:observe_apply");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:observe_apply");
         self.scan.materialize_advance();
     }
 
@@ -899,7 +899,7 @@ impl Prepared {
     }
 
     fn settle_before(&mut self, newest: i32) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:settle_reconcile");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:settle_reconcile");
         while self
             .tail
             .first_key_value()
@@ -1020,7 +1020,7 @@ impl Prepared {
 
     fn publish_daily(&mut self, tag: &str, row: &LedgerDaily) -> io::Result<()> {
         let day = row.day_hour;
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:native_daily_projection");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:native_daily_projection");
         let mut values = Vec::with_capacity(26);
         values.extend(daily_values(row)?.into_iter().map(|(_, value)| value));
         let identity = (row.country, row.instance, row.epoch.clone());
@@ -1406,9 +1406,9 @@ impl Prepared {
             frame,
             content,
             &FrameChanges {
-                rows_changed: [true; replay::frame::TABLE_COUNT],
-                table_read: [false; replay::frame::TABLE_COUNT],
-                slot_read: [false; replay::frame::TABLE_COUNT],
+                rows_changed: [true; replay_data::rows::TABLE_COUNT],
+                table_read: [false; replay_data::rows::TABLE_COUNT],
+                slot_read: [false; replay_data::rows::TABLE_COUNT],
                 updates: None,
             },
             cancelled,
@@ -1422,7 +1422,7 @@ impl Prepared {
         changes: &FrameChanges,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        let cpu = ::replay::cpu::scope_phase("politics_ledger:observe_apply");
+        let cpu = ::replay_frame::cpu::scope_phase("politics_ledger:observe_apply");
         self.scan.advance(frame.hour)?;
         self.series.advance(frame.hour)?;
         if self
@@ -1506,7 +1506,8 @@ impl Prepared {
         self.scan.prune_publications(frame);
         self.settle_native(changes)?;
         self.read_daily_keys(frame, changes);
-        let cpu = ::replay::cpu::scope_phase("politics_ledger:presentation_projection_series");
+        let cpu =
+            ::replay_frame::cpu::scope_phase("politics_ledger:presentation_projection_series");
         let tags = std::mem::take(&mut self.scan.dirty);
         let mut presented = Presentations::new(&tags);
         for tag in &tags {
@@ -1888,7 +1889,7 @@ impl Prepared {
             self.folds[1] += usize::from(presented.parallel);
         }
         drop(cpu);
-        let cpu = ::replay::cpu::scope_phase("politics_ledger:parts_projection_series");
+        let cpu = ::replay_frame::cpu::scope_phase("politics_ledger:parts_projection_series");
         for tag in &tags {
             let identity = self.scan.countries[tag]
                 .coverage
@@ -1929,7 +1930,7 @@ impl Prepared {
         }
         self.check_parts(frame, changes)?;
         drop(cpu);
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:pruning");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:pruning");
         self.scan.retain_open(frame, &tags);
         for tag in &tags {
             let Some(pending) = self.open_notes.get_mut(tag) else {
@@ -1990,7 +1991,7 @@ impl Prepared {
         content: Option<&PoliticsContent>,
         changes: &FrameChanges,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:observe_apply");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:observe_apply");
         self.scan.advance_accounting(frame, content)?;
         self.publish_census(frame)?;
         self.scan.prune_publications(frame);
@@ -2005,7 +2006,7 @@ impl Prepared {
     /// accepted, and publish a census run that began since the last one
     /// published. Whether the hour starts an episode after a gap.
     fn publish_census(&mut self, frame: &DecodedFrame) -> io::Result<bool> {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:series_observe");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:series_observe");
         let census_known = frame.complete::<tables::Countries>().is_ok();
         let census_starts = self
             .scan
@@ -2041,7 +2042,7 @@ impl Prepared {
     /// Settle the open native days before the newest day the hour's power,
     /// government and daily rows publish.
     fn settle_native(&mut self, changes: &FrameChanges) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:settle_reconcile");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:settle_reconcile");
         let native_changed = [
             TableId::CountryPowerDaily,
             TableId::CountryPowerChanges,
@@ -2071,8 +2072,8 @@ impl Prepared {
     /// daily table allocation they were not read from. Continuing complete
     /// reads replace just their changed keys.
     fn read_daily_keys(&mut self, frame: &DecodedFrame, changes: &FrameChanges) {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:observe_apply");
-        let _keys_cpu = ::replay::cpu::scope_phase("politics_ledger:daily_keys");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:observe_apply");
+        let _keys_cpu = ::replay_frame::cpu::scope_phase("politics_ledger:daily_keys");
         let index = TableId::CountryPowerDaily.index();
         if !(changes.rows_changed[index] || changes.table_read[index]) {
             return;
@@ -2145,7 +2146,7 @@ impl Prepared {
     /// Keep the open parts of the captured countries only, when the hour
     /// reads its captures.
     fn check_parts(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:parts_capture_check");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:parts_capture_check");
         if (changes.rows_changed[TableId::PoliticsCaptureCoverage.index()]
             || changes.table_read[TableId::PoliticsCaptureCoverage.index()])
             && let Ok(rows) = frame.complete::<tables::PoliticsCaptureCoverage>()
@@ -2200,13 +2201,13 @@ impl Prepared {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        let cpu = ::replay::cpu::scope_phase("politics_ledger:pruning");
+        let cpu = ::replay_frame::cpu::scope_phase("politics_ledger:pruning");
         self.scan.materialize_clock()?;
         if let Some(frame) = self.scan.previous.clone() {
             self.scan.compact_open(&frame);
         }
         drop(cpu);
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:series_flush");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:series_flush");
         self.metadata.warnings = self
             .scan
             .warnings
@@ -2357,7 +2358,7 @@ pub struct BlockExtract {
 }
 
 /// The ledger's block extract.
-pub fn block_extract(_: replay::format::FormatVersion) -> Box<dyn Extract> {
+pub fn block_extract(_: replay_data::format::FormatVersion) -> Box<dyn Extract> {
     Box::new(BlockExtract {
         inputs: inputs::Inputs::default(),
         previous: None,
@@ -2530,7 +2531,7 @@ fn present_one(
         Some(&mut notes),
     )?;
     let payments = {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:payment_projection");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:payment_projection");
         let mut projection = Payments::new(&reply);
         reply
             .spending
@@ -2669,8 +2670,10 @@ fn present_window(
                     .name("politics ledger presentation".into())
                     .spawn_scoped(scope, move || {
                         priority.enter(Level::Normal);
-                        let _cpu =
-                            ::replay::cpu::scope("fold", Some("politics_ledger:presentation"));
+                        let _cpu = ::replay_frame::cpu::scope(
+                            "fold",
+                            Some("politics_ledger:presentation"),
+                        );
                         part.iter()
                             .map(|tag| present_one(scan, branch, tag, content, cancelled))
                             .collect::<Vec<_>>()
@@ -2989,7 +2992,7 @@ pub(super) fn checkpoint_frame(hour: i32, rows: Vec<TableRows>) -> io::Result<Ve
         hour,
         metrics: Default::default(),
         tables: std::array::from_fn(|_| {
-            replay::frame::TableView::Unavailable {
+            replay_frame::frame::TableView::Unavailable {
                 reason: "Unused ledger continuation input".into(),
             }
             .into()
@@ -2997,7 +3000,7 @@ pub(super) fn checkpoint_frame(hour: i32, rows: Vec<TableRows>) -> io::Result<Ve
     };
     for rows in rows {
         let table = rows.table();
-        frame.tables[table.index()] = replay::frame::TableView::Complete(rows).into();
+        frame.tables[table.index()] = replay_frame::frame::TableView::Complete(rows).into();
     }
     let mut bytes = Vec::new();
     frame.encode_checkpoint(&mut bytes)?;
@@ -3005,7 +3008,7 @@ pub(super) fn checkpoint_frame(hour: i32, rows: Vec<TableRows>) -> io::Result<Ve
 }
 
 pub(super) fn read_checkpoint(bytes: &[u8]) -> io::Result<DecodedFrame> {
-    let mut decoder = replay::codec::Decoder::new(bytes);
+    let mut decoder = replay_data::codec::Decoder::new(bytes);
     let frame = DecodedFrame::decode_checkpoint(&mut decoder)?;
     decoder.finish()?;
     Ok(frame)

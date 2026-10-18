@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::scripted_text::{EventObject, EventScope};
-use installed_content::tokens::Token;
+use installed_content_core::tokens::Token;
 
 #[cfg(test)]
 mod tests;
@@ -148,7 +148,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(character) = self.char_scientist(scopes)? else {
             return Ok(String::new());
         };
-        let days = installed_content::fixed5::decimal_i32(item.value.scalar().unwrap_or_default());
+        let days = installed_content_core::fixed5::decimal_i32(item.value.scalar().unwrap_or_default());
         let at = {
             let mut graph = self.graph.borrow_mut();
             let at = graph.scopes.len();
@@ -175,7 +175,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<String, String> {
         // Look up the held token ID. Quoted and numeric values
         // have the lexer's reserved identities.
-        if item.kind != installed_content::parser::native::Kind::Bare || item.number() {
+        if item.kind != installed_content_core::parser::native::Kind::Bare || item.number() {
             return Ok(String::new());
         }
         let token = item.value.c_str().map_err(|why| why.to_string())?;

@@ -32,7 +32,7 @@ fn faction_frame() -> DecodedFrame {
 
 #[test]
 fn faction_leader_raw_zero_is_empty_at_the_context_mask_in_flat_and_graph_paths() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = faction_frame();
     *frame.tables[TableId::WarRelations.index()] = TableView::Unavailable {
@@ -70,7 +70,7 @@ fn faction_leader_raw_zero_is_empty_at_the_context_mask_in_flat_and_graph_paths(
         ])));
         let evaluator = evaluator.with_event_scopes(graph.clone());
         let caller = evaluator.event_scopes(0).unwrap();
-        let parsed = installed_content::scope::parse("faction_leader", false, world.recorded());
+        let parsed = installed_content_core::scope::parse("faction_leader", false, world.recorded());
         let entered = evaluator.enter_scope(&parsed, caller).unwrap().unwrap();
         assert_eq!(entered.this, Scope::State(NULL_STATE));
         assert_eq!(entered.root, Scope::Country(2));
@@ -88,7 +88,7 @@ fn faction_leader_raw_zero_is_empty_at_the_context_mask_in_flat_and_graph_paths(
 
 #[test]
 fn only_known_clearing_carriers_use_the_reserved_faction_fallback() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = faction_frame();
     if let TableView::Complete(TableRows::FactionMembers(rows)) =
@@ -98,7 +98,7 @@ fn only_known_clearing_carriers_use_the_reserved_faction_fallback() {
     }
     with_world(&frame, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
-        let parsed = installed_content::scope::parse("faction_leader", false, world.recorded());
+        let parsed = installed_content_core::scope::parse("faction_leader", false, world.recorded());
         for this in [
             Scope::State(NULL_STATE),
             Scope::State(64),
@@ -132,7 +132,7 @@ fn only_known_clearing_carriers_use_the_reserved_faction_fallback() {
         );
         let mut unknown = Scopes::of(Scope::Country(1));
         unknown.unknown.prev = true;
-        let parsed = installed_content::scope::parse("PREV.faction_leader", false, world.recorded());
+        let parsed = installed_content_core::scope::parse("PREV.faction_leader", false, world.recorded());
         assert!(evaluator.enter_scope(&parsed, unknown).is_err());
     });
 
@@ -141,7 +141,7 @@ fn only_known_clearing_carriers_use_the_reserved_faction_fallback() {
     };
     with_world(&frame, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
-        let parsed = installed_content::scope::parse("faction_leader", false, world.recorded());
+        let parsed = installed_content_core::scope::parse("faction_leader", false, world.recorded());
         assert_eq!(
             evaluator.enter(&parsed, Scopes::of(Scope::Country(1))),
             Ok(Some(Scope::Country(2)))
@@ -157,7 +157,7 @@ fn only_known_clearing_carriers_use_the_reserved_faction_fallback() {
 
 #[test]
 fn faction_leader_predicate_does_not_compare_raw_zero_by_canonical_identity() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = faction_frame();
     // Synthetic positive event-word alias to actual canonical0; its carrier

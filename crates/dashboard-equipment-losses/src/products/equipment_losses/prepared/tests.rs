@@ -1,8 +1,10 @@
 use super::*;
 use dashboard_base::prepared::series::tests::Fixture;
 use dashboard_core::test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag};
-use replay::frame::TableView;
-use replay::rows::{EquipmentDestructionRow, SunkShipEntry, SunkShipsRow, TableRows};
+use replay_data::{
+    rows::EquipmentDestructionRow, rows::SunkShipEntry, rows::SunkShipsRow, rows::TableRows,
+};
+use replay_frame::frame::TableView;
 
 #[test]
 fn prepared_loss_contract_names_land_coverage_separately_from_the_prefix() {
@@ -106,7 +108,7 @@ fn lend_lease_deletion_visits_only_current_owners_and_resume_rebuilds_the_join()
     use dashboard_base::prepared::observer_tests::{
         Work, assert_flat, assert_reply_parity, scaled_work,
     };
-    use replay::rows::LendLeaseEquipmentRow;
+    use replay_data::rows::LendLeaseEquipmentRow;
     let measured = scaled_work(10, |history| {
         let mut seed = frame(10, history as u32, 0, false);
         empty_drain(&mut seed);
@@ -295,7 +297,7 @@ fn one_changed_loss_leaf_does_not_walk_the_countrys_retained_design_keys() {
 fn deferred_loss_values_and_exchange_read_dates_match_oracle_through_commits_resume_append_and_gap()
 -> io::Result<()> {
     use dashboard_base::prepared::observer_tests::assert_reply_parity;
-    use replay::rows::LendLeaseEquipmentRow;
+    use replay_data::rows::LendLeaseEquipmentRow;
     let mut first = frame(10, 2, 100_001, false);
     *first.tables[TableId::LendLeaseEquipment.index()] =
         TableView::Complete(TableRows::LendLeaseEquipment(vec![LendLeaseEquipmentRow {
@@ -393,7 +395,7 @@ fn deferred_loss_values_and_exchange_read_dates_match_oracle_through_commits_res
 fn changed_carried_variant_operands_wait_for_the_first_real_read_including_after_resume()
 -> io::Result<()> {
     let hour = (10..100)
-        .find(|hour| !replay::cadence::is_refresh(TableId::VariantDefinitions, hour + 1))
+        .find(|hour| !replay_data::cadence::is_refresh(TableId::VariantDefinitions, hour + 1))
         .unwrap();
     let first = dashboard_core::test_fixtures::named_frame(hour, Some(b"mod old name"));
     let mut carried = first.clone();
@@ -441,7 +443,7 @@ fn changed_carried_variant_operands_wait_for_the_first_real_read_including_after
 #[test]
 fn cancelling_log_deltas_keep_the_supplying_boundary_then_carry_through_publication()
 -> io::Result<()> {
-    use replay::rows::{CombatLogEquipmentRow, SliceReadRow};
+    use replay_data::{rows::CombatLogEquipmentRow, rows::SliceReadRow};
     let mut first = frame(10, 1, 100_001, false);
     empty_drain(&mut first);
     *first.tables[TableId::CombatLogEquipment.index()] =
@@ -1104,7 +1106,7 @@ fn retained_holders_are_retagged_while_identity_tables_are_incomplete_and_at_the
 #[test]
 fn a_combat_read_selects_only_its_owner_after_other_owners_rows_are_pruned() -> io::Result<()> {
     use dashboard_base::prepared::observer_tests::{Work, assert_flat, scaled_work};
-    use replay::rows::{CombatLogEquipmentRow, SliceReadRow};
+    use replay_data::{rows::CombatLogEquipmentRow, rows::SliceReadRow};
     let measured = scaled_work(10, |history| {
         let mut first = frame(10, 2, 0, false);
         empty_drain(&mut first);
@@ -1287,10 +1289,8 @@ fn amount_only_drains_keep_their_owner_join_and_serialize_no_unchanged_read_key(
 #[test]
 fn combat_read_date_deltas_keep_all_prepared_bytes_and_future_dates() -> io::Result<()> {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use replay::{
-        frame::{FrameDecoder, FrameEncoder},
-        rows::SliceReadRow,
-    };
+    use replay_data::rows::SliceReadRow;
+    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
     let mut first = frame(10, 24, 0, false);
     empty_drain(&mut first);
     let base: Vec<_> = (0..24)
@@ -1374,7 +1374,7 @@ fn combat_read_date_deltas_keep_all_prepared_bytes_and_future_dates() -> io::Res
 #[test]
 fn country_rename_between_variant_reads_survives_balance_only_deltas() -> io::Result<()> {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use replay::frame::{FrameDecoder, FrameEncoder};
+    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
     let mut input = dashboard_core::test_fixtures::named_frame(117, Some(b"mod design"));
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *input.tables[TableId::Countries.index()]

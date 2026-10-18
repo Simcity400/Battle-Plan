@@ -19,10 +19,8 @@
 
 use std::io;
 
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{TableSchema, tables},
-};
+use replay_data::{rows::TableSchema, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 use super::perspective::Resolution;
 
@@ -83,22 +81,22 @@ impl Limitations {
     }
 
     pub fn note_trains(&mut self, frame: &DecodedFrame) {
-        self.note::<replay::rows::tables::ProvinceSupply>(
+        self.note::<replay_data::rows::tables::ProvinceSupply>(
             frame,
             "railway supply-source spurs and port anchors unavailable",
         );
-        self.note::<replay::rows::tables::RailEdges>(
+        self.note::<replay_data::rows::tables::RailEdges>(
             frame,
             "railway strips, bridges and train routes unavailable",
         );
-        self.note::<replay::rows::tables::RailCooldowns>(frame, "train routes unavailable");
-        self.note::<replay::rows::tables::SupplyNodes>(frame, "supply trains are hidden: node weights and selected parent routes are unavailable; no shortest-path substitute is used");
-        self.note::<replay::rows::tables::TrainInventory>(frame, "supply trains are hidden: allocated variants, fleet cap and controller access are unavailable");
-        self.note::<replay::rows::tables::VariantDefinitions>(
+        self.note::<replay_data::rows::tables::RailCooldowns>(frame, "train routes unavailable");
+        self.note::<replay_data::rows::tables::SupplyNodes>(frame, "supply trains are hidden: node weights and selected parent routes are unavailable; no shortest-path substitute is used");
+        self.note::<replay_data::rows::tables::TrainInventory>(frame, "supply trains are hidden: allocated variants, fleet cap and controller access are unavailable");
+        self.note::<replay_data::rows::tables::VariantDefinitions>(
             frame,
             "supply trains are hidden: allocated variant model keys are unavailable",
         );
-        self.note::<replay::rows::tables::LexicalTokens>(
+        self.note::<replay_data::rows::tables::LexicalTokens>(
             frame,
             "a supply train whose equipment type token is among the missing rows draws no consist",
         );
@@ -694,8 +692,8 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
             .iter()
             .find(|row| row.id == 0)
             .map(|row| &row.display);
-        if !matches!(display, Some(replay::rows::Recorded::Value(Some(_)))) {
-            let reason = if matches!(display, Some(replay::rows::Recorded::NotRecorded)) {
+        if !matches!(display, Some(replay_data::rows::Recorded::Value(Some(_)))) {
+            let reason = if matches!(display, Some(replay_data::rows::Recorded::NotRecorded)) {
                 "not recorded"
             } else {
                 "unavailable"
@@ -719,11 +717,9 @@ fn invalid(message: impl Into<String>) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::TableRows;
-    use replay::{
-        frame::Metrics,
-        rows::{PoliticalPartyRow, ProvinceRow, TableId},
-    };
+    use replay_data::rows::TableRows;
+    use replay_data::{rows::PoliticalPartyRow, rows::ProvinceRow, rows::TableId};
+    use replay_frame::frame::Metrics;
 
     /// A frame whose every table is unavailable, so a test only has to fill in
     /// the ones it cares about.
@@ -976,7 +972,7 @@ mod tests {
 
     #[test]
     fn unreadable_template_model_inputs_are_counted_in_their_own_line() {
-        use replay::rows::DivisionTemplateIconRow;
+        use replay_data::rows::DivisionTemplateIconRow;
         let mut whole = frame();
         for table in TableId::ALL {
             *whole.tables[table.index()] = TableView::Complete(TableRows::empty(table));

@@ -1,7 +1,7 @@
 use super::*;
 use crate::test_fixtures::{named_frame, slot_hour};
-use replay::frame::TableView;
-use replay::rows::{CountryRow, TableRows};
+use replay_data::{rows::CountryRow, rows::TableRows};
+use replay_frame::frame::TableView;
 
 #[test]
 fn variant_reads_keep_used_spellings_without_holding_the_dictionary_baseline() {
@@ -64,8 +64,8 @@ fn variant_reads_keep_used_spellings_without_holding_the_dictionary_baseline() {
 #[test]
 fn variant_snapshot_spellings_and_comparisons_follow_only_current_tokens() {
     use crate::prepared::frame_changes::FrameChangeTracker;
-    use replay::frame::{FrameDecoder, FrameEncoder};
-    let format = replay::format::FormatVersion::CURRENT;
+    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
+    let format = replay_data::format::FormatVersion::CURRENT;
     let mut input = named_frame(117, Some(b"mod design"));
     *input.tables[TableId::VariantUpgrades.index()] =
         TableView::Complete(TableRows::VariantUpgrades(vec![]));
@@ -141,9 +141,9 @@ fn variant_snapshot_spellings_and_comparisons_follow_only_current_tokens() {
 #[test]
 fn variant_dependencies_release_definitions_on_deletes_snapshots_and_restore() {
     use crate::prepared::frame_changes::FrameChangeTracker;
-    use replay::frame::{FrameDecoder, FrameEncoder};
-    use replay::rows::{CountryAppearanceRow, CountryLinkRow};
-    let format = replay::format::FormatVersion::CURRENT;
+    use replay_data::{rows::CountryAppearanceRow, rows::CountryLinkRow};
+    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
+    let format = replay_data::format::FormatVersion::CURRENT;
     for snapshots in [false, true] {
         let mut input = named_frame(117, Some(b"mod design"));
         *input.tables[TableId::LexicalTokens.index()] =
@@ -370,7 +370,7 @@ fn equipment_names_preserve_authored_empty_and_key_equal_titles() {
 
 #[test]
 fn equipment_reader_warnings_keep_every_named_refusal() {
-    let mut types = installed_content::equipment::Database::default();
+    let mut types = installed_content_core::equipment::Database::default();
     types.misreads = (0..9)
         .map(|entry| format!("equipment file: refused {entry}"))
         .collect();
@@ -425,7 +425,7 @@ impl Texts for Fixture {
             .map(|(_, v)| (*v).to_owned())
     }
     fn stored_text(&self, text: &str, what: &str) -> Result<String, String> {
-        let mut localisation = installed_content::localisation::Localisation::default();
+        let mut localisation = installed_content_localisation::localisation::Localisation::default();
         localisation.language = "english".into();
         crate::scripted_text::stored_text(&localisation, "english", text.as_bytes(), what)
     }
@@ -584,7 +584,7 @@ fn invalid_variant_bytes_refuse_names_and_fingerprints_without_dropping_identity
             }
         }
         let mut variants = VariantCatalogue::default();
-        variants.observe(replay::format::FormatVersion::CURRENT, &frame);
+        variants.observe(replay_data::format::FormatVersion::CURRENT, &frame);
         let raw = variants.current(20).unwrap();
         assert_eq!(raw.id, 20, "{field}");
         assert!(
@@ -614,7 +614,7 @@ fn invalid_variant_bytes_refuse_names_and_fingerprints_without_dropping_identity
 #[test]
 fn a_variant_s_design_fingerprint_follows_its_name_and_modules() {
     use crate::products::equipment::VariantCatalogue;
-    use replay::rows::VariantModuleRow;
+    use replay_data::rows::VariantModuleRow;
     let hour = slot_hour(TableId::VariantDefinitions);
     let module = |source_ordinal, slot, definition_token| VariantModuleRow {
         variant: 20,
@@ -634,7 +634,7 @@ fn a_variant_s_design_fingerprint_follows_its_name_and_modules() {
             },
         };
         let mut catalogue = VariantCatalogue::default();
-        catalogue.observe(replay::format::FormatVersion::CURRENT, &frame);
+        catalogue.observe(replay_data::format::FormatVersion::CURRENT, &frame);
         catalogue.current(20).unwrap().design.clone()
     };
     let design_a = design(b"Panzer", Some(vec![module(0, 1, 1)])).unwrap();
@@ -671,28 +671,28 @@ fn an_hour_between_reads_whose_variant_table_is_not_complete_ends_what_is_known(
     };
     let mut catalogue = VariantCatalogue::default();
     catalogue.observe(
-        replay::format::FormatVersion::CURRENT,
+        replay_data::format::FormatVersion::CURRENT,
         &named_frame(hour, Some(b"Name")),
     );
     catalogue.observe(
-        replay::format::FormatVersion::CURRENT,
+        replay_data::format::FormatVersion::CURRENT,
         &carried(hour + 1, Some(b"Name")),
     );
     assert_eq!(catalogue.current(20).unwrap().display_name, "Name");
     // The recording marked the carried table unavailable: unknown from here, and
     // still unknown once it is complete again, until the next read.
     catalogue.observe(
-        replay::format::FormatVersion::CURRENT,
+        replay_data::format::FormatVersion::CURRENT,
         &carried(hour + 2, None),
     );
     assert!(catalogue.current(20).is_none());
     catalogue.observe(
-        replay::format::FormatVersion::CURRENT,
+        replay_data::format::FormatVersion::CURRENT,
         &carried(hour + 3, Some(b"Name")),
     );
     assert!(catalogue.current(20).is_none());
     catalogue.observe(
-        replay::format::FormatVersion::CURRENT,
+        replay_data::format::FormatVersion::CURRENT,
         &named_frame(hour + 4, Some(b"Renamed")),
     );
     assert_eq!(catalogue.current(20).unwrap().display_name, "Renamed");
@@ -706,9 +706,9 @@ fn an_hour_between_reads_whose_variant_table_is_not_complete_ends_what_is_known(
 
 fn catalogue_changes_carry_unchanged_operands(count: u32) {
     use crate::prepared::frame_changes::FrameChangeTracker;
-    use replay::frame::{FrameDecoder, FrameEncoder};
-    use replay::rows::CountryLinkRow;
-    let format = replay::format::FormatVersion::CURRENT;
+    use replay_data::rows::CountryLinkRow;
+    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
+    let format = replay_data::format::FormatVersion::CURRENT;
     let mut input = named_frame(slot_hour(TableId::VariantDefinitions), Some(b"mod design"));
     *input.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
         (1..=count)
@@ -905,16 +905,17 @@ fn variant_weak_country_identity_cannot_clear_pending_invalidation() {
             }
             _ => {}
         }
-        let changes = FrameChanges::alone(&intervening, replay::format::FormatVersion::CURRENT);
+        let changes =
+            FrameChanges::alone(&intervening, replay_data::format::FormatVersion::CURRENT);
         reads.carry_keys(&intervening, &changes);
         // Even returning to the original live allocation cannot erase the
         // intervening invalidation. Only the full key comparison can confirm it.
         let mut restored = first.clone();
         restored.hour = intervening.hour + 1;
         let changes = FrameChanges {
-            rows_changed: [false; replay::frame::TABLE_COUNT],
-            table_read: [false; replay::frame::TABLE_COUNT],
-            slot_read: [false; replay::frame::TABLE_COUNT],
+            rows_changed: [false; replay_data::rows::TABLE_COUNT],
+            table_read: [false; replay_data::rows::TABLE_COUNT],
+            slot_read: [false; replay_data::rows::TABLE_COUNT],
             updates: None,
         };
         reads.carry_keys(&restored, &changes);
@@ -931,7 +932,7 @@ fn variant_weak_country_identity_cannot_clear_pending_invalidation() {
 #[test]
 fn variant_span_advance_requires_a_full_country_comparison_at_the_next_read() {
     use crate::prepared::frame_changes::FrameChanges;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let mut input = named_frame(117, Some(b"mod design"));
     input.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
     let mut catalogue = VariantCatalogue::default();
@@ -940,9 +941,9 @@ fn variant_span_advance_requires_a_full_country_comparison_at_the_next_read() {
     catalogue.advance(140);
     input.hour = 141;
     let mut changes = FrameChanges {
-        rows_changed: [false; replay::frame::TABLE_COUNT],
-        table_read: [false; replay::frame::TABLE_COUNT],
-        slot_read: [false; replay::frame::TABLE_COUNT],
+        rows_changed: [false; replay_data::rows::TABLE_COUNT],
+        table_read: [false; replay_data::rows::TABLE_COUNT],
+        slot_read: [false; replay_data::rows::TABLE_COUNT],
         updates: None,
     };
     changes.slot_read[TableId::VariantDefinitions.index()] = true;
@@ -961,9 +962,9 @@ fn variant_span_advance_requires_a_full_country_comparison_at_the_next_read() {
 
 fn pending_variant_operands(count: u32) {
     use crate::prepared::frame_changes::FrameChangeTracker;
-    use replay::frame::{FrameDecoder, FrameEncoder};
-    use replay::rows::{CountryAppearanceRow, CountryLinkRow};
-    let format = replay::format::FormatVersion::CURRENT;
+    use replay_data::{rows::CountryAppearanceRow, rows::CountryLinkRow};
+    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
+    let format = replay_data::format::FormatVersion::CURRENT;
     let mut input = named_frame(117, Some(b"mod design"));
     *input.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
         (1..=count)

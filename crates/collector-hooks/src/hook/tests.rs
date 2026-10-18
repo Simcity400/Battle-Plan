@@ -157,10 +157,10 @@ fn owned_family_restores_after_capture_stop_without_clearing_it() {
         })
         .collect();
     assert_eq!(Hook::set_family_enabled(&mut hooks, true), Ok(true));
-    engine::allocation::set_stop_hook(Some(|| true));
-    assert!(engine::allocation::capture_stopped());
+    engine_allocation::set_stop_hook(Some(|| true));
+    assert!(engine_allocation::capture_stopped());
     assert_eq!(
-        engine::allocation::vec::<u8>(1).unwrap_err().kind(),
+        engine_allocation::vec::<u8>(1).unwrap_err().kind(),
         io::ErrorKind::OutOfMemory
     );
     assert!(
@@ -180,7 +180,7 @@ fn owned_family_restores_after_capture_stop_without_clearing_it() {
     assert_eq!(Hook::set_enabled_batch(&mut family, false), Ok(true));
     drop(family);
     assert!(
-        engine::allocation::capture_stopped(),
+        engine_allocation::capture_stopped(),
         "restore must not clear the terminal gate"
     );
     assert!(hooks.iter().all(|hook| !hook.is_enabled()));

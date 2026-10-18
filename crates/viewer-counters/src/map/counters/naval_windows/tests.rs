@@ -51,7 +51,7 @@ fn fixture() -> Fixture {
 
 #[test]
 fn naval_marker_hovers_cover_progress_and_visible_hq_frame_is_clickable() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = GUI.replacen(
         r#"buttonType = { name = "bg_btn" quadTextureSprite = "GFX_bg" }"#,
@@ -158,7 +158,7 @@ fn sea_plate(local: [i32; 2], count: usize, screen: [i32; 2]) -> land::AtSeaPlat
 
 #[test]
 fn at_sea_movement_keeps_the_viewport_parent_and_local_position() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = GUI.replacen(
         r#"name = "unit_counter_navy" size = { width = 20 height = 10 }"#,
@@ -218,7 +218,7 @@ fn at_sea_movement_keeps_the_viewport_parent_and_local_position() {
 
 #[test]
 fn at_sea_movement_follows_hidden_column_and_visible_append_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = GUI.replacen(
         r#"name = "unit_counter_navy" size = { width = 20 height = 10 }"#,
@@ -254,7 +254,7 @@ fn at_sea_movement_follows_hidden_column_and_visible_append_order() {
 
 #[test]
 fn at_sea_movement_places_a_returning_item_from_the_columns_previous_count() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     let native = view.native.clone();
@@ -620,7 +620,7 @@ fn gap(why: &'static str) -> Update {
 /// items when that fade ends.
 #[test]
 fn a_combat_and_a_base_of_one_slot_number_keep_their_own_grids() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     let base = view.base(1);
@@ -664,7 +664,7 @@ fn a_combat_and_a_base_of_one_slot_number_keep_their_own_grids() {
 /// the first affected frame, with a named reason.
 #[test]
 fn a_refused_port_item_keeps_its_slot_and_draws_nothing() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     let base = view.base(1);
@@ -707,7 +707,7 @@ fn a_refused_port_item_keeps_its_slot_and_draws_nothing() {
 /// wrote.
 #[test]
 fn refused_combat_tiles_and_convoy_additions_keep_their_slots_and_draw_nothing() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     let combat = view.combat((4, 9));
@@ -752,7 +752,7 @@ fn refused_combat_tiles_and_convoy_additions_keep_their_slots_and_draw_nothing()
 /// next rotation, which writes both bars again, draws it.
 #[test]
 fn a_refused_combat_update_withholds_the_icon_until_a_rotation() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     let combat = view.combat((4, 9));
@@ -782,7 +782,7 @@ fn a_refused_combat_update_withholds_the_icon_until_a_rotation() {
 /// fade and tick their retained items without drawing.
 #[test]
 fn an_erased_icon_draws_nothing_while_its_hide_fade_runs() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     let base = view.base(1);
@@ -846,7 +846,7 @@ fn an_erased_icon_draws_nothing_while_its_hide_fade_runs() {
 /// order would hide the item before advancing its clock and lose the frame.
 #[test]
 fn an_item_hidden_by_its_icons_ended_fade_keeps_that_frames_clock() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     // Three frames of 0.125 s: the loop is 0.375 s.
@@ -894,7 +894,7 @@ fn an_item_hidden_by_its_icons_ended_fade_keeps_that_frames_clock() {
 /// Refuse the affected item by name while keeping its pooled history.
 #[test]
 fn a_hanging_frame_animation_is_counted_where_its_item_draws() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     view.fixture.animated.insert(b"GFX_hull".to_vec(), 0.01);
@@ -918,7 +918,7 @@ fn a_hanging_frame_animation_is_counted_where_its_item_draws() {
 /// refuses the dependent update.
 #[test]
 fn items_appended_while_the_grid_read_is_refused_draw_nothing_until_it_is_read() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     let base = view.base(1);
@@ -954,7 +954,7 @@ fn items_appended_while_the_grid_read_is_refused_draw_nothing_until_it_is_read()
 /// an item's and a combat icon's alike (a rotation included).
 #[test]
 fn a_call_that_does_not_apply_withholds_the_window_until_it_is_built_again() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     let combat = view.combat((4, 9));
@@ -981,7 +981,7 @@ fn a_call_that_does_not_apply_withholds_the_window_until_it_is_built_again() {
 /// ([`CounterReport::warnings`]).
 #[test]
 fn a_refused_base_window_counts_its_port_items() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     let base = view.base(1);
@@ -1015,7 +1015,7 @@ fn a_refused_base_window_counts_its_port_items() {
 /// decided rotation writes it again; an HQ-only update in between does not.
 #[test]
 fn an_omitted_icon_is_withheld_until_a_decided_rotation() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     let owner = (4, 9);
@@ -1110,7 +1110,7 @@ fn an_omitted_icon_is_withheld_until_a_decided_rotation() {
 /// places, leaves [`gui_windows::FRAME_BTN`] unknown rather than keeping the old frame.
 #[test]
 fn an_undecided_hq_frame_withholds_the_icon_until_it_is_decided() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     let owner = (4, 9);
@@ -1293,7 +1293,7 @@ fn supply_flotilla(
 /// repairs the withheld state.
 #[test]
 fn a_refused_update_makes_its_known_writes_and_waits_only_for_its_unknown_part() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use viewer_foundation::map::counter_inputs::NavalSupply;
     let mut shipped = Synthetic::new();
@@ -1332,7 +1332,7 @@ fn a_refused_update_makes_its_known_writes_and_waits_only_for_its_unknown_part()
 /// definition is a proven no-op and does not replace it.
 #[test]
 fn an_undecidable_hull_withholds_the_window_until_a_hull_is_written() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use counter_order::HullIcon;
     let mut shipped = Synthetic::new();
@@ -1379,7 +1379,7 @@ fn an_undecidable_hull_withholds_the_window_until_a_hull_is_written() {
 /// clock-dependent state reached by the lifecycle.
 #[test]
 fn the_windows_run_on_the_presentation_clock_they_are_given() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     view.fixture.animated.insert(b"GFX_hull".to_vec(), 0.0625);
@@ -1435,7 +1435,7 @@ fn the_windows_run_on_the_presentation_clock_they_are_given() {
 /// engaged rotation writes and repairs it.
 #[test]
 fn only_an_engaged_rotation_repairs_the_background_frame() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     let owner = (4, 9);
@@ -1475,7 +1475,7 @@ fn only_an_engaged_rotation_repairs_the_background_frame() {
 /// full-intel update writes its supply.
 #[test]
 fn an_omitted_icon_leaves_its_items_unknown_until_they_are_written() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use viewer_foundation::map::counter_inputs::NavalSupply;
     let mut shipped = Synthetic::new();
@@ -1505,7 +1505,7 @@ fn an_omitted_icon_leaves_its_items_unknown_until_they_are_written() {
 /// (partial-intel) update keeps it withheld, and only a written ratio repairs it.
 #[test]
 fn an_unrecorded_supply_ratio_is_repaired_only_by_a_written_one() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use viewer_foundation::map::counter_inputs::NavalSupply;
     let mut shipped = Synthetic::new();
@@ -1535,7 +1535,7 @@ fn an_unrecorded_supply_ratio_is_repaired_only_by_a_written_one() {
 /// omitted update, waits for a full-intel write of its supply.
 #[test]
 fn an_item_first_built_after_undecided_grids_waits_for_its_kept_parts() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use viewer_foundation::map::counter_inputs::NavalSupply;
     let mut shipped = Synthetic::new();
@@ -1569,7 +1569,7 @@ fn an_item_first_built_after_undecided_grids_waits_for_its_kept_parts() {
 /// Unavailable selection retains the old drawable and its named refusal.
 #[test]
 fn only_a_defined_carrier_sprite_repairs_the_carrier_drawable() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut shipped = Synthetic::new();
     let settings = CounterSettings::default();
@@ -1611,7 +1611,7 @@ fn only_a_defined_carrier_sprite_repairs_the_carrier_drawable() {
 /// every other part is written; hidden they draw, and only a defined sprite repairs them.
 #[test]
 fn an_omitted_icon_leaves_its_items_carrier_drawable_unknown() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut shipped = Synthetic::new();
     let settings = CounterSettings::default();
@@ -1644,7 +1644,7 @@ fn an_omitted_icon_leaves_its_items_carrier_drawable_unknown() {
 /// the affected items until a later update repairs their unknown parts.
 #[test]
 fn an_undecided_port_roster_leaves_its_items_unknown_until_they_are_written() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     let base = view.base(1);
@@ -1699,7 +1699,7 @@ fn an_undecided_port_roster_leaves_its_items_unknown_until_they_are_written() {
 /// it withheld, and a defined hull draws it.
 #[test]
 fn a_skipped_counter_at_sea_waits_for_its_kept_parts() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use counter_order::HullIcon;
     let mut shipped = Synthetic::new();
@@ -1728,7 +1728,7 @@ fn a_skipped_counter_at_sea_waits_for_its_kept_parts() {
 /// update may keep, while a complete census that lacks its source destroys it.
 #[test]
 fn a_counter_an_incomplete_census_lacks_is_kept_unknown() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut shipped = Synthetic::new();
     let flotilla = gui_windows::tests::at_sea_flotilla(false);
@@ -1761,7 +1761,7 @@ fn a_counter_an_incomplete_census_lacks_is_kept_unknown() {
 /// census, the absent combat is empty.
 #[test]
 fn a_combat_an_incomplete_census_lacks_keeps_its_icon_omitted() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     let owner = (4, 9);
@@ -1809,7 +1809,7 @@ fn a_combat_an_incomplete_census_lacks_keeps_its_icon_omitted() {
 /// an owner that keeps its slot, and any allocation before the divergence, are not.
 #[test]
 fn a_slot_allocated_after_a_divergence_is_unknown() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     let native = view.native.clone();
@@ -1881,7 +1881,7 @@ fn a_slot_allocated_after_a_divergence_is_unknown() {
 /// the template's longest; a template with no transition is left alone.
 #[test]
 fn a_window_whose_tick_fails_has_unknown_transitions() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     let combat = view.combat((1, 9));
@@ -1930,7 +1930,7 @@ fn a_window_whose_tick_fails_has_unknown_transitions() {
 /// is counted as not from history.
 #[test]
 fn the_pools_frame_wins_and_the_index_establishes_one_it_lacks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use viewer_foundation::icon_frames::{CARRIED, Kept, NAVAL_NO_HISTORY};
     let view = View::with_gui(&GUI.replacen(
@@ -2030,7 +2030,7 @@ fn the_pools_frame_wins_and_the_index_establishes_one_it_lacks() {
 /// template's longest, and lifting it leaves the update's own refusal standing.
 #[test]
 fn a_skipped_counter_at_sea_has_unknown_transitions() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // `unit_counter_navy` with a 0.1 s fade.
     let gui = GUI.replacen(
@@ -2111,7 +2111,7 @@ fn combat_pass(owners: &[CombatOwner]) -> CombatPass {
 /// clears the pass flag); a clean province off screen is not updated at all.
 #[test]
 fn an_off_screen_province_keeps_its_icon_until_its_update() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     let window = view.native.clone();
@@ -2151,7 +2151,7 @@ fn an_off_screen_province_keeps_its_icon_until_its_update() {
 /// clean, the next owner in view takes the slot after the last one taken, as the game's.
 #[test]
 fn an_off_screen_stretch_leaves_the_round_robin_as_the_game_has_it() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::new();
     let window = view.native.clone();
@@ -2211,7 +2211,7 @@ fn an_off_screen_stretch_leaves_the_round_robin_as_the_game_has_it() {
 /// The hit target is the drawn quad.
 #[test]
 fn a_lower_right_centred_scaled_result_button_is_placed_as_the_game_places_it() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = format!(
         "{}\n{}",
@@ -2269,7 +2269,7 @@ fn a_lower_right_centred_scaled_result_button_is_placed_as_the_game_places_it() 
 /// transition for the longest.
 #[test]
 fn a_grown_item_updated_every_frame_is_known_again() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::with_gui(&GUI.replacen(
         r#"name = "unit_counter_navy" size = { width = 20 height = 10 }"#,
@@ -2297,7 +2297,7 @@ fn a_grown_item_updated_every_frame_is_known_again() {
 /// the affected items until a later update repairs their unknown parts.
 #[test]
 fn a_late_convoy_addition_inherits_the_unknown_transition() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = View::with_gui(&GUI.replacen(
         r#"name = "GFX_mapicon_tiny_unit_counter"
@@ -2328,7 +2328,7 @@ fn a_late_convoy_addition_inherits_the_unknown_transition() {
 /// even when no declared child window has a transition.
 #[test]
 fn a_drop_down_only_transition_bounds_the_wait() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let view = View::with_gui(&GUI.replacen(
         r#"iconType = { name = "type" spriteType = "GFX_hull" } }"#,
@@ -2345,7 +2345,7 @@ fn a_drop_down_only_transition_bounds_the_wait() {
 /// Every mission update first hides and flags the ideology child.
 #[test]
 fn a_definitely_hidden_ideology_repairs_an_undecided_one() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut shipped = Synthetic::new();
     let settings = CounterSettings::default();
@@ -2371,7 +2371,7 @@ fn a_definitely_hidden_ideology_repairs_an_undecided_one() {
 /// coarse update; or a mission item's unknown bars followed by hidden bars.
 #[test]
 fn a_definite_hide_repairs_an_uncertain_part() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use counter_order::HullIcon;
     let mut shipped = Synthetic::new();
@@ -2438,7 +2438,7 @@ fn a_result_presentation_counts_every_held_reference() {
 /// in its slot; a new owner allocated after divergence takes an unknown slot.
 #[test]
 fn an_incomplete_result_census_keeps_its_icons_undecided() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = format!(
         "{}\n{}",
@@ -2547,7 +2547,7 @@ fn an_incomplete_result_census_keeps_its_icons_undecided() {
 /// replacement repairs it.
 #[test]
 fn a_failed_hull_selection_restores_the_remembered_unknown_sprite() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use counter_order::HullIcon;
     let mut shipped = Synthetic::new();

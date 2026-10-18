@@ -11,12 +11,12 @@ use crate::{
     table_capture::{Arena, CaptureRows},
     table_conversion::unavailable,
 };
-use engine::allocation::{copy_vec, owned_vec};
-use engine::{Memory, ccountry, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{CountryAppearanceRow, ReservedCountryNamingRow, TableId, tables},
+use engine_allocation::{copy_vec, owned_vec};
+use engine_native::{Memory, ccountry, walk::Outcome};
+use replay_data::{
+    rows::CountryAppearanceRow, rows::ReservedCountryNamingRow, rows::TableId, rows::tables,
 };
+use replay_frame::frame::TableView;
 
 mod store;
 pub use store::{AppearanceStore, Carry};
@@ -86,7 +86,7 @@ pub struct Capacities {
     launch_states: usize,
     reverse_visibility: usize,
     launch: naval::LaunchCapacities,
-    raw: engine::raw_country_observations::Capacity,
+    raw: engine_native::raw_country_observations::Capacity,
 }
 impl Capacities {
     #[cfg(any(test, feature = "test-support"))]
@@ -96,7 +96,7 @@ impl Capacities {
             ..Default::default()
         }
     }
-    fn raw_capacity(&self) -> engine::raw_country_observations::Capacity {
+    fn raw_capacity(&self) -> engine_native::raw_country_observations::Capacity {
         let mut raw = self.raw;
         raw.links = raw.links.max(self.rows).max(self.country_array);
         // Countries reads at most two link words and one tag per physical
@@ -129,7 +129,10 @@ impl Capacities {
         crate::country_scale::raise(&mut self.naming_bytes, bytes);
     }
 
-    pub fn raise_original_tag_lists(&mut self, demand: engine::original_tag_lists::Demand) {
+    pub fn raise_original_tag_lists(
+        &mut self,
+        demand: engine_stability::original_tag_lists::Demand,
+    ) {
         crate::country_scale::raise(&mut self.original_tag_buckets, demand.buckets);
         crate::country_scale::raise(&mut self.original_tag_members, demand.members);
     }
@@ -153,20 +156,20 @@ struct Preacquired {
     ticks: Option<[u64; N]>,
 }
 pub struct Captured {
-    pub raw: engine::raw_country_observations::Journal,
+    pub raw: engine_native::raw_country_observations::Journal,
     preacquired: Option<Preacquired>,
     rows: CaptureRows<
         ccountry::AppearanceRow<
-            engine::capture_text::Owned,
-            engine::capture_text::Owned,
-            engine::capture_text::Owned,
+            engine_native::capture_text::Owned,
+            engine_native::capture_text::Owned,
+            engine_native::capture_text::Owned,
         >,
     >,
     subject_starts: Vec<usize>,
     subjects: Arena<u32>,
     reserved: ccountry::ReservedNamingWalk,
     naming: Arena<u8>,
-    original_tag_buckets: Arena<engine::original_tag_lists::Bucket>,
+    original_tag_buckets: Arena<engine_stability::original_tag_lists::Bucket>,
     original_tag_members: Arena<u32>,
     original_tag_bucket_len: Result<usize, &'static str>,
     country_array: Arena<u32>,
@@ -198,12 +201,12 @@ impl Captured {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         let raw = capacity.raw_capacity();
         Self {
-            raw: engine::raw_country_observations::Journal::try_new(raw)
+            raw: engine_native::raw_country_observations::Journal::try_new(raw)
                 .map_err(crate::allocation::io)
-                .unwrap_or_else(|_| engine::raw_country_observations::Journal::vacant()),
+                .unwrap_or_else(|_| engine_native::raw_country_observations::Journal::vacant()),
             preacquired: None,
             rows: CaptureRows::new(capacity.rows),
-            subject_starts: owned_vec(engine::allocation::default_vec(capacity.rows)),
+            subject_starts: owned_vec(engine_allocation::default_vec(capacity.rows)),
             subjects: Arena::new(capacity.subjects),
             reserved: ccountry::ReservedNamingWalk {
                 row: ccountry::ReservedNamingRow::default(),
@@ -261,7 +264,7 @@ impl Captured {
         self.land_theatre_count = count;
     }
 
-    fn naming_span(&self, name: engine::csubject_relation::Name) -> Option<&[u8]> {
+    fn naming_span(&self, name: engine_native::csubject_relation::Name) -> Option<&[u8]> {
         self.naming
             .first
             .get(..self.naming.len)?
@@ -302,7 +305,7 @@ impl Captured {
                         + row.old_names.as_ref().map_or(0, |names| {
                             names
                                 .iter()
-                                .map(engine::capture_text::Owned::allocated_bytes)
+                                .map(engine_native::capture_text::Owned::allocated_bytes)
                                 .sum::<usize>()
                         })
                 })
@@ -470,7 +473,7 @@ impl Captured {
         let _reads = crate::read_accounting::table(TABLES[1]);
         let begin = qpc();
         self.raw.table(
-            engine::raw_country_observations::Source::AppearanceOriginal,
+            engine_native::raw_country_observations::Source::AppearanceOriginal,
             self.rows.outcome,
         );
         self.reserved = ccountry::read_reserved_naming_observed_growing(
@@ -481,7 +484,7 @@ impl Captured {
             &mut self.raw,
         );
         self.raw.table(
-            engine::raw_country_observations::Source::ReservedTag,
+            engine_native::raw_country_observations::Source::ReservedTag,
             self.reserved.outcome,
         );
         // This control exists even when mandatory naming failed. Consume its
@@ -547,7 +550,7 @@ impl Captured {
         drop(_reads);
         let _reads = crate::read_accounting::table(TABLES[1]);
         let begin = qpc();
-        let buckets = engine::original_tag_lists::capture_growing(
+        let buckets = engine_stability::original_tag_lists::capture_growing(
             memory,
             state,
             &mut self.original_tag_buckets.first,
@@ -565,7 +568,7 @@ impl Captured {
         if buckets.len.is_err() {
             ORIGINAL_TAG_BUCKET_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        let array = engine::country_roster::capture_growing(
+        let array = engine_stability::country_roster::capture_growing(
             memory,
             base,
             state,
@@ -669,7 +672,7 @@ impl Captured {
         let used = self.naming.len;
         let row = &mut self.rows.rows[index];
         if row.original_tag_reference <= 0 {
-            row.original_tag = Some(engine::csubject_relation::Name {
+            row.original_tag = Some(engine_native::csubject_relation::Name {
                 start: used,
                 len: 0,
             });
@@ -683,8 +686,8 @@ impl Captured {
             return false;
         };
         if self.naming.first.len() < end
-            && engine::allocation::advisory(|| {
-                engine::allocation::resize_default(&mut self.naming.first, end)
+            && engine_allocation::advisory(|| {
+                engine_allocation::resize_default(&mut self.naming.first, end)
             })
             .is_err()
         {
@@ -693,7 +696,7 @@ impl Captured {
         self.naming.first[used..end].copy_from_slice(bytes);
         self.naming.required = required;
         self.naming.len = end;
-        row.original_tag = Some(engine::csubject_relation::Name {
+        row.original_tag = Some(engine_native::csubject_relation::Name {
             start: used,
             len: bytes.len(),
         });
@@ -748,7 +751,7 @@ impl Captured {
                             true
                         }
                         Some(_) => false,
-                        None => engine::cpdx_array::copy_u32s(
+                        None => engine_native::cpdx_array::copy_u32s(
                             memory,
                             subjects,
                             destination,
@@ -815,8 +818,8 @@ impl Captured {
                 .zip(&self.subject_starts),
             |(r, &start)| CountryAppearanceRow {
                 country: r.country,
-                subjects: replay::rows::Recorded::Value(owned_vec(
-                    engine::allocation::collect_vec(
+                subjects: replay_data::rows::Recorded::Value(owned_vec(
+                    engine_allocation::collect_vec(
                         subjects[start..start + r.subjects.count as usize]
                             .iter()
                             .map(|&value| value as i32),
@@ -849,7 +852,7 @@ impl Captured {
                     .old_names
                     .as_ref()
                     .map(|names| owned_vec(copy_vec(names[2].as_bytes()))),
-                original_tag: replay::rows::Recorded::Value(
+                original_tag: replay_data::rows::Recorded::Value(
                     r.original_tag
                         .and_then(|name| {
                             name.start.checked_add(name.len).and_then(|end| {
@@ -861,10 +864,10 @@ impl Captured {
                         })
                         .map(|bytes| owned_vec(copy_vec(bytes))),
                 ),
-                original_tag_reference: replay::rows::Recorded::Value(Some(
+                original_tag_reference: replay_data::rows::Recorded::Value(Some(
                     r.original_tag_reference,
                 )),
-                transport_convoys: replay::rows::Recorded::Value(replay::rows::Retired),
+                transport_convoys: replay_data::rows::Recorded::Value(replay_data::rows::Retired),
             },
         )
     }
@@ -912,8 +915,10 @@ impl Captured {
             std::slice::from_ref(r),
             |_| ReservedCountryNamingRow {
                 // Country0's operands are not witnessed; current writers leave them empty.
-                attack: replay::rows::Recorded::Value(replay::rows::Witnessed(None)),
-                raw_country_observations: replay::rows::Recorded::Value(replay::rows::Retired),
+                attack: replay_data::rows::Recorded::Value(replay_data::rows::Witnessed(None)),
+                raw_country_observations: replay_data::rows::Recorded::Value(
+                    replay_data::rows::Retired,
+                ),
                 tag: owned_vec(copy_vec(tag)),
                 name_tag: owned_vec(copy_vec(name_tag)),
                 cosmetic_tag: owned_vec(copy_vec(cosmetic_tag)),
@@ -922,14 +927,14 @@ impl Captured {
                 overlord: r.overlord,
                 autonomy: autonomy.map(|bytes| owned_vec(copy_vec(bytes))),
                 built: r.built,
-                original_tag: replay::rows::Recorded::Value(
+                original_tag: replay_data::rows::Recorded::Value(
                     original_tag.map(|bytes| owned_vec(copy_vec(bytes))),
                 ),
-                original_tag_reference: replay::rows::Recorded::Value(Some(
+                original_tag_reference: replay_data::rows::Recorded::Value(Some(
                     r.original_tag_reference,
                 )),
-                original_tag_buckets: replay::rows::Recorded::Value(self.original_tag_lists()),
-                country_array: replay::rows::Recorded::Value(
+                original_tag_buckets: replay_data::rows::Recorded::Value(self.original_tag_lists()),
+                country_array: replay_data::rows::Recorded::Value(
                     self.country_array_len
                         .ok()
                         .and_then(|len| {
@@ -940,11 +945,11 @@ impl Captured {
                         })
                         .map(|values| owned_vec(copy_vec(values))),
                 ),
-                owned_state_count: replay::rows::Recorded::Value(r.owned_state_count),
-                faction: replay::rows::Recorded::Value(r.faction),
-                land_theatre_count: replay::rows::Recorded::Value(self.land_theatre_count),
-                movement: replay::rows::Recorded::Value(replay::rows::Retired),
-                launch_sources: replay::rows::Recorded::Value(
+                owned_state_count: replay_data::rows::Recorded::Value(r.owned_state_count),
+                faction: replay_data::rows::Recorded::Value(r.faction),
+                land_theatre_count: replay_data::rows::Recorded::Value(self.land_theatre_count),
+                movement: replay_data::rows::Recorded::Value(replay_data::rows::Retired),
+                launch_sources: replay_data::rows::Recorded::Value(
                     self.launch_projection()
                         .unwrap_or_else(|error| {
                             crate::allocation::observe(&error);
@@ -952,7 +957,7 @@ impl Captured {
                         })
                         .filter(|_| current(self.launch.launch_sample_hour())),
                 ),
-                reverse_visibility: replay::rows::Recorded::Value(
+                reverse_visibility: replay_data::rows::Recorded::Value(
                     self.reverse_visibility
                         .projection()
                         .unwrap_or_else(|error| {
@@ -961,14 +966,20 @@ impl Captured {
                         })
                         .filter(|_| current(self.reverse_visibility.sample_hour())),
                 ),
-                transport_mission_inputs: replay::rows::Recorded::Value(replay::rows::Retired),
-                country_intel_sample: replay::rows::Recorded::Value(None),
-                dynamic_tag_boundary: replay::rows::Recorded::Value(Some(r.dynamic_tag_boundary)),
+                transport_mission_inputs: replay_data::rows::Recorded::Value(
+                    replay_data::rows::Retired,
+                ),
+                country_intel_sample: replay_data::rows::Recorded::Value(None),
+                dynamic_tag_boundary: replay_data::rows::Recorded::Value(Some(
+                    r.dynamic_tag_boundary,
+                )),
             },
         )
     }
 
-    fn launch_projection(&self) -> std::io::Result<Option<replay::rows::ReservedLaunchSources>> {
+    fn launch_projection(
+        &self,
+    ) -> std::io::Result<Option<replay_data::rows::ReservedLaunchSources>> {
         if self.launch.launch_sample_hour().is_none() {
             return Ok(None);
         }
@@ -1007,7 +1018,7 @@ impl Captured {
         }) {
             return None;
         }
-        Some(owned_vec(engine::allocation::collect_vec(
+        Some(owned_vec(engine_allocation::collect_vec(
             buckets.iter().map(|bucket| {
                 owned_vec(copy_vec(&members[bucket.start..bucket.start + bucket.len]))
             }),

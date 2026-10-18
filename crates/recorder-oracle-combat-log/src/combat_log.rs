@@ -25,22 +25,20 @@ use std::{
     io,
 };
 
-use engine::{
-    clend_lease_exchange::{DELIVERED_KIND, SUNK_KIND},
-    ncombat_log_cequipment_loss::month_bucket,
-    ncombat_log_cmanager::{RECOVERED_KIND, WINDOW_ENTRIES},
+use engine_land_inputs::{
+    ncombat_log_cequipment_loss::month_bucket, ncombat_log_cmanager::RECOVERED_KIND,
+    ncombat_log_cmanager::WINDOW_ENTRIES,
 };
+use engine_resources::{clend_lease_exchange::DELIVERED_KIND, clend_lease_exchange::SUNK_KIND};
 use installed_content_save::{Save, production};
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryRow, TableId, tables},
-};
+use replay_data::{rows::CountryRow, rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::{Report, complete, invalid, required_country_tag};
 
 /// The orders group and variant reference types (the reader checks the same).
-const GROUP_TYPE: u32 = engine::corders_group::REFERENCE_TYPE;
-const VARIANT_TYPE: u32 = engine::cequipment_variant::REFERENCE_TYPE;
+const GROUP_TYPE: u32 = engine_native::corders_group::REFERENCE_TYPE;
+const VARIANT_TYPE: u32 = engine_native::cequipment_variant::REFERENCE_TYPE;
 
 type Key<'a> = (&'a [u8], u32, u8, u16, u32);
 
@@ -69,7 +67,7 @@ pub fn compare(
     for row in complete::<tables::CombatLogEquipment>(frame)? {
         let tag = required_country_tag(row.country, links)?;
         if !full
-            && replay::sliced::read_hour(reads, TableId::CombatLogEquipment, row.country)
+            && replay_data::sliced::read_hour(reads, TableId::CombatLogEquipment, row.country)
                 != Some(frame.hour)
         {
             carried += 1;

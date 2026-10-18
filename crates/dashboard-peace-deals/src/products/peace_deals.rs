@@ -20,11 +20,9 @@ use dashboard_base::{
     products::country_groups::{HourSpan, war_ongoing},
 };
 use dashboard_text::metadata::{CountryKeys, branch_bounds, country_tables, slot_read};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, ViewIdentity},
-    rows::{CountryLinkRow, CountryRow, TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -39,7 +37,7 @@ use ts_rs::TS;
 #[cfg(test)]
 use dashboard_text::metadata::validate_campaign;
 #[cfg(test)]
-use replay::frame::FrameDecoder;
+use replay_frame::frame::FrameDecoder;
 
 pub struct PeaceDeals;
 mod exact;
@@ -658,41 +656,53 @@ impl SnapshotInputs {
                 changed
             }};
         }
-        let owners_changed = fields!(owners, States, |row: &replay::rows::StateRow| (
+        let owners_changed = fields!(owners, States, |row: &replay_data::rows::StateRow| (
             row.id, row.owner
         ));
-        let wars_changed = fields!(wars, WarRelations, |row: &replay::rows::WarRelationRow| (
-            row.first_country,
-            row.second_country,
-            row.start_hour,
-            row.end_hour
-        ));
-        let subjects_changed = fields!(subjects, Subjects, |row: &replay::rows::SubjectRow| (
-            row.overlord,
-            row.subject,
-            row.start_hour,
-            row.end_hour,
-            row.cancel,
-            row.state.clone()
-        ));
+        let wars_changed = fields!(
+            wars,
+            WarRelations,
+            |row: &replay_data::rows::WarRelationRow| (
+                row.first_country,
+                row.second_country,
+                row.start_hour,
+                row.end_hour
+            )
+        );
+        let subjects_changed =
+            fields!(subjects, Subjects, |row: &replay_data::rows::SubjectRow| (
+                row.overlord,
+                row.subject,
+                row.start_hour,
+                row.end_hour,
+                row.cancel,
+                row.state.clone()
+            ));
         let exists_changed = fields!(
             existence,
             CountryCounterInputs,
-            |row: &replay::rows::CountryCounterInputRow| (row.country, row.owned_state_count > 0)
+            |row: &replay_data::rows::CountryCounterInputRow| (
+                row.country,
+                row.owned_state_count > 0
+            )
         );
-        let politics_changed = fields!(politics, Politics, |row: &replay::rows::PoliticsRow| (
-            row.country,
-            row.ruling_party
-        ));
+        let politics_changed = fields!(
+            politics,
+            Politics,
+            |row: &replay_data::rows::PoliticsRow| (row.country, row.ruling_party)
+        );
         let parties_changed = fields!(
             parties,
             PoliticalParties,
-            |row: &replay::rows::PoliticalPartyRow| (row.country, row.id, row.token.clone())
+            |row: &replay_data::rows::PoliticalPartyRow| (row.country, row.id, row.token.clone())
         );
         let appearances_changed = fields!(
             appearances,
             CountryAppearance,
-            |row: &replay::rows::CountryAppearanceRow| (row.country, row.leader_ideology.clone())
+            |row: &replay_data::rows::CountryAppearanceRow| (
+                row.country,
+                row.leader_ideology.clone()
+            )
         );
         if owners_changed || holders_changed {
             self.resolved_owners = self
@@ -887,14 +897,14 @@ impl SnapshotInputs {
 
 /// The state-action keyword selects the semantic binding; the recording
 /// supplies its spelling, and content supplies its display name.
-/// See engine::peace_conference.
+/// See engine_peace::peace_conference.
 fn state_action_key(frame: &DecodedFrame) -> Result<String, String> {
     let rows = frame
         .complete::<tables::LexicalTokens>()
         .map_err(|error| format!("LexicalTokens: {error}"))?;
     let mut found = rows.iter().filter(|row| {
-        installed_content::parser::native::Token {
-            kind: installed_content::parser::native::Kind::Bare,
+        installed_content_core::parser::native::Token {
+            kind: installed_content_core::parser::native::Kind::Bare,
             text: row.literal.clone(),
             line: 0,
             quoted: false,
@@ -915,7 +925,7 @@ fn state_action_key(frame: &DecodedFrame) -> Result<String, String> {
 
 fn name_actions(
     reply: &mut PeaceDealsReply,
-    localisation: &installed_content::localisation::Localisation,
+    localisation: &installed_content_localisation::localisation::Localisation,
     recorded_language: &str,
 ) {
     let mut names: HashMap<String, Option<String>> = HashMap::new();
@@ -1056,8 +1066,8 @@ pub fn scan_branch(
             TableId::Campaign | TableId::PeaceConferences | TableId::LexicalTokens
         )
     }) {
-        let cadence = replay::cadence::cadence_in(table, replay.format);
-        if cadence != replay::cadence::Cadence::Hourly {
+        let cadence = replay_data::cadence::cadence_in(table, replay.format);
+        if cadence != replay_data::cadence::Cadence::Hourly {
             return Err(dashboard_core::invalid(format!(
                 "Peace deals does not support the {cadence:?} cadence of {table:?}"
             )));
@@ -1195,9 +1205,9 @@ impl Scan {
         self.observe_changed(
             frame,
             &FrameChanges {
-                rows_changed: [true; replay::frame::TABLE_COUNT],
-                table_read: [true; replay::frame::TABLE_COUNT],
-                slot_read: [true; replay::frame::TABLE_COUNT],
+                rows_changed: [true; replay_data::rows::TABLE_COUNT],
+                table_read: [true; replay_data::rows::TABLE_COUNT],
+                slot_read: [true; replay_data::rows::TABLE_COUNT],
                 updates: None,
             },
         )
@@ -1260,7 +1270,7 @@ impl Scan {
         let had_active = self.has_active;
         let roster_read = hour == self.first
             || slot_read(
-                replay::format::FormatVersion::read(self.format)?,
+                replay_data::format::FormatVersion::read(self.format)?,
                 &frame.metrics,
                 TableId::PeaceConferences,
                 hour,

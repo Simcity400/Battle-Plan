@@ -5,10 +5,8 @@ use std::{
 };
 
 use installed_content_save::Save;
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryRow, FactionRow, TableId, tables},
-};
+use replay_data::{rows::CountryRow, rows::FactionRow, rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::{
     CountryContext, Report, TokenNames, complete, country_tag, invalid, required_country_tag,
@@ -228,10 +226,10 @@ pub fn current_relation_owners<'a>(
             current.insert(tag);
         }
     }
-    let slot = frame.hour.rem_euclid(replay::cadence::STAGGER_PERIOD) as u32;
+    let slot = frame.hour.rem_euclid(replay_data::cadence::STAGGER_PERIOD) as u32;
     for country in frame.complete::<tables::Countries>()? {
         if !with_rows.contains(&country.id)
-            && replay::cadence::slice_of(country.id) == slot
+            && replay_data::cadence::slice_of(country.id) == slot
             && let Some(tag) = country_tag(country.id, links)?
         {
             current.insert(tag);
@@ -281,7 +279,7 @@ pub fn compare_relation_opinions(
     let links = &countries.links;
     let current = current_relation_owners(
         frame,
-        replay::rows::TableId::RelationOpinions,
+        replay_data::rows::TableId::RelationOpinions,
         links,
         report,
     )?;
@@ -289,7 +287,7 @@ pub fn compare_relation_opinions(
     slice_limitation(
         frame,
         report,
-        replay::rows::TableId::RelationOpinions,
+        replay_data::rows::TableId::RelationOpinions,
         &current,
     );
     let mut opinions = BTreeMap::new();
@@ -362,13 +360,17 @@ pub fn compare_relation_tuples(
     report: &mut Report,
 ) -> io::Result<()> {
     let links = &countries.links;
-    let current =
-        current_relation_owners(frame, replay::rows::TableId::RelationTuples, links, report)?;
+    let current = current_relation_owners(
+        frame,
+        replay_data::rows::TableId::RelationTuples,
+        links,
+        report,
+    )?;
     let is_current = |owner: &[u8]| current.as_ref().is_none_or(|tags| tags.contains(owner));
     slice_limitation(
         frame,
         report,
-        replay::rows::TableId::RelationTuples,
+        replay_data::rows::TableId::RelationTuples,
         &current,
     );
     let mut tuples = BTreeMap::new();
@@ -530,8 +532,8 @@ pub fn compare_country_intel(
 ) -> io::Result<()> {
     let links = &countries.links;
     let rows = frame.complete::<tables::CountryIntel>()?;
-    let counts = replay::rows::CountryIntelRow::native_counts(rows);
-    let mut recorded: BTreeMap<&[u8], (u32, BTreeMap<u32, &replay::rows::CountryIntelRow>)> =
+    let counts = replay_data::rows::CountryIntelRow::native_counts(rows);
+    let mut recorded: BTreeMap<&[u8], (u32, BTreeMap<u32, &replay_data::rows::CountryIntelRow>)> =
         BTreeMap::new();
     for row in rows.iter().filter(|row| row.owner_country != 0) {
         let owner = required_country_tag(row.owner_country, links)?;
@@ -546,7 +548,7 @@ pub fn compare_country_intel(
             return Err(invalid("duplicate resolved country intel record index"));
         }
     }
-    let zero = replay::rows::CountryIntelRow::default();
+    let zero = replay_data::rows::CountryIntelRow::default();
     for (tag, records) in &save.country_intel {
         if reserved_intel::is_serialized_reserved_tag(save, tag) {
             continue;

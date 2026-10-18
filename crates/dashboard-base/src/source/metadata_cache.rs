@@ -1,6 +1,6 @@
 //! Current presentation metadata, keyed by accepted recording/content stamps.
-use replay::identity::IdentityCodec;
 use super::*;
+use replay_data::identity::IdentityCodec;
 use serde::{Deserialize, Serialize};
 
 const SCHEMA: u32 = 1;
@@ -174,7 +174,7 @@ pub(super) fn read(
 mod tests {
     use super::*;
     use crate::test_fixtures::{CAMPAIGN, continuation_records, records, scale_frame};
-    use replay::rows::TableId;
+    use replay_data::rows::TableId;
 
     struct Fixture {
         root: PathBuf,

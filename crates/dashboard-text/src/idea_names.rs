@@ -2,10 +2,8 @@
 //! descriptions: an idea's selected localisation key, or its generated advisor name.
 
 use crate::catalogue::{self, View};
-use installed_content::{
-    ideas::{Idea, IdeaContent},
-    localisation::Argument,
-};
+use installed_content_core::{ideas::Idea, ideas::IdeaContent};
+use installed_content_localisation::localisation::Argument;
 
 /// The country an idea is named for: its tag,
 /// canonical slot (CountryLinks) and appearance, `None` when the hour does
@@ -47,8 +45,8 @@ const ADVISOR_NAME_PATTERN: &str = "POLITICS_ADVISOR_NAME_PATTERN";
 /// An idea's name for a country: its selected localisation key, or a generated advisor name.
 pub fn idea_name(
     ideas: &IdeaContent,
-    names: &installed_content::names::NameLists,
-    localisation: &installed_content::localisation::Localisation,
+    names: &installed_content_core::names::NameLists,
+    localisation: &installed_content_localisation::localisation::Localisation,
     token: &str,
     country: IdeaCountry<'_>,
 ) -> Result<IdeaName, String> {
@@ -116,8 +114,8 @@ pub fn idea_name(
 /// `level`. Localise the pattern with `NAME` and `SURNAME` text arguments.
 /// No draw gives empty text; unreadable drawn names retain their refusal.
 fn generated_idea_name(
-    names: &installed_content::names::NameLists,
-    localisation: &installed_content::localisation::Localisation,
+    names: &installed_content_core::names::NameLists,
+    localisation: &installed_content_localisation::localisation::Localisation,
     idea: &Idea,
     country: IdeaCountry<'_>,
     look: CountryLook<'_>,
@@ -139,7 +137,7 @@ fn generated_idea_name(
         return Ok(String::new());
     };
     let text = |part: &str, bytes| {
-        installed_content::parser::text(bytes)
+        installed_content_core::parser::text(bytes)
             .map_err(|refused| format!("the drawn {part} of a generated advisor name is {refused}"))
     };
     let (first, surname) = (text("name", first)?, text("surname", surname)?);

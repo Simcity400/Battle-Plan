@@ -1,9 +1,9 @@
 use super::*;
-use engine::fuel_awards::{Recipient, Settled, Started};
-use replay::rows::CountryFuelRow;
+use engine_fuel::{fuel_awards::Recipient, fuel_awards::Settled, fuel_awards::Started};
+use replay_data::rows::CountryFuelRow;
 
 fn input(count: u32) -> Vec<TableInput> {
-    let mut tables = (0..replay::frame::TABLE_COUNT)
+    let mut tables = (0..replay_data::rows::TABLE_COUNT)
         .map(|_| TableInput::Sampled(TableView::Complete(TableRows::CountryFuel(Vec::new()))))
         .collect::<Vec<_>>();
     tables[TableId::CountryFuel.index()] =
@@ -151,7 +151,7 @@ fn same_pointer_and_zero_instance_reset_withdraws_only_its_old_window() {
     assert!(
         rows(&tables)
             .iter()
-            .all(|row| row.awards == Recorded::Value(replay::rows::Retired))
+            .all(|row| row.awards == Recorded::Value(replay_data::rows::Retired))
     );
 }
 
@@ -207,7 +207,7 @@ fn repeated_roots_in_one_sample_cannot_certify_two_continuity_segments() {
 
 #[test]
 fn continuity_start_is_scoped_by_actual_branch_and_fresh_reattach_observation() {
-    let mut tracker = replay::branches::BranchTracker::new();
+    let mut tracker = replay_frame::branches::BranchTracker::new();
     tracker.begin_session(7).unwrap();
     let mut windows = Windows::default();
     let mut tables = input(1);
@@ -263,7 +263,7 @@ fn continuity_start_is_scoped_by_actual_branch_and_fresh_reattach_observation() 
     }
     // The container resumes the same process from its recovered last hour;
     // Campaign opens fresh Windows even when that next hour keeps the branch.
-    let mut resumed = replay::branches::BranchTracker::new();
+    let mut resumed = replay_frame::branches::BranchTracker::new();
     resumed
         .seed_recorded_branch(
             tracker.branch_start(previous).unwrap().clone(),
@@ -339,7 +339,7 @@ fn writer_window_at_5000_keeps_corrections_names_owner_and_local_refusals() {
         assert_eq!(day.own_gain_raw, 72);
         assert_eq!(
             day.own_gain_quantity_raw,
-            24 * engine::fuel_awards::quantity(3)
+            24 * engine_fuel::fuel_awards::quantity(3)
         );
         assert_eq!(day.recipients.len(), 1);
         let part = &day.recipients[0];

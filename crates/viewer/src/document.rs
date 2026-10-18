@@ -45,16 +45,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use installed_content::{
-    ResolveOptions,
-    map::{self, MapData},
-};
-use replay::{
-    BranchId,
-    container::{Replay, SeekResult},
-    frame::DecodedFrame,
-    rows::tables as row_tables,
-};
+use installed_content_core::{ResolveOptions, map, map::MapData};
+use replay::{container::Replay, container::SeekResult};
+use replay_data::{BranchId, rows::tables as row_tables};
+use replay_frame::frame::DecodedFrame;
 
 use {
     crate::playback::Playback, viewer_foundation::map::province_map::HeightField,
@@ -114,7 +108,7 @@ use {viewer_world::map::weather, viewer_world::map::weather::SnowMud};
 /// `hour_fraction` is how far past it the frame sits.
 pub struct InitialHour {
     pub branch: Option<BranchId>,
-    pub hour: Option<replay::Hour>,
+    pub hour: Option<replay_data::Hour>,
     pub hour_fraction: f32,
 }
 
@@ -159,8 +153,8 @@ pub type VisualFallback<'a> = (
 fn decided(
     fallback: Option<VisualFallback<'_>>,
     options: &ResolveOptions,
-    selected: &[installed_content::content::visual::Choice],
-    recorded: &[installed_content::content::visual::RecordedMod],
+    selected: &[installed_content_core::content::visual::Choice],
+    recorded: &[installed_content_core::content::visual::RecordedMod],
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Option<(
     crate::visual_fallback::FallbackKey,
@@ -169,30 +163,31 @@ fn decided(
     let (recording, decisions) = fallback?;
     let key = crate::visual_fallback::FallbackKey {
         recording: recording.to_owned(),
-        revision: installed_content::content::visual::revision(options, selected, recorded, cancel).ok()?,
+        revision: installed_content_core::content::visual::revision(options, selected, recorded, cancel)
+            .ok()?,
     };
     let decision = decisions.get(&key)?;
     decision.reason().is_some().then(|| (key, decision.clone()))
 }
 
-/// What the selected visual mods hold now ([`installed_content::content::visual::revision`]), with the
+/// What the selected visual mods hold now ([`installed_content_core::content::visual::revision`]), with the
 /// recording's own mods as the selection mounts them; `None` when it cannot be read.
 fn visual_revision_now(
     options: &ResolveOptions,
     replay: &Replay,
-    visual_mods: Option<&[installed_content::content::visual::Choice]>,
+    visual_mods: Option<&[installed_content_core::content::visual::Choice]>,
 ) -> Option<String> {
     let selected = visual_mods.filter(|selected| !selected.is_empty())?;
     let recorded: Vec<_> = replay
         .identity
         .mods
         .iter()
-        .map(|recorded| installed_content::content::visual::RecordedMod {
+        .map(|recorded| installed_content_core::content::visual::RecordedMod {
             id: recorded.id.clone(),
             name: recorded.display_name.clone(),
         })
         .collect();
-    installed_content::content::visual::revision(
+    installed_content_core::content::visual::revision(
         options,
         selected,
         &recorded,
@@ -217,13 +212,16 @@ fn until_current<T>(
 }
 
 /// The city sprawl of `plan`: placed as the recording places it, its buildings' artwork
-/// loaded through the visual mods' artwork fallback ([`installed_content::ResolvedLayers::artwork`]),
+/// loaded through the visual mods' artwork fallback ([`installed_content_core::ResolvedLayers::artwork`]),
 /// with the graphics defines of `defines` (recorded, graphics) while the mods show.
 fn load_sprawl(
-    layers: &installed_content::ResolvedLayers,
-    decode: installed_content::image::native::Decode,
+    layers: &installed_content_core::ResolvedLayers,
+    decode: installed_content_image::native::Decode,
     plan: &sprawl::SprawlPlan,
-    (defines, graphics): (&installed_content::defines::Defines, &installed_content::defines::Defines),
+    (defines, graphics): (
+        &installed_content_core::defines::Defines,
+        &installed_content_core::defines::Defines,
+    ),
 ) -> io::Result<(Sprawl, Vec<String>)> {
     layers.artwork("city sprawl", |stack| {
         let mut warnings = Vec::new();
@@ -246,12 +244,10 @@ pub struct Content {
     /// Perspective-independent compute resources, weakly cached per graphics device.
     pub political_gpu: viewer_world::map::political_gpu::Cache,
     pub texture_quality: u8,
-    pub visual_mods: Option<Vec<installed_content::content::visual::Choice>>,
+    pub visual_mods: Option<Vec<installed_content_core::content::visual::Choice>>,
     /// What the mounted visual mods held when this content loaded
-    /// ([`installed_content::content::visual::revision`]); empty when none is mounted.
+    /// ([`installed_content_core::content::visual::revision`]); empty when none is mounted.
     pub visual_revision: String,
-    /// Whether any visual mod's files are shown over the recording.
-    visual_shown: bool,
     /// The fallback key it was built for and what it was built under
     /// ([`crate::visual_fallback`]); `None` without a visual mod selection to fall back from.
     pub fallback: Option<crate::visual_fallback::Built>,
@@ -262,7 +258,7 @@ pub struct Content {
     pub camera_law: CameraLaw,
     /// The user's `settings.txt` display facts that size the game's interface
     /// on screen, or why they could not be read; see [`crate::map::ui_scale`].
-    pub game_display: Result<installed_content::settings::Display, String>,
+    pub game_display: Result<installed_content_settings::settings::Display, String>,
     /// The user's `settings.txt` counter options (`counter_color_mode`, `template_counter`),
     /// which the window's toggles and a dump start from.
     pub game_counters: counters::CounterSettings,
@@ -277,7 +273,7 @@ pub struct Content {
     /// Persistent recording compatibility, content verification and presentation limitations.
     pub warnings: Vec<String>,
     /// Shared lazy content reads, reported afresh for map diagnostics and dumps.
-    pub uncovered_reads: installed_content::content::UncoveredReads,
+    pub uncovered_reads: installed_content_core::content::UncoveredReads,
     /// The content's sound definitions and the layers their samples are read
     /// from; `None` when they are unreadable, which leaves the maps silent.
     pub audio: Option<Arc<viewer_audio::Source>>,
@@ -292,7 +288,7 @@ pub struct Content {
     pub straits: Vec<StraitVertex>,
     /// `map/strategicregions/*.txt`, which layer 1 of the political fill is built from; see
     /// `viewer_world::map::political::strategic_regions_of`.
-    pub strategic_regions: Arc<BTreeMap<u32, installed_content::regions::StrategicRegion>>,
+    pub strategic_regions: Arc<BTreeMap<u32, installed_content_regions::regions::StrategicRegion>>,
     pub naval_dominance: viewer_world::map::naval_dominance::Content,
     /// The map modes' defines, colours and the content's scripted modes.
     pub map_modes: Arc<viewer_world::map::map_mode::Content>,
@@ -397,13 +393,6 @@ pub struct Content {
     pub province_geometry: Arc<ProvinceGeometry>,
     /// How long that one pass over `map/provinces.bmp` took, for reporting.
     pub province_geometry_build: Duration,
-}
-
-impl Content {
-    /// Whether any visual mod's files are shown over the recording.
-    pub fn shows_visual_mods(&self) -> bool {
-        self.visual_shown
-    }
 }
 
 /// What one hour's [`perspective::Vision`] reads besides its tables: the hour
@@ -1124,7 +1113,7 @@ impl Document {
         options: &ResolveOptions,
         allow_unverified: bool,
         initial: &InitialHour,
-        visual_mods: Option<&[installed_content::content::visual::Choice]>,
+        visual_mods: Option<&[installed_content_core::content::visual::Choice]>,
         texture_quality: u8,
     ) -> io::Result<Self> {
         let path = fs::canonicalize(path)?;
@@ -1179,7 +1168,7 @@ impl Document {
         allow_unverified: bool,
         initial: &InitialHour,
         replay: Arc<Replay>,
-        visual_mods: Option<&[installed_content::content::visual::Choice]>,
+        visual_mods: Option<&[installed_content_core::content::visual::Choice]>,
         texture_quality: u8,
         visual_fallback: Option<VisualFallback<'_>>,
     ) -> io::Result<Self> {
@@ -1212,13 +1201,13 @@ impl Document {
         allow_unverified: bool,
         initial: &InitialHour,
         replay: Arc<Replay>,
-        visual_mods: Option<&[installed_content::content::visual::Choice]>,
+        visual_mods: Option<&[installed_content_core::content::visual::Choice]>,
         texture_quality: u8,
         visual_fallback: Option<VisualFallback<'_>>,
     ) -> io::Result<Self> {
         let mut warnings = replay.compatibility_gaps();
         warnings.extend(replay.warnings.iter().cloned());
-        engine::executable_tables::initialize(&options.game_dir)?;
+        engine_executable::executable_tables::initialize(&options.game_dir)?;
         if let Some(replay::spool::ControlRecord::Partial { reason, .. }) = replay.partial() {
             warnings.push(format!("Partial recording: {reason}"));
         }
@@ -1240,10 +1229,9 @@ impl Document {
         let recorded_language = language.strip_prefix("l_").unwrap_or(language).to_owned();
         // Replay::open requires every session to have the same content identity.
         // The recorded layer ids and hashes, rather than launcher state, select it.
-        let mut content = installed_content::resolve(&replay.identity, options)?;
+        let mut content = installed_content_core::resolve(&replay.identity, options)?;
         let uncovered_reads = content.layers.report_uncovered_reads();
         let mut visual_revision = String::new();
-        let mut visual_shown = false;
         let mut fallback = None;
         // Visual mods mount above the recorded stack for artwork only; geometry and every
         // recorded fact keep reading the recorded layers. A selection that cannot be shown is
@@ -1253,7 +1241,7 @@ impl Document {
                 .identity
                 .mods
                 .iter()
-                .map(|recorded| installed_content::content::visual::RecordedMod {
+                .map(|recorded| installed_content_core::content::visual::RecordedMod {
                     id: recorded.id.clone(),
                     name: recorded.display_name.clone(),
                 })
@@ -1272,7 +1260,7 @@ impl Document {
                         under: decision.under(),
                     });
                 }
-                None => match installed_content::content::visual::apply(
+                None => match installed_content_core::content::visual::apply(
                     &mut content.layers,
                     options,
                     selected,
@@ -1280,7 +1268,6 @@ impl Document {
                     &cancel,
                 ) {
                     Ok(plan) => {
-                        visual_shown = !plan.order.is_empty();
                         if let Some((recording, decisions)) = visual_fallback {
                             let key = crate::visual_fallback::FallbackKey {
                                 recording: recording.to_owned(),
@@ -1320,14 +1307,14 @@ impl Document {
             recorded_language.clone(),
         );
         let map = map::load(&content.layers)?;
-        let (terrain, default_map) = installed_content::terrain::read(&content.layers)?;
+        let (terrain, default_map) = installed_content_core::terrain::read(&content.layers)?;
         // The game logs a malformed terrain entry or field and loads the rest.
         for reason in &terrain.skipped {
             warnings.push(format!(
                 "Terrain content the game logs and reads past: {reason}."
             ));
         }
-        let defines = installed_content::defines::read(&content.layers)?;
+        let defines = installed_content_core::defines::read(&content.layers)?;
         let audio = audio_source(&content.layers, &defines, &options.user_dir, &mut warnings);
         // Graphics consumers read the recorded defines with the graphics sections of the defines
         // merged natively with the visual mods' scripts (`Defines::with_graphics_of`); every
@@ -1336,7 +1323,7 @@ impl Document {
         // keep the recorded defines, each named.
         let art_defines = match content.layers.presentation_defines() {
             None => defines.clone(),
-            Some(stack) => match installed_content::defines::read(stack)
+            Some(stack) => match installed_content_core::defines::read(stack)
                 .and_then(|shown| defines.with_graphics_of(&shown))
             {
                 Ok((graphics, kept)) => {
@@ -1357,15 +1344,15 @@ impl Document {
         };
         // The defines an artwork loader reads with the stack it was handed: graphics defines
         // with the visual mods, recorded defines when it falls back to the recording.
-        let defines_for = |stack: &installed_content::ResolvedLayers| {
+        let defines_for = |stack: &installed_content_core::ResolvedLayers| {
             if stack.shows_visual_mods() {
                 &art_defines
             } else {
                 &defines
             }
         };
-        // Every key as the game reads it (`installed_content::settings::SettingsKeys`).
-        let settings = installed_content::settings::read_keys(&options.user_dir)?;
+        // Every key as the game reads it (`installed_content_settings::settings::SettingsKeys`).
+        let settings = installed_content_settings::settings::read_keys(&options.user_dir)?;
         let camera_tilt = viewer_foundation::map::camera::stored_tilt(
             settings
                 .f32_at(&["camera_tilt"])
@@ -1397,14 +1384,14 @@ impl Document {
         let decode = settings.texture_decode();
         // Text is read in the user's game language, not the recording's.
         let language = settings.language()?;
-        let game_counters = installed_content::settings::Counters::read(&settings)
+        let game_counters = installed_content_settings::settings::Counters::read(&settings)
             .map_err(invalid)?
             .into();
         // Only the interface scale's default needs these; without them it falls
         // back to 1.0 and says so, rather than refusing the recording.
-        let game_display = installed_content::settings::read_pdx(&options.user_dir)
+        let game_display = installed_content_settings::settings::read_pdx(&options.user_dir)
             .and_then(|pdx| {
-                installed_content::settings::Display::read(
+                installed_content_settings::settings::Display::read(
                     &settings,
                     pdx.as_ref().map(|pdx| pdx.items.as_slice()),
                 )
@@ -1427,10 +1414,11 @@ impl Document {
                         .rev()
                         .find_map(|clamp| clamp.size)
                         .unwrap_or(CONSTRUCTED);
-                    let scale = display.effective_gui_scale(installed_content::settings::Desktop {
-                        physical: CONSTRUCTED,
-                        dpi: 96,
-                    });
+                    let scale =
+                        display.effective_gui_scale(installed_content_settings::settings::Desktop {
+                            physical: CONSTRUCTED,
+                            dpi: 96,
+                        });
                     (frame, display.interface_to_frame(frame, scale))
                 }
                 Err(_) => (CONSTRUCTED, 1.0),
@@ -1444,10 +1432,10 @@ impl Document {
         // this wave. A wave-1 failure precedes any wave-2 one, since wave 2
         // needs wave-1 values to start.
         // The strategic regions are parsed once for borders, counters and aircraft.
-        let installed_content::regions::StrategicRegions {
+        let installed_content_regions::regions::StrategicRegions {
             regions,
             notes: region_notes,
-        } = installed_content::regions::read(&content.layers)?;
+        } = installed_content_regions::regions::read(&content.layers)?;
         warnings.extend(region_notes);
         let wave1 = std::thread::scope(|scope| -> io::Result<_> {
             let layers = &content.layers;
@@ -1517,14 +1505,14 @@ impl Document {
                         decode,
                     )
                 })?;
-                let states = installed_content::states::read(layers, &defines, &map.definitions)?;
-                let adjacencies = installed_content::adjacencies::read(layers)?;
+                let states = installed_content_states::states::read(layers, &defines, &map.definitions)?;
+                let adjacencies = installed_content_core::adjacencies::read(layers)?;
                 Ok((border_assets, states, adjacencies))
             });
             let h_rail_reads = scope.spawn(|| -> io::Result<_> {
-                let (cities, city_styles) = installed_content::cities::read(layers)?;
-                let buildings_read = installed_content::positions::read_buildings(layers)?;
-                let building_types = installed_content::buildings::read(layers)?;
+                let (cities, city_styles) = installed_content_core::cities::read(layers)?;
+                let buildings_read = installed_content_core::positions::read_buildings(layers)?;
+                let building_types = installed_content_core::buildings::read(layers)?;
                 let rail_defines = crate::map_assets::graphics_define(
                     layers,
                     "railways",
@@ -1542,10 +1530,10 @@ impl Document {
             });
             // The infrastructure map mode's limit operands: locations and enabling technologies.
             let h_infrastructure_reads = scope.spawn(|| -> io::Result<_> {
-                let locations = installed_content::strategic_locations::read(layers)?;
+                let locations = installed_content_core::strategic_locations::read(layers)?;
                 let technologies = layers
                     .key_names()
-                    .and_then(|names| installed_content::technology::Catalog::read(layers, &names))
+                    .and_then(|names| installed_content_core::technology::Catalog::read(layers, &names))
                     .map_err(|error| error.to_string());
                 Ok((locations, technologies))
             });
@@ -1645,10 +1633,10 @@ impl Document {
             });
             // The ideology groups supply the tactic triggers' ideology names.
             // Loading trigger keys registers those content names.
-            let h_ideologies = scope.spawn(|| installed_content::ideologies::read(layers));
+            let h_ideologies = scope.spawn(|| installed_content_core::ideologies::read(layers));
             // The resource declarations, for the tactic triggers' resource
             // names as the content is read.
-            let h_resources = scope.spawn(|| installed_content::resources::read(layers));
+            let h_resources = scope.spawn(|| installed_content_core::resources::read(layers));
             // The initial seek decodes from its block start to the hour, all
             // in memory; it overlaps the file reads above on its own thread.
             // Only playback moves here, so the joins below keep their order.
@@ -1908,8 +1896,8 @@ impl Document {
             let layers = &content.layers;
             let h_movement = scope.spawn(|| -> io::Result<_> {
                 let mut movement = MovementContent::new(
-                    installed_content::movement::MovementMap::read(layers, &defines)?,
-                    installed_content::movement::MovementDefines::read(&defines)?,
+                    installed_content_core::movement::MovementMap::read(layers, &defines)?,
+                    installed_content_core::movement::MovementDefines::read(&defines)?,
                 );
                 movement.set_task_force_terrain(
                     combat_assets.movement_terrain(),
@@ -2072,13 +2060,13 @@ impl Document {
         // Raid `is_coastal` reads the movement map's static province terrain.
         raid_assets.trigger_content.terrain = movement.clone();
         let map_modes = {
-            let scripted_modes = installed_content::scripted_map_modes::read(&content.layers)?;
+            let scripted_modes = installed_content_core::scripted_map_modes::read(&content.layers)?;
             for (field, count) in scripted_modes.refusal_counts() {
                 warnings.push(format!(
                     "Scripted map modes: {count} unread entries {field}"
                 ));
             }
-            let categories = installed_content::state_categories::read(&content.layers)?;
+            let categories = installed_content_state_categories::state_categories::read(&content.layers)?;
             let infrastructure = viewer_world::map::map_mode::infrastructure::Content::new(
                 &building_types,
                 &defines,
@@ -2327,7 +2315,7 @@ impl Document {
                 "The resources map mode draws no state icons: {why}"
             )),
         }
-        let adjacency_icons = match installed_content::adjacency_rules::read(&content.layers) {
+        let adjacency_icons = match installed_content_core::adjacency_rules::read(&content.layers) {
             Ok(rules) => viewer_world::map::adjacency_icons::AdjacencyIcons::new(&rules, &defines),
             Err(error) => {
                 warnings.push(format!(
@@ -2350,9 +2338,8 @@ impl Document {
             trade_routes,
             counter_content,
             combat,
-            visual_mods: visual_mods.map(<[installed_content::content::visual::Choice]>::to_vec),
+            visual_mods: visual_mods.map(<[installed_content_core::content::visual::Choice]>::to_vec),
             visual_revision,
-            visual_shown,
             fallback,
             texture_quality,
             weather_effects,
@@ -2562,6 +2549,7 @@ impl Document {
             .order_field_with_allied(perspective, show_allied)
     }
 
+    #[cfg(test)]
     pub fn unit_model_field(
         &self,
         perspective: &perspective::Choice,
@@ -2654,7 +2642,7 @@ pub(crate) struct OverlayTables {
     /// The Operatives map mode's intel icons for the viewing country.
     intel: Arc<intel_icons::IntelIcons>,
     /// The branch, hour and canonical viewing country the tables are for.
-    built_for: (replay::BranchId, replay::Hour, u32),
+    built_for: (replay_data::BranchId, replay_data::Hour, u32),
 }
 
 impl OverlayTables {
@@ -2732,7 +2720,7 @@ impl<'a> Hour<'a> {
     /// plays, and without sub-unit compositions the battles still sound
     /// their distant ambience, but no layer. `None` without battle defines.
     pub fn battle_sounds(&self) -> Option<viewer_audio::Battles> {
-        use replay::rows::tables;
+        use replay_data::rows::tables;
         use viewer_foundation::table_access::{Available, rows};
         let audio = self.content.audio.as_ref()?;
         audio.content.battle.as_ref()?;
@@ -2742,7 +2730,7 @@ impl<'a> Hour<'a> {
             Ok(false) => refusals.push(format!("the recorded {table} table is incomplete")),
             Err(why) => refusals.push(format!("the recorded {table} table is unavailable ({why})")),
         };
-        fn state<T: replay::rows::TableSchema>(
+        fn state<T: replay_data::rows::TableSchema>(
             available: &std::io::Result<Available<'_, T>>,
         ) -> Result<bool, String> {
             match available {
@@ -2774,14 +2762,14 @@ impl<'a> Hour<'a> {
             .map(|division| (division.id, division.template))
             .collect();
         // A template whose composition was unreadable or unrecorded is unknown.
-        let templates: BTreeMap<u64, &replay::rows::TemplateGrids> = templates
+        let templates: BTreeMap<u64, &replay_data::rows::TemplateGrids> = templates
             .as_ref()
             .map_or(&[][..], Available::rows)
             .iter()
             .filter(|template| template.model_unreadable == 0)
             .filter_map(|template| match &template.grids {
-                replay::rows::Recorded::Value(grids) => Some((template.template, grids)),
-                replay::rows::Recorded::NotRecorded => None,
+                replay_data::rows::Recorded::Value(grids) => Some((template.template, grids)),
+                replay_data::rows::Recorded::NotRecorded => None,
             })
             .collect();
         let tokens = tokens.as_ref().map_or(&[][..], Available::rows);
@@ -2888,7 +2876,7 @@ impl<'a> Hour<'a> {
     /// The viewed country's trade-route lines and convoys of the hour
     /// ([`viewer_world::map::trade_routes`]).
     fn trade_route_lines(&self, ours: u32) -> Arc<viewer_world::map::trade_routes::TradeRoutes> {
-        use replay::rows::TableId;
+        use replay_data::rows::TableId;
         const TABLES: &[TableId] = &[
             TableId::ResourceOrigins,
             TableId::ConvoyClients,
@@ -2923,7 +2911,10 @@ impl<'a> Hour<'a> {
             }
         };
         let (graph, geography) = graph;
-        let provinces = match self.frame.complete::<replay::rows::tables::Provinces>() {
+        let provinces = match self
+            .frame
+            .complete::<replay_data::rows::tables::Provinces>()
+        {
             Ok(rows) => rows,
             Err(why) => {
                 let mut routes = trade_routes::TradeRoutes::default();
@@ -2991,7 +2982,7 @@ impl<'a> Hour<'a> {
         let counters = &self.counters;
         let anchor = |province: u32, kind: u32| counters.anchor(province, kind);
         let declared = |name: &str| self.unit_models.declares(name);
-        let evaluate = |items: &[installed_content::parser::Item], scopes| {
+        let evaluate = |items: &[installed_content_core::parser::Item], scopes| {
             self.trigger_world().evaluate(items, scopes)
         };
         let variant_model = |variant: u64, country: u32| {
@@ -3164,7 +3155,7 @@ impl<'a> Hour<'a> {
             viewer_foundation::map::task_force_visual::TaskForceMotions::read(self.frame)?;
         let missions = viewer_foundation::map::task_force_visual::MissionSkips::read(self.frame)?;
         let region = |province| content.region(province);
-        let evaluate = |items: &[installed_content::parser::Item], scopes| {
+        let evaluate = |items: &[installed_content_core::parser::Item], scopes| {
             self.trigger_world().evaluate(items, scopes)
         };
         self.unit_models
@@ -3191,6 +3182,7 @@ impl<'a> Hour<'a> {
             })
     }
 
+    #[cfg(test)]
     pub fn unit_model_field(
         &self,
         perspective: &perspective::Choice,
@@ -3255,7 +3247,9 @@ impl<'a> Hour<'a> {
     ) -> viewer_world::map::animated_map_text::events::Prepared {
         use viewer_world::map::animated_map_text::events::{Context, Prepared};
         let view = vision.ours();
-        match viewer_foundation::table_access::rows::<replay::rows::tables::MapEvents>(self.frame) {
+        match viewer_foundation::table_access::rows::<replay_data::rows::tables::MapEvents>(
+            self.frame,
+        ) {
             Ok(intervals) => Prepared::new(
                 &Context::new(
                     self.frame,
@@ -3303,7 +3297,7 @@ impl<'a> Hour<'a> {
                     |terrain| terrain.flags & 1 != 0,
                 )
         };
-        let origin = |force: &replay::rows::TaskForceRow| {
+        let origin = |force: &replay_data::rows::TaskForceRow| {
             motions.settled_origin(
                 force,
                 movement,
@@ -3312,7 +3306,7 @@ impl<'a> Hour<'a> {
                 &land,
             )
         };
-        let evaluate = |items: &[installed_content::parser::Item], scopes| {
+        let evaluate = |items: &[installed_content_core::parser::Item], scopes| {
             self.trigger_world().evaluate(items, scopes)
         };
         let model = |variant, country| {
@@ -4046,7 +4040,7 @@ const _: fn() = || {
     fn shared<T: Send + Sync>() {}
     shared::<Content>();
     shared::<replay::container::Replay>();
-    shared::<replay::frame::DecodedFrame>();
+    shared::<replay_frame::frame::DecodedFrame>();
 };
 
 /// The recorded battles in recorded order, each with the units of its member
@@ -4058,8 +4052,8 @@ const _: fn() = || {
 /// battle's sounds keep its object as their identity from hour to hour, so a
 /// battle that moves in the list plays on.
 fn recorded_battles(
-    recorded: &[replay::rows::BattleSoundRow],
-    combats: &[replay::rows::LandCombatRow],
+    recorded: &[replay_data::rows::BattleSoundRow],
+    combats: &[replay_data::rows::LandCombatRow],
     layers: bool,
     composition: impl Fn(u64) -> Option<Vec<(String, usize)>>,
 ) -> (Vec<viewer_audio::battle::Battle>, usize) {
@@ -4133,7 +4127,7 @@ const MUSIC_CHANCE_ONE: f64 = 100_000.0;
 /// its modifiers).
 fn song_chances(
     content: &viewer_audio::Content,
-    mut evaluate: impl FnMut(&[installed_content::parser::Item]) -> Result<i64, String>,
+    mut evaluate: impl FnMut(&[installed_content_core::parser::Item]) -> Result<i64, String>,
 ) -> viewer_audio::Chances {
     let mut refusals = Vec::new();
     let weights = content
@@ -4168,8 +4162,8 @@ fn song_chances(
 /// silent with a warning; unreadable `NSound` defines leave the height and
 /// voice categories at full volume, named in the warnings.
 fn audio_source(
-    layers: &installed_content::ResolvedLayers,
-    defines: &installed_content::defines::Defines,
+    layers: &installed_content_core::ResolvedLayers,
+    defines: &installed_content_core::defines::Defines,
     user: &std::path::Path,
     warnings: &mut Vec<String>,
 ) -> Option<Arc<viewer_audio::Source>> {
@@ -4315,13 +4309,14 @@ mod tests {
         };
         let base = root.join("base");
         let mut layers =
-            installed_content::ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
-        let selected = [installed_content::content::visual::Choice {
+            installed_content_core::ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
+        let selected = [installed_content_core::content::visual::Choice {
             id: "mod/art.mod".into(),
             name: "Art".into(),
         }];
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        installed_content::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
+        installed_content_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel)
+            .unwrap();
         let plan = viewer_world::map::sprawl::SprawlPlan {
             buildings: vec![viewer_world::map::sprawl::SprawlBuilding {
                 entity: "house".into(),
@@ -4335,7 +4330,7 @@ mod tests {
             entities: vec!["house".into()],
             bounds: Default::default(),
         };
-        let defines = installed_content::defines::read(&layers).unwrap();
+        let defines = installed_content_core::defines::read(&layers).unwrap();
         let (sprawl, _) =
             load_sprawl(&layers, Default::default(), &plan, (&defines, &defines)).unwrap();
         let _ = std::fs::remove_dir_all(&root);
@@ -4393,13 +4388,13 @@ mod tests {
             user_dir: root.join("user"),
             cache_dir: root.join("cache"),
         };
-        let selected = [installed_content::content::visual::Choice {
+        let selected = [installed_content_core::content::visual::Choice {
             id: "mod/art.mod".into(),
             name: "Art".into(),
         }];
         let cancel = std::sync::atomic::AtomicBool::new(false);
         let revision =
-            installed_content::content::visual::revision(&options, &selected, &[], &cancel).unwrap();
+            installed_content_core::content::visual::revision(&options, &selected, &[], &cancel).unwrap();
         let key = crate::visual_fallback::FallbackKey {
             recording: "A".into(),
             revision,
@@ -4436,7 +4431,7 @@ mod tests {
         assert_eq!(decided("A"), None);
         let _ = std::fs::remove_dir_all(&root);
     }
-    use replay::identity::Roster;
+    use replay_data::identity::Roster;
 
     /// The recorded battles keep their recorded order, centres and radii
     /// (not the provinces' combat order or a grouping of their own), and
@@ -4448,7 +4443,7 @@ mod tests {
         // has no template slots and is not an unknown division.
         let unit_class = |unit: u64| if unit == 99 { 13 } else { DIVISION_CLASS };
         let combat = |id: u64, province: u32, attackers: Vec<u64>, defenders: Vec<u64>| {
-            replay::rows::LandCombatRow {
+            replay_data::rows::LandCombatRow {
                 id,
                 province,
                 attacker_classes: attackers.iter().map(|&unit| unit_class(unit)).collect(),
@@ -4472,8 +4467,8 @@ mod tests {
             4 => Some(vec![("infantry".to_owned(), 2)]),
             _ => None,
         };
-        let row =
-            |ordinal: u32, x: f32, radius: f32, provinces: Vec<u32>| replay::rows::BattleSoundRow {
+        let row = |ordinal: u32, x: f32, radius: f32, provinces: Vec<u32>| {
+            replay_data::rows::BattleSoundRow {
                 ordinal,
                 center_x: x.to_bits(),
                 center_z: (-x).to_bits(),
@@ -4481,7 +4476,8 @@ mod tests {
                 provinces,
                 sounding: false,
                 object: 0x1000 + u64::from(ordinal),
-            };
+            }
+        };
         // The game's list: province 9's battle first, then one covering
         // provinces 5 and 7, then a battle whose combats have ended.
         let recorded = [
@@ -4533,7 +4529,7 @@ mod tests {
             music.songs.push(Song {
                 track: index,
                 station: station.into(),
-                chance: installed_content::parser::parse(chance).unwrap().items,
+                chance: installed_content_core::parser::parse(chance).unwrap().items,
                 source: String::new(),
             });
         }
@@ -4810,7 +4806,7 @@ mod tests {
             .raids_hovered
         );
     }
-    use replay::identity::Verification;
+    use replay_data::identity::Verification;
 
     #[test]
     fn every_unverified_identity_requires_override_and_keeps_its_reason() {
@@ -4834,7 +4830,7 @@ mod tests {
     #[test]
     #[ignore = "read-only historical content load with dump GPU; requires BATTLE_PLAN_COMPAT_RECORDINGS, BATTLE_PLAN_GAME_DIR, BATTLE_PLAN_USER_DIR and BATTLE_PLAN_COMPAT_CACHE"]
     fn historical_coverage_document_load_keeps_uncovered_read_notes() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         crate::render::probe_dump_device().unwrap();
         let path = |name| PathBuf::from(std::env::var_os(name).expect(name));

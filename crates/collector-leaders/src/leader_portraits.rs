@@ -4,12 +4,10 @@ use crate::{
     projection::{Projection, project_table},
     table_capture::CaptureRows,
 };
-use engine::allocation::{copy_vec, owned_vec};
-use engine::{Memory, corders_group::Root, cunit_leader, walk::Outcome};
-use replay::{
-    frame::TableInput,
-    rows::{LeaderPortraitRow, TableId, tables},
-};
+use engine_allocation::{copy_vec, owned_vec};
+use engine_native::{Memory, corders_group::Root, cunit_leader, walk::Outcome};
+use replay_data::{rows::LeaderPortraitRow, rows::TableId, rows::tables};
+use replay_frame::frame::TableInput;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::LeaderPortraits];
@@ -24,11 +22,9 @@ pub struct Capacities {
 impl Capacities {
     pub fn presize(&mut self, memory: &impl Memory, base: usize) -> Result<(), &'static str> {
         // Select at most one leader per orders root.
-        let count = collector_extended_support::demand::rows(engine::corders_group::walk_roots(
-            memory,
-            base,
-            &mut [],
-        ))?;
+        let count = collector_extended_support::demand::rows(
+            engine_native::corders_group::walk_roots(memory, base, &mut []),
+        )?;
         crate::table_capture::grow_capacity(&mut self.rows, count);
         crate::table_capture::grow_capacity(&mut self.sources, count);
         Ok(())
@@ -36,7 +32,7 @@ impl Capacities {
 }
 
 pub struct Captured {
-    rows: CaptureRows<cunit_leader::PortraitRow<engine::capture_text::Owned>>,
+    rows: CaptureRows<cunit_leader::PortraitRow<engine_native::capture_text::Owned>>,
     // Reused only by the adjacent path walk; storage grows off-thread.
     sources: CaptureRows<(u64, usize)>,
 }
@@ -73,7 +69,7 @@ impl Captured {
                 .rows
                 .iter()
                 .flat_map(|row| &row.strings)
-                .map(engine::capture_text::Owned::allocated_bytes)
+                .map(engine_native::capture_text::Owned::allocated_bytes)
                 .sum::<usize>()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
@@ -149,7 +145,9 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::frame::{DecodedFrame, FrameEncoder, Metrics, TableView};
+    use replay_frame::{
+        frame::DecodedFrame, frame::FrameEncoder, frame::Metrics, frame::TableView,
+    };
 
     #[test]
     fn census_reuse_requires_both_complete_outcomes_and_resets_between_captures() {
@@ -192,7 +190,7 @@ mod tests {
         capture.rows.outcome = Outcome::Rows { len: 1 };
         capture.sources.outcome = Outcome::Rows { len: 1 };
         capture.capture(
-            &engine::memory::SliceMemory {
+            &engine_native::memory::SliceMemory {
                 base: 0,
                 bytes: &[],
             },
@@ -210,7 +208,7 @@ mod tests {
 
     #[test]
     fn incomplete_order_census_is_not_an_empty_portrait_scope() {
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

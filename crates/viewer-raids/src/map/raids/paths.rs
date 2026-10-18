@@ -27,20 +27,18 @@ use std::{
 };
 use viewer_foundation::debug_fields;
 
-/// Source kinds (`engine::craid_source`) whose distance uses a path:
+/// Source kinds (`engine_native::craid_source`) whose distance uses a path:
 /// a naval base measures to the target's naval path target, a building
 /// to its province.
-pub(crate) const NAVAL_BASE: u8 = engine::craid_source::KIND_NAVAL_BASE as u8;
-pub(crate) const BUILDING: u8 = engine::craid_source::KIND_BUILDING as u8;
+pub(crate) const NAVAL_BASE: u8 = engine_native::craid_source::KIND_NAVAL_BASE as u8;
+pub(crate) const BUILDING: u8 = engine_native::craid_source::KIND_BUILDING as u8;
 
-use installed_content::{
-    province_geometry::ProvinceGeometry,
-    province_graph::{ProvinceGraph, RaidPath, raid_distance},
+use installed_content_core::{
+    province_geometry::ProvinceGeometry, province_graph::ProvinceGraph, province_graph::RaidPath,
+    province_graph::raid_distance,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{RaidPathDistanceRow, RaidScope, tables},
-};
+use replay_data::{rows::RaidPathDistanceRow, rows::RaidScope, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::{
     RaidAssets,
@@ -235,7 +233,7 @@ pub struct Distances<'a> {
     assets: &'a RaidAssets,
     frame: &'a DecodedFrame,
     /// The recorded memo, in its key order (source, target): a decoded table
-    /// holds unique ascending keys (`replay::frame::validate_rows`).
+    /// holds unique ascending keys (`replay_frame::frame::validate_rows`).
     recorded: Result<&'a [RaidPathDistanceRow], String>,
     naval_bases: OnceLock<Result<BTreeSet<u32>, String>>,
     /// Each province's recorded state, and each state's province count.

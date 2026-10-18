@@ -2,14 +2,12 @@ use super::test_fixtures::{research_frame, sliced_research_frame};
 use super::{Country, Inventory, MAX_BYTES, base_cost, check_budget, history_bytes, remaining};
 use crate::ResearchOutcome;
 use crate::test_fixtures::{CAMPAIGN, fixture_research_inputs, records};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{
-        CountryLinkRow, ResearchAppliedBonusRow, ResearchInputRow, ResearchTechnologyRow, TableId,
-        TableRows,
-    },
+use replay::container::Replay;
+use replay_data::{
+    rows::CountryLinkRow, rows::ResearchAppliedBonusRow, rows::ResearchInputRow,
+    rows::ResearchTechnologyRow, rows::TableId, rows::TableRows,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::{collections::BTreeMap, sync::atomic::AtomicBool};
 
 fn input(handle: u32, progress: i64) -> ResearchInputRow {
@@ -17,7 +15,7 @@ fn input(handle: u32, progress: i64) -> ResearchInputRow {
         country: 11,
         index: 0,
         technology_handle: handle,
-        database_index: replay::rows::Recorded::Value(handle as i32),
+        database_index: replay_data::rows::Recorded::Value(handle as i32),
         technology_present: 1,
         token: format!("tech_{handle}").into_bytes(),
         classifier: 5,
@@ -633,7 +631,7 @@ fn a_carried_read_ends_when_the_next_read_is_due() {
     let histories =
         super::research_branch(&research_replay(frames), 1, &AtomicBool::new(false)).unwrap();
     let history = &histories["GER"];
-    let due = 100 + replay::cadence::STAGGER_PERIOD;
+    let due = 100 + replay_data::cadence::STAGGER_PERIOD;
     assert_eq!(
         history.coverage,
         [crate::ResearchCoverage {
@@ -651,7 +649,7 @@ fn historical_reads_are_carried_and_counted_through_the_branch() {
     // so the read and the carried hours are driven as the branch walk drives them.
     let mut country = Country::default();
     let mut row = input(1, 100_000);
-    row.database_index = replay::rows::Recorded::NotRecorded;
+    row.database_index = replay_data::rows::Recorded::NotRecorded;
     observe(&mut country, 100, &row);
     country.last_read = Some(100);
     for hour in 101..=110 {
@@ -733,7 +731,7 @@ fn an_unlinked_input_row_does_not_hide_linked_reads_in_its_frame() {
             else {
                 panic!("fixture research inputs")
             };
-            rows.push(replay::rows::ResearchInputRow {
+            rows.push(replay_data::rows::ResearchInputRow {
                 country: 999,
                 ..Default::default()
             });
@@ -840,7 +838,7 @@ fn research_cache_keeps_country_requests_independent() {
     if let TableView::Complete(TableRows::SliceReads(rows)) =
         &mut *frame.tables[TableId::SliceReads.index()]
     {
-        rows.push(replay::rows::SliceReadRow {
+        rows.push(replay_data::rows::SliceReadRow {
             table: TableId::ResearchInputs.index() as u32,
             owner: 9002,
             sample_hour: 100,
@@ -912,7 +910,7 @@ fn research_repeat_levels_and_removed_slots_preserve_distinct_assignments() {
     if let TableView::Complete(TableRows::ResearchTechnologies(rows)) =
         &mut *first.tables[TableId::ResearchTechnologies.index()]
     {
-        rows[0].classifier = engine::ctechnology::CLASSIFIER_ACTIVE;
+        rows[0].classifier = engine_research::ctechnology::CLASSIFIER_ACTIVE;
     }
     let mut second = first.clone();
     second.hour = 101;
@@ -954,7 +952,7 @@ fn repeated_handle_assignments_do_not_complete_transfer_or_share_progress() {
     country.read_after = Some(0);
     observe(&mut country, 24, &input(7, 200_000));
     let mut later = input(7, 9_000_000);
-    later.database_index = replay::rows::Recorded::Value(8);
+    later.database_index = replay_data::rows::Recorded::Value(8);
     let former = ResearchTechnologyRow {
         country: 11,
         database_index: 7,
@@ -1014,7 +1012,7 @@ fn repeated_handle_assignments_do_not_complete_transfer_or_share_progress() {
 fn historical_inputs_without_occurrence_keep_slot_state_but_join_no_assignment() {
     let mut country = Country::default();
     let mut row = input(7, 100_000);
-    row.database_index = replay::rows::Recorded::NotRecorded;
+    row.database_index = replay_data::rows::Recorded::NotRecorded;
     row.research_speed_raw = 150_000;
     observe(&mut country, 0, &row);
     // The next read of an equal handle and name is still no proof of one assignment.
@@ -1072,7 +1070,7 @@ fn unjoined_progress_merges_only_within_one_held_technology() {
     let mut country = Country::default();
     let held = |handle: u32, progress: i64| {
         let mut row = input(handle, progress);
-        row.database_index = replay::rows::Recorded::NotRecorded;
+        row.database_index = replay_data::rows::Recorded::NotRecorded;
         row
     };
     // The same technology read twice at equal progress is one sample.
@@ -1165,13 +1163,13 @@ fn a_technology_is_shown_in_its_first_available_folder_and_unknowns_are_named() 
 #[test]
 fn a_finished_technology_left_in_a_slot_without_an_assignment_is_not_research() {
     for database_index in [
-        replay::rows::Recorded::NotRecorded,
-        replay::rows::Recorded::Value(7),
+        replay_data::rows::Recorded::NotRecorded,
+        replay_data::rows::Recorded::Value(7),
     ] {
         let mut country = Country::default();
         let mut row = input(7, 10_000_000);
         row.database_index = database_index;
-        row.classifier = engine::ctechnology::CLASSIFIER_COMPLETED;
+        row.classifier = engine_research::ctechnology::CLASSIFIER_COMPLETED;
         observe(&mut country, 0, &row);
         let slot = &country.history.slots[0];
         assert!(slot.entries.is_empty());
@@ -1186,8 +1184,8 @@ fn completed_same_name_occurrence_cannot_supply_former_assignment_progress() {
     let mut country = Country::default();
     observe(&mut country, 0, &input(7, 100_000));
     let mut completed = input(7, 9_000_000);
-    completed.database_index = replay::rows::Recorded::Value(8);
-    completed.classifier = engine::ctechnology::CLASSIFIER_COMPLETED;
+    completed.database_index = replay_data::rows::Recorded::Value(8);
+    completed.classifier = engine_research::ctechnology::CLASSIFIER_COMPLETED;
     let former = ResearchTechnologyRow {
         country: 11,
         database_index: 7,
@@ -1212,7 +1210,7 @@ fn completed_same_name_occurrence_cannot_supply_former_assignment_progress() {
 
     let mut country = Country::default();
     observe(&mut country, 0, &input(7, 100_000));
-    completed.database_index = replay::rows::Recorded::Value(7);
+    completed.database_index = replay_data::rows::Recorded::Value(7);
     completed.level = 1;
     observe(&mut country, 1, &completed);
     observe(&mut country, 2, &completed);

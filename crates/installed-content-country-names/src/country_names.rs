@@ -14,13 +14,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{
-        CountryAppearanceRow, CountryLinkRow, CountryRow, ReservedCountryNamingRow, TableId,
-        TableSchema, tables,
-    },
+use replay_data::{
+    rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow,
+    rows::ReservedCountryNamingRow, rows::TableId, rows::TableSchema, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 use crate::localisation::Localisation;
 
@@ -621,7 +619,7 @@ fn naming_tag<'a>(
 }
 
 /// The original-or-own tag, shared with the collector's status summary.
-pub use replay::country_flags::original_tag;
+pub use replay_data::country_flags::original_tag;
 
 /// Per canonical slot: the operands, or why they are unavailable this hour.
 fn operands(frame: &DecodedFrame) -> BTreeMap<u32, Result<Operands, String>> {
@@ -734,13 +732,11 @@ fn country_operands<'r>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{
-            AutonomyRow, CountryAppearanceRow, CountryLinkRow, CountryRow, PoliticalPartyRow,
-            PoliticsRow, TableId, TableRows,
-        },
+    use replay_data::{
+        rows::AutonomyRow, rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow,
+        rows::PoliticalPartyRow, rows::PoliticsRow, rows::TableId, rows::TableRows,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     fn localisation(entries: &[(&str, &str)]) -> Localisation {
         entries
@@ -1008,7 +1004,7 @@ mod tests {
 
     #[test]
     fn recorded_dynamic_boundary_uses_signed_slot_comparison_and_keeps_gaps() {
-        use replay::rows::Recorded;
+        use replay_data::rows::Recorded;
         let mut frame = frame();
         for (boundary, expected) in [
             (i32::MIN, [true, true, true, true]),
@@ -1091,7 +1087,7 @@ mod tests {
 
     #[test]
     fn original_getters_use_signed_reference_and_keep_optional_bytes_lazy() {
-        use replay::rows::Recorded;
+        use replay_data::rows::Recorded;
         let mut frame = frame();
         *frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
             reason: "unrelated links".into(),

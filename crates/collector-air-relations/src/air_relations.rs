@@ -5,7 +5,7 @@
 //! work is split: [`PARTS`] pool jobs, each owning every [`PARTS`]th slot,
 //! copy only the raw vectors of countries a writer touched (or whose slot
 //! changed, or that were never observed) into their staging buffers, in
-//! batched gathers and scattered copies ([`engine::air_participant_vectors`]).
+//! batched gathers and scattered copies ([`engine_air_history::air_participant_vectors`]).
 //! A quiet hour copies nothing. The decode thread then turns the staged
 //! entries into held rows off the game thread, in hour order.
 //!
@@ -27,11 +27,11 @@ use crate::{
     table_capture::{CaptureRows, grow_capacity},
     table_conversion::table,
 };
-use engine::{Memory, air_participant_vectors as native, allocation, ccountry, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{AirCountryRelationRow, TableId, tables},
-};
+use engine_air_history::air_participant_vectors as native;
+use engine_allocation as allocation;
+use engine_native::{Memory, ccountry, walk::Outcome};
+use replay_data::{rows::AirCountryRelationRow, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 use std::sync::{Mutex, MutexGuard};
 
 pub const N: usize = 1;

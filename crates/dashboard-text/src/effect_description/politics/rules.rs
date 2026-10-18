@@ -1,8 +1,6 @@
 use super::*;
-use installed_content::{
-    power_balance::rules,
-    scope::{Keyword, Scope as Parsed},
-    scripted_triggers::Template,
+use installed_content_core::{
+    power_balance::rules, scope::Keyword, scope::Scope as Parsed, scripted_triggers::Template,
 };
 
 #[cfg(test)]
@@ -47,7 +45,7 @@ impl Renderer<'_, '_, '_> {
                 let value = item
                     .value
                     .scalar()
-                    .and_then(installed_content::parser::read_bool)
+                    .and_then(installed_content_core::parser::read_bool)
                     .unwrap_or(false);
                 text.push_str(&self.rule_prefix(value == fulfilled, scopes)?);
                 text.push(' ');
@@ -75,7 +73,7 @@ impl Renderer<'_, '_, '_> {
                 value = item
                     .value
                     .scalar()
-                    .and_then(installed_content::parser::read_bool)
+                    .and_then(installed_content_core::parser::read_bool)
                     .unwrap_or(false);
             } else if !(item.keyword_is("target")
                 || item.keyword_is("trigger")
@@ -105,8 +103,8 @@ impl Renderer<'_, '_, '_> {
                         .as_ref()
                         .map_err(Clone::clone)?;
                     match database.lookup(name.as_bytes()) {
-                        installed_content::scripted_triggers::Lookup::Template(template) => template,
-                        installed_content::scripted_triggers::Lookup::Missing => {
+                        installed_content_core::scripted_triggers::Lookup::Template(template) => template,
+                        installed_content_core::scripted_triggers::Lookup::Missing => {
                             return Err(format!(
                                 "scripted relation target {name} is absent from recorded content"
                             ));
@@ -141,7 +139,7 @@ impl Renderer<'_, '_, '_> {
     fn relation_has_country_specifier(&self, fields: &[Item]) -> Result<bool, String> {
         let mut specified = false;
         for item in fields.iter().filter(|item| item.keyword_is("target")) {
-            let operand = installed_content::parser::c_string(item.value.scalar().unwrap_or_default());
+            let operand = installed_content_core::parser::c_string(item.value.scalar().unwrap_or_default());
             // Scope-selector parsing stores flags without changing the bound name.
             if item.value_keyword().is_some_and(|word| {
                 [
@@ -405,7 +403,7 @@ impl Renderer<'_, '_, '_> {
         // use the one scope parser and evaluator.
         let evaluator = self.evaluator()?;
         let parsed =
-            installed_content::scope::parse(&key(item), item.key_quoted, evaluator.world().recorded());
+            installed_content_core::scope::parse(&key(item), item.key_quoted, evaluator.world().recorded());
         if item.value.items().is_some() && !matches!(parsed, Parsed::Unknown(_)) {
             let entered = evaluator
                 .enter_scope(&parsed, scopes)?

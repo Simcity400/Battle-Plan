@@ -5,16 +5,15 @@ use crate::{
     table_capture::{Arena, CaptureRows, grow_capacity},
     table_conversion::table,
 };
-use engine::allocation::{collect_vec, copy_vec, filled, owned_vec, resize_default};
-use engine::naval_air_efficiency_inputs;
-use engine::{
-    Memory, cfex_air, cfex_damage_entry, cfex_member, cnaval_combat, naval_combat_air_base_wings,
-    naval_combat_air_hit, naval_combat_hit, naval_ship_modifier_inputs, walk::Outcome,
+use engine_allocation::{collect_vec, copy_vec, filled, owned_vec, resize_default};
+use engine_native::naval_air_efficiency_inputs;
+use engine_native::{
+    Memory, cfex_air, cfex_damage_entry, cfex_member, cnaval_combat, naval_combat_air_hit,
+    naval_combat_hit, naval_ship_modifier_inputs, walk::Outcome,
 };
-use replay::{
-    frame::TableView,
-    rows::{self, TableId, tables},
-};
+use engine_naval_history::naval_combat_air_base_wings;
+use replay_data::{rows, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
     /// Benchmarks: read every weapon term's metadata, as without the memo.
@@ -32,7 +31,7 @@ thread_local! {
 /// and the live ships' weapon contexts within it.
 pub fn member_phase_data() -> impl serde::Serialize {
     use std::sync::atomic::Ordering::Relaxed;
-    let phases = &engine::cfex_member::MEMBER_PHASES;
+    let phases = &engine_native::cfex_member::MEMBER_PHASES;
     let mut frequency = 0;
     // SAFETY: an out pointer to a live local.
     let known = unsafe {
@@ -52,7 +51,7 @@ pub fn member_phase_data() -> impl serde::Serialize {
 }
 
 /// The capture's task-force doctrine and leader source memo.
-fn source_memo() -> Option<engine::naval_ship_modifier_inputs::SourceMemo> {
+fn source_memo() -> Option<engine_native::naval_ship_modifier_inputs::SourceMemo> {
     #[cfg(any(test, feature = "test-support"))]
     if SOURCE_MEMO_OFF.get() {
         return None;
@@ -61,10 +60,10 @@ fn source_memo() -> Option<engine::naval_ship_modifier_inputs::SourceMemo> {
 }
 
 /// The capture's weapon-term metadata memo.
-fn term_metadata() -> engine::naval_ship_modifier_inputs::TermMetadata {
+fn term_metadata() -> engine_native::naval_ship_modifier_inputs::TermMetadata {
     #[cfg(any(test, feature = "test-support"))]
     if TERM_MEMO_OFF.get() {
-        return engine::naval_ship_modifier_inputs::TermMetadata::unkept();
+        return engine_native::naval_ship_modifier_inputs::TermMetadata::unkept();
     }
     Default::default()
 }
@@ -111,7 +110,10 @@ pub struct Capacities {
 impl Capacities {
     /// Live combat/header demand before attach and on the spool's sizing thread.
     /// Full capture still supplies growth after a change between observations.
-    pub fn raise_for_live_details(&mut self, demand: engine::naval_combat_demand::Demand) {
+    pub fn raise_for_live_details(
+        &mut self,
+        demand: engine_naval_history::naval_combat_demand::Demand,
+    ) {
         for (capacity, required) in [
             (&mut self.details, demand.rows),
             (&mut self.ships, demand.ships),
@@ -155,8 +157,8 @@ pub struct Captured {
     plane_air: Arena<naval_combat_air_hit::Row>,
     plane_hits: Arena<naval_combat_hit::Row>,
     plane_kills: Arena<naval_air_efficiency_inputs::WingKill>,
-    commanders: Arena<engine::naval_commander_inputs::Row>,
-    commander_timed_traits: Arena<engine::cunit_leader::TimedTrait>,
+    commanders: Arena<engine_native::naval_commander_inputs::Row>,
+    commander_timed_traits: Arena<engine_native::cunit_leader::TimedTrait>,
     weapon_sources: Arena<naval_ship_modifier_inputs::SourceRow>,
     weapon_terms: Arena<naval_ship_modifier_inputs::ModifierTerm>,
     /// Air bases the hour's combats reference, in first-reference order.
@@ -471,36 +473,36 @@ impl Captured {
             naval_hits: &mut self.hits.first,
             lengths: [0; 3],
             required: [0; 3],
-            planes: engine::walk::Buffer::Growing(&mut self.planes.first),
+            planes: engine_native::walk::Buffer::Growing(&mut self.planes.first),
             planes_len: 0,
             planes_required: 0,
-            plane_air_hits: engine::walk::Buffer::Growing(&mut self.plane_air.first),
-            plane_naval_hits: engine::walk::Buffer::Growing(&mut self.plane_hits.first),
+            plane_air_hits: engine_native::walk::Buffer::Growing(&mut self.plane_air.first),
+            plane_naval_hits: engine_native::walk::Buffer::Growing(&mut self.plane_hits.first),
             plane_hit_lengths: [0; 2],
             plane_hit_required: [0; 2],
-            plane_kills: engine::walk::Buffer::Growing(&mut self.plane_kills.first),
+            plane_kills: engine_native::walk::Buffer::Growing(&mut self.plane_kills.first),
             plane_kills_len: 0,
             plane_kills_required: 0,
-            commander_inputs: engine::walk::Buffer::Growing(&mut self.commanders.first),
+            commander_inputs: engine_native::walk::Buffer::Growing(&mut self.commanders.first),
             commander_inputs_len: 0,
             commander_inputs_required: 0,
             commander_timed_traits: &mut self.commander_timed_traits.first,
             commander_timed_traits_len: 0,
-            side_units: engine::walk::Buffer::Growing(&mut self.side_units.first),
+            side_units: engine_native::walk::Buffer::Growing(&mut self.side_units.first),
             side_units_len: 0,
             side_units_required: 0,
             summary_countries: &mut self.summary_countries,
             summary_countries_len: 0,
-            custom_sea: engine::walk::Buffer::Growing(&mut self.custom_sea.first),
+            custom_sea: engine_native::walk::Buffer::Growing(&mut self.custom_sea.first),
             custom_sea_len: 0,
             custom_sea_required: 0,
-            damage_sources: engine::walk::Buffer::Growing(&mut self.damage_sources.first),
+            damage_sources: engine_native::walk::Buffer::Growing(&mut self.damage_sources.first),
             damage_sources_len: 0,
             damage_sources_required: 0,
-            wing_types: engine::walk::Buffer::Growing(&mut self.wing_types.first),
+            wing_types: engine_native::walk::Buffer::Growing(&mut self.wing_types.first),
             wing_types_len: 0,
             wing_types_required: 0,
-            plane_wings: engine::walk::Buffer::Growing(&mut self.plane_wings.first),
+            plane_wings: engine_native::walk::Buffer::Growing(&mut self.plane_wings.first),
             plane_wings_len: 0,
             plane_wings_required: 0,
             weapon_sources: &mut self.weapon_sources.first,
@@ -515,7 +517,7 @@ impl Captured {
             memory,
             base,
             state,
-            engine::walk::Buffer::Growing(&mut self.details.rows),
+            engine_native::walk::Buffer::Growing(&mut self.details.rows),
             &mut self.ships.rows,
             &mut self.groups,
             &mut buffers,
@@ -861,8 +863,8 @@ impl Captured {
 }
 /// Spool-thread commander projection, shared with retained naval results.
 pub fn commander_inputs(
-    c: &engine::naval_commander_inputs::Row,
-    timed: &[engine::cunit_leader::TimedTrait],
+    c: &engine_native::naval_commander_inputs::Row,
+    timed: &[engine_native::cunit_leader::TimedTrait],
 ) -> rows::NavalCommanderInputs {
     rows::NavalCommanderInputs {
         commander: c.commander,
@@ -934,7 +936,7 @@ pub fn commander_inputs(
     }
 }
 pub fn commander_skill(
-    s: engine::naval_commander_inputs::SkillDefinition,
+    s: engine_native::naval_commander_inputs::SkillDefinition,
 ) -> rows::CombatCommanderSkillDefinition {
     rows::CombatCommanderSkillDefinition {
         present: s.present,
@@ -1172,23 +1174,23 @@ mod tests {
     #[test]
     fn commander_projection_preserves_timed_trait_order_for_live_and_results() {
         let timed = [
-            engine::cunit_leader::TimedTrait {
+            engine_native::cunit_leader::TimedTrait {
                 token_id: 9,
                 definition_ordinal: 3,
                 remaining_days: -1,
             },
-            engine::cunit_leader::TimedTrait {
+            engine_native::cunit_leader::TimedTrait {
                 token_id: 9,
                 definition_ordinal: 3,
                 remaining_days: 0,
             },
-            engine::cunit_leader::TimedTrait {
+            engine_native::cunit_leader::TimedTrait {
                 token_id: 7,
                 definition_ordinal: 8,
                 remaining_days: i32::MAX,
             },
         ];
-        let commander = engine::naval_commander_inputs::Row {
+        let commander = engine_native::naval_commander_inputs::Row {
             commander: (9 << 32) | 4713,
             timed_traits: [1, 2],
             ..Default::default()
@@ -1208,7 +1210,7 @@ mod tests {
             [(9, 3, 0), (7, 8, i32::MAX)]
         );
         let row = commander_inputs(
-            &engine::naval_commander_inputs::Row {
+            &engine_native::naval_commander_inputs::Row {
                 commander: commander.commander,
                 ..Default::default()
             },

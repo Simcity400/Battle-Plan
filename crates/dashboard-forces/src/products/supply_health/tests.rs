@@ -3,13 +3,11 @@ use dashboard_base::{
     source::SourceKey,
     test_fixtures::{CAMPAIGN, records, source},
 };
-use replay::{
-    frame::TableView,
-    rows::{
-        CountryLinkRow, CountryRow, DivisionManpowerContributor, DivisionRow, DivisionStatusRow,
-        Recorded, TableRows,
-    },
+use replay_data::{
+    rows::CountryLinkRow, rows::CountryRow, rows::DivisionManpowerContributor, rows::DivisionRow,
+    rows::DivisionStatusRow, rows::Recorded, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 use std::{hint::black_box, path::PathBuf, time::Instant};
 
 fn defines() -> Defines {
@@ -259,8 +257,9 @@ fn supply_health_reads_mod_defines_and_refuses_missing_forms_by_name() {
         "NDefines={NMilitary={SUPPLY_GRACE=10,LOW_SUPPLY=.6},NGraphics={SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD=.15,SUPPLY_UNIT_COUNTER_LOW_THRESHOLD=.4}}").unwrap();
     std::fs::write(addon.join("common/defines/01_mod.lua"),
         "local x=2; NDefines.NMilitary.SUPPLY_GRACE=x*7; NDefines.NMilitary.LOW_SUPPLY=.73; NDefines.NGraphics.SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD=.123456789; NDefines.NGraphics.SUPPLY_UNIT_COUNTER_LOW_THRESHOLD=.52").unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&base, &[]), (&addon, &[])]).unwrap();
-    let got = Defines::read(&installed_content::defines::read(&layers).unwrap()).unwrap();
+    let layers =
+        installed_content_core::ResolvedLayers::from_folders(&[(&base, &[]), (&addon, &[])]).unwrap();
+    let got = Defines::read(&installed_content_core::defines::read(&layers).unwrap()).unwrap();
     assert_eq!(
         got,
         Defines {
@@ -276,9 +275,10 @@ fn supply_health_reads_mod_defines_and_refuses_missing_forms_by_name() {
         "NDefines.NGraphics.SUPPLY_UNIT_COUNTER_LOW_THRESHOLD={unsupported=1}",
     )
     .unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&base, &[]), (&addon, &[])]).unwrap();
+    let layers =
+        installed_content_core::ResolvedLayers::from_folders(&[(&base, &[]), (&addon, &[])]).unwrap();
     assert!(
-        Defines::read(&installed_content::defines::read(&layers).unwrap())
+        Defines::read(&installed_content_core::defines::read(&layers).unwrap())
             .unwrap_err()
             .to_string()
             .contains("NGraphics.SUPPLY_UNIT_COUNTER_LOW_THRESHOLD")

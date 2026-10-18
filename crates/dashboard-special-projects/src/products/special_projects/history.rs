@@ -4,13 +4,13 @@ use super::*;
 use dashboard_text::metadata::validate_campaign;
 use dashboard_text::metadata::{check_cancel, tagged_countries};
 use dashboard_text::triggers::inputs::{self as reuse, ReuseCounts, Since, TableChanges};
-use replay::rows::CountryRow;
 #[cfg(any(test, feature = "test-support"))]
-use replay::{
-    container::Replay,
-    frame::{FrameDecoder, Metrics, SharedView, TableView},
-    rows::{RowCodec, TableRows, TableSchema},
-};
+use replay::container::Replay;
+use replay_data::rows::CountryRow;
+#[cfg(any(test, feature = "test-support"))]
+use replay_data::{rows::RowCodec, rows::TableRows, rows::TableSchema};
+#[cfg(any(test, feature = "test-support"))]
+use replay_frame::{frame::FrameDecoder, frame::Metrics, frame::SharedView, frame::TableView};
 use std::collections::BTreeSet;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -219,14 +219,15 @@ impl Inputs {
             projects
                 .iter()
                 .filter(|project| {
-                    project.program_reference as u32 == engine::nproject_cprogram::REFERENCE_TYPE
+                    project.program_reference as u32
+                        == engine_projects::nproject_cprogram::REFERENCE_TYPE
                 })
                 .map(|project| (project.program_reference >> 32) as u32),
         );
         let scientists: Vec<_> = programs
             .iter()
             .flatten()
-            .filter(|program| program.scientist as u32 == engine::ccharacter::REFERENCE_TYPE)
+            .filter(|program| program.scientist as u32 == engine_native::ccharacter::REFERENCE_TYPE)
             .map(|program| (program.scientist >> 32) as u32)
             .collect();
         let characters = rows_at::<tables::Characters>(frame, scientists.iter().copied());
@@ -337,7 +338,7 @@ pub(super) struct Span {
 pub(super) struct BranchScan {
     /// The recording's format, which dates its daily tables
     /// ([`dashboard_text::metadata::slot_read`]).
-    pub(crate) format: replay::format::FormatVersion,
+    pub(crate) format: replay_data::format::FormatVersion,
     pub campaign_start: Option<i32>,
     pub spans: Vec<Span>,
     blocks: usize,

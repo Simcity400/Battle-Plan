@@ -4,7 +4,7 @@
 //! characters' appointed list), is read every hour. A row records a country's appointed `CAdvisor*`
 //! array and each advisor's character id, idea and slot. Every writer of the array is a Hooked site
 //! of the advisor pool family  (advisor insertion, the unappointment helper, the pool's constructor
-//! and destructor, [`engine::advisor_pool_mutations`]); every writer of an advisor's character
+//! and destructor, [`engine_mutations::advisor_pool_mutations`]); every writer of an advisor's character
 //! link, idea and slot is one of the advisor family's sites, which notify the character domain
 //! ([`crate::character_changes`]); a character's id is written only by `repair_containers`, which
 //! the roster domain observes ([`crate::roster_changes`]); and a country gains or replaces its
@@ -20,12 +20,10 @@ use crate::{
     advisor_pool_changes::{Counts, Table},
     sampled_verify::Check,
 };
-use engine::{
-    Memory, allocation,
-    ccharacter::NameWalk,
-    ccountry_characters::{self as native, Row},
-    cpdx_array::Array,
-    walk::Outcome,
+use engine_allocation as allocation;
+use engine_native::{
+    Memory, ccharacter::NameWalk, ccountry_characters as native, ccountry_characters::Row,
+    cpdx_array::Array, walk::Outcome,
 };
 
 /// Whether HiredAdvisors carries a quiet hour.
@@ -84,7 +82,7 @@ pub(super) fn key(
     domains: &dyn Domains,
 ) -> Option<Key> {
     let (pools, characters, roster) = (domains.pools()?, domains.characters()?, domains.roster()?);
-    let arrays = engine::ccountry::Reader::new(memory, base, game_state)
+    let arrays = engine_native::ccountry::Reader::new(memory, base, game_state)
         .ok()?
         .arrays();
     Some(Key {
@@ -299,7 +297,7 @@ mod tests {
     /// held: every hour walks (and here fails, unreadable).
     #[test]
     fn an_unreadable_census_holds_nothing_and_walks_every_hour() {
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -341,8 +339,8 @@ mod tests {
             bytes[at + 8..at + 12].copy_from_slice(&count.to_le_bytes());
             bytes[at + 12..at + 16].copy_from_slice(&count.to_le_bytes());
         };
-        header(engine::cgame_state::COUNTRIES, 0x1000, 2);
-        header(engine::cgame_state::COUNTRY_LINKS, 0x1100, 1);
+        header(engine_native::cgame_state::COUNTRIES, 0x1000, 2);
+        header(engine_native::cgame_state::COUNTRY_LINKS, 0x1100, 1);
         bytes
     }
 
@@ -352,7 +350,7 @@ mod tests {
     #[test]
     fn a_quiet_hour_publishes_the_held_walk_and_its_rotation_hour_compares() {
         let world = empty_world();
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0x1000,
             bytes: &world,
         };

@@ -1,7 +1,8 @@
 //! Battle Plan Recorder beside the replay app: starting it when this app opens, and
 //! the recording names and campaign flags both programs read from the
 //! recorder's shared settings.
-use replay::{identity::is_campaign_uuid, recorder_settings::RecorderSettings};
+use replay::recorder_settings::RecorderSettings;
+use replay_data::identity::is_campaign_uuid;
 use serde::Serialize;
 use std::{
     collections::BTreeMap,

@@ -1,7 +1,7 @@
 //! Allocation-free notifications from the native writers of each country's
 //! available- and appointed-advisor arrays and character records and of the
 //! character manager's advisor idea-token set
-//! ([`engine::advisor_pool_mutations`]). A detour only notifies the shared
+//! ([`engine_mutations::advisor_pool_mutations`]). A detour only notifies the shared
 //! watch registry ([`WatchRegistry`]) for the object its first argument
 //! names, counts its site and calls the original; it never changes game
 //! behaviour. remove_advisor_role names no pool, so it revokes
@@ -14,10 +14,8 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{
-    Memory,
-    advisor_pool_mutations::{MUTATIONS, Receiver},
-};
+use engine_mutations::{advisor_pool_mutations::MUTATIONS, advisor_pool_mutations::Receiver};
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -317,7 +315,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "advisor_pool_changes")
             && MUTATIONS[..UNAPPOINT].iter().all(|(site, _)| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             let callbacks: [usize; UNAPPOINT] = [

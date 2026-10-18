@@ -11,33 +11,33 @@ use dashboard_base::products::{
 use dashboard_base::{catalogue, source::Source};
 use dashboard_core::transport::json_len;
 use dashboard_core::{config::LoadContext, protocol::validate_tag};
+#[cfg(any(test, feature = "test-support"))]
+use dashboard_text::metadata::validate_campaign;
 use dashboard_text::{
     catalogue::{Catalogue, Refusals, View},
     metadata::{IdentityTrack, LinkTags, mapped_slot, slot_read},
     scripted_text::{self, StateNames},
 };
-use engine::craid_instance as native;
-use installed_content::raids::{
-    Catalog, RaidType,
-    target::{country as target_country, state as target_state},
+use engine_native::craid_instance as native;
+use installed_content_raids::{
+    raids::Catalog, raids::RaidType, raids::target::country as target_country,
+    raids::target::state as target_state,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{RaidRow, RaidScope, TableId, tables},
-};
+#[cfg(any(test, feature = "test-support"))]
+use replay::container::Replay;
+use replay_data::{rows::RaidRow, rows::RaidScope, rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
+#[cfg(any(test, feature = "test-support"))]
+use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
+#[cfg(any(test, feature = "test-support"))]
+use std::{collections::VecDeque, sync::atomic::Ordering};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
 use ts_rs::TS;
-#[cfg(any(test, feature = "test-support"))]
-use {
-    dashboard_text::metadata::validate_campaign,
-    replay::{container::Replay, frame::FrameDecoder},
-    std::{collections::VecDeque, sync::atomic::Ordering},
-};
 
 pub struct Raids;
 
@@ -313,7 +313,7 @@ fn prepare_types(cat: &Catalogue, raids: &Catalog) -> Vec<RaidTypeInfo> {
 
 pub fn check_content(cat: &Catalogue) -> io::Result<Vec<dashboard_core::findings::Finding>> {
     use dashboard_core::findings::{Finding, Kind};
-    let raids = installed_content::raids::read(&cat.content.layers)?;
+    let raids = installed_content_raids::raids::read(&cat.content.layers)?;
     // The corpus raid reader owns native notes, including uncertain types.
     let mut findings = Vec::new();
     let mut icons = BTreeMap::new();
@@ -365,7 +365,7 @@ pub fn check_content(cat: &Catalogue) -> io::Result<Vec<dashboard_core::findings
 }
 
 fn read_content(cat: Arc<Catalogue>) -> io::Result<Content> {
-    let raids = installed_content::raids::read(&cat.content.layers)?;
+    let raids = installed_content_raids::raids::read(&cat.content.layers)?;
     let mut warnings = cat.verification.clone();
     warnings.extend(cat.warnings.iter().cloned());
     warnings.extend(raids.misreads.iter().map(|(_, text)| text.clone()));
@@ -430,7 +430,7 @@ fn target_name(
     content: &Content,
 ) -> Result<String, String> {
     let cat = &content.catalogue;
-    installed_content::raids::target::location(
+    installed_content_raids::raids::target::location(
         frame,
         scope,
         |key| {
@@ -486,7 +486,7 @@ struct Scan {
     /// The recording's format, which dates its daily tables
     /// ([`dashboard_text::metadata::slot_read`]); every observation supplies it.
     #[serde(skip)]
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
     result: ScannedRaids,
     tracks: BTreeMap<String, Track>,
     #[serde(with = "dashboard_core::map_pairs")]
@@ -535,7 +535,7 @@ impl Default for Scan {
 impl Scan {
     fn new() -> Self {
         Self {
-            format: replay::format::FormatVersion::default(),
+            format: replay_data::format::FormatVersion::default(),
             result: ScannedRaids::default(),
             tracks: BTreeMap::new(),
             tallies: BTreeMap::new(),
@@ -653,10 +653,7 @@ impl Scan {
                 && self.country_keys.as_ref().is_none_or(|keys| {
                     #[cfg(test)]
                     let before = keys.row_visits();
-                    let changed = !keys.same_changes(
-                        countries,
-                        changes.rows(TableId::Countries),
-                    );
+                    let changed = !keys.same_changes(countries, changes.rows(TableId::Countries));
                     #[cfg(test)]
                     {
                         self.work.row_visits += keys.row_visits() - before;

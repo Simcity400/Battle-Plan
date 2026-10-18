@@ -1,4 +1,4 @@
-//! Lays out and draws [`installed_content::gui::native`] element trees with the retained state owned
+//! Lays out and draws [`installed_content_core::gui::native`] element trees with the retained state owned
 //! by [`lifecycle::Instance`]. Windows preserve attach order, evaluated position and size,
 //! anchors and margins. Controls preserve authored or code-written sprites, frames, text,
 //! progress, scale and state. Grids and overlapping lists use [`grid_slots`] and
@@ -18,14 +18,13 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::collections::{BTreeSet, HashMap};
 
-use installed_content::{
+use installed_content_core::{
+    gui::native, gui::native::Animation, gui::native::Coordinate, gui::native::Element,
+    gui::native::Fields, gui::native::GridFormat, gui::native::Kind, gui::native::ListFormat,
+    gui::native::Orientation, gui::native::TextFormat, gui::native::VerticalAlignment,
     gui::native::fonts::TextColors,
-    gui::native::{
-        self, Animation, Coordinate, Element, Fields, GridFormat, Kind, ListFormat, Orientation,
-        TextFormat, VerticalAlignment,
-    },
-    localisation::Localisation,
 };
+use installed_content_localisation::localisation::Localisation;
 
 pub mod animation;
 pub mod fixed;
@@ -55,7 +54,7 @@ pub fn lossy(bytes: &[u8]) -> String {
 }
 
 /// The fallback sprite for an empty or unknown sprite name.
-pub const FALLBACK_SPRITE: &[u8] = installed_content::gui::native::resources::FALLBACK_SPRITE;
+pub const FALLBACK_SPRITE: &[u8] = installed_content_core::gui::native::resources::FALLBACK_SPRITE;
 
 /// Why a window cannot be drawn as the game draws it, for one element: its kind names the reason
 /// for counting ([`Refusal::kind`]), its detail says what the game does.
@@ -228,7 +227,7 @@ pub struct SpriteInfo {
     /// report zero extent.
     pub missing: Option<String>,
     /// Why the sprite is not taken as the game takes it, by kind: the reader's refusals of its
-    /// declaration ([`installed_content::gui::native::sprites::SpriteFacts::refusals`],
+    /// declaration ([`installed_content_core::gui::native::sprites::SpriteFacts::refusals`],
     /// [`RefusalKind::Reader`]), a texture whose bytes leave the draw undetermined
     /// ([`RefusalKind::UndefinedRead`]; [`RefusalKind::MissingInput`] for the device) or at a
     /// path the layers cannot address ([`RefusalKind::MissingResource`]). A layout that draws or measures it is refused by
@@ -237,8 +236,8 @@ pub struct SpriteInfo {
 }
 
 /// Truncates f32 to i32 using the shared integer-conversion implementation
-/// ([`installed_content::crt::truncate_f32`]).
-use installed_content::crt::truncate_f32;
+/// ([`installed_content_core::crt::truncate_f32`]).
+use installed_content_core::crt::truncate_f32;
 
 impl SpriteInfo {
     /// Frame grid dimensions: `noOfFrames` horizontally and one vertically, with the axes
@@ -444,7 +443,7 @@ pub trait Resources {
         None
     }
     /// Over the one registry every `.gui` file's `guiTypes` insert into
-    /// ([`installed_content::gui::native::Guis::template`]): the scrollbars a container, a list box or
+    /// ([`installed_content_core::gui::native::Guis::template`]): the scrollbars a container, a list box or
     /// a scrollbar's parts name are found there.
     fn gui_type(&self, name: &[u8]) -> Option<&Element>;
     /// A texture file the game's code loads by path (an edit box's `textureFile` its text
@@ -461,7 +460,7 @@ pub trait Resources {
         None
     }
     /// Whether the content names a `textBoxType` whose constructor can register a session text
-    /// sprite ([`installed_content::gui::native::Guis::text_box_named`]). Such a sprite persists under
+    /// sprite ([`installed_content_core::gui::native::Guis::text_box_named`]). Such a sprite persists under
     /// the template name after construction, so later absent-sprite lookup can depend on
     /// unrecorded session history. The default `false` states that no such template exists.
     fn session_text_sprite(&self, name: &[u8]) -> bool {
@@ -1546,7 +1545,7 @@ pub(super) fn own_sprite(element: &Element) -> Option<(&[u8], bool)> {
         }
         Fields::Button(button) => Some((&button.sprite, true)),
         Fields::ListBox(list) => {
-            let name = installed_content::parser::c_string(&list.background);
+            let name = installed_content_core::parser::c_string(&list.background);
             (!name.is_empty()).then_some((name, true))
         }
         Fields::EditBox(edit) if edit.flags() & 0x2 == 0 => Some((b"", false)),

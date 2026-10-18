@@ -1,7 +1,8 @@
 use super::*;
 use crate::triggers::scope_selector;
-use installed_content::crt::{Scanned, scan_i32};
-use replay::{frame::TableView, rows::TableId};
+use installed_content_core::{crt::Scanned, crt::scan_i32};
+use replay_data::rows::TableId;
+use replay_frame::frame::TableView;
 
 impl Renderer<'_, '_, '_> {
     // int effect: selectors leave the integer
@@ -30,7 +31,10 @@ impl Renderer<'_, '_, '_> {
         }
     }
 
-    fn description_province(&self, id: u32) -> Result<Option<&replay::rows::ProvinceRow>, String> {
+    fn description_province(
+        &self,
+        id: u32,
+    ) -> Result<Option<&replay_data::rows::ProvinceRow>, String> {
         Ok(self
             .context
             .text

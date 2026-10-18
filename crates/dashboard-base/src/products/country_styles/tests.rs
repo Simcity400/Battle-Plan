@@ -1,11 +1,9 @@
 use super::HourKey;
 use crate::test_fixtures::{CAMPAIGN, records, source};
-use installed_content::localisation::Localisation;
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{TableId, TableRows},
-};
+use installed_content_localisation::localisation::Localisation;
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::sync::{Arc, atomic::AtomicBool};
 
 #[test]
@@ -27,7 +25,7 @@ fn styled_frame(hour: i32, red: f32) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1));
     *frame.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(vec![
-            replay::rows::CountryAppearanceRow {
+            replay_data::rows::CountryAppearanceRow {
                 country: 9001,
                 red: red.to_bits(),
                 green: 0.5_f32.to_bits(),
@@ -36,7 +34,7 @@ fn styled_frame(hour: i32, red: f32) -> DecodedFrame {
             },
         ]));
     *frame.tables[TableId::Politics.index()] =
-        TableView::Complete(TableRows::Politics(vec![replay::rows::PoliticsRow {
+        TableView::Complete(TableRows::Politics(vec![replay_data::rows::PoliticsRow {
             country: 9001,
             ..Default::default()
         }]));
@@ -46,7 +44,7 @@ fn styled_frame(hour: i32, red: f32) -> DecodedFrame {
 #[test]
 fn country_styles_take_the_engine_name_and_the_recorded_map_colour() {
     // Colour codes in the game's text are removed from chart names.
-    let localisation: installed_content::localisation::Localisation =
+    let localisation: installed_content_localisation::localisation::Localisation =
         [("GER".to_owned(), "§YGerman§! Reich".to_owned())]
             .into_iter()
             .collect();

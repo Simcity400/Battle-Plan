@@ -2,7 +2,8 @@
 //! Progress runs stay country-local; the feed caches only actual completions.
 
 use super::*;
-use replay::{container::Replay, frame::FrameDecoder};
+use replay::container::Replay;
+use replay_frame::frame::FrameDecoder;
 
 #[cfg(any(test, feature = "test-support"))]
 const CACHED_BRANCHES: usize = 4;
@@ -12,7 +13,7 @@ const CACHED_BRANCHES: usize = 4;
 struct WorldBuilder {
     /// The recording's format, which dates its daily tables
     /// ([`dashboard_text::metadata::slot_read`]).
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
     countries: BTreeMap<(u32, u32), Builder>,
     campaign_start: Option<i32>,
     warnings: BTreeMap<String, usize>,
@@ -437,7 +438,7 @@ pub(super) fn present_observations(
 /// Dollar aliases are expanded before deciding whether country frame inputs are needed.
 pub(super) fn scripted_names(
     definitions: &Catalog,
-    localisation: &installed_content::localisation::Localisation,
+    localisation: &installed_content_localisation::localisation::Localisation,
 ) -> bool {
     let keys: std::collections::BTreeSet<_> = definitions
         .projects

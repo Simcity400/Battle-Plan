@@ -9,7 +9,7 @@ fn owned_log_copies_multiple_conferences_and_retains_failures() {
     assert_eq!(
         f.copy(
             &mut [0; 2],
-            &mut [engine::peace_settlement::Action::default(); 3]
+            &mut [engine_peace::peace_settlement::Action::default(); 3]
         )
         .actions,
         3
@@ -23,7 +23,7 @@ fn owned_log_copies_multiple_conferences_and_retains_failures() {
     })
     .unwrap();
     let bytes = storage.allocated_bytes();
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: 0,
         bytes: &f.bytes,
     };
@@ -33,7 +33,7 @@ fn owned_log_copies_multiple_conferences_and_retains_failures() {
     assert_eq!(storage.events[0].snapshot.actions, 3);
     f.u64(0x20000, 99);
     assert!(storage.observe(
-        &engine::memory::SliceMemory {
+        &engine_native::memory::SliceMemory {
             base: 0,
             bytes: &f.bytes
         },
@@ -48,7 +48,7 @@ fn owned_log_copies_multiple_conferences_and_retains_failures() {
         Some("peace action vtable unsupported")
     );
     assert!(!storage.observe(
-        &engine::memory::SliceMemory {
+        &engine_native::memory::SliceMemory {
             base: 0,
             bytes: &f.bytes
         },
@@ -67,7 +67,7 @@ fn bounded_storage_follows_design_and_stress_populations() {
     for count in [1500, 5000] {
         let mut f = Fixture::new(count, count);
         let pointer = f.rebase();
-        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let mut storage = Storage::new(Capacities::for_counts(count, count)).unwrap();
         assert!(storage.observe(&memory, 0, pointer, Some(91), 0, true));
         assert_eq!(storage.events[0].snapshot.failure, None);

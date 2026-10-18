@@ -4,12 +4,12 @@ use super::{
     program_outcome,
 };
 use crate::table_capture::CaptureRows;
-use engine::{
-    ccountry, cgame_state, msvc_string, nproject_breakthrough_node,
-    nproject_cbreakthrough_progress, nproject_cprogram, nproject_cprogram_status,
-    nproject_cproject, nproject_cproject_pool, nproject_cproject_state_machine,
-    nproject_cprototype_project_state as prototype, nproject_csimple_project_state as simple,
-    nproject_sproject_context, nproject_sproject_history,
+use engine_native::{ccountry, cgame_state, msvc_string};
+use engine_projects::{
+    nproject_breakthrough_node, nproject_cbreakthrough_progress, nproject_cprogram,
+    nproject_cprogram_status, nproject_cproject, nproject_cproject_pool,
+    nproject_cproject_state_machine, nproject_cprototype_project_state as prototype,
+    nproject_csimple_project_state as simple, nproject_sproject_context, nproject_sproject_history,
 };
 
 pub const BASE: usize = 0x140000000;
@@ -30,8 +30,8 @@ const BT_HEAD: usize = 0x9100;
 pub const BT_NODE: usize = 0x9200;
 pub const HEAP: usize = 0xA000;
 
-pub fn memory(bytes: &[u8]) -> engine::memory::SliceMemory<'_> {
-    engine::memory::SliceMemory {
+pub fn memory(bytes: &[u8]) -> engine_native::memory::SliceMemory<'_> {
+    engine_native::memory::SliceMemory {
         base: ADDRESS,
         bytes,
     }
@@ -390,7 +390,7 @@ pub fn fixture() -> Vec<u8> {
 
 /// Reference typed walks with identical pooled buffers, outcomes and
 /// arenas installed exactly like `decode_projects_payload` installs them.
-pub fn direct(memory: &impl engine::Memory, capacities: &Capacities) -> Captured {
+pub fn direct(memory: &impl engine_native::Memory, capacities: &Capacities) -> Captured {
     let mut captured = Captured::with_capacities(capacities);
     let first = nproject_cprogram::walk(
         memory,
@@ -440,7 +440,7 @@ pub fn job() -> ProjectsJob {
 /// Capture one current payload, then decode into fresh pooled buffers. The
 /// payload holds ProjectPrograms and ProjectBreakthroughs only.
 pub fn split(
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     capacities: &Capacities,
 ) -> (Captured, ProjectsCopyReport, ProjectsJob) {
     let mut captured = Captured::with_capacities(capacities);

@@ -1,6 +1,6 @@
 //! Allocation-free notifications from the native writers of every rail
 //! info's RailCooldowns row, its building and selection inputs and its
-//! RailEdges rows ([`engine::railway_mutations`]). A detour only marks the
+//! RailEdges rows ([`engine_mutations::railway_mutations`]). A detour only marks the
 //! province whose info its arguments name in the family's [`DirtySet`],
 //! counts its site and calls the original; it never changes game behaviour.
 //!
@@ -26,10 +26,8 @@ use crate::{
     dirty_set::{Dirty, DirtySet},
     hook::Hook,
 };
-use engine::{
-    Memory,
-    railway_mutations::{MUTATIONS, Receiver},
-};
+use engine_mutations::{railway_mutations::MUTATIONS, railway_mutations::Receiver};
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -105,7 +103,7 @@ impl Watches {
     /// `location`: a province status marks its province; a state status
     /// holds no rail building.
     fn building(&self, flags: u32, location: u32) -> Option<Dirty<'_>> {
-        if flags & engine::cbuilding_status::PROVINCE_FLAG == 0 {
+        if flags & engine_native::cbuilding_status::PROVINCE_FLAG == 0 {
             return None;
         }
         self.buildings[0].fetch_add(1, Ordering::Relaxed);
@@ -225,9 +223,9 @@ fn target(receiver: Receiver, first: usize, second: usize) -> Target {
         ),
         Receiver::Info => {
             // SAFETY: a guarded read of live memory on the calling thread.
-            let memory = unsafe { engine::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native::memory::LiveMemory::new() };
             Target::Province(
-                engine::railway_mutations::province(&memory, first).map(|id| id as usize),
+                engine_mutations::railway_mutations::province(&memory, first).map(|id| id as usize),
             )
         }
         Receiver::CooldownList => Target::Countdown,
@@ -393,7 +391,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "rail_changes")
             && MUTATIONS.iter().all(|(site, _)| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [
@@ -521,9 +519,9 @@ mod tests {
         );
         let mut info = vec![0_u8; 0x100];
         let mut definition = vec![0_u8; 0x100];
-        let id = engine::province_definition::ID;
+        let id = engine_native::province_definition::ID;
         definition[id..id + 4].copy_from_slice(&517_u32.to_le_bytes());
-        let at = engine::cprovince_railway_info::PROVINCE_RECORD;
+        let at = engine_railways::cprovince_railway_info::PROVINCE_RECORD;
         info[at..at + 8].copy_from_slice(&(definition.as_ptr() as u64).to_le_bytes());
         assert_eq!(
             target(Receiver::Info, info.as_ptr() as usize, 7),
@@ -577,7 +575,7 @@ mod tests {
     /// status marks nothing; a status without a location moves the epoch.
     #[test]
     fn forwarded_building_writes_mark_province_statuses() {
-        use engine::cbuilding_status::{PROVINCE_FLAG, STATE_FLAG};
+        use engine_native::{cbuilding_status::PROVINCE_FLAG, cbuilding_status::STATE_FLAG};
         let watches = Watches::enabled(1_024);
         let (Some(epoch), _) = take(&watches) else {
             unreachable!("observing")

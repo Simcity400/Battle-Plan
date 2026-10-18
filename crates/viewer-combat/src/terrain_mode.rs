@@ -8,8 +8,10 @@
 //! effects ([`local`]).
 use std::sync::Arc;
 
-use installed_content::{localisation::Localisation, terrain::TerrainCategory};
-use replay::{frame::DecodedFrame, rows::tables};
+use installed_content_core::terrain::TerrainCategory;
+use installed_content_localisation::localisation::Localisation;
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 use viewer_foundation::{
     map::perspective::Vision,
     tooltip_text::{TextIcons, Tooltip, token, viewing_tag},

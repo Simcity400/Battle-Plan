@@ -1,9 +1,7 @@
 use super::*;
 use crate::test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag};
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::*,
-};
+use replay_data::rows::*;
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 fn frame(hour: i32, members: &[u32], wars: &[(u32, u32, i32)]) -> DecodedFrame {
     let mut frame = scale_frame(1, hour, 3);
@@ -229,7 +227,7 @@ fn event_feed_diplomacy_guarantee_direction_is_first_to_second_from_either_owner
                 first_country: 100_000,
                 second_country: 100_001,
                 start_hour: 101,
-                type_id: engine::cguarantee_relation::TYPE,
+                type_id: engine_native::cguarantee_relation::TYPE,
                 ..Default::default()
             }]));
         *observed.tables[TableId::SliceReads.index()] =
@@ -264,7 +262,7 @@ fn event_feed_diplomacy_initial_guarantees_are_snapshots_even_when_published_lat
                 first_country: 100_000,
                 second_country: 100_001,
                 start_hour: 100,
-                type_id: engine::cguarantee_relation::TYPE,
+                type_id: engine_native::cguarantee_relation::TYPE,
                 ..Default::default()
             }]));
         *observed.tables[TableId::SliceReads.index()] =
@@ -299,7 +297,7 @@ fn event_feed_diplomacy_carried_relation_rows_without_a_current_read_are_not_eve
             first_country: 100_000,
             second_country: 100_001,
             start_hour: 101,
-            type_id: engine::cguarantee_relation::TYPE,
+            type_id: engine_native::cguarantee_relation::TYPE,
             ..Default::default()
         }]));
     *carried.tables[TableId::SliceReads.index()] =
@@ -330,7 +328,7 @@ fn event_feed_diplomacy_guarantees_use_only_fresh_owner_ranges() {
                     first_country: 100_000 + index,
                     second_country: 100_000 + (index + 1) % 3,
                     start_hour: 101,
-                    type_id: engine::cguarantee_relation::TYPE,
+                    type_id: engine_native::cguarantee_relation::TYPE,
                     ..Default::default()
                 })
                 .collect(),
@@ -417,7 +415,7 @@ fn event_feed_diplomacy_guarantee_seen_after_gap_has_observation_bound() {
             first_country: 100_000,
             second_country: 100_001,
             start_hour: 102,
-            type_id: engine::cguarantee_relation::TYPE,
+            type_id: engine_native::cguarantee_relation::TYPE,
             ..Default::default()
         }]));
     *observed.tables[TableId::SliceReads.index()] =
@@ -563,7 +561,7 @@ fn event_feed_diplomacy_observer_resumes_and_appends_without_repeating_relations
                         first_country: 100_000,
                         second_country: 100_001,
                         start_hour: 101,
-                        type_id: engine::cguarantee_relation::TYPE,
+                        type_id: engine_native::cguarantee_relation::TYPE,
                         ..Default::default()
                     }]
                 }),

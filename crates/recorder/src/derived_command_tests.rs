@@ -1,18 +1,14 @@
 #![cfg(feature = "slow-tests")]
 
-use replay::{
-    container::Replay,
-    day_night::{self, Clock},
-    frame::{FrameDecoder, TableUpdate, TableView},
-    rows::{Recorded, TableId},
+use replay::container::Replay;
+use replay::{spool::ControlRecord, spool::Record};
+use replay_data::{day_night, day_night::Clock, rows::Recorded, rows::TableId};
+use replay_data::{
+    identity::Roster, identity::Verification, rows::DayNightClock, rows::ProvinceTemperature,
+    rows::TableRows, rows::TemperaturePass, rows::WeatherProvinceRow, temperature::State,
 };
-use replay::{
-    frame::FrameEncoder,
-    identity::{Roster, Verification},
-    rows::{DayNightClock, ProvinceTemperature, TableRows, TemperaturePass, WeatherProvinceRow},
-    spool::{ControlRecord, Record},
-    temperature::State,
-};
+use replay_frame::frame::FrameEncoder;
+use replay_frame::{frame::FrameDecoder, frame::TableUpdate, frame::TableView};
 use std::fs;
 
 #[test]
@@ -93,7 +89,7 @@ fn derived_command_fails_on_wrong_current_checksum_and_incomplete_comparison() {
     bitmap[28..30].copy_from_slice(&8_u16.to_le_bytes());
     bitmap[54..].fill(0);
     fs::write(game.join("map/rivers.bmp"), &bitmap).unwrap();
-    let gathered = installed_content::gather(&installed_content::GatherOptions {
+    let gathered = installed_content_core::gather(&installed_content_core::GatherOptions {
         game_dir: game.clone(),
         user_dir: user.clone(),
         cache_dir: root.join("cache"),
@@ -101,7 +97,8 @@ fn derived_command_fails_on_wrong_current_checksum_and_incomplete_comparison() {
     })
     .unwrap();
     let executable =
-        engine::build::hash_executable(fs::File::open(game.join("hoi4.exe")).unwrap()).unwrap();
+        engine_executable::build::hash_executable(fs::File::open(game.join("hoi4.exe")).unwrap())
+            .unwrap();
     let mut identity = gathered
         .identity(
             "synthetic".into(),
@@ -157,7 +154,7 @@ fn derived_command_fails_on_wrong_current_checksum_and_incomplete_comparison() {
                                 temperature_pass: Recorded::Value((id == 0).then_some(
                                     TemperaturePass {
                                         anchor: frame.hour,
-                                        checksum: replay::temperature::checksum([0, 0]),
+                                        checksum: replay_data::temperature::checksum([0, 0]),
                                         ..Default::default()
                                     },
                                 )),

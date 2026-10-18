@@ -18,13 +18,9 @@ use viewer_foundation::errors::examples;
 use viewer_foundation::map::test_support::test_tga_rgba8;
 use viewer_foundation::parallel::map;
 
-use installed_content::{
-    ResolvedLayers,
-    characters::{self, Authored},
-    gfx::SpriteSet,
-    gui::native::resources,
-    image::{dds, native::Decode},
-};
+use installed_content_core::{ResolvedLayers, characters, characters::Authored, gui::native::resources};
+use installed_content_gfx::gfx::SpriteSet;
+use installed_content_image::{dds, native::Decode};
 
 use viewer_foundation::map::{
     lazy_icons::{LazyImages, LazyTextures, Lookup},
@@ -234,7 +230,7 @@ pub fn load(
     // A file whose reading stops short leaves every character it could
     // define or redefine unknown, with the file and the cause.
     let mut characters = BTreeMap::<String, Authored>::new();
-    let mut coverage = installed_content::coverage::Coverage::default();
+    let mut coverage = installed_content_core::coverage::Coverage::default();
     for (path, parsed_path) in paths.iter().zip(parsed) {
         coverage.next_file();
         let (found, stop) = parsed_path?;
@@ -386,7 +382,7 @@ mod tests {
 
     #[test]
     fn portrait_sprite_uses_the_native_decoder_and_client_setting() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use super::*;
         let root = std::env::temp_dir().join(format!(
@@ -399,7 +395,7 @@ mod tests {
         let layers = ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
         let sprites = SpriteSet::new(&[(
             "interface/test.gfx".into(),
-            installed_content::gui::native::sprites::read_sprites(
+            installed_content_core::gui::native::sprites::read_sprites(
                 b"spriteTypes = { spriteType = { name = GFX_portrait texturefile = gfx/portrait.tga } }",
             ),
         )]);
@@ -430,7 +426,7 @@ mod tests {
                 if path.contains("broken") {
                     return Err(io::Error::other("broken"));
                 }
-                Ok(dds::Texture::from_rgba8(installed_content::image::Rgba8Image {
+                Ok(dds::Texture::from_rgba8(installed_content_image::Rgba8Image {
                     width: 8,
                     height: 4,
                     pixels: vec![0; 128],
@@ -490,7 +486,7 @@ mod tests {
             "test portrait",
             Arc::new(|path: &str| {
                 let width = if path.contains("generic") { 6 } else { 8 };
-                Ok(dds::Texture::from_rgba8(installed_content::image::Rgba8Image {
+                Ok(dds::Texture::from_rgba8(installed_content_image::Rgba8Image {
                     width,
                     height: 4,
                     pixels: vec![0; width as usize * 16],

@@ -11,7 +11,7 @@ fn shared_animator_clock_preserves_empty_routes_and_names_missing_speed() {
     assert_eq!(animator_min_arc(&[], None, &mut report), Some(0.0));
     assert!(report.selection_errors.is_empty());
     for (speed, expected) in [(0, 0.0), (3, 0.0), (4, 1.0)] {
-        let clock = replay::rows::ClockRow {
+        let clock = replay_data::rows::ClockRow {
             speed,
             ..Default::default()
         };
@@ -165,7 +165,7 @@ fn ship_ladder_has_no_culture_step_and_supports_signed_model_numbers() {
         (3, (1 << 8) | (1 << 39)),
         (4, 1 << 39),
     ]
-    .map(|(ship, formation_flags)| replay::rows::ShipModelRow {
+    .map(|(ship, formation_flags)| replay_data::rows::ShipModelRow {
         ship,
         formation_flags,
         ..Default::default()
@@ -181,7 +181,7 @@ fn ship_ladder_has_no_culture_step_and_supports_signed_model_numbers() {
 
 #[test]
 fn a_recorded_roster_puts_its_first_capital_in_slot_zero_and_supports_after_it() {
-    use replay::rows::{ShipCounterInputs, ShipModelRow};
+    use replay_data::{rows::ShipCounterInputs, rows::ShipModelRow};
     let row = |ship, ordinal, formation_flags| ShipModelRow {
         ship,
         formation_flags,
@@ -230,13 +230,12 @@ fn a_recorded_roster_puts_its_first_capital_in_slot_zero_and_supports_after_it()
 /// operands leave the formation undrawn and counted.
 #[test]
 fn a_patrol_here_has_no_formation_and_one_elsewhere_keeps_its_hulls() {
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{
-            CountryLinkRow, CountryRow, ShipCounterInputs, ShipModelRow, ShipRow, TableRows,
-            TaskForceCounterInputRow, TaskForceMapMotionRow, TaskForceMissionRow, TaskForceRow,
-        },
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::ShipCounterInputs, rows::ShipModelRow,
+        rows::ShipRow, rows::TableRows, rows::TaskForceCounterInputRow,
+        rows::TaskForceMapMotionRow, rows::TaskForceMissionRow, rows::TaskForceRow,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
     use viewer_foundation::map::unit_rules::PATROL;
     const FORCE: u64 = (6689 << 32) | 51;
     const SHIP: u64 = (12 << 32) | 51;
@@ -286,7 +285,7 @@ fn a_patrol_here_has_no_formation_and_one_elsewhere_keeps_its_hulls() {
             ..Default::default()
         }]));
         set(TableRows::ProvinceUnitOrder(vec![
-            replay::rows::ProvinceUnitOrderRow {
+            replay_data::rows::ProvinceUnitOrderRow {
                 province: 5,
                 mixed: vec![FORCE],
                 naval: vec![FORCE],
@@ -390,13 +389,12 @@ fn formation_fixture(
     flags: impl IntoIterator<Item = u64>,
     combat_role: u8,
 ) -> (DecodedFrame, UnitModelAssets) {
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{
-            CountryLinkRow, CountryRow, ShipCounterInputs, ShipModelRow, ShipRow, TableRows,
-            TaskForceCounterInputRow, TaskForceMapMotionRow, TaskForceRow,
-        },
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::ShipCounterInputs, rows::ShipModelRow,
+        rows::ShipRow, rows::TableRows, rows::TaskForceCounterInputRow,
+        rows::TaskForceMapMotionRow, rows::TaskForceRow,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
     let models: Vec<_> = flags
         .into_iter()
         .enumerate()
@@ -441,7 +439,7 @@ fn formation_fixture(
             logical_owner: 100,
             ..Default::default()
         }]),
-        TableRows::ProvinceUnitOrder(vec![replay::rows::ProvinceUnitOrderRow {
+        TableRows::ProvinceUnitOrder(vec![replay_data::rows::ProvinceUnitOrderRow {
             province,
             mixed: vec![force],
             naval: vec![force],
@@ -516,7 +514,7 @@ fn kotka_hulls(
         .map(|force| {
             (
                 force.province,
-                installed_content::movement::ProvinceTerrain {
+                installed_content_core::movement::ProvinceTerrain {
                     flags: u8::from(land),
                     index: 1,
                 },
@@ -524,7 +522,7 @@ fn kotka_hulls(
             )
         })
         .collect();
-    let map = installed_content::movement::MovementMap::from_parts(&provinces);
+    let map = installed_content_core::movement::MovementMap::from_parts(&provinces);
     let world = counter_move::RouteWorld {
         map: &map,
         width: 5632.0,
@@ -629,15 +627,16 @@ fn capital_attach_point_can_be_a_skeleton_joint_without_a_locator() {
     assert!(mesh.locators.is_empty());
 }
 
-fn replace_table(frame: &mut DecodedFrame, table: replay::rows::TableRows) {
+fn replace_table(frame: &mut DecodedFrame, table: replay_data::rows::TableRows) {
     let index = table.table().index();
-    *frame.tables[index] = replay::frame::TableView::Complete(table);
+    *frame.tables[index] = replay_frame::frame::TableView::Complete(table);
 }
 
 #[test]
 fn carrier_plate_only_when_another_task_force_holds_the_visual_slot() {
-    use replay::rows::{
-        ProvinceUnitOrderRow, TableRows, TaskForceCounterInputRow, TaskForceMapMotionRow,
+    use replay_data::{
+        rows::ProvinceUnitOrderRow, rows::TableRows, rows::TaskForceCounterInputRow,
+        rows::TaskForceMapMotionRow,
     };
     let (mut frame, assets) = kotka_formation(0);
     let force = (944 << 32) | 61;
@@ -721,8 +720,9 @@ fn carrier_plate_only_when_another_task_force_holds_the_visual_slot() {
 
 #[test]
 fn rosters_hide_port_hulls_and_share_one_slot_at_sea() {
-    use replay::rows::{
-        ProvinceUnitOrderRow, TableRows, TaskForceCounterInputRow, TaskForceMapMotionRow,
+    use replay_data::{
+        rows::ProvinceUnitOrderRow, rows::TableRows, rows::TaskForceCounterInputRow,
+        rows::TaskForceMapMotionRow,
     };
     let compositions = [
         (497, vec![1 << 39; 8]),

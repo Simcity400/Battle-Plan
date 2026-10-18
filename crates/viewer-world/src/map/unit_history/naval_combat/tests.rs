@@ -1,7 +1,7 @@
 //! Lifecycle checks for the full-reference manager and deactivation-only release. No model renderer is constructed.
 
 use super::*;
-use installed_content::mesh::{Animation, EntityState, Mesh, NavalHitMissEffect};
+use installed_content_core::{mesh::Animation, mesh::EntityState, mesh::Mesh, mesh::NavalHitMissEffect};
 use {
     crate::map::entity_animation::Clip, crate::map::entity_animation::Node,
     crate::map::unit_history, crate::map::unit_history::Kind,

@@ -1,7 +1,7 @@
 use crate::map::gpu_contract::device_descriptor;
 #[cfg(test)]
 use crate::map::test_support::serial;
-use installed_content::map::{CountryColors, ProvinceDefinition};
+use installed_content_core::{map::CountryColors, map::ProvinceDefinition};
 
 use super::*;
 
@@ -369,7 +369,7 @@ fn a_uniform_neighbourhood_sets_the_all_same_flag() {
 /// not, which is the shipped map's case.
 #[test]
 fn the_atlas_warnings_are_raised_only_for_indices_the_bitmap_paints() {
-    use installed_content::terrain::TerrainType;
+    use installed_content_core::terrain::TerrainType;
 
     let kind = |atlas_index| TerrainType {
         name: "t".into(),
@@ -665,7 +665,7 @@ fn sixteen_bit_texels_sample_exactly_on_the_device() {
     }
     assert_eq!(values[8], 1.0);
 }
-use installed_content::image::bmp;
+use installed_content_image::bmp;
 
 /// What every upload refuses is refused before any device exists, so a visual mod's texture the
 /// scene could not upload falls back to the recorded one at load.

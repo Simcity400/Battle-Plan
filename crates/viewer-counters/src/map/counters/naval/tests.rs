@@ -1,8 +1,8 @@
 use super::*;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{TableId, TableRows, TaskForceCounterInputRow, TaskForceRow},
+use replay_data::{
+    rows::TableId, rows::TableRows, rows::TaskForceCounterInputRow, rows::TaskForceRow,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 use viewer_foundation::map::unit_rules::ATTACKING;
 
 /// Exclude combat task forces from counter sources after preparing their
@@ -11,7 +11,7 @@ use viewer_foundation::map::unit_rules::ATTACKING;
 fn combat_task_forces_never_offer_sea_counter_sources() {
     let skips = viewer_foundation::map::task_force_visual::MissionSkips::fixture([(7, (0, 0))], []);
     for combat_references in [i32::MIN, -1, 0, 1, i32::MAX] {
-        let force = replay::rows::TaskForceRow {
+        let force = replay_data::rows::TaskForceRow {
             id: 7,
             combat_references,
             ..Default::default()
@@ -32,7 +32,7 @@ fn combat_task_forces_never_offer_sea_counter_sources() {
 /// model buckets remain available.
 #[test]
 fn combat_task_forces_leave_sea_group_anchors_unchanged_at_both_heights() {
-    use replay::rows::{ShipCounterInputs, ShipModelRow, ShipRow};
+    use replay_data::{rows::ShipCounterInputs, rows::ShipModelRow, rows::ShipRow};
     use {
         crate::map::counter_groups, crate::map::counter_groups::Extents,
         crate::map::counter_groups::GroupDefines, crate::map::counter_groups::Icon,
@@ -377,11 +377,12 @@ fn a_port_force_dropped_for_a_missing_operand_leaves_its_roster_undecided() {
         ..Default::default()
     };
     let forces = [force.clone()];
-    let order = counter_order::RecordedOrder::from_rows(&[replay::rows::ProvinceUnitOrderRow {
-        province: 12,
-        mixed: Vec::new(),
-        naval: vec![7],
-    }]);
+    let order =
+        counter_order::RecordedOrder::from_rows(&[replay_data::rows::ProvinceUnitOrderRow {
+            province: 12,
+            mixed: Vec::new(),
+            naval: vec![7],
+        }]);
     let owner = |raw: u32| (raw < 100).then_some(raw);
     let unlinked = |_: u32| None;
     with_port_context(&forces, |context| {
@@ -422,17 +423,17 @@ fn a_port_force_the_incomplete_census_lacks_leaves_its_roster_undecided() {
     };
     let forces = [recorded];
     let order = counter_order::RecordedOrder::from_rows(&[
-        replay::rows::ProvinceUnitOrderRow {
+        replay_data::rows::ProvinceUnitOrderRow {
             province: 12,
             mixed: Vec::new(),
             naval: vec![7, 8],
         },
-        replay::rows::ProvinceUnitOrderRow {
+        replay_data::rows::ProvinceUnitOrderRow {
             province: 13,
             mixed: Vec::new(),
             naval: vec![7],
         },
-        replay::rows::ProvinceUnitOrderRow {
+        replay_data::rows::ProvinceUnitOrderRow {
             province: 14,
             mixed: Vec::new(),
             naval: vec![9],

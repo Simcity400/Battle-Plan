@@ -572,7 +572,7 @@ mod supply {
             let mut fixture = Fixture::new();
             assert!(matches!(
                 fixture.source.replay_ref().identity.verification,
-                replay::identity::Verification::Unchecked
+                replay_data::identity::Verification::Unchecked
             ));
             let params =
                 serde_json::json!({"branchId":"1", "tags":[tag(0)], "from":31, "to":31, "width":1});

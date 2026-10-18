@@ -74,7 +74,7 @@ impl NameFacts {
         };
         let event =
             |token, class_name, sink_hour, read_hour, province: Option<u32>| sinkings::ShipEvent {
-                entry: replay::rows::SunkShipEntry {
+                entry: replay_data::rows::SunkShipEntry {
                     class_token: token,
                     class_name,
                     sink_hour,
@@ -377,7 +377,7 @@ impl Prepared {
             .classes
             .iter()
             .map(|(&token, (name, sink, read))| sinkings::ShipEvent {
-                entry: replay::rows::SunkShipEntry {
+                entry: replay_data::rows::SunkShipEntry {
                     class_token: token,
                     class_name: name.clone(),
                     sink_hour: *sink,

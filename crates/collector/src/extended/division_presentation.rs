@@ -10,18 +10,17 @@ use crate::{
     spooling::unavailable,
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
-use engine::allocation::{copy_vec, owned_vec};
-use engine::{
+use engine_allocation::{copy_vec, owned_vec};
+use engine_native::{
     Memory, carmy, carmy::DivisionSeed, ccountry, cname_group_member,
     corders_group_member::MembershipCapacity, cprovince, walk::Outcome,
 };
-use replay::{
-    frame::TableInput,
-    rows::{
-        DivisionCamouflage, DivisionMovementRow, DivisionRetreatBanRow, DivisionStatusRow,
-        NameOperands, Recorded, Retired, TableId, Witnessed, tables,
-    },
+use replay_data::{
+    rows::DivisionCamouflage, rows::DivisionMovementRow, rows::DivisionRetreatBanRow,
+    rows::DivisionStatusRow, rows::NameOperands, rows::Recorded, rows::Retired, rows::TableId,
+    rows::Witnessed, rows::tables,
 };
+use replay_frame::frame::TableInput;
 
 pub const N: usize = 4;
 /// The passes inside the DivisionStatus acquisition span.
@@ -52,7 +51,7 @@ pub(crate) fn movement_arrow_data() -> impl serde::Serialize {
 }
 
 // One scalar projection for the unchanged-row comparison and the owned row.
-// Stepped fields are rounded to their display steps (replay::display), as the
+// Stepped fields are rounded to their display steps (replay_data::display), as the
 // baseline holds them.
 macro_rules! status_fields {
     ($row:ident, $apply:ident, [$($args:expr),* $(,)?] $(,)?) => {
@@ -99,7 +98,7 @@ macro_rules! project_status_fields {
             country_ordinal: Recorded::Value($row.country_ordinal),
             invalid_orders_reason: Recorded::Value($row.invalid_orders_reason),
             // Playback computes the glyph byte from the value and threshold.
-            attrition: replay::rows::RetiredU8::default(),
+            attrition: replay_data::rows::RetiredU8::default(),
             supply: Recorded::Value($supply),
             attrition_inputs: Recorded::Value(Retired),
             dig_in_factor: Recorded::Value($dig_in),
@@ -219,7 +218,7 @@ impl NamingWork {
         let index = match self.refusals.binary_search_by_key(&reason, |entry| entry.0) {
             Ok(index) => index,
             Err(index) => {
-                engine::allocation::reserve(&mut self.refusals, 1)?;
+                engine_allocation::reserve(&mut self.refusals, 1)?;
                 self.refusals.insert(index, (reason, 0));
                 index
             }
@@ -357,7 +356,7 @@ impl Capacities {
     ) -> Result<(), &'static str> {
         let count =
             crate::country_scale::table_demand::rows(carmy::walk(memory, base, state, &mut []))?;
-        let mut rows = engine::allocation::default_vec::<carmy::Row>(count)
+        let mut rows = engine_allocation::default_vec::<carmy::Row>(count)
             .map_err(|_| "division name sizing allocation failed")?;
         let mut groups = cname_group_member::GroupKeys::try_with_capacity(count, count)
             .map_err(|_| "division name sizing allocation failed")?;
@@ -370,8 +369,8 @@ impl Capacities {
         let mut failure = None;
         let outcome = carmy::walk_with(memory, base, state, &mut rows, |army, _| {
             let result = army
-                .checked_add(engine::carmy_combat_inputs::NAME_GROUP_MEMBER)
-                .and_then(|address| engine::read::<u64>(memory, address))
+                .checked_add(engine_native::carmy_combat_inputs::NAME_GROUP_MEMBER)
+                .and_then(|address| engine_native::read::<u64>(memory, address))
                 .and_then(|member| usize::try_from(member).ok())
                 .filter(|member| *member != 0)
                 .ok_or("division name sizing member unavailable");
@@ -424,7 +423,7 @@ fn status_packet(c: &Capacities) -> carmy::StatusPacket {
         manpower: 0,
         acclimatization_categories: 0,
         thresholds: 0,
-        modifiers: engine::modifier_accumulator::SnapshotCapacity {
+        modifiers: engine_native::modifier_accumulator::SnapshotCapacity {
             nodes: c.status,
             entries: 0,
         },
@@ -561,7 +560,7 @@ pub struct Captured {
     movement_packet: carmy::MovementPacket,
     /// Sparse execution output from the same held pass, installed only after
     /// both Presentation and Late have joined. Never reads native memory.
-    order_transport: engine::order_execution::UnitPacket,
+    order_transport: engine_native::order_execution::UnitPacket,
     geometry: cprovince::GeometryPacket,
     status_packet: carmy::StatusPacket,
     dig_in: super::dig_in::Captured,
@@ -615,7 +614,7 @@ impl Captured {
             cached_names: Arena::new(0),
             name_groups: cname_group_member::GroupKeys::default(),
             movement_packet: carmy::MovementPacket::vacant(),
-            order_transport: engine::order_execution::UnitPacket::vacant(),
+            order_transport: engine_native::order_execution::UnitPacket::vacant(),
             geometry: cprovince::GeometryPacket::vacant(),
             status_packet: carmy::StatusPacket::vacant(),
             dig_in: super::dig_in::Captured::new(0),
@@ -652,7 +651,7 @@ impl Captured {
             .map_err(crate::allocation::io)
             .unwrap_or_default(),
             movement_packet,
-            order_transport: engine::order_execution::UnitPacket::vacant(),
+            order_transport: engine_native::order_execution::UnitPacket::vacant(),
             geometry: cprovince::GeometryPacket::try_with_capacities(c.geometry)
                 .unwrap_or_default(),
             status_packet: status_packet(c),
@@ -815,7 +814,7 @@ impl Captured {
     /// Its reset makes a failed/cancelled hour incapable of carrying old values.
     pub(crate) fn install_order_transport(
         &mut self,
-        execution: &mut engine::order_execution::Prepared,
+        execution: &mut engine_native::order_execution::Prepared,
     ) {
         self.order_transport.reset();
         execution.swap_units(&mut self.order_transport);
@@ -828,7 +827,10 @@ impl Captured {
         )
     }
 
-    fn order_transport(&self, division: u64) -> Option<replay::rows::DivisionOrderTransportInputs> {
+    fn order_transport(
+        &self,
+        division: u64,
+    ) -> Option<replay_data::rows::DivisionOrderTransportInputs> {
         let rows = self.order_transport.rows();
         if !matches!(self.order_transport.outcome(), Outcome::Rows { len } if len == rows.len()) {
             return None;
@@ -837,11 +839,11 @@ impl Captured {
             .binary_search_by_key(&division, |row| row.division)
             .ok()
             .and_then(|index| rows[index].inputs)?;
-        Some(replay::rows::DivisionOrderTransportInputs {
+        Some(replay_data::rows::DivisionOrderTransportInputs {
             naval_weight: inputs.naval_weight,
             paradrop_eligible: inputs.paradrop_eligible,
             paradrop_modifiers: inputs.paradrop_modifiers.map(|modifiers| {
-                replay::rows::ParadropTransportModifiers {
+                replay_data::rows::ParadropTransportModifiers {
                     country_term: modifiers.country_term,
                     commander_term: modifiers.commander_term,
                 }
@@ -905,7 +907,7 @@ impl Captured {
     /// and a span that cannot be copied leaves the cache to its own reads.
     ///
     /// With the `army_stat` store, a member no hooked writer touched since the
-    /// Held read  (`engine::army_stat_mutations`: `cached-name refresh`, and the
+    /// Held read  (`engine_mutations::army_stat_mutations`: `cached-name refresh`, and the
     /// country-wide refresh, which moves the marks' epoch) is not read: its
     /// held span and cache text stand in for the reads, and the inputs are
     /// derived from the span as from a read (the template's group and a heap
@@ -1351,9 +1353,9 @@ impl Captured {
         self.reset_status();
         let outcome = source_outcome(&sources);
         let rows = &sources.rows[..outcome.len()];
-        self.supply_grace = engine::read::<i32>(
+        self.supply_grace = engine_native::read::<i32>(
             memory,
-            base.wrapping_add(engine::carmy_attrition::SUPPLY_GRACE_RVA),
+            base.wrapping_add(engine_land_inputs::carmy_attrition::SUPPLY_GRACE_RVA),
         );
         // Only the test fixture omits the worker's sample hour and uses fixed storage.
         if hour.is_some() {
@@ -1694,7 +1696,7 @@ impl Captured {
                         && r.numerator == previous.numerator
                         && r.retreat == previous.retreat
                         && r.strategic_redeployment == previous.strategic_redeployment
-                        && replay::rows::Recorded::Value(r.strategic_action)
+                        && replay_data::rows::Recorded::Value(r.strategic_action)
                             == previous.strategic_action
                         && Recorded::Value(r.withdrawal) == previous.withdrawal
                         && Recorded::Value(r.movement_priority) == previous.movement_priority
@@ -1726,7 +1728,7 @@ impl Captured {
                     numerator: r.numerator,
                     retreat: r.retreat,
                     strategic_redeployment: r.strategic_redeployment,
-                    strategic_action: replay::rows::Recorded::Value(r.strategic_action),
+                    strategic_action: replay_data::rows::Recorded::Value(r.strategic_action),
                     withdrawal: Recorded::Value(r.withdrawal),
                     movement_priority: Recorded::Value(r.movement_priority),
                     order_transport: Recorded::Value(self.order_transport(r.division)),
@@ -1767,7 +1769,7 @@ impl Captured {
             .unwrap_or(usize::MAX)
     }
     #[cfg(test)]
-    pub(super) fn tables(&self) -> [replay::frame::TableView; N] {
+    pub(super) fn tables(&self) -> [replay_frame::frame::TableView; N] {
         self.table_inputs(None, None).map(|input| match input {
             TableInput::Sampled(view) => view,
             _ => unreachable!("projection without a baseline always samples"),
@@ -1779,7 +1781,8 @@ impl Captured {
 mod tests {
     use super::*;
     use crate::unit_scale_tests::fixture as scale_fixture;
-    use replay::{frame::TableView, rows::TableRows};
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
 
     mod read_ahead;
     mod status_bench;
@@ -1802,7 +1805,7 @@ mod tests {
     fn template_registry(
         world: &mut scale_fixture::World,
     ) -> (Box<[u8; 32]>, Vec<u8>, Box<[u8; 40]>) {
-        use engine::{creference_registry as registry, reference_bucket as bucket};
+        use engine_native::{creference_registry as registry, reference_bucket as bucket};
         let word = |offset| u64::from_le_bytes(world.bytes[offset..offset + 8].try_into().unwrap());
         let templates: std::collections::BTreeSet<_> = world
             .armies
@@ -1852,7 +1855,7 @@ mod tests {
         header[registry::MASK..registry::MASK + 4].copy_from_slice(&mask.to_le_bytes());
         header[registry::OVERFLOW_DISTANCE] = overflow as u8;
         let root = registry::LOW_ROOTS_RVA
-            + engine::creferenced_division_template::REFERENCE_TYPE as usize * 8;
+            + engine_native::creferenced_division_template::REFERENCE_TYPE as usize * 8;
         world.bytes[root..root + 8].copy_from_slice(&(header.as_ptr() as u64).to_le_bytes());
         let mut group = Box::new([0; 40]);
         group[..8].copy_from_slice(
@@ -1890,7 +1893,7 @@ mod tests {
             })
             .collect();
         for (&army, member) in world.armies.iter().zip(&members) {
-            let offset = army - world.base + engine::carmy_combat_inputs::NAME_GROUP_MEMBER;
+            let offset = army - world.base + engine_native::carmy_combat_inputs::NAME_GROUP_MEMBER;
             world.bytes[offset..offset + 8]
                 .copy_from_slice(&(member.as_ptr() as u64).to_le_bytes());
         }
@@ -1910,7 +1913,8 @@ mod tests {
         // An unresolved reference (including the invalid sentinel) is native
         // known absence. Refuse an actually malformed template registry while
         // leaving the independent retained name member/cache readable.
-        registry.0[engine::creference_registry::COUNT..engine::creference_registry::COUNT + 4]
+        registry.0[engine_native::creference_registry::COUNT
+            ..engine_native::creference_registry::COUNT + 4]
             .copy_from_slice(&u32::MAX.to_le_bytes());
         let mut members = division_name_members(&mut world);
         members[0][cname_group_member::FLAG_A] = 0;
@@ -1923,7 +1927,8 @@ mod tests {
             .enumerate()
             .map(|(index, &army)| DivisionSeed {
                 pointer: army,
-                division: engine::read(&memory, army + engine::cunit::HANDLE).unwrap(),
+                division: engine_native::read(&memory, army + engine_native::cunit::HANDLE)
+                    .unwrap(),
                 name_member: Some(members[index].as_ptr() as usize),
                 ..Default::default()
             })
@@ -1978,10 +1983,10 @@ mod tests {
         );
         let mut baseline = std::array::from_fn(|_| unavailable("outside cache fixture"));
         baseline[TableId::DivisionStatus.index()] = captured.tables()[1].clone();
-        let mut encoder = replay::frame::FrameEncoder::new();
+        let mut encoder = replay_frame::frame::FrameEncoder::new();
         encoder
             .encode(
-                replay::frame::DecodedFrame {
+                replay_frame::frame::DecodedFrame {
                     branch: 1,
                     hour: 0,
                     tables: baseline.map(Into::into),
@@ -2203,7 +2208,8 @@ mod tests {
             .enumerate()
             .map(|(index, &army)| DivisionSeed {
                 pointer: army,
-                division: engine::read(&memory, army + engine::cunit::HANDLE).unwrap(),
+                division: engine_native::read(&memory, army + engine_native::cunit::HANDLE)
+                    .unwrap(),
                 name_member: Some(members[index].as_ptr() as usize),
                 ..Default::default()
             })
@@ -2297,7 +2303,8 @@ mod tests {
             .iter()
             .map(|&pointer| DivisionSeed {
                 pointer,
-                division: engine::read(&memory, pointer + engine::cunit::HANDLE).unwrap(),
+                division: engine_native::read(&memory, pointer + engine_native::cunit::HANDLE)
+                    .unwrap(),
                 ..Default::default()
             })
             .collect();
@@ -2423,7 +2430,7 @@ mod tests {
             ..Capacities::default()
         });
         captured.capture_naming(
-            &engine::memory::SliceMemory {
+            &engine_native::memory::SliceMemory {
                 base: 0x1000,
                 bytes: &bytes,
             },
@@ -2480,8 +2487,8 @@ mod tests {
         // Naming follows the member's nonnull template reference,
         // then reads that template's name-group pointer.
         let template =
-            engine::read::<u64>(&world.live(), world.armies[0] + carmy::STANDARD_TEMPLATE).unwrap()
-                as usize;
+            engine_native::read::<u64>(&world.live(), world.armies[0] + carmy::STANDARD_TEMPLATE)
+                .unwrap() as usize;
         let offset = template - world.base + cname_group_member::TEMPLATE_NAME_GROUP;
         world.bytes[offset..offset + 8].fill(0);
         let seeds = std::array::from_fn::<_, 2, _>(|index| DivisionSeed {
@@ -2601,7 +2608,7 @@ mod tests {
                         return false;
                     }
                 }
-                engine::memory::SliceMemory {
+                engine_native::memory::SliceMemory {
                     base: 0x1000,
                     bytes: self.bytes,
                 }
@@ -2659,7 +2666,7 @@ mod tests {
             ..Capacities::default()
         };
         let mut captured = Captured::with_capacities(&capacity);
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
@@ -2777,14 +2784,14 @@ mod tests {
         captured.status.outcome = Outcome::Rows { len: 1 };
         let mut baseline = std::array::from_fn(|_| unavailable("outside naming fixture"));
         baseline[TableId::DivisionStatus.index()] = captured.tables()[1].clone();
-        let mut encoder = replay::frame::FrameEncoder::new();
+        let mut encoder = replay_frame::frame::FrameEncoder::new();
         encoder
             .encode(
-                replay::frame::DecodedFrame {
+                replay_frame::frame::DecodedFrame {
                     branch: 1,
                     hour: 0,
                     tables: baseline.map(Into::into),
-                    metrics: replay::frame::Metrics::default(),
+                    metrics: replay_frame::frame::Metrics::default(),
                 },
                 false,
             )
@@ -2890,10 +2897,10 @@ mod tests {
         assert_eq!((work.captured, work.refused), (1, 0));
         let mut baseline = std::array::from_fn(|_| unavailable("outside reason fixture"));
         baseline[TableId::DivisionStatus.index()] = captured.tables()[1].clone();
-        let mut encoder = replay::frame::FrameEncoder::new();
+        let mut encoder = replay_frame::frame::FrameEncoder::new();
         encoder
             .encode(
-                replay::frame::DecodedFrame {
+                replay_frame::frame::DecodedFrame {
                     branch: 1,
                     hour: 0,
                     tables: baseline.map(Into::into),
@@ -2979,10 +2986,10 @@ mod tests {
         );
         let mut baseline = std::array::from_fn(|_| unavailable("outside camouflage fixture"));
         baseline[TableId::DivisionStatus.index()] = captured.tables()[1].clone();
-        let mut encoder = replay::frame::FrameEncoder::new();
+        let mut encoder = replay_frame::frame::FrameEncoder::new();
         encoder
             .encode(
-                replay::frame::DecodedFrame {
+                replay_frame::frame::DecodedFrame {
                     branch: 1,
                     hour: 0,
                     tables: baseline.map(Into::into),
@@ -3250,8 +3257,8 @@ mod tests {
         // Status authenticates the country/link roots even when its row
         // capacity admits no unit. Supply the required null/sentinel slots.
         for (offset, data, count) in [
-            (engine::cgame_state::COUNTRIES, 0x1380_u64, 2_u32),
-            (engine::cgame_state::COUNTRY_LINKS, 0x1390_u64, 1_u32),
+            (engine_native::cgame_state::COUNTRIES, 0x1380_u64, 2_u32),
+            (engine_native::cgame_state::COUNTRY_LINKS, 0x1390_u64, 1_u32),
         ] {
             bytes[offset..offset + 8].copy_from_slice(&data.to_le_bytes());
             bytes[offset + 8..offset + 12].copy_from_slice(&count.to_le_bytes());
@@ -3278,7 +3285,7 @@ mod tests {
         use std::panic::{AssertUnwindSafe, catch_unwind};
 
         struct PanicAt<'a> {
-            memory: engine::memory::SliceMemory<'a>,
+            memory: engine_native::memory::SliceMemory<'a>,
             address: usize,
         }
         impl Memory for PanicAt<'_> {
@@ -3300,8 +3307,8 @@ mod tests {
             outcome: Outcome::Rows { len: 1 },
         };
         for offset in [
-            engine::cgame_state::PROVINCES,
-            engine::cgame_state::COUNTRIES,
+            engine_native::cgame_state::PROVINCES,
+            engine_native::cgame_state::COUNTRIES,
         ] {
             let mut capture = Captured::with_capacities(&Capacities {
                 movement: 1,
@@ -3321,7 +3328,7 @@ mod tests {
             });
             capture.reserve_sources(1);
             capture.capture_owned(
-                &engine::memory::SliceMemory {
+                &engine_native::memory::SliceMemory {
                     base: 0x1000,
                     bytes: &bytes,
                 },
@@ -3329,7 +3336,7 @@ mod tests {
                 sources(),
             );
             let memory = PanicAt {
-                memory: engine::memory::SliceMemory {
+                memory: engine_native::memory::SliceMemory {
                     base: 0x1000,
                     bytes: &bytes,
                 },
@@ -3496,8 +3503,9 @@ mod tests {
             outcome: inputs.outcome(),
         };
         let memory = populated.world.live();
-        let countries =
-            std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+        let countries = std::sync::Arc::new(
+            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        );
         for (status_failure, movement_failure) in [
             (Some(Failure::Stopped), None),
             (None, Some(Failure::Panicked)),
@@ -3564,7 +3572,7 @@ mod tests {
         use crate::acquisition::Failure;
         let (seed, bytes) = presentation_fixture();
         let seeds = [seed];
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
@@ -3598,7 +3606,7 @@ mod tests {
             captured.reserve_sources(1);
             let mut request = crate::acquisition_jobs::PresentationRequest {
                 countries: std::sync::Arc::new(
-                    engine::country_memory::Cache::try_with_capacity(0).unwrap(),
+                    engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
                 ),
                 context,
                 captured,
@@ -3661,7 +3669,7 @@ mod tests {
         let seeds = [seed];
         capture.movement.rows[0].division = 999;
         capture.capture(
-            &engine::memory::SliceMemory {
+            &engine_native::memory::SliceMemory {
                 base: 0x1000,
                 bytes: &bytes,
             },
@@ -3719,7 +3727,7 @@ mod tests {
                 word.copy_from_slice(&(index as u32 + 1).to_le_bytes());
             }
             capture.capture_owned(
-                &engine::memory::SliceMemory {
+                &engine_native::memory::SliceMemory {
                     base: 0x1000,
                     bytes: &bytes,
                 },
@@ -3792,7 +3800,7 @@ mod tests {
             strength_factor: 57_038,
             supply_grace_maximum: i64::MAX,
             supply_grace_remaining: i64::MIN,
-            supply: Some(engine::cunit_supply_inputs::Inputs {
+            supply: Some(engine_native::cunit_supply_inputs::Inputs {
                 asked: 123_456,
                 disruption: 4,
                 ..Default::default()
@@ -3832,7 +3840,7 @@ mod tests {
         // Every division records its supply footer at display precision.
         assert_eq!(
             s[0].supply,
-            Recorded::Value(Some(replay::rows::DivisionSupplyFooter {
+            Recorded::Value(Some(replay_data::rows::DivisionSupplyFooter {
                 asked: 123_000,
                 disruption: 1_000,
                 origins: Some(Vec::new()),
@@ -3845,14 +3853,14 @@ mod tests {
         for (id, view) in TABLES.into_iter().zip(capture.tables()) {
             baseline[id.index()] = view;
         }
-        let mut encoder = replay::frame::FrameEncoder::new();
+        let mut encoder = replay_frame::frame::FrameEncoder::new();
         encoder
             .encode(
-                replay::frame::DecodedFrame {
+                replay_frame::frame::DecodedFrame {
                     branch: 1,
                     hour: 0,
                     tables: baseline.map(Into::into),
-                    metrics: replay::frame::Metrics::default(),
+                    metrics: replay_frame::frame::Metrics::default(),
                 },
                 false,
             )
@@ -3883,7 +3891,7 @@ mod tests {
         }
         assert_eq!(
             m[0].strategic_action,
-            replay::rows::Recorded::Value(carmy::StrategicAction::Available(
+            replay_data::rows::Recorded::Value(carmy::StrategicAction::Available(
                 carmy::StrategicRedeploymentInputs {
                     country_modifier: i64::MIN,
                     ..Default::default()
@@ -3972,7 +3980,7 @@ mod tests {
             reason: "census failed",
         };
         capture.capture(
-            &engine::memory::SliceMemory {
+            &engine_native::memory::SliceMemory {
                 base: 0,
                 bytes: &[],
             },
@@ -4023,10 +4031,10 @@ mod tests {
             panic!("stationary movement row remains available");
         };
         rows[0].order_transport =
-            Recorded::Value(Some(replay::rows::DivisionOrderTransportInputs {
+            Recorded::Value(Some(replay_data::rows::DivisionOrderTransportInputs {
                 naval_weight: Some(i64::MAX),
                 paradrop_eligible: Some(9),
-                paradrop_modifiers: Some(replay::rows::ParadropTransportModifiers {
+                paradrop_modifiers: Some(replay_data::rows::ParadropTransportModifiers {
                     country_term: i64::MIN,
                     commander_term: None,
                 }),
@@ -4034,14 +4042,14 @@ mod tests {
         let mut baseline = std::array::from_fn(|_| unavailable("outside movement fixture"));
         baseline[TableId::DivisionMovement.index()] =
             TableView::Complete(TableRows::DivisionMovement(rows));
-        let mut encoder = replay::frame::FrameEncoder::new();
+        let mut encoder = replay_frame::frame::FrameEncoder::new();
         encoder
             .encode(
-                replay::frame::DecodedFrame {
+                replay_frame::frame::DecodedFrame {
                     branch: 1,
                     hour: 0,
                     tables: baseline.map(Into::into),
-                    metrics: replay::frame::Metrics::default(),
+                    metrics: replay_frame::frame::Metrics::default(),
                 },
                 false,
             )
@@ -4112,14 +4120,14 @@ mod tests {
         let mut baseline = std::array::from_fn(|_| unavailable("outside movement fixture"));
         baseline[TableId::DivisionMovement.index()] =
             TableView::Complete(TableRows::DivisionMovement(rows));
-        let mut encoder = replay::frame::FrameEncoder::new();
+        let mut encoder = replay_frame::frame::FrameEncoder::new();
         encoder
             .encode(
-                replay::frame::DecodedFrame {
+                replay_frame::frame::DecodedFrame {
                     branch: 1,
                     hour: 12,
                     tables: baseline.map(Into::into),
-                    metrics: replay::frame::Metrics::default(),
+                    metrics: replay_frame::frame::Metrics::default(),
                 },
                 false,
             )

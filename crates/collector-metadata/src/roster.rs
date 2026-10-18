@@ -1,13 +1,9 @@
 //! The callback copies prepared, exact native roster bytes; the spool worker verifies IDs.
 
-use engine::allocation;
-use engine::{
-    Memory,
-    capture_text::Owned,
-    cdlc_manager::{self, mounts_match},
-    walk::Outcome,
-};
-use replay::identity::{Identity, Roster as IdentityRoster, Verification};
+use engine_allocation as allocation;
+use engine_dlc::{cdlc_manager, cdlc_manager::mounts_match};
+use engine_native::{Memory, capture_text::Owned, walk::Outcome};
+use replay_data::{identity::Identity, identity::Roster as IdentityRoster, identity::Verification};
 use serde::{
     Serialize, Serializer,
     ser::{SerializeMap, SerializeSeq},
@@ -565,7 +561,7 @@ pub fn allocation_failure_fixture() -> impl FnOnce() -> io::Result<()> {
 #[cfg(any(test, feature = "test-support"))]
 mod fixtures {
     use super::*;
-    use replay::identity::{COVERAGE_POLICY_VERSION, Dlc};
+    use replay_data::{identity::COVERAGE_POLICY_VERSION, identity::Dlc};
     use std::collections::BTreeSet;
 
     pub(super) fn identity(ids: &[&str]) -> Identity {
@@ -661,7 +657,7 @@ mod fixtures {
 mod tests {
     use super::fixtures::*;
     use super::*;
-    use replay::identity::Mod;
+    use replay_data::identity::Mod;
 
     fn check(roster: &Roster, identity: &mut Identity, note: Option<&str>) -> Result<(), String> {
         let expected: Vec<_> = identity
@@ -917,14 +913,16 @@ mod tests {
             self.u64(at + 24, text.len().max(31));
         }
         fn node(&mut self, at: usize, left: usize, parent: usize, right: usize, nil: bool) {
-            use engine::msvc_tree_node as tree;
+            use engine_native::msvc_tree_node as tree;
             self.u64(at + tree::LEFT, left);
             self.u64(at + tree::PARENT, parent);
             self.u64(at + tree::RIGHT, right);
             self.bytes[at + tree::NIL] = u8::from(nil);
         }
         fn new(ids: &[String], filters: usize) -> Self {
-            use engine::{dlc_content_entry as entry, dlc_content_map_node as content, msvc_map};
+            use engine_dlc::{
+                dlc_content_entry as entry, dlc_content_map_node as content, msvc_map,
+            };
             let mut live = Self {
                 bytes: vec![0; 0x100_0000],
                 heap: 0x80_0000,
@@ -980,13 +978,13 @@ mod tests {
             live
         }
     }
-    impl engine::Memory for Live {
+    impl engine_native::Memory for Live {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let root = match address {
                 cdlc_manager::SINGLETON_RVA => Self::MANAGER,
                 cdlc_manager::SEARCH_PATH_RVA => Self::ROOT,
                 _ => {
-                    return engine::memory::SliceMemory {
+                    return engine_native::memory::SliceMemory {
                         base: 0,
                         bytes: &self.bytes,
                     }
@@ -1064,7 +1062,7 @@ mod tests {
     }
     #[test]
     fn five_thousand_roster_entries_and_long_native_text_are_sampled_without_allocating() {
-        use engine::{dlc_content_entry as entry, dlc_content_map_node as content, msvc_map};
+        use engine_dlc::{dlc_content_entry as entry, dlc_content_map_node as content, msvc_map};
         const COUNT: usize = 5_001;
         let mut ids: Vec<String> = (0..COUNT).map(|index| format!("dlc{index:05}")).collect();
         ids[COUNT - 1] = format!("dlc{}", "x".repeat(COUNT));

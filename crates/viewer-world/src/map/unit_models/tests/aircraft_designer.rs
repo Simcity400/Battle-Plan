@@ -1,11 +1,10 @@
 use super::*;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{
-        CountryAppearanceRow, CountryLinkRow, CountryRow, LexicalTokenRow, PoliticalPartyRow,
-        PoliticsRow, SimulationFeatureRow, TableId, TableRows,
-    },
+use replay_data::{
+    rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow,
+    rows::PoliticalPartyRow, rows::PoliticsRow, rows::SimulationFeatureRow, rows::TableId,
+    rows::TableRows,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 use viewer_foundation::map::aircraft_model::designer_entity;
 
 const ARCHETYPE: u32 = 7;
@@ -138,7 +137,7 @@ fn frame(token: u32, saved: &str, dlc: u32) -> DecodedFrame {
             TableRows::SimulationFeatures(vec![SimulationFeatureRow {
                 dlc_mask: dlc,
                 human_ai: 0,
-                weather_suspend: replay::rows::Recorded::Value(None),
+                weather_suspend: replay_data::rows::Recorded::Value(None),
                 ..Default::default()
             }]),
         ),
@@ -198,7 +197,7 @@ const ALL: [&str; 3] = [
 
 #[test]
 fn with_the_dlc_an_archetype_without_a_saved_model_takes_its_pool_model() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = assets(&ALL);
     let recorded = frame(ARCHETYPE, "", DLC);
@@ -216,7 +215,7 @@ fn with_the_dlc_an_archetype_without_a_saved_model_takes_its_pool_model() {
 
 #[test]
 fn a_saved_model_is_answered_before_the_pools_are_run() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // A nonempty saved entity name returns before graphics selection,
     // so with the DLC the saved
@@ -235,7 +234,7 @@ fn a_saved_model_is_answered_before_the_pools_are_run() {
 
 #[test]
 fn an_undeclared_pool_model_falls_through_to_the_aircraft_ladder() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // No pool or conventional candidate is declared: the result is
     // null, the empty saved entity name gives nothing, and
@@ -256,7 +255,7 @@ fn an_undeclared_pool_model_falls_through_to_the_aircraft_ladder() {
 
 #[test]
 fn without_the_dlc_or_a_sub_unit_list_the_pools_are_not_run() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = assets(&ALL);
     // No DLC: the saved model, then the ladder.

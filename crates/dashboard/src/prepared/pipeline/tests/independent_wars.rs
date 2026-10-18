@@ -7,7 +7,10 @@ use super::family_lanes::{assert_payloads_equal, payloads};
 use super::*;
 use crate::prepared::prepass;
 use crate::products::{war_casualties::prepared::block as casualties, wars::block as wars};
-use replay::rows::{AutonomyRow, CapitulationRow, PoliticalPartyRow, StateRow, WarRelationRow};
+use replay_data::{
+    rows::AutonomyRow, rows::CapitulationRow, rows::PoliticalPartyRow, rows::StateRow,
+    rows::WarRelationRow,
+};
 use serde_json::{Value, json};
 
 type Payloads = BTreeMap<(String, u64), Vec<u8>>;
@@ -45,7 +48,7 @@ fn war_frame(branch: u64, hour: i32) -> DecodedFrame {
     // is decoded again every hour, which makes every hour one the wars visit.
     *frame.tables[TableId::ReservedCountryNaming.index()] =
         TableView::Complete(TableRows::ReservedCountryNaming(vec![
-            replay::rows::ReservedCountryNamingRow::default(),
+            replay_data::rows::ReservedCountryNamingRow::default(),
         ]));
     let fought: i64 = FIGHTING
         .iter()
@@ -176,7 +179,7 @@ fn joined_frame(branch: u64, hour: i32) -> DecodedFrame {
             &mut *frame.tables[TableId::WarOwnedRelations.index()]
     {
         for owner in [2, 3] {
-            rows.push(replay::rows::WarOwnedRelationRow {
+            rows.push(replay_data::rows::WarOwnedRelationRow {
                 owner,
                 ordinal: 1,
                 first_country: 2,

@@ -9,7 +9,7 @@ fn fresh() -> EventScopes {
 
 #[test]
 fn rules_use_registry_order_last_authored_value_and_fulfilled_field() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = super::super::tests::fixture();
     let content = fixture
@@ -32,7 +32,7 @@ fn rules_use_registry_order_last_authored_value_and_fulfilled_field() {
 
 #[test]
 fn relation_uses_last_rule_and_explicit_target_before_trigger() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(relation("add_relation_rule_override={target=BBB trigger=SYN_TRIGGER usage_desc=SYN_DESC can_send_volunteers=yes can_create_factions=no}").unwrap(), "Relation Alpha->Beta:[no]Factions");
 }
@@ -44,7 +44,7 @@ fn target(body: &str, graph: EventScopes) -> Result<String, String> {
 fn relation(body: &str) -> Result<String, String> {
     let template = Template {
         name: b"SYN_TRIGGER".to_vec(),
-        body: Ok(installed_content::parser::parse(
+        body: Ok(installed_content_core::parser::parse(
             b"custom_trigger_tooltip={tooltip=SYN_OTHER_TIP always=yes}",
         )
         .unwrap()
@@ -94,14 +94,14 @@ fn render(body: &str, graph: EventScopes, template: Option<&Template>) -> Result
         .unwrap()
         .set_synthetic_environment(Default::default());
     fixture.catalogue = catalogue;
-    *fixture.frame.tables[replay::rows::TableId::Politics.index()] =
-        replay::frame::TableView::Complete(replay::rows::TableRows::Politics(vec![
-            replay::rows::PoliticsRow {
+    *fixture.frame.tables[replay_data::rows::TableId::Politics.index()] =
+        replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::Politics(vec![
+            replay_data::rows::PoliticsRow {
                 country: 100,
                 capital: 1,
                 ..Default::default()
             },
-            replay::rows::PoliticsRow {
+            replay_data::rows::PoliticsRow {
                 country: 200,
                 capital: 2,
                 ..Default::default()
@@ -132,7 +132,9 @@ fn render(body: &str, graph: EventScopes, template: Option<&Template>) -> Result
         out: Description::default(),
         scripted_stack: Vec::new(),
     };
-    let items = installed_content::parser::parse(body.as_bytes()).unwrap().items;
+    let items = installed_content_core::parser::parse(body.as_bytes())
+        .unwrap()
+        .items;
     if template.is_some() {
         renderer.politics_relation_rule(&items[0], scopes, false, template)
     } else {
@@ -142,7 +144,7 @@ fn render(body: &str, graph: EventScopes, template: Option<&Template>) -> Result
 
 #[test]
 fn empty_invalid_and_scope_targets_leave_template_precedence() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for target in ["\"\"", "SYN_MISSING", "ROOT", "event_target:SYN_TARGET"] {
         assert_eq!(relation(&format!("add_relation_rule_override={{target={target} trigger=SYN_TRIGGER can_send_volunteers=yes}}")).unwrap(), "Relation Alpha->Other\n:[yes]Volunteers");
@@ -151,7 +153,7 @@ fn empty_invalid_and_scope_targets_leave_template_precedence() {
 
 #[test]
 fn target_capital_continent_uses_perspective_localisation() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // Targeted rule descriptions share their flag-trigger template.
     let mut scope = EventScope::of(EventObject::Country(1));
@@ -173,7 +175,7 @@ fn target_capital_continent_uses_perspective_localisation() {
 
 #[test]
 fn named_target_from_flag_uses_scope_name_and_marked_country() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // FROM selects the named country target.
     let mut scope = EventScope::of(EventObject::Country(1));
@@ -187,7 +189,7 @@ fn named_target_from_flag_uses_scope_name_and_marked_country() {
 
 #[test]
 fn mode_two_suppresses_status_but_not_resets_it_and_derives_negative_key() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(
         target(
@@ -217,7 +219,7 @@ fn mode_two_suppresses_status_but_not_resets_it_and_derives_negative_key() {
 
 #[test]
 fn target_context_and_or_keep_three_space_indentation() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(target("BBB={custom_trigger_tooltip={tooltip=SYN_TIP always=yes} custom_trigger_tooltip={tooltip=SYN_OTHER_TIP always=yes}}", fresh()).unwrap(), "\u{11}YBeta\u{11}!:\n   Tip BBB\n   Other\n");
     assert_eq!(target("OR={custom_trigger_tooltip={tooltip=SYN_TIP always=yes} custom_trigger_tooltip={tooltip=SYN_OTHER_TIP always=no}}", fresh()).unwrap(), "Any:\n   Tip AAA\n   Other\n");
@@ -226,7 +228,7 @@ fn target_context_and_or_keep_three_space_indentation() {
 
 #[test]
 fn unported_target_trigger_fields_are_named() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(
         target("has_country_flag={flag=SYN_SIGNAL days=2}", fresh()).unwrap_err(),

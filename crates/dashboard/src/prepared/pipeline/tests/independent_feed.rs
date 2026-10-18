@@ -14,7 +14,7 @@ use super::*;
 use crate::prepared::prepass;
 use dashboard_base::prepared::kept::counted;
 use independent::Own;
-use replay::rows::{RelationTupleRow, SliceReadRow, TableRows};
+use replay_data::{rows::RelationTupleRow, rows::SliceReadRow, rows::TableRows};
 
 type Payloads = BTreeMap<(String, u64), Vec<u8>>;
 
@@ -34,7 +34,7 @@ const LAST: i32 = 115;
 fn feed_frame(branch: u64, hour: i32) -> DecodedFrame {
     let mut frame = crate::products::event_feed::prepared::tests::frame(hour, 3);
     frame.branch = branch;
-    let guarantee = engine::cguarantee_relation::TYPE;
+    let guarantee = engine_native::cguarantee_relation::TYPE;
     let mut relations = vec![
         RelationTupleRow {
             owner_country: A,

@@ -5,14 +5,14 @@ use installed_content_save::Save;
 use recorder_oracle_support::fixtures;
 use recorder_oracle_support::report::Report;
 use recorder_oracle_support::support::*;
-use replay::frame::DecodedFrame;
-use replay::rows::TableId;
-use replay::rows::tables;
+use replay_data::rows::TableId;
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::io;
 pub mod counters;
 #[cfg(test)]
-use replay::frame::TableView;
+use replay_data::rows::TableRows;
 #[cfg(test)]
-use replay::rows::TableRows;
+use replay_frame::frame::TableView;

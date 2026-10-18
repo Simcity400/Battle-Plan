@@ -1,8 +1,9 @@
 //! Tests of raid draw composition with battle-plan routes and counter GUI inventory.
-use installed_content::gui::native;
+use installed_content_core::gui::native;
 use raids::test_support::{DRAW_GUI, assets, frame, path_assets, put};
-use replay::rows::{RaidRow, RaidScope};
-use replay::{frame::DecodedFrame, rows::tables};
+use replay_data::rows::tables;
+use replay_data::{rows::RaidRow, rows::RaidScope};
+use replay_frame::frame::DecodedFrame;
 use viewer_foundation::map::{
     icon_windows::PoolView,
     sprites::Batch,
@@ -16,9 +17,10 @@ use viewer_foundation::map::{
 use {viewer_raids::map::raids, viewer_raids::map::raids::*};
 #[test]
 fn invasion_routes_use_the_recorded_move_world_and_native_unit_fallbacks() {
-    use replay::rows::{
-        ArmyOrderPlanRow, ArmyOrderRow, CountryCounterInputRow, DivisionRow, DivisionStatusRow,
-        InvasionPreparationRow, LandTheatreRow, OrdersGroupMemberRow, OrdersGroupRow,
+    use replay_data::{
+        rows::ArmyOrderPlanRow, rows::ArmyOrderRow, rows::CountryCounterInputRow,
+        rows::DivisionRow, rows::DivisionStatusRow, rows::InvasionPreparationRow,
+        rows::LandTheatreRow, rows::OrdersGroupMemberRow, rows::OrdersGroupRow,
     };
     use viewer_counter_products::map::orders::invasion::Routes;
     let assets = path_assets();
@@ -66,7 +68,7 @@ fn invasion_routes_use_the_recorded_move_world_and_native_unit_fallbacks() {
         put::<tables::CountryCounterInputs>(
             frame,
             vec![CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
+                forward_visibility: replay_data::rows::Recorded::NotRecorded,
                 country: 11,
                 first_division,
                 co_belligerents: Some(vec![]).into(),
@@ -176,9 +178,9 @@ fn invasion_routes_use_the_recorded_move_world_and_native_unit_fallbacks() {
 }
 
 fn hover_tooltip(offer: bool) {
-    use installed_content::localisation::Localisation;
+    use installed_content_localisation::localisation::Localisation;
     use raids::test_support::{frame, put, registered_command_power};
-    use replay::rows::{RaidTargetRow, RaidTooltipOperandRow};
+    use replay_data::{rows::RaidTargetRow, rows::RaidTooltipOperandRow};
 
     let mut assets = assets();
     assets
@@ -219,15 +221,15 @@ fn hover_tooltip(offer: bool) {
     put::<tables::RaidTooltipOperands>(
         &mut frame,
         [
-            (engine::raid_tooltip_operands::REFERENCES, 0),
-            (engine::raid_tooltip_operands::REFERENCES, 1),
+            (engine_native::raid_tooltip_operands::REFERENCES, 0),
+            (engine_native::raid_tooltip_operands::REFERENCES, 1),
             (
-                engine::raid_tooltip_operands::NAME,
-                engine::raid_tooltip_operands::ARMY_RESOLVED,
+                engine_native::raid_tooltip_operands::NAME,
+                engine_native::raid_tooltip_operands::ARMY_RESOLVED,
             ),
             (
-                engine::raid_tooltip_operands::NAME,
-                engine::raid_tooltip_operands::WING_RESOLVED,
+                engine_native::raid_tooltip_operands::NAME,
+                engine_native::raid_tooltip_operands::WING_RESOLVED,
             ),
         ]
         .map(|(kind, key)| RaidTooltipOperandRow {
@@ -365,14 +367,14 @@ fn hover_tooltip(offer: bool) {
 
 #[test]
 fn raid_tooltip_regression_active_hover_loads_substituted_target_icon() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     hover_tooltip(false);
 }
 
 #[test]
 fn raid_tooltip_regression_disabled_offer_hover_loads_diagnostic_icon() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     hover_tooltip(true);
 }
@@ -384,12 +386,12 @@ fn a_stage_threshold_is_crossed_at_its_sub_hour_moment() {
     // reached halfway through it.
     let track = line_track(60_000, 1_500_000);
     let stages = [
-        installed_content::raids::RaidAnimationStage {
+        installed_content_raids::raids::RaidAnimationStage {
             state: "cruise".into(),
             intro: None,
             at_progress_raw: 0,
         },
-        installed_content::raids::RaidAnimationStage {
+        installed_content_raids::raids::RaidAnimationStage {
             state: "dive".into(),
             intro: Some("dive_intro".into()),
             at_progress_raw: 62_500,

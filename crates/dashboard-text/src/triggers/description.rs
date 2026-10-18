@@ -2,11 +2,8 @@
 //! with inversion=false, indent=0, mode=1.
 //! The caller supplies the heading and two-level line indentation.
 
-use installed_content::{
-    localisation::{Argument, Localisation},
-    parser::{Item, Operator},
-    scope::{Keyword, Scope as Parsed},
-};
+use installed_content_core::{parser::Item, parser::Operator, scope::Keyword, scope::Scope as Parsed};
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
 use std::{cell::RefCell, collections::BTreeMap};
 
 use super::{
@@ -232,7 +229,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                             Child::Scripted(template) => {
                                 // A scripted trigger's own text is
                                 // empty, the template receives inversion == operand.
-                                let frame = installed_content::trigger_keys::frame(template);
+                                let frame = installed_content_core::trigger_keys::frame(template);
                                 if let Some(why) = self.evaluator.enter_frame(frame) {
                                     return Err(why);
                                 }
@@ -433,7 +430,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                 key_text(item)
             ));
         };
-        let operand = installed_content::parser::c_string(item.value.scalar().unwrap_or_default());
+        let operand = installed_content_core::parser::c_string(item.value.scalar().unwrap_or_default());
         let key = match name.as_str() {
             "is_attacker" => Some(if trigger_boolean(item)? != inverted {
                 b"IS_ATTACKER".as_slice()
@@ -458,7 +455,7 @@ impl<'a> Formatter<'_, '_, 'a> {
         match name.as_str() {
             "phase" => {
                 // Use the stored ID, not authored spelling.
-                let id = installed_content::fixed5::decimal_i32(operand);
+                let id = installed_content_core::fixed5::decimal_i32(operand);
                 let key = if id < 0 {
                     b"PHASE_DEFAULT".as_slice()
                 } else {

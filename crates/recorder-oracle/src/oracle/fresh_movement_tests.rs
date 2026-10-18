@@ -1,7 +1,7 @@
 use super::*;
-use replay::rows::{
-    DivisionMovementRow, RailCooldownRow, RailEdgeRow, RailwayBuildingHealth, RailwayBuildingState,
-    Recorded, StateRow,
+use replay_data::{
+    rows::DivisionMovementRow, rows::RailCooldownRow, rows::RailEdgeRow,
+    rows::RailwayBuildingHealth, rows::RailwayBuildingState, rows::Recorded, rows::StateRow,
 };
 
 fn set(frame: &mut DecodedFrame, rows: TableRows) {
@@ -22,10 +22,10 @@ fn building(location: u32, name: &[u8], level: i16, healthy: i16) -> save::const
 
 #[test]
 fn selected_railway_building_level_compares_without_demanding_eta_health() {
-    use replay::rows::RailwaySelectionInputs;
+    use replay_data::rows::RailwaySelectionInputs;
     let (mut frame, mut saved, _, _) = fixtures::fixture();
     let names = BTreeMap::from([(
-        engine::cbuilding_template::RAIL_WAY_TOKEN,
+        engine_native::cbuilding_template::RAIL_WAY_TOKEN,
         b"rail_way".as_slice(),
     )]);
     saved
@@ -78,7 +78,7 @@ fn selected_railway_building_level_compares_without_demanding_eta_health() {
 #[test]
 fn railway_infrastructure_uses_saved_health_and_exact_content_maximum() {
     let (mut frame, mut saved, _, _) = fixtures::fixture();
-    let token = engine::cbuilding_database::INFRASTRUCTURE_TOKEN;
+    let token = engine_native::cbuilding_database::INFRASTRUCTURE_TOKEN;
     let names = BTreeMap::from([(token, b"infrastructure".as_slice())]);
     saved.construction.state_buildings.insert(
         (1, b"infrastructure".to_vec()),
@@ -90,10 +90,10 @@ fn railway_infrastructure_uses_saved_health_and_exact_content_maximum() {
         (None, 0, -7, -42_857),
         (None, 0, 0, i64::from(u32::MAX)),
     ] {
-        let mut buildings = installed_content::buildings::Buildings::default();
+        let mut buildings = installed_content_core::buildings::Buildings::default();
         buildings.types.insert(
             "infrastructure".into(),
-            installed_content::buildings::BuildingType {
+            installed_content_core::buildings::BuildingType {
                 name: "infrastructure".into(),
                 province_max,
                 state_max,
@@ -101,7 +101,7 @@ fn railway_infrastructure_uses_saved_health_and_exact_content_maximum() {
             },
         );
         buildings.declaration_order.push("infrastructure".into());
-        let defines = installed_content::defines::Defines::new().unwrap();
+        let defines = installed_content_core::defines::Defines::new().unwrap();
         defines
             .load(
                 "fixture.lua",
@@ -175,7 +175,7 @@ fn railway_infrastructure_uses_saved_health_and_exact_content_maximum() {
         &frame,
         &saved,
         &Default::default(),
-        &installed_content::defines::Defines::new().unwrap(),
+        &installed_content_core::defines::Defines::new().unwrap(),
         &names,
         &mut report,
     )
@@ -187,7 +187,7 @@ fn railway_infrastructure_uses_saved_health_and_exact_content_maximum() {
 fn selected_rail_building_compares_saved_scalars_without_inventing_cache_presence() {
     let (mut frame, mut saved, _, _) = fixtures::fixture();
     let names = BTreeMap::from([(
-        engine::cbuilding_template::RAIL_WAY_TOKEN,
+        engine_native::cbuilding_template::RAIL_WAY_TOKEN,
         b"rail_way".as_slice(),
     )]);
     set(
@@ -464,7 +464,7 @@ fn division_base_speed_is_required_for_a_route_and_never_compared() {
 
 #[test]
 fn fresh_task_force_packet_refusal_is_a_difference_for_idle_and_targeted_units() {
-    use replay::rows::TaskForceMapMotionRow;
+    use replay_data::rows::TaskForceMapMotionRow;
     let (mut frame, saved, _, _) = fixtures::fixture();
     let force = (7_u64 << 32) | 51;
     let label = format!("TaskForceMapMotion {force}.fresh");
@@ -513,7 +513,7 @@ fn fresh_task_force_packet_refusal_is_a_difference_for_idle_and_targeted_units()
 
 #[test]
 fn fresh_idle_railway_packet_refusal_differs_from_historical_absence_and_native_zero() {
-    use replay::rows::{FreshRailwayCounterEta, RailwayGunCounterInputRow};
+    use replay_data::{rows::FreshRailwayCounterEta, rows::RailwayGunCounterInputRow};
     let (mut frame, saved, _, _) = fixtures::fixture();
     let gun = (7_u64 << 32) | 51;
     let label = format!("RailwayGunCounterInputs {gun}.fresh");
@@ -522,7 +522,7 @@ fn fresh_idle_railway_packet_refusal_differs_from_historical_absence_and_native_
         (Recorded::NotRecorded, false, true),
         (
             Recorded::Value(Some(FreshRailwayCounterEta {
-                sample_hour: replay::rows::PacketHour::Host,
+                sample_hour: replay_data::rows::PacketHour::Host,
                 maximum_speed: Some(0),
                 land_supply_factor: Some(0),
                 orders_group: Some(0),

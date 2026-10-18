@@ -2,7 +2,7 @@ use super::{
     Capacities, Captured, IntelCopyContext, IntelCopyReport, IntelJob,
     copy_intel_refresh_with_divisions,
 };
-use engine::{Memory, memory::SliceMemory, walk::Outcome};
+use engine_native::{Memory, memory::SliceMemory, walk::Outcome};
 
 pub(crate) const BASE: usize = 0;
 pub(crate) const GAME_STATE: usize = 0x10000;
@@ -29,7 +29,8 @@ fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
 }
 
 pub(crate) fn fixture() -> Vec<u8> {
-    use engine::{carmy, ccountry, cfleet, cgame_state, ctask_force, cunit, unit_viewer_entry};
+    use engine_native::{carmy, ccountry, cfleet, cgame_state, ctask_force, cunit};
+    use engine_visibility::unit_viewer_entry;
     let mut bytes = vec![0; 0x80000];
     header(&mut bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 2);
     put64(&mut bytes, CTAB, 0);
@@ -70,11 +71,11 @@ pub(crate) fn memory(bytes: &[u8]) -> SliceMemory<'_> {
 
 pub(crate) struct Split {
     pub outcome: Outcome,
-    pub rows: Vec<engine::unit_viewer_entry::Row>,
+    pub rows: Vec<engine_visibility::unit_viewer_entry::Row>,
 }
 
 fn collect_typed(memory: &impl Memory, cap: usize) -> Split {
-    use engine::unit_viewer_entry;
+    use engine_visibility::unit_viewer_entry;
     let capacities = Capacities {
         rows: [4, 4, 4, 4, cap, 4, 4],
         radar_provinces: 8,
@@ -147,7 +148,7 @@ pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
 /// decoded from the same shared spans equal the direct walk's
 /// per-family partitions.
 pub(crate) fn assert_paths_match_direct(split: &Split, direct: &Split) {
-    use engine::ctask_force;
+    use engine_native::ctask_force;
     // Task-force handles carry the naval type tag in the low word;
     // divisions carry another.
     let is_fleet = |unit: u64| (unit & 0xffff_ffff) == u64::from(ctask_force::DEFAULT_HANDLE_TYPE);

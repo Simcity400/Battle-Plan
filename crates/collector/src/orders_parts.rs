@@ -1,7 +1,7 @@
 //! The Orders job's census and plan walk in parts over consecutive ranges of
 //! the handle-sorted order groups, joined by the OrdersStitch job into the
 //! census and plans one walk over all groups takes
-//! (`engine::corder_instance::stitch_census`, `stitch_plans`). Each part
+//! (`engine_native::corder_instance::stitch_census`, `stitch_plans`). Each part
 //! reads its own groups' orders only; the stitch reads nothing.
 //!
 //! The split is sized from live time: the next hour's part count is last
@@ -11,16 +11,13 @@
 //! carries the split from hour to hour, whichever pooled frame each hour
 //! uses.
 use crate::sampling::qpc;
-use engine::{
-    Memory,
-    corder_instance::{
-        self, AssignedSources, CensusPart, PartWalk, PlanOrder, PlanPart, PlanRow, PlanWalk, Row,
-        SuccessorLists, Visit,
-    },
-    corders_group::Root,
-    walk::Outcome,
+use engine_native::{
+    Memory, corder_instance, corder_instance::AssignedSources, corder_instance::CensusPart,
+    corder_instance::PartWalk, corder_instance::PlanOrder, corder_instance::PlanPart,
+    corder_instance::PlanRow, corder_instance::PlanWalk, corder_instance::Row,
+    corder_instance::SuccessorLists, corder_instance::Visit, corders_group::Root, walk::Outcome,
 };
-use replay::rows::TableId;
+use replay_data::rows::TableId;
 use std::{mem::size_of, ops::Range};
 
 /// The part jobs an hour can hold: the Orders job's own part and the
@@ -99,7 +96,7 @@ impl Part {
         range: Range<usize>,
     ) -> Result<(), &'static str> {
         self.roots.clear();
-        engine::allocation::reserve(&mut self.roots, roots.len())
+        engine_allocation::reserve(&mut self.roots, roots.len())
             .map_err(|_| "army order part root allocation failed")?;
         self.roots.extend_from_slice(roots);
         self.root_outcome = outcome;

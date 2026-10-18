@@ -1,6 +1,6 @@
 use super::tests::{event, frame, put};
 use super::*;
-use installed_content::ResolvedLayers;
+use installed_content_core::ResolvedLayers;
 use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -166,7 +166,7 @@ fn item_icon<'a>(reply: &'a PoliticsLedgerReply, item: &'a LedgerSpendItem) -> O
 }
 
 fn expected_png(pixel: [u8; 4]) -> String {
-    dashboard_text::catalogue::png_data_url(&installed_content::image::Rgba8Image {
+    dashboard_text::catalogue::png_data_url(&installed_content_image::Rgba8Image {
         width: 1,
         height: 1,
         pixels: pixel.to_vec(),
@@ -176,7 +176,7 @@ fn expected_png(pixel: [u8; 4]) -> String {
 
 #[test]
 fn stacked_mod_law_advisor_decision_ability_and_trait_use_content_names_and_png_art() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     let base = stack.base();
@@ -238,10 +238,10 @@ fn stacked_mod_law_advisor_decision_ability_and_trait_use_content_names_and_png_
     stack.png(&addon, "gfx/fallback.png", fallback_pixel);
     let content = stack.content();
     {
-        let (parsed, _) = installed_content::focus::parse(
+        let (parsed, _) = installed_content_focus::focus::parse(
             b"focus_tree = { focus = { id = repeated icon = GFX_first icon = GFX_second } focus = { id = conditional icon = { GFX_first = { always = no } } icon = GFX_second } }",
-            installed_content::focus::Database::National,
-            &installed_content::key_names::KeyNames::default(),
+            installed_content_focus::focus::Database::National,
+            &installed_content_core::key_names::KeyNames::default(),
         ).unwrap();
         assert_eq!(parsed["repeated"].icon.as_deref(), Some("GFX_first"));
         assert_eq!(parsed["repeated"].icons.cases.len(), 2);
@@ -263,8 +263,8 @@ fn stacked_mod_law_advisor_decision_ability_and_trait_use_content_names_and_png_
         TableRows::CharacterPortraits(vec![CharacterPortraitRow {
             character: 9,
             portraits: vec![CharacterPortrait {
-                category: replay::rows::PORTRAIT_CIVILIAN,
-                size: replay::rows::PORTRAIT_LARGE,
+                category: replay_data::rows::PORTRAIT_CIVILIAN,
+                size: replay_data::rows::PORTRAIT_LARGE,
                 is_set: 1,
                 kind: 0,
                 identity: b"GFX_mod_advisor".to_vec(),
@@ -584,7 +584,7 @@ fn stacked_mod_law_advisor_decision_ability_and_trait_use_content_names_and_png_
 
 #[test]
 fn renamed_target_is_named_at_each_spend_hour_and_old_rows_are_not_relabelled() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     stack.write(&stack.addon(), "localisation/english/targets_l_english.yml", "l_english:\n C1:0 \"Owner\"\n C2:0 \"Old target\"\n RENAMED:0 \"New target\"\n DIPLOMACY_IMPROVERELATION:0 \"Improve relations\"\n");
@@ -622,7 +622,7 @@ fn renamed_target_is_named_at_each_spend_hour_and_old_rows_are_not_relabelled() 
 
 #[test]
 fn daily_cost_modifier_and_mios_use_recorded_identity_and_stack_localisation() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     stack.write(
@@ -748,7 +748,7 @@ fn daily_cost_modifier_and_mios_use_recorded_identity_and_stack_localisation() {
 
 #[test]
 fn mio_scripted_names_are_frozen_at_the_read_and_missing_identity_is_counted() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     stack.write(&stack.addon(), "localisation/english/mio_l_english.yml", "l_english:\n C1:0 \"First owner\"\n C2:0 \"Second owner\"\n mod_mio:0 \"[FROM.ReadPrefix] organisation\"\n prefix:0 \"[THIS.GetTag]\"\n");
@@ -781,7 +781,7 @@ fn mio_scripted_names_are_frozen_at_the_read_and_missing_identity_is_counted() {
             );
         } else {
             *current.tables[TableId::IndustrialOrganisations.index()] =
-                replay::frame::TableView::Unavailable {
+                replay_frame::frame::TableView::Unavailable {
                     reason: "synthetic MIO gap".into(),
                 };
         }
@@ -849,7 +849,7 @@ fn mio_scripted_names_are_frozen_at_the_read_and_missing_identity_is_counted() {
 
 #[test]
 fn mio_explicit_name_and_icon_survive_missing_lexical_token() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     let addon = stack.addon();
@@ -953,7 +953,7 @@ fn mio_explicit_name_and_icon_survive_missing_lexical_token() {
 
 #[test]
 fn military_and_scientist_actions_select_native_recorded_portrait_roles() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     let addon = stack.addon();
@@ -1063,7 +1063,7 @@ fn military_and_scientist_actions_select_native_recorded_portrait_roles() {
 
 #[test]
 fn decision_icons_use_native_default_links_and_keep_known_art_when_name_is_unknown() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     let addon = stack.addon();
@@ -1153,7 +1153,7 @@ fn decision_icons_use_native_default_links_and_keep_known_art_when_name_is_unkno
 
 #[test]
 fn daily_relation_title_and_missing_direct_charge_do_not_borrow_action_token_branches() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     stack.write(&stack.addon(), "localisation/english/relation_l_english.yml", "l_english:\n C1:0 \"Owner\"\n C2:0 \"Target\"\n DIPLOMACY_IMPROVERELATION:0 \"Improve relations action\"\n DIPLOMACY_IMPROVERELATION_TITLE:0 \"Improve relations upkeep\"\n");
@@ -1227,7 +1227,7 @@ fn daily_relation_title_and_missing_direct_charge_do_not_borrow_action_token_bra
 
 #[test]
 fn decision_scripted_names_use_known_scopes_and_native_random_fast_paths_without_guessing_seed() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     let addon = stack.addon();
@@ -1299,7 +1299,7 @@ fn decision_scripted_names_use_known_scopes_and_native_random_fast_paths_without
 
 #[test]
 fn decision_name_from_uses_native_added_trigger_children_and_targets_presence() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     let addon = stack.addon();
@@ -1372,7 +1372,7 @@ fn decision_name_from_uses_native_added_trigger_children_and_targets_presence() 
 
 #[test]
 fn targeted_decision_state_selector_uses_recorded_state_and_fresh_nested_seed() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     let addon = stack.addon();
@@ -1420,7 +1420,7 @@ fn targeted_decision_state_selector_uses_recorded_state_and_fresh_nested_seed() 
 #[test]
 #[ignore = "requires installed game and Workshop corpus paths"]
 fn spending_native_content_corpus_audit() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let game =
         PathBuf::from(std::env::var_os("BATTLE_PLAN_POL_SPENDING_GAME").or_else(|| std::env::var_os("HOI4_POL_SPENDING_GAME")).expect("BATTLE_PLAN_POL_SPENDING_GAME"));
@@ -1471,7 +1471,7 @@ fn spending_native_content_corpus_audit() {
             "USER {root_name}: language={}",
             installed_stacks::language(&user).unwrap()
         );
-        let gathered = installed_content::content::gather(&installed_content::GatherOptions {
+        let gathered = installed_content_core::content::gather(&installed_content_core::GatherOptions {
             game_dir: game.clone(),
             user_dir: user,
             cache_dir: cache.clone(),
@@ -1485,7 +1485,7 @@ fn spending_native_content_corpus_audit() {
             gathered.order_note
         );
         let layers = gathered.layers;
-        let decisions = installed_content::decisions::read(&layers).unwrap();
+        let decisions = installed_content_core::decisions::read(&layers).unwrap();
         let icons: usize = decisions
             .entries
             .values()
@@ -1504,7 +1504,7 @@ fn spending_native_content_corpus_audit() {
         for reason in decisions.notes {
             eprintln!("REFUSAL {root_name}: {reason} (count: 1)");
         }
-        match installed_content::abilities::read(&layers) {
+        match installed_content_abilities::abilities::read(&layers) {
             Ok(abilities) => {
                 eprintln!(
                     "ABILITIES {root_name}: names={} static_icons={} animated_icons={} warnings={}",
@@ -1527,12 +1527,12 @@ fn spending_native_content_corpus_audit() {
             }
             Err(reason) => eprintln!("REFUSAL {root_name} abilities: {reason} (count: 1)"),
         }
-        let traits = installed_content::unit_leader::Traits::registered(&layers).unwrap();
+        let traits = installed_content_core::unit_leader::Traits::registered(&layers).unwrap();
         eprintln!(
             "TRAITS {root_name}: registered={}",
             traits.spellings().count()
         );
-        let (focuses, warnings) = installed_content::focus::read(&layers).unwrap();
+        let (focuses, warnings) = installed_content_focus::focus::read(&layers).unwrap();
         let conditional = focuses
             .values()
             .filter(|focus| focus.icons.cases.iter().any(|case| case.trigger.is_some()))
@@ -1554,7 +1554,7 @@ fn spending_native_content_corpus_audit() {
 
 #[test]
 fn power_content_reader_notes_reach_counted_ledger_diagnostics() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     let addon = stack.addon();

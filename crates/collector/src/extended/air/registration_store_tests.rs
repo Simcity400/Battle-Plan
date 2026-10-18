@@ -3,7 +3,7 @@
 use super::air_bases_test_kit as kit;
 use super::*;
 use crate::{air_base_carry_changes::Watches, extended::fog, sampled_verify::Check};
-use engine::{cair_base, cair_wing_pool, ccountry_air_container};
+use engine_native::{cair_base, cair_wing_pool, ccountry_air_container};
 use std::cell::RefCell;
 
 const B0_HANDLE: u64 = (0x41 << 32) | cair_base::TYPE as u64;
@@ -267,7 +267,7 @@ fn a_pass_that_stops_early_holds_nothing() {
     let watches: &'static Watches = Box::leak(Box::new(Watches::enabled(16)));
     let mut job = job(watches);
     hour(&bytes, &mut job, Check::Nothing);
-    let manager = kit::GAME_STATE + engine::cgame_state::STRATEGIC_AIR_MANAGER;
+    let manager = kit::GAME_STATE + engine_native::cgame_state::STRATEGIC_AIR_MANAGER;
     kit::put64(&mut bytes, manager, 0);
     hour(&bytes, &mut job, Check::Nothing);
     kit::put64(&mut bytes, manager, kit::MANAGER as u64);
@@ -302,7 +302,7 @@ fn read<'a>(
 #[test]
 fn a_held_container_span_differs_only_in_what_the_rows_consume() {
     use super::registration_store::Difference;
-    use engine::cair_base::CONTAINER_SPAN;
+    use engine_native::cair_base::CONTAINER_SPAN;
     let container = 0x1000;
     let span = crate::raw::Span {
         addr: container + ccountry_air_container::COUNTRY,

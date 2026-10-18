@@ -8,8 +8,8 @@ use super::build::{
 };
 use super::values::{self, ONE};
 use super::*;
-use installed_content::localisation::Argument as Arg;
-use replay::rows::CharacterOperativeRow;
+use installed_content_localisation::localisation::Argument as Arg;
+use replay_data::rows::CharacterOperativeRow;
 use viewer_foundation::map::native_text::FLAG;
 use viewer_foundation::tooltip_text::localise;
 
@@ -252,7 +252,7 @@ fn codename(hour: &Hour<'_, '_>, character: &CharacterOperativeRow) -> Result<St
 pub(super) fn operation(
     hour: &Hour<'_, '_>,
     row: &OperationRow,
-    definition: Option<&installed_content::intelligence::Operation>,
+    definition: Option<&installed_content_core::intelligence::Operation>,
     state: OperationState,
     value: Option<Result<i64, String>>,
     _shared: &Shared<'_, '_>,

@@ -58,7 +58,7 @@ impl CurrentJoins {
         }
     }
     fn combat_reads(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> (usize, Vec<u32>) {
-        let _cpu = ::replay::cpu::scope_phase("equipment_losses:combat_reads");
+        let _cpu = ::replay_frame::cpu::scope_phase("equipment_losses:combat_reads");
         let table = TableId::CombatLogEquipment as u32;
         let Ok(rows) = frame.complete::<tables::SliceReads>() else {
             self.combat_dates.clear();
@@ -122,22 +122,22 @@ static DESTRUCTION_AMOUNT_FIELD: std::sync::LazyLock<u64> = std::sync::LazyLock:
     )
 });
 
-fn combat_log(frame: &DecodedFrame) -> &[replay::rows::CombatLogEquipmentRow] {
+fn combat_log(frame: &DecodedFrame) -> &[replay_data::rows::CombatLogEquipmentRow] {
     match &*frame.tables[TableId::CombatLogEquipment.index()] {
-        replay::frame::TableView::Complete(rows)
-        | replay::frame::TableView::Truncated { rows, .. } => rows
+        replay_frame::frame::TableView::Complete(rows)
+        | replay_frame::frame::TableView::Truncated { rows, .. } => rows
             .rows::<tables::CombatLogEquipment>()
             .unwrap_or_default(),
-        replay::frame::TableView::Unavailable { .. } => &[],
+        replay_frame::frame::TableView::Unavailable { .. } => &[],
     }
 }
 
 /// Country is the first component of the log's recorded key. Selecting its
 /// range keeps the recorded order, including when another owner's rows leave.
 fn combat_owner(
-    rows: &[replay::rows::CombatLogEquipmentRow],
+    rows: &[replay_data::rows::CombatLogEquipmentRow],
     raw: u32,
-) -> &[replay::rows::CombatLogEquipmentRow] {
+) -> &[replay_data::rows::CombatLogEquipmentRow] {
     let first = rows.partition_point(|row| row.country < raw);
     let last = rows.partition_point(|row| row.country <= raw);
     &rows[first..last]
@@ -221,7 +221,7 @@ pub struct Prepared {
     work: dashboard_base::prepared::observer_tests::Work,
 }
 
-fn state(format: replay::format::FormatVersion) -> State {
+fn state(format: replay_data::format::FormatVersion) -> State {
     State {
         land_source: LandSource::CombatLog,
         include_all_destruction: true,
@@ -300,10 +300,10 @@ impl Prepared {
             self.finish_block(frame.hour - 1);
         }
         self.values.advance(frame.hour)?;
-        let cpu = ::replay::cpu::scope_phase("equipment_losses:variant_names");
+        let cpu = ::replay_frame::cpu::scope_phase("equipment_losses:variant_names");
         self.variants.observe_changed(replay.format, frame, changes);
         drop(cpu);
-        let cpu = ::replay::cpu::scope_phase("equipment_losses:joins");
+        let cpu = ::replay_frame::cpu::scope_phase("equipment_losses:joins");
         let links = frame.complete::<tables::CountryLinks>().ok();
         let census = frame.complete::<tables::Countries>().ok();
         let restoring = !self.joins.joined;
@@ -602,9 +602,11 @@ impl Prepared {
             }
             self.joins.drain_len = drain_len;
             let status = match &*frame.tables[TableId::EquipmentDestruction.index()] {
-                replay::frame::TableView::Complete(_) => "complete".to_owned(),
-                replay::frame::TableView::Truncated { .. } => DESTRUCTION_TRUNCATED.to_owned(),
-                replay::frame::TableView::Unavailable { reason } => reason.clone(),
+                replay_frame::frame::TableView::Complete(_) => "complete".to_owned(),
+                replay_frame::frame::TableView::Truncated { .. } => {
+                    DESTRUCTION_TRUNCATED.to_owned()
+                }
+                replay_frame::frame::TableView::Unavailable { reason } => reason.clone(),
             };
             let before = self.joins.drain_status.as_ref();
             if restoring || before.is_none_or(|old| old.0 != status) {
@@ -735,7 +737,7 @@ impl Prepared {
             self.lend_read = Some(frame.hour);
         }
         drop(cpu);
-        let _cpu = ::replay::cpu::scope_phase("equipment_losses:owner_projection");
+        let _cpu = ::replay_frame::cpu::scope_phase("equipment_losses:owner_projection");
         for (identity, records) in affected {
             #[cfg(test)]
             {
@@ -1029,7 +1031,7 @@ impl Prepared {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("equipment_losses:series_flush");
+        let _cpu = ::replay_frame::cpu::scope_phase("equipment_losses:series_flush");
         if let Ok(last) = i32::try_from(self.next - 1) {
             self.absent.advance(last);
             for country in self.countries.values_mut() {
@@ -1333,9 +1335,9 @@ fn validate_origin(
                 branch,
                 selected.origin_hour,
                 &[
-                    replay::rows::TableId::Campaign,
-                    replay::rows::TableId::Countries,
-                    replay::rows::TableId::CountryLinks,
+                    replay_data::rows::TableId::Campaign,
+                    replay_data::rows::TableId::Countries,
+                    replay_data::rows::TableId::CountryLinks,
                 ],
                 cancelled,
             )?
@@ -1374,7 +1376,7 @@ fn read_scanned(
     identity: Identity,
     (from, to, width): (f64, f64, u32),
     reads: &[i32],
-    format: replay::format::FormatVersion,
+    format: replay_data::format::FormatVersion,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Scanned>> {
     let Some((keys, ())) =

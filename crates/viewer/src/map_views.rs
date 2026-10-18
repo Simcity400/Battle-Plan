@@ -13,11 +13,11 @@ use {
 /// country. An hour lacking the complete tables a filter reads, or naming a human-controlled
 /// country it cannot place, draws every country rather than guess.
 fn counter_owners(
-    frame: &replay::frame::DecodedFrame,
+    frame: &replay_frame::frame::DecodedFrame,
     filter: &dashboard::protocol::CounterFilter,
 ) -> Option<Arc<BTreeSet<u32>>> {
     use dashboard::protocol::CounterFilter;
-    use replay::rows::tables;
+    use replay_data::rows::tables;
     match filter {
         CounterFilter::All => None,
         CounterFilter::Players => {
@@ -96,10 +96,10 @@ impl ResolvedSettings {
 }
 
 /// The tables [`counter_owners`] reads.
-const OWNER_TABLES: [replay::rows::TableId; 3] = [
-    replay::rows::TableId::CountryLinks,
-    replay::rows::TableId::HumanControllers,
-    replay::rows::TableId::Countries,
+const OWNER_TABLES: [replay_data::rows::TableId; 3] = [
+    replay_data::rows::TableId::CountryLinks,
+    replay_data::rows::TableId::HumanControllers,
+    replay_data::rows::TableId::Countries,
 ];
 
 /// A view's resolved counter owners, read again only when the filter or one of the tables they
@@ -113,7 +113,7 @@ pub struct CounterOwners {
 /// belongs to one recording's decoder and is shared only by hours whose table did not change,
 /// so another recording, branch or changed hour reads again.
 type ResolvedOwners = (
-    [replay::frame::ViewIdentity; OWNER_TABLES.len()],
+    [replay_frame::frame::ViewIdentity; OWNER_TABLES.len()],
     dashboard::protocol::CounterFilter,
     Option<Arc<BTreeSet<u32>>>,
 );
@@ -121,7 +121,7 @@ type ResolvedOwners = (
 impl CounterOwners {
     pub fn get(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         filter: &dashboard::protocol::CounterFilter,
     ) -> Option<Arc<BTreeSet<u32>>> {
         let tables = OWNER_TABLES.map(|table| frame.tables[table.index()].identity());
@@ -130,7 +130,7 @@ impl CounterOwners {
 
     fn get_with(
         &mut self,
-        tables: [replay::frame::ViewIdentity; OWNER_TABLES.len()],
+        tables: [replay_frame::frame::ViewIdentity; OWNER_TABLES.len()],
         filter: &dashboard::protocol::CounterFilter,
         read: impl FnOnce(&dashboard::protocol::CounterFilter) -> Option<Arc<BTreeSet<u32>>>,
     ) -> Option<Arc<BTreeSet<u32>>> {
@@ -186,7 +186,15 @@ impl Views {
         let land_combats = self.land_combats.take_running();
         let resources = self.resources.take_running();
         let adjacency_rules = self.adjacency_rules.take_running();
-        naval || labels || pings || raids || intel || bases || land_combats || resources || adjacency_rules
+        naval
+            || labels
+            || pings
+            || raids
+            || intel
+            || bases
+            || land_combats
+            || resources
+            || adjacency_rules
     }
 }
 
@@ -301,7 +309,7 @@ mod tests {
 
     #[test]
     fn owners_are_read_again_only_for_other_tables_or_another_filter() {
-        use replay::frame::{SharedView, TableView};
+        use replay_frame::{frame::SharedView, frame::TableView};
         let view = || -> SharedView {
             TableView::Unavailable {
                 reason: "synthetic".into(),

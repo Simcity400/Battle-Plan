@@ -9,7 +9,10 @@
 
 use super::{RawRun, ScannedLine, ScannedLines, breakdown::RawModifierRun};
 use crate::products::{country_groups::HourSpan, equipment::VariantCatalogue};
-use replay::rows::{CountryProductionModifiersRow, ProductionLineModifiersRow, TableId, TableRows};
+use replay_data::{
+    rows::CountryProductionModifiersRow, rows::ProductionLineModifiersRow, rows::TableId,
+    rows::TableRows,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -77,7 +80,7 @@ fn encode(rows: TableRows) -> io::Result<Vec<u8>> {
 }
 
 fn decode(table: TableId, bytes: &[u8]) -> io::Result<TableRows> {
-    let mut input = replay::codec::Decoder::new(bytes);
+    let mut input = replay_data::codec::Decoder::new(bytes);
     let rows = table.decode_rows(1, &mut input)?;
     input.finish()?;
     Ok(rows)
@@ -168,7 +171,7 @@ impl SavedLines {
     /// `recorded_language`. None for a scan saved by another layout.
     pub fn restore(
         self,
-        localisation: Option<Arc<installed_content::localisation::Localisation>>,
+        localisation: Option<Arc<installed_content_localisation::localisation::Localisation>>,
         recorded_language: Arc<str>,
     ) -> io::Result<Option<ScannedLines>> {
         if self.schema != SCHEMA {

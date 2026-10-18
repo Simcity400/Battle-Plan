@@ -163,10 +163,7 @@ impl NativeHost {
         if inner.process.is_none() || inner.shutting_down || inner.generation != viewer {
             return false;
         }
-        inner.pending.gamepad = Some(GamepadMessage::merge(
-            inner.pending.gamepad.take(),
-            message,
-        ));
+        inner.pending.gamepad = Some(GamepadMessage::merge(inner.pending.gamepad.take(), message));
         drop(inner);
         self.shared.1.notify_all();
         true
@@ -326,12 +323,21 @@ mod tests {
         };
         let held = Some('a');
         // Pad b only jitters at rest: pad a, held steady, stays forwarded.
-        assert_eq!(last_touched(held, 'b', &state([0.015, -0.01], 0.0, 0)), held);
+        assert_eq!(
+            last_touched(held, 'b', &state([0.015, -0.01], 0.0, 0)),
+            held
+        );
         // Really used, by a stick, a trigger or a button, it takes over.
-        assert_eq!(last_touched(held, 'b', &state([0.3, 0.0], 0.0, 0)), Some('b'));
+        assert_eq!(
+            last_touched(held, 'b', &state([0.3, 0.0], 0.0, 0)),
+            Some('b')
+        );
         assert_eq!(last_touched(held, 'b', &state([0.0; 2], 0.4, 0)), Some('b'));
         let south = GamepadButton::South.bit();
-        assert_eq!(last_touched(held, 'b', &state([0.0; 2], 0.0, south)), Some('b'));
+        assert_eq!(
+            last_touched(held, 'b', &state([0.0; 2], 0.0, south)),
+            Some('b')
+        );
         // With none forwarded yet, jitter selects nothing.
         assert_eq!(last_touched(None, 'b', &state([0.01, 0.0], 0.0, 0)), None);
         // The forwarded pad coming to rest stays forwarded, so its rest reaches the map.
@@ -482,7 +488,10 @@ mod tests {
         // Another program comes to the front with the stick held: the map lets go, as Windows
         // stops reporting the controller to the host.
         router.route(&maps, None, held(0.8));
-        assert_eq!(maps.take(), [(Target::Campaign, 7, GamepadMessage::Release)]);
+        assert_eq!(
+            maps.take(),
+            [(Target::Campaign, 7, GamepadMessage::Release)]
+        );
         router.route(&maps, None, held(0.8));
         assert!(maps.take().is_empty());
         // Back in front, it takes what is held then.

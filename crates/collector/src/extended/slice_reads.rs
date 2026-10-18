@@ -3,9 +3,10 @@
 //! Nothing is read from the game for it. The spool assembles the table from
 //! each hour's sliced reads while it merges them (`Campaign::merge_sliced_inputs`),
 //! so this pack only reserves the table's place in the frame.
-use engine::allocation::string;
-use engine::walk::Outcome;
-use replay::{frame::TableView, rows::TableId};
+use engine_allocation::string;
+use engine_native::walk::Outcome;
+use replay_data::rows::TableId;
+use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::SliceReads];

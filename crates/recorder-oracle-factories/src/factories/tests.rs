@@ -1,8 +1,6 @@
 use super::*;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{CountryFactoriesRow, TableId, TableRows},
-};
+use replay_data::{rows::CountryFactoriesRow, rows::TableId, rows::TableRows};
+use replay_frame::{frame::Metrics, frame::TableView};
 
 /// GER controls state 1 and occupies ITA's state 2; ITA owns state 3.
 fn save(ger: &str, ita: &str) -> Save {
@@ -27,10 +25,10 @@ provinces={{}}
 const CLEAN: &str = "refresh=8 production={ dirty=no }";
 
 fn content(extra: &str) -> Buildings {
-    installed_content::buildings::parse(
+    installed_content_core::buildings::parse(
         format!("buildings={{ civ={{general_production=1}} arms={{military_production=1}} yard={{naval_production=1}} infrastructure={{}} both={{military_production=1 general_production=1}} {extra} }}")
             .as_bytes(),
-        &installed_content::key_names::KeyNames::default(),
+        &installed_content_core::key_names::KeyNames::default(),
     )
     .unwrap()
 }
@@ -74,7 +72,7 @@ fn run_with_states(
     content: &Buildings,
     rows: Vec<CountryFactoriesRow>,
     membership: &installed_content_save::PartialMapMembership,
-    states: Vec<replay::rows::StateRow>,
+    states: Vec<replay_data::rows::StateRow>,
 ) -> io::Result<Report> {
     let mut frame = DecodedFrame {
         branch: 1,
@@ -107,7 +105,7 @@ fn run_with_states(
 
 #[test]
 fn unowned_state_factories_follow_positive_control_and_never_charge_null_control() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut saved = save(CLEAN, CLEAN);
     let state = saved.states.get_mut(&2).unwrap();
@@ -118,7 +116,7 @@ fn unowned_state_factories_follow_positive_control_and_never_charge_null_control
     }
     .into();
     for (controller, levels) in [(0, [3, 0, 5]), (u32::MAX, [3, 0, 5]), (5, [3, 3, 7])] {
-        let states = vec![replay::rows::StateRow {
+        let states = vec![replay_data::rows::StateRow {
             id: 2,
             controller,
             ..Default::default()
@@ -147,7 +145,7 @@ fn unowned_state_factories_follow_positive_control_and_never_charge_null_control
 
 #[test]
 fn an_excluded_state_keeps_all_saved_factory_input_comparisons() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let membership = super::super::fixtures::membership(
         "state={id=1 provinces={1}} \
@@ -179,7 +177,7 @@ fn an_excluded_state_keeps_all_saved_factory_input_comparisons() {
 
 #[test]
 fn excluded_state_unsaved_control_requires_capture_and_missing_factory_capture_is_reported() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let membership = super::super::fixtures::membership(
         "state={id=1 provinces={1}} \
@@ -211,7 +209,7 @@ fn excluded_state_unsaved_control_requires_capture_and_missing_factory_capture_i
 
 #[test]
 fn an_excluded_state_without_factory_inputs_does_not_skip_a_country() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let membership = super::super::fixtures::membership(
         "state={id=1 provinces={1}} \
@@ -239,7 +237,7 @@ fn an_excluded_state_without_factory_inputs_does_not_skip_a_country() {
 
 #[test]
 fn history_building_effects_compare_saved_levels_without_waiving_a_difference() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let membership = super::super::fixtures::membership(
         "state={id=1 provinces={1} history={buildings={civ=99} \
@@ -262,7 +260,7 @@ fn history_building_effects_compare_saved_levels_without_waiving_a_difference() 
 
 #[test]
 fn controlled_and_offsite_levels_compare_per_group() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let saved = save(CLEAN, CLEAN);
     // GER: state 1 and occupied state 2 plus two offsite arms levels.
@@ -279,7 +277,7 @@ fn controlled_and_offsite_levels_compare_per_group() {
 
 #[test]
 fn pending_recalculations_and_ambiguous_types_are_listed_not_compared() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let rows = || vec![row(5, [0; 3]), row(6, [0; 3])];
     for ger in [
@@ -311,7 +309,7 @@ fn pending_recalculations_and_ambiguous_types_are_listed_not_compared() {
 
 #[test]
 fn missing_rows_inputs_or_content_are_not_silently_compared() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let report = run(&save(CLEAN, CLEAN), &content(""), vec![row(5, [3, 3, 7])]).unwrap();
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
@@ -325,9 +323,9 @@ fn missing_rows_inputs_or_content_are_not_silently_compared() {
         .is_err()
     );
     assert!(run(&save("refresh=0", CLEAN), &content(""), rows()).is_err());
-    let undeclared = installed_content::buildings::parse(
+    let undeclared = installed_content_core::buildings::parse(
         b"buildings={ civ={} arms={} yard={} infrastructure={} }",
-        &installed_content::key_names::KeyNames::default(),
+        &installed_content_core::key_names::KeyNames::default(),
     )
     .unwrap();
     assert!(run(&save(CLEAN, CLEAN), &undeclared, rows()).is_err());

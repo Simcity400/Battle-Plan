@@ -1,8 +1,9 @@
 //! The active naval window's fresh screen and capital-screen calculations.
 use super::keyed::Keyed;
-use installed_content::naval_combat_defines::Defines;
-use replay::rows::{
-    NavalCombatShipRow, NavalCombatSideDetails, NavalCombatSummaryInputs, ShipModelRow,
+use installed_content_naval_combat_defines::naval_combat_defines::Defines;
+use replay_data::{
+    rows::NavalCombatShipRow, rows::NavalCombatSideDetails, rows::NavalCombatSummaryInputs,
+    rows::ShipModelRow,
 };
 
 const ONE: i64 = 100_000;

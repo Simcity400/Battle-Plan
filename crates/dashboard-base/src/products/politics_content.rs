@@ -9,14 +9,10 @@ use crate::{
     Artwork, Source,
     catalogue::{self, Catalogue, View},
 };
-use installed_content::{
-    characters::{
-        AdvisorRole, Authored, BuiltTemplate, Characters, PORTRAIT_ROLES, PORTRAIT_SIZES,
-    },
-    coverage::Gap,
-    ideas::{Idea, IdeaContent},
-    ideologies::Ideologies,
-    leader_traits::LeaderTraits,
+use installed_content_core::{
+    characters::AdvisorRole, characters::Authored, characters::BuiltTemplate,
+    characters::Characters, characters::PORTRAIT_ROLES, characters::PORTRAIT_SIZES, coverage::Gap,
+    ideas::Idea, ideas::IdeaContent, ideologies::Ideologies, leader_traits::LeaderTraits,
     modifier_definitions::ModifierDefinitions,
 };
 use std::{
@@ -36,7 +32,7 @@ const MAX_CACHED_PORTRAITS: usize = 512;
 
 /// See [`PoliticsContent::recorded_name`].
 pub fn recorded_name(
-    localisation: &installed_content::localisation::Localisation,
+    localisation: &installed_content_localisation::localisation::Localisation,
     saved: &str,
 ) -> RecordedName {
     if saved.is_empty() {
@@ -72,7 +68,7 @@ pub struct PoliticsContent {
     pub ideologies: Ideologies,
     pub modifier_definitions: ModifierDefinitions,
     /// The names database a generated advisor name draws from.
-    pub names: installed_content::names::NameLists,
+    pub names: installed_content_core::names::NameLists,
     /// Standing notes about the content: files left out, closed or ambiguous.
     pub warnings: Vec<String>,
     /// Artwork already built, by token, with why its icon is missing if it is.
@@ -92,13 +88,13 @@ pub struct PoliticsContent {
 /// Presentation definitions needed only by the power ledger. Reading is lazy
 /// and shared by every country/widget using this catalogue.
 pub struct PowerContent {
-    pub decisions: installed_content::decisions::Database,
-    pub abilities: installed_content::abilities::AbilitySprites,
-    pub focuses: installed_content::focus::Focuses,
+    pub decisions: installed_content_core::decisions::Database,
+    pub abilities: installed_content_abilities::abilities::AbilitySprites,
+    pub focuses: installed_content_focus::focus::Focuses,
     pub warnings: Vec<String>,
-    pub unit_traits: installed_content::unit_leader::Traits,
-    pub triggers: installed_content::trigger_keys::TriggerNames,
-    pub aliases: Arc<installed_content::tag_aliases::TagAliases>,
+    pub unit_traits: installed_content_core::unit_leader::Traits,
+    pub triggers: installed_content_core::trigger_keys::TriggerNames,
+    pub aliases: Arc<installed_content_core::tag_aliases::TagAliases>,
     pub dlcs: std::collections::BTreeSet<String>,
 }
 
@@ -161,7 +157,7 @@ impl PoliticsContent {
     }
     pub fn load(catalogue: Arc<Catalogue>) -> io::Result<Self> {
         let (ideologies, ideology_warnings) =
-            installed_content::ideologies::read(&catalogue.content.layers)?;
+            installed_content_core::ideologies::read(&catalogue.content.layers)?;
         Self::load_prepared(catalogue, ideologies, ideology_warnings)
     }
 
@@ -176,20 +172,20 @@ impl PoliticsContent {
     fn load_prepared(
         catalogue: Arc<Catalogue>,
         ideologies: Ideologies,
-        ideology_warnings: Vec<installed_content::Diagnostic>,
+        ideology_warnings: Vec<installed_content_core::Diagnostic>,
     ) -> io::Result<Self> {
         let layers = &catalogue.content.layers;
         let mut warnings = catalogue.verification.clone();
         // The groups named by this define contain character advisor templates.
         // Read them as advisors rather than ideas.
-        let officers = installed_content::defines::read(layers)?
+        let officers = installed_content_core::defines::read(layers)?
             .strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
-        let (ideas, advisors, idea_warnings) = installed_content::ideas::read(layers, &officers)?;
-        let (characters, character_warnings) = installed_content::characters::read(layers, advisors)?;
-        let (traits, trait_warnings) = installed_content::leader_traits::read(layers)?;
+        let (ideas, advisors, idea_warnings) = installed_content_core::ideas::read(layers, &officers)?;
+        let (characters, character_warnings) = installed_content_core::characters::read(layers, advisors)?;
+        let (traits, trait_warnings) = installed_content_core::leader_traits::read(layers)?;
         let (modifier_definitions, definition_warnings) =
-            installed_content::modifier_definitions::read(layers)?;
-        let names = installed_content::names::read(layers)?;
+            installed_content_core::modifier_definitions::read(layers)?;
+        let names = installed_content_core::names::read(layers)?;
         for list in [
             idea_warnings,
             character_warnings,
@@ -233,19 +229,19 @@ impl PoliticsContent {
             .power_result
             .get_or_init(|| {
                 let layers = &self.catalogue.content.layers;
-                let decisions = installed_content::decisions::read(layers)?;
-                let abilities = installed_content::abilities::read(layers)?;
-                let (focuses, focus_warnings) = installed_content::focus::read(layers)?;
-                let unit_traits = installed_content::unit_leader::Traits::registered(layers)?;
-                let triggers = installed_content::trigger_keys::TriggerNames::new(
-                    installed_content::scripted_triggers::read(layers)?,
-                    installed_content::trigger_keys::CountTriggerNames::new(
-                        &installed_content::buildings::read(layers)?,
+                let decisions = installed_content_core::decisions::read(layers)?;
+                let abilities = installed_content_abilities::abilities::read(layers)?;
+                let (focuses, focus_warnings) = installed_content_focus::focus::read(layers)?;
+                let unit_traits = installed_content_core::unit_leader::Traits::registered(layers)?;
+                let triggers = installed_content_core::trigger_keys::TriggerNames::new(
+                    installed_content_core::scripted_triggers::read(layers)?,
+                    installed_content_core::trigger_keys::CountTriggerNames::new(
+                        &installed_content_core::buildings::read(layers)?,
                         &self.ideologies,
-                        &installed_content::resources::read(layers)?.0,
+                        &installed_content_core::resources::read(layers)?.0,
                     ),
                 );
-                let aliases = Arc::new(installed_content::tag_aliases::read(layers)?);
+                let aliases = Arc::new(installed_content_core::tag_aliases::read(layers)?);
                 let dlcs = layers.dlc_names()?;
                 let warnings = decisions
                     .notes

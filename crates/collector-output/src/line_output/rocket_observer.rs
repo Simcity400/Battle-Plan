@@ -5,7 +5,10 @@ use super::{
     Pending, append, invalidate, observe_credit, observe_delivery, refuse_delivery,
     refuse_spending,
 };
-use engine::line_output_sites::{ROCKET_ADVANCE, ROCKET_DELIVERY_RETURN, RocketTick};
+use engine_production::{
+    line_output_sites::ROCKET_ADVANCE, line_output_sites::ROCKET_DELIVERY_RETURN,
+    line_output_sites::RocketTick,
+};
 use std::{
     cell::Cell,
     ops::Range,
@@ -198,7 +201,7 @@ unsafe extern "system-unwind" fn before(
             return;
         }
         context.acquired = true;
-        let memory = unsafe { engine::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
         if kind == 2 {
             let occupied = SCOPE.try_with(|scope| scope.get().present);
             if !matches!(occupied, Ok(false)) {
@@ -206,7 +209,8 @@ unsafe extern "system-unwind" fn before(
                 retain();
                 return;
             }
-            context.tick = engine::line_output_sites::read_rocket_spending(&memory, base, receiver);
+            context.tick =
+                engine_production::line_output_sites::read_rocket_spending(&memory, base, receiver);
             if SCOPE
                 .try_with(|scope| {
                     scope.set(Scope {
@@ -226,7 +230,8 @@ unsafe extern "system-unwind" fn before(
             let scope = SCOPE.try_with(|scope| scope.get()).unwrap_or_default();
             // DELIVERY RCX is logistics status. Producer comes only from the
             // matched same-thread Rocket scope, not a receiver-type guess.
-            let variant = engine::cequipment_variant::identity(&memory, base, second).unwrap_or(0);
+            let variant =
+                engine_native::cequipment_variant::identity(&memory, base, second).unwrap_or(0);
             if let crate::rocket_output::Entry::Delivery {
                 country,
                 variant,

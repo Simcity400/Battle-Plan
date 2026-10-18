@@ -1,6 +1,8 @@
 //! Command dispatch checks stay with the CLI host.
 use crate::test_support::replay;
-use replay::{frame::TableUpdate, rows::TableId, spool::Record};
+use replay::spool::Record;
+use replay_data::rows::TableId;
+use replay_frame::frame::TableUpdate;
 use std::{fs, path::Path};
 
 #[test]

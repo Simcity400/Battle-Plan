@@ -2,8 +2,9 @@
 //! Port items have separate child and arrival behavior.
 
 use super::*;
-use replay::rows::{
-    CountryCounterInputRow, FleetCounterInputRow, TaskForceCounterInputRow, TaskForceRow,
+use replay_data::{
+    rows::CountryCounterInputRow, rows::FleetCounterInputRow, rows::TaskForceCounterInputRow,
+    rows::TaskForceRow,
 };
 use viewer_foundation::map::counter_hovers::task_force::{Control, Hover};
 use viewer_foundation::map::counter_order;
@@ -448,9 +449,9 @@ pub(super) fn append(context: &Context<'_>, input: &Hover, out: &mut Tooltip) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{
-        CountryLinkRow, CountryRow, Recorded, ShipRow, TableRows, UnitSupplyDemand,
-        UnitSupplyInputs,
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::Recorded, rows::ShipRow, rows::TableRows,
+        rows::UnitSupplyDemand, rows::UnitSupplyInputs,
     };
     use viewer_foundation::map::test_support::{test_frame, test_put};
 
@@ -814,7 +815,7 @@ mod tests {
         test_put(
             &mut frame,
             TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
+                forward_visibility: replay_data::rows::Recorded::NotRecorded,
                 country: 7,
                 pride_of_the_fleet: 11,
                 ..Default::default()
@@ -848,14 +849,14 @@ mod tests {
             &mut frame,
             TableRows::CountryCounterInputs(vec![
                 CountryCounterInputRow {
-                    forward_visibility: replay::rows::Recorded::NotRecorded,
+                    forward_visibility: replay_data::rows::Recorded::NotRecorded,
                     country: 7,
                     pride_of_the_fleet: 11,
                     pride_name: Some(b"ship eleven".to_vec()).into(),
                     ..Default::default()
                 },
                 CountryCounterInputRow {
-                    forward_visibility: replay::rows::Recorded::NotRecorded,
+                    forward_visibility: replay_data::rows::Recorded::NotRecorded,
                     country: 12,
                     pride_of_the_fleet: 99,
                     pride_name: Some(b"unrelated ship".to_vec()).into(),
@@ -960,7 +961,7 @@ mod tests {
                 }]),
             );
             let country = CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
+                forward_visibility: replay_data::rows::Recorded::NotRecorded,
                 country: 7,
                 pride_of_the_fleet: 11,
                 pride_name: ship_name,

@@ -56,7 +56,7 @@ fn nodes(
         provinces.insert((row.country, row.province));
         if row.is_vertex() {
             // A vertex row carries only its province-keyed parent edge.
-            if row.index != replay::rows::SupplyNodeRow::VERTEX | row.province
+            if row.index != replay_data::rows::SupplyNodeRow::VERTEX | row.province
                 || (row.kind, row.flag, row.available, row.consumed) != (0, 0, 0, 0)
             {
                 return Err(invalid("SupplyNodes vertex row is not a bare parent edge"));

@@ -3,13 +3,11 @@ use super::*;
 use dashboard_base::prepared::frame_changes::FrameChangeTracker;
 use dashboard_base::prepared::series::tests::Fixture;
 use dashboard_core::test_fixtures::{CAMPAIGN, records};
-use replay::{
-    frame::TableView,
-    rows::{
-        LandCombatDetailsRow, LandCombatResultsRow, LandCombatSideDetails, LandResultSide,
-        OrdersGroupRow, Recorded, TableRows,
-    },
+use replay_data::{
+    rows::LandCombatDetailsRow, rows::LandCombatResultsRow, rows::LandCombatSideDetails,
+    rows::LandResultSide, rows::OrdersGroupRow, rows::Recorded, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 
 fn replay(frames: &[DecodedFrame]) -> Replay {
     Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap()
@@ -252,9 +250,10 @@ fn prepared_leader_conflicting_repeated_outcomes_remain_unresolved_after_resume(
 
 #[test]
 fn prepared_naval_leader_source_links_join_late_results_and_permanent_conflicts_after_resume() {
-    use replay::rows::{
-        NavalCombatDetailsRow, NavalCombatResultDetailsRow, NavalCombatSideDetails, NavalResultRow,
-        NavalResultSideDetails, NavalResultSourceRow,
+    use replay_data::{
+        rows::NavalCombatDetailsRow, rows::NavalCombatResultDetailsRow,
+        rows::NavalCombatSideDetails, rows::NavalResultRow, rows::NavalResultSideDetails,
+        rows::NavalResultSourceRow,
     };
     let mut frames: Vec<_> = (100..=104).map(|hour| frame(hour, 2)).collect();
     for frame in &mut frames {
@@ -567,8 +566,9 @@ fn admission_work(
     content: Option<&Content>,
 ) -> io::Result<dashboard_base::prepared::observer_tests::Work> {
     use dashboard_base::prepared::observer_tests::{self, Work};
-    use replay::rows::{
-        NavalCombatResultDetailsRow, NavalResultRow, NavalResultSideDetails, NavalResultSourceRow,
+    use replay_data::{
+        rows::NavalCombatResultDetailsRow, rows::NavalResultRow, rows::NavalResultSideDetails,
+        rows::NavalResultSourceRow,
     };
     let mut template = frame(100, countries);
     for rows in [
@@ -784,7 +784,7 @@ fn prepared_leaders_shared_driver_five_thousand_current_rows_keep_admission_work
 #[test]
 #[cfg(feature = "slow-tests")]
 fn prepared_leaders_shared_driver_configured_content_success_and_failure_never_reload() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use dashboard_base::prepared::observer_tests;
     for refused in [false, true] {
@@ -973,12 +973,12 @@ fn prepared_leaders_deferred_carry_matches_hourly_oracle_after_append_gap_alias_
 
 #[test]
 fn prepared_leaders_repeated_formation_bindings_keep_hourly_command_episodes() {
-    use replay::rows::FleetRow;
+    use replay_data::rows::FleetRow;
     let mut base = frame(100, 1);
     if let TableView::Complete(TableRows::UnitLeaders(rows)) =
         &mut *base.tables[TableId::UnitLeaders.index()]
     {
-        rows[0].kind = engine::cunit_leader::KIND_NAVY;
+        rows[0].kind = engine_native::cunit_leader::KIND_NAVY;
         rows[0].category = 2;
     }
     set(
@@ -1033,9 +1033,10 @@ fn prepared_leaders_repeated_formation_bindings_keep_hourly_command_episodes() {
 /// conflict in the next.
 #[test]
 fn prepared_leaders_join_outcomes_published_in_earlier_windows() {
-    use replay::rows::{
-        NavalCombatDetailsRow, NavalCombatResultDetailsRow, NavalCombatSideDetails, NavalResultRow,
-        NavalResultSideDetails, NavalResultSourceRow,
+    use replay_data::{
+        rows::NavalCombatDetailsRow, rows::NavalCombatResultDetailsRow,
+        rows::NavalCombatSideDetails, rows::NavalResultRow, rows::NavalResultSideDetails,
+        rows::NavalResultSourceRow,
     };
     let mut naval: Vec<_> = (100..=103).map(|hour| frame(hour, 2)).collect();
     for frame in &mut naval {
@@ -1122,8 +1123,8 @@ fn prepared_leaders_join_outcomes_published_in_earlier_windows() {
 /// match the per-hour oracle.
 #[test]
 fn prepared_leaders_reread_identity_only_for_leaders_whose_rows_changed() {
-    use replay::frame::{FrameDecoder, FrameEncoder};
-    use replay::rows::LexicalTokenRow;
+    use replay_data::rows::LexicalTokenRow;
+    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
     let frames: Vec<_> = (100..=103)
         .map(|hour| {
             let mut frame = frame(hour, 2);
@@ -1175,7 +1176,7 @@ fn prepared_leaders_reread_identity_only_for_leaders_whose_rows_changed() {
 /// Observe `frames` with the change facts of their recorded updates, as the
 /// hourly walk observes them; each hour's leader rows read so far.
 fn observe_recorded(state: &mut Prepared, replay: &Replay, frames: &[DecodedFrame]) -> Vec<usize> {
-    use replay::frame::{FrameDecoder, FrameEncoder};
+    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::new();
     let mut tracker = FrameChangeTracker::new();
@@ -1411,8 +1412,8 @@ fn battle_only_hours_do_not_materialize_unchanged_leader_careers() {
     states[1].scan.eager_battles = true;
     let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
     let flag = AtomicBool::new(false);
-    let mut encoder = replay::frame::FrameEncoder::new();
-    let mut decoder = replay::frame::FrameDecoder::new();
+    let mut encoder = replay_frame::frame::FrameEncoder::new();
+    let mut decoder = replay_frame::frame::FrameDecoder::new();
     for (ordinal, input) in frames.iter().enumerate() {
         let wire = std::sync::Arc::new(
             encoder

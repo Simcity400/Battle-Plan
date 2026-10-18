@@ -1,6 +1,7 @@
 use super::*;
 use crate::local_subunit_changes::Watches;
-use engine::{ccountry, cdeployment_status, cequipment_type, cgame_state, csub_unit_definition};
+use engine_deployment::cdeployment_status;
+use engine_native::{ccountry, cequipment_type, cgame_state, csub_unit_definition};
 
 /// Base zero; the sub-unit database pointer reads as `DATABASE`.
 struct World(Vec<u8>);
@@ -9,13 +10,13 @@ const DATABASE: usize = 0x9800;
 const ARCHETYPE: usize = 0xa000;
 /// The global definition of token 5.
 const GLOBAL: usize = 0xb000;
-impl engine::Memory for World {
+impl engine_native::Memory for World {
     fn copy(&self, at: usize, output: &mut [u8]) -> bool {
         if at == csub_unit_definition::DATABASE_RVA && output.len() == 8 {
             output.copy_from_slice(&(DATABASE as u64).to_le_bytes());
             return true;
         }
-        engine::memory::SliceMemory {
+        engine_native::memory::SliceMemory {
             base: 0,
             bytes: &self.0,
         }

@@ -1,5 +1,5 @@
 //! Allocation-free notifications from the native writers of every country
-//! air object's registered missions ([`engine::regional_mission_mutations`]).
+//! air object's registered missions ([`engine_mutations::regional_mission_mutations`]).
 //! A detour only notifies the shared watch registry ([`WatchRegistry`]) for
 //! the `CStrategicAir` its first argument names, counts its site and calls
 //! the original; it never changes game behaviour. Both sites also run on the
@@ -12,7 +12,8 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{Memory, regional_mission_mutations::MUTATIONS};
+use engine_mutations::regional_mission_mutations::MUTATIONS;
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -225,7 +226,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "mission_changes")
             && MUTATIONS.iter().all(|site| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [

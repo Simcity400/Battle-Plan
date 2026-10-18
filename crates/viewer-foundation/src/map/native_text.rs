@@ -800,14 +800,14 @@ pub struct Page {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Font {
     /// The registered font's facts: its name, `color`, `textcolors`, `icons_add_height`.
-    pub facts: installed_content::gui::native::fonts::FontFacts,
+    pub facts: installed_content_core::gui::native::fonts::FontFacts,
     /// The selected family's glyphs.
-    pub glyphs: installed_content::gui::native::fonts::GlyphSet,
+    pub glyphs: installed_content_core::gui::native::fonts::GlyphSet,
     /// Missing font-page textures retain a zero-by-zero extent and null binding.
     /// Their glyphs remain in layout but draw no visible pixels.
     pub pages: Vec<Option<Page>>,
     /// Why a text in this font cannot be drawn as the game draws it: the reader's refusals of
-    /// its declaration ([`installed_content::gui::native::fonts::FontFacts::refusals`]), a `.fnt` the
+    /// its declaration ([`installed_content_core::gui::native::fonts::FontFacts::refusals`]), a `.fnt` the
     /// layers cannot address, a page in a format this port has not implemented. A layout
     /// refuses a text in it by these reasons.
     pub refusals: Vec<(super::native_gui::RefusalKind, String)>,
@@ -835,7 +835,7 @@ impl Font {
     /// The quad of the glyph drawn for `ch` (already the drawn codepoint, a fallback's `?`):
     /// `x / w`, `y / h`, `(x + width) / w`, `(y + height) / h` in `f32`, over the null texture's
     /// 0 by 0 when its page did not load. A glyph's page is the index of the family file it was
-    /// read from ([`installed_content::gui::native::fonts::Glyph::page`]), which always has a record.
+    /// read from ([`installed_content_core::gui::native::fonts::Glyph::page`]), which always has a record.
     pub fn quad(&self, ch: char) -> Option<GlyphQuad> {
         let glyph = self.glyphs.glyphs.get(&u32::from(ch))?;
         let index = glyph.page as usize;
@@ -898,7 +898,10 @@ impl Glyphs for Font {
 /// `load_font`'s height 0), for tests.
 #[cfg(any(test, feature = "test-support"))]
 pub fn monospace(name: &str, width: i32, height: i32) -> Font {
-    use installed_content::gui::native::fonts::{FontFacts, Glyph as Record, GlyphSet};
+    use installed_content_core::{
+        gui::native::fonts::FontFacts, gui::native::fonts::Glyph as Record,
+        gui::native::fonts::GlyphSet,
+    };
     let glyphs = (0x20u32..0x7F)
         .map(|code| {
             (

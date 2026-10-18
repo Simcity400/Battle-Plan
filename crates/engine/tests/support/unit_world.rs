@@ -1,11 +1,12 @@
 //! Owned native-layout unit populations. Counts and topology are test inputs,
 //! not content assumptions. Pointers are relocated only after allocation ends.
-use engine::{
-    cair_base, cair_wing, cair_wing_pool, carmy, carmy_upgrades_requests as upgrades, ccountry,
-    cequipment_variant as variant, cequipment_variant_pool as equipment, cfleet, cgame_state,
-    cprovince, creferenced_division_template as template, cship, cstrategic_air,
+use engine_deployment::carmy_upgrades_requests as upgrades;
+use engine_native::{
+    cair_base, cair_wing, cair_wing_pool, carmy, ccountry, cequipment_variant as variant,
+    cequipment_variant_pool as equipment, cfleet, cgame_state, cprovince,
+    creferenced_division_template as template, cship, cstrategic_air,
     cstrategic_air_manager as air_manager, csub_unit_definition as stats, ctask_force, cunit,
-    memory::{CountedMemory, LiveMemory},
+    memory::CountedMemory, memory::LiveMemory,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -174,20 +175,20 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
             h.ptr(army + cunit::STAT_BLOCK, stat);
             h.ptr(
                 army + carmy::ACCLIMATIZATION,
-                engine::acclimatization_data::VTABLE_RVA,
+                engine_native::acclimatization_data::VTABLE_RVA,
             );
-            let viewers = h.alloc(3 * engine::unit_viewer_entry::STRIDE);
+            let viewers = h.alloc(3 * engine_visibility::unit_viewer_entry::STRIDE);
             h.ptr(army + cunit::VIEWER_DATA, viewers);
             h.u32(army + cunit::VIEWER_DATA + 8, 3);
             h.u32(army + cunit::VIEWER_COUNT, 3);
             for i in 0..3 {
                 h.u32(
-                    viewers + i * engine::unit_viewer_entry::STRIDE,
+                    viewers + i * engine_visibility::unit_viewer_entry::STRIDE,
                     ((slot + i) % shape.countries + 1) as u32,
                 );
                 h.bytes[viewers
-                    + i * engine::unit_viewer_entry::STRIDE
-                    + engine::unit_viewer_entry::LEVEL] = 2;
+                    + i * engine_visibility::unit_viewer_entry::STRIDE
+                    + engine_visibility::unit_viewer_entry::LEVEL] = 2;
             }
             let requests = h.alloc(0x100);
             h.ptr(army + carmy::REQUESTS, requests);
@@ -223,10 +224,13 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
                 (wing_id << 32) | cair_wing::TYPE as u64,
             );
             h.bytes[wing + cair_wing::NAME..wing + cair_wing::NAME + 4].copy_from_slice(b"Wing");
-            h.u64(wing + cair_wing::NAME + engine::msvc_string::LENGTH, 4);
             h.u64(
-                wing + cair_wing::NAME + engine::msvc_string::CAPACITY,
-                engine::msvc_string::INLINE_CAPACITY,
+                wing + cair_wing::NAME + engine_native::msvc_string::LENGTH,
+                4,
+            );
+            h.u64(
+                wing + cair_wing::NAME + engine_native::msvc_string::CAPACITY,
+                engine_native::msvc_string::INLINE_CAPACITY,
             );
             h.ptr(wing + cair_wing::POOL, pool);
             h.ptr(wing + cair_wing::EQUIPMENT_POOL, equipment::VTABLE_RVA);
@@ -255,13 +259,16 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
         );
         h.u32(base + cair_base::CAPACITY, wings.len() as u32 * 10);
         // One occupied container in the native country-slot-sized base array.
-        let container = h.alloc(engine::ccountry_air_container::SIZE);
-        h.ptr(container, engine::ccountry_air_container::VTABLE_RVA);
+        let container = h.alloc(engine_native::ccountry_air_container::SIZE);
+        h.ptr(container, engine_native::ccountry_air_container::VTABLE_RVA);
         h.u32(
-            container + engine::ccountry_air_container::COUNTRY,
+            container + engine_native::ccountry_air_container::COUNTRY,
             slot as u32,
         );
-        h.array(container + engine::ccountry_air_container::POOLS, &[pool]);
+        h.array(
+            container + engine_native::ccountry_air_container::POOLS,
+            &[pool],
+        );
         let mut containers = vec![0; shape.countries + 1];
         containers[slot] = container;
         h.array(base + cair_base::COUNTRY_CONTAINERS, &containers);
@@ -303,7 +310,7 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
         h.array(task + ctask_force::SHIPS, &ships);
     }
     if active {
-        use engine::{cland_combat as combat, cland_combatant as side};
+        use engine_native::{cland_combat as combat, cland_combatant as side};
         let mut combats = Vec::new();
         // Ten percent fighting, one distinct attacker and defender per battle.
         for pair in armies[..(shape.divisions / 20) * 2].chunks_exact(2) {

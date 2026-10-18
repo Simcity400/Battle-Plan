@@ -268,9 +268,10 @@ fn family_lanes_observe_every_job_family_in_serial_order_and_on_lanes() {
 
 // One frame giving several moved families rows that change by hour.
 fn moved_families_frame(hour: i32) -> DecodedFrame {
-    use replay::rows::{
-        ActiveIdeaRow, AirWingRow, LexicalTokenRow, ShipCounterInputs, ShipModelRow, ShipRow,
-        StateResistanceRow, TaskForceRow, WingEquipmentRow,
+    use replay_data::{
+        rows::ActiveIdeaRow, rows::AirWingRow, rows::LexicalTokenRow, rows::ShipCounterInputs,
+        rows::ShipModelRow, rows::ShipRow, rows::StateResistanceRow, rows::TaskForceRow,
+        rows::WingEquipmentRow,
     };
     let mut frame = frame(1, hour, 3);
     *frame.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(vec![
@@ -382,7 +383,10 @@ fn moved_families_frame(hour: i32) -> DecodedFrame {
 
 // Project and sinking rows over the single-country source fixture.
 fn project_and_sinking_frame(hour: i32) -> DecodedFrame {
-    use replay::rows::{LexicalTokenRow, ProjectRow, ProjectState, SunkShipEntry, SunkShipsRow};
+    use replay_data::{
+        rows::LexicalTokenRow, rows::ProjectRow, rows::ProjectState, rows::SunkShipEntry,
+        rows::SunkShipsRow,
+    };
     let mut frame = crate::test_fixtures::source(1, hour, Some(i64::from(hour) * 1000));
     frame.metrics.table_ns[TableId::Projects.index()] = 1;
     *frame.tables[TableId::Projects.index()] = TableView::Complete(TableRows::Projects(
@@ -583,7 +587,7 @@ fn family_lanes_feed_sources_match_serial_sections_and_oracle() {
     ignore = "slow: runs in the full suite (--features slow-tests)"
 )]
 fn family_lanes_same_frame_identity_and_membership_change_match_serial() {
-    use replay::rows::{CountryLinkRow, FactionMemberRow, FactionRow};
+    use replay_data::{rows::CountryLinkRow, rows::FactionMemberRow, rows::FactionRow};
     let mut initial = frame(1, 10, 3);
     let mut changed = frame(1, 11, 3);
     if let TableView::Complete(TableRows::Countries(rows)) =
@@ -809,7 +813,8 @@ fn family_lanes_reject_an_unjoined_second_frame_and_close_on_coordinator_unwind(
         workers
             .begin(
                 &first,
-                FrameChangeTracker::new().observe(&first, replay::format::FormatVersion::CURRENT),
+                FrameChangeTracker::new()
+                    .observe(&first, replay_data::format::FormatVersion::CURRENT),
             )
             .unwrap();
         assert_eq!(
@@ -817,7 +822,7 @@ fn family_lanes_reject_an_unjoined_second_frame_and_close_on_coordinator_unwind(
                 .begin(
                     &next,
                     FrameChangeTracker::new()
-                        .observe(&next, replay::format::FormatVersion::CURRENT)
+                        .observe(&next, replay_data::format::FormatVersion::CURRENT)
                 )
                 .err()
                 .expect("second pending frame must be rejected")
@@ -830,7 +835,8 @@ fn family_lanes_reject_an_unjoined_second_frame_and_close_on_coordinator_unwind(
         workers
             .begin(
                 &next,
-                FrameChangeTracker::new().observe(&next, replay::format::FormatVersion::CURRENT),
+                FrameChangeTracker::new()
+                    .observe(&next, replay_data::format::FormatVersion::CURRENT),
             )
             .unwrap();
         workers
@@ -845,7 +851,7 @@ fn family_lanes_reject_an_unjoined_second_frame_and_close_on_coordinator_unwind(
                 .begin(
                     &first,
                     FrameChangeTracker::new()
-                        .observe(&first, replay::format::FormatVersion::CURRENT),
+                        .observe(&first, replay_data::format::FormatVersion::CURRENT),
                 )
                 .unwrap();
             panic!("coordinator unwind with a frame dispatched");
@@ -876,7 +882,7 @@ fn family_lanes_join_all_results_and_select_the_original_call_error() {
             .begin(
                 &observed,
                 FrameChangeTracker::new()
-                    .observe(&observed, replay::format::FormatVersion::CURRENT),
+                    .observe(&observed, replay_data::format::FormatVersion::CURRENT),
             )
             .unwrap();
         let error = workers
@@ -1045,7 +1051,7 @@ fn family_lanes_five_thousand_countries_match_every_section() {
 #[cfg(feature = "slow-tests")]
 #[test]
 fn family_lanes_missing_and_modded_content_match_every_section_and_warning_byte() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
     for modded in [false, true] {
         let frames = vec![frame(1, 10, 2), frame(1, 11, 2)];

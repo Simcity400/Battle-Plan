@@ -7,7 +7,7 @@
 //! global definition's; every run-time writer of the clone vector and of a
 //! clone's requirements is a hooked site, and a status is replaced only
 //! through its destructor's hooked clear
-//! ([`engine::local_subunit_mutations`]). A country's held rows are carried,
+//! ([`engine_mutations::local_subunit_mutations`]). A country's held rows are carried,
 //! without reading its clones, when its country object is the held walk's
 //! and either
 //! - the domain's quiet token equals the one taken before the held walk, so
@@ -28,14 +28,14 @@ use crate::{
     local_subunit_changes::{Changes, Counts},
     sampled_verify::Check,
 };
-use engine::{
-    allocation,
-    cdeployment_status::{
-        self as native, Deployment, HeldLocalSubunits, LocalRequirement, LocalSelection,
-        LocalSubunitRow, LocalSubunitWalk,
-    },
-    walk::Outcome,
+use engine_allocation as allocation;
+use engine_deployment::{
+    cdeployment_status as native, cdeployment_status::Deployment,
+    cdeployment_status::HeldLocalSubunits, cdeployment_status::LocalRequirement,
+    cdeployment_status::LocalSelection, cdeployment_status::LocalSubunitRow,
+    cdeployment_status::LocalSubunitWalk,
 };
+use engine_native::walk::Outcome;
 use std::{cell::Cell, ops::Range};
 
 /// One country of the held walk.
@@ -155,7 +155,7 @@ fn same(
 /// what the store and the domain certify. Records the hour's counts.
 #[allow(clippy::too_many_arguments)]
 pub fn capture(
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
     store: &mut LocalStore,

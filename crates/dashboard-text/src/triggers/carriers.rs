@@ -1,7 +1,7 @@
 //! Recorded identities for event scopes' project, raid, MIO and unit arms.
 
 use super::{Evaluator, Scope, World};
-use replay::rows::{DivisionRow, ProjectRow, RaidRow, tables};
+use replay_data::{rows::DivisionRow, rows::ProjectRow, rows::RaidRow, rows::tables};
 
 impl<'a> World<'a> {
     /// Projects retains the pool owner and local id.
@@ -96,7 +96,7 @@ impl Evaluator<'_, '_> {
     pub(super) fn decoded_carrier(&self, kind: u32, id: u32) -> Result<Option<Scope>, String> {
         let world = self.world();
         match kind {
-            engine::nproject_cproject::REFERENCE_TYPE => {
+            engine_projects::nproject_cproject::REFERENCE_TYPE => {
                 let mut found = world
                     .frame()
                     .complete::<tables::Projects>()
@@ -121,7 +121,7 @@ impl Evaluator<'_, '_> {
                 .iter()
                 .find(|row| row.organisation == (u64::from(id) << 32 | u64::from(kind)))
                 .map(|row| Scope::IndustrialOrganisation(row.organisation))),
-            engine::craid_instance::REFERENCE_TYPE_VALUE => Ok(world
+            engine_native::craid_instance::REFERENCE_TYPE_VALUE => Ok(world
                 .frame()
                 .complete::<tables::Raids>()
                 .map_err(|why| why.to_string())?

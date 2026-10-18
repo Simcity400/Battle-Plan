@@ -1,13 +1,11 @@
 use super::*;
 use crate::test_fixtures::{CAMPAIGN, records, source as frame};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{
-        CountryCounterInputRow, CountryFactoriesRow, CountryLinkRow, CountryRow, TableId,
-        TableRows, tables,
-    },
+use replay::container::Replay;
+use replay_data::{
+    rows::CountryCounterInputRow, rows::CountryFactoriesRow, rows::CountryLinkRow,
+    rows::CountryRow, rows::TableId, rows::TableRows, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -87,7 +85,7 @@ fn request(
 
 #[test]
 fn explicit_casualty_columns_share_exact_signed_subtotals_and_reads() {
-    use replay::rows::WarRelationRow;
+    use replay_data::rows::WarRelationRow;
     let source = opened(
         (100..=145)
             .filter(|hour| !(127..130).contains(hour))
@@ -562,7 +560,9 @@ fn scoreboard_registry_needs_no_scan_and_force_columns_allow_ranking() {
 
 #[test]
 fn scoreboard_force_columns_share_roster_counts_zero_and_hourly_reads_at_scale() {
-    use replay::rows::{AirWingRow, ShipRow, TaskForceRow, WingEquipmentRow};
+    use replay_data::{
+        rows::AirWingRow, rows::ShipRow, rows::TaskForceRow, rows::WingEquipmentRow,
+    };
     let force_frame = |hour, planes| {
         let mut out = countries(hour, 5000);
         *out.tables[TableId::AirWings.index()] =
@@ -696,8 +696,9 @@ fn scoreboard_force_columns_share_roster_counts_zero_and_hourly_reads_at_scale()
 
 #[test]
 fn scoreboard_army_size_uses_exact_owner_manpower_and_preserves_missing_input() {
-    use replay::rows::{
-        DivisionCensusRow, DivisionLandInputsRow, DivisionManpowerContributor, DivisionRow,
+    use replay_data::{
+        rows::DivisionCensusRow, rows::DivisionLandInputsRow, rows::DivisionManpowerContributor,
+        rows::DivisionRow,
     };
     let mut first = countries(100, 2);
     *first.tables[TableId::Divisions.index()] =
@@ -1014,9 +1015,9 @@ fn scoreboard_held_stability_read_at_maximum_hour_stays_disjoint() {
 }
 
 fn multi_measure_frame(hour: i32, read: i32, delivered: Option<i64>) -> DecodedFrame {
-    use replay::rows::{
-        LexicalTokenRow, NukeRow, ProductionLineOutputRow, ProductionLineRow,
-        RocketProductionOutputRow, VariantDefinitionRow,
+    use replay_data::{
+        rows::LexicalTokenRow, rows::NukeRow, rows::ProductionLineOutputRow,
+        rows::ProductionLineRow, rows::RocketProductionOutputRow, rows::VariantDefinitionRow,
     };
     let mut out = crate::test_fixtures::stability_frame(
         hour,
@@ -1414,7 +1415,7 @@ fn scoreboard_stability_read_merge_preserves_many_runs_and_held_intersections() 
 
 #[test]
 fn scoreboard_many_hour_stability_and_political_top_five_thousand_countries() {
-    use replay::rows::{CountryStabilityInputRow, SliceReadRow};
+    use replay_data::{rows::CountryStabilityInputRow, rows::SliceReadRow};
     // One held-read stretch and the next supplying read; every country remains present.
     let frames = (0..5)
         .map(|offset| {

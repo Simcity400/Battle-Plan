@@ -3,7 +3,7 @@
 //! the requested window, so 5,000-country rosters need no large allocation.
 
 use super::*;
-use engine::{
+use engine_native::{
     cgame_state, character_advisor_node, character_leader_node, cunit_leader_trait, msvc_tree_node,
 };
 use std::cell::Cell;
@@ -524,8 +524,8 @@ impl Memory for Counting<'_> {
 
     fn copy_records(
         &self,
-        sources: engine::memory::RecordSources<'_>,
-        layout: &engine::memory::RecordLayout<'_>,
+        sources: engine_native::memory::RecordSources<'_>,
+        layout: &engine_native::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         let completed = self.inner.copy_records(sources, layout, destination);
@@ -535,10 +535,10 @@ impl Memory for Counting<'_> {
 
     fn execute_read_plan(
         &self,
-        plan: &engine::read_plan::PreparedPlan,
+        plan: &engine_native::read_plan::PreparedPlan,
         destination: &mut [u8],
-    ) -> Option<engine::read_plan::Outcome> {
-        use engine::read_plan::Outcome as Plan;
+    ) -> Option<engine_native::read_plan::Outcome> {
+        use engine_native::read_plan::Outcome as Plan;
         let outcome = self.inner.execute_read_plan(plan, destination);
         let completed = match outcome {
             Some(Plan::Complete) => plan.reads().len(),
@@ -649,7 +649,7 @@ pub(super) fn typed(memory: &impl Memory, part: usize) -> Captured {
     captured.install_family(PART_MASKS[part], results);
     captured.fail_character_tables(
         PART_MASKS[part].map(|active| !active),
-        replay::cadence::SKIPPED_REASON,
+        replay_data::cadence::SKIPPED_REASON,
     );
     captured
 }
@@ -727,7 +727,7 @@ fn decode_cache(cache: &advisors::Cache) -> Captured {
     let mut captured = Captured::with_capacities(&capacities());
     captured.fail_character_tables(
         PART_MASKS[2].map(|active| !active),
-        replay::cadence::SKIPPED_REASON,
+        replay_data::cadence::SKIPPED_REASON,
     );
     cache.decode(&mut captured);
     captured
@@ -1353,7 +1353,7 @@ fn a_frame_publishes_its_held_advisor_table_without_rewriting_it() {
         frame.reset();
         frame.fail_character_tables(
             PART_MASKS[2].map(|active| !active),
-            replay::cadence::SKIPPED_REASON,
+            replay_data::cadence::SKIPPED_REASON,
         );
         cache.decode(frame);
         frame.tables()[2].clone()

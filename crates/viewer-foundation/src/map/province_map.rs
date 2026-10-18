@@ -1,12 +1,12 @@
 //! Borrowed province and terrain images and shared pixel/world sampling contracts.
 
 use crate::errors::invalid;
-use installed_content::map::MapData;
+use installed_content_core::map::MapData;
 use std::io;
 
 /// A province id image in map pixel space: `provinces.bmp`, origin top-left, x right, y down.
 ///
-/// The same shape as [`installed_content::map::MapData`](../../../installed-content/map/struct.MapData.html)'s
+/// The same shape as [`installed_content_core::map::MapData`](../../../installed-content/map/struct.MapData.html)'s
 /// `width`, `height` and `province_ids`, borrowed so this module needs no loader dependency.
 #[derive(Clone, Copy, Debug)]
 pub struct ProvinceMap<'a> {
@@ -57,7 +57,7 @@ pub fn pixel_from_world(map_height: u32, x: f32, z: f32) -> (f32, f32) {
 
 /// Terrain height samples in map pixel space, one byte per pixel, rows top-left first.
 ///
-/// The caller feeds `map/heightmap.bmp` decoded by `installed_content::image::bmp::decode_indexed`; the
+/// The caller feeds `map/heightmap.bmp` decoded by `installed_content_image::bmp::decode_indexed`; the
 /// bytes are heights in [`HEIGHT_SCALE`] world units, the same scale `pdxmap.shader`'s vertex shader
 /// uses.
 #[derive(Clone, Copy, Debug)]

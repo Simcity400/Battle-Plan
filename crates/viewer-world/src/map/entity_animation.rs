@@ -5,7 +5,7 @@
 //! belong to the viewer, never the recording client's renderer.
 
 use super::models::{ModelInstance, PaletteJoint};
-use installed_content::mesh::{self, EntityState, JointPose, Transform};
+use installed_content_core::{mesh, mesh::EntityState, mesh::JointPose, mesh::Transform};
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::{collections::BTreeMap, sync::Arc};
@@ -1806,7 +1806,7 @@ mod tests {
 
     #[test]
     fn building_damage_event_uses_state_entry_and_repair_stops_it() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let rig = building_rig();
         let mut player = Player::new(&rig);
@@ -1837,7 +1837,7 @@ mod tests {
 
     #[test]
     fn newly_created_damaged_building_does_not_use_the_global_elapsed_clock() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let rig = building_rig();
         let mut player = Player::new(&rig);
@@ -1871,7 +1871,7 @@ mod tests {
 
     #[test]
     fn a_stage_crossed_during_playback_plays_its_intro_then_its_state() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let rig = stage_rig(true);
         let mut player = Player::new(&rig);
@@ -1897,7 +1897,7 @@ mod tests {
 
     #[test]
     fn a_fresh_entity_mid_stage_shows_the_state_from_its_own_entry() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         // A first placement, a seek or a dump creates a fresh arrow,
         // which requests
@@ -1914,7 +1914,7 @@ mod tests {
 
     #[test]
     fn a_stage_whose_intro_the_entity_lacks_keeps_the_current_state() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let rig = stage_rig(false);
         let mut player = Player::new(&rig);

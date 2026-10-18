@@ -104,10 +104,10 @@ fn a_kept_leader_visibility_rejection_is_counted_once_per_hour() {
 
 #[test]
 fn missing_trait_sprite_retries_native_gui_fallback_with_registered_spelling() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use dashboard_text::catalogue::texture_tests::{from_url, png_bytes, texture_catalogue};
-    let image = installed_content::image::Rgba8Image {
+    let image = installed_content_image::Rgba8Image {
         width: 2,
         height: 2,
         pixels: [12, 34, 56, 255].repeat(4),
@@ -126,12 +126,12 @@ fn missing_trait_sprite_retries_native_gui_fallback_with_registered_spelling() {
                     spriteType={name=GFX_trait_Broken_Trait textureFile=gfx/missing.png}}",
             ),
         ],
-        &[("gfx/fallback.png", png_bytes(&image)), ("gfx/canonical.png", png_bytes(&installed_content::image::Rgba8Image { width: 1, height: 1, pixels: vec![23,45,67,255] }))],
+        &[("gfx/fallback.png", png_bytes(&image)), ("gfx/canonical.png", png_bytes(&installed_content_image::Rgba8Image { width: 1, height: 1, pixels: vec![23,45,67,255] }))],
     );
     let catalogue = Arc::new(catalogue);
     let content = Content {
         politics: Arc::new(politics_content::PoliticsContent::load(catalogue.clone()).unwrap()),
-        leaders: installed_content::unit_leader::Leaders::load(&catalogue.content.layers, &|_| None)
+        leaders: installed_content_core::unit_leader::Leaders::load(&catalogue.content.layers, &|_| None)
             .unwrap(),
         catalogue,
     };
@@ -156,10 +156,11 @@ fn missing_trait_sprite_retries_native_gui_fallback_with_registered_spelling() {
 
 #[test]
 fn leader_outcomes_join_native_handles_and_keep_pending_battles_unknown() {
-    use replay::{
-        frame::TableView,
-        rows::{LandCombatDetailsRow, LandCombatResultsRow, LandCombatSideDetails, TableRows},
+    use replay_data::{
+        rows::LandCombatDetailsRow, rows::LandCombatResultsRow, rows::LandCombatSideDetails,
+        rows::TableRows,
     };
+    use replay_frame::frame::TableView;
     let reference = (5_u64 << 32) | 4713;
     let make = |hour, combats: &[u64]| {
         let mut frame = dashboard_core::test_fixtures::source(1, hour, None);
@@ -212,7 +213,7 @@ fn leader_outcomes_join_native_handles_and_keep_pending_battles_unknown() {
                 end_hour: 102,
                 winners: 2,
                 sides: [
-                    replay::rows::LandResultSide {
+                    replay_data::rows::LandResultSide {
                         commander: reference,
                         ..Default::default()
                     },
@@ -255,13 +256,12 @@ fn leader_outcomes_join_native_handles_and_keep_pending_battles_unknown() {
 
 #[test]
 fn naval_outcomes_require_the_exact_persistent_source_and_idle_fleets_are_commands() {
-    use replay::{
-        frame::TableView,
-        rows::{
-            FleetRow, NavalCombatDetailsRow, NavalCombatResultDetailsRow, NavalCombatSideDetails,
-            NavalResultRow, NavalResultSideDetails, NavalResultSourceRow, TableRows,
-        },
+    use replay_data::{
+        rows::FleetRow, rows::NavalCombatDetailsRow, rows::NavalCombatResultDetailsRow,
+        rows::NavalCombatSideDetails, rows::NavalResultRow, rows::NavalResultSideDetails,
+        rows::NavalResultSourceRow, rows::TableRows,
     };
+    use replay_frame::frame::TableView;
     let reference = (5_u64 << 32) | 4713;
     let combats = [(10_u64 << 32) | 4718, (11_u64 << 32) | 4718];
     let make = |hour, active: bool| {
@@ -426,10 +426,10 @@ fn naval_outcomes_require_the_exact_persistent_source_and_idle_fleets_are_comman
 #[test]
 #[ignore = "large 5000-country scan fixture; keep routine filtered tests light"]
 fn scan_5000_countries_changed_rows_and_gaps() {
-    use replay::{
-        frame::TableView,
-        rows::{CountryLinkRow, CountryRow, TableRows, UnitLeaderTraitRow},
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::TableRows, rows::UnitLeaderTraitRow,
     };
+    use replay_frame::frame::TableView;
     let countries: Vec<_> = (0..5000)
         .map(|c| CountryRow {
             id: c + 1,
@@ -521,13 +521,12 @@ fn scan_5000_countries_changed_rows_and_gaps() {
 
 #[test]
 fn scan_joins_raw_owners_commands_and_counts_each_combat_once() {
-    use replay::{
-        frame::TableView,
-        rows::{
-            CountryRow, LandCombatDetailsRow, LandCombatSideDetails, NavalCombatDetailsRow,
-            NavalCombatSideDetails, OrdersGroupPlanRow, OrdersGroupRow, TableRows,
-        },
+    use replay_data::{
+        rows::CountryRow, rows::LandCombatDetailsRow, rows::LandCombatSideDetails,
+        rows::NavalCombatDetailsRow, rows::NavalCombatSideDetails, rows::OrdersGroupPlanRow,
+        rows::OrdersGroupRow, rows::TableRows,
     };
+    use replay_frame::frame::TableView;
     let reference = (5u64 << 32) | 4713;
     let make = |hour, combat, commander| {
         let mut frame = dashboard_core::test_fixtures::source(1, hour, None);
@@ -683,10 +682,8 @@ fn scan_joins_raw_owners_commands_and_counts_each_combat_once() {
 
 #[test]
 fn missing_trait_reads_kinds_and_lightweight_choices_stay_honest() {
-    use replay::{
-        frame::TableView,
-        rows::{TableRows, UnitLeaderTraitRow},
-    };
+    use replay_data::{rows::TableRows, rows::UnitLeaderTraitRow};
+    use replay_frame::frame::TableView;
     let reference = (5_u64 << 32) | 4713;
     let make = |hour: i32| {
         let mut frame = dashboard_core::test_fixtures::source(1, hour, None);
@@ -814,10 +811,10 @@ fn missing_trait_reads_kinds_and_lightweight_choices_stay_honest() {
 
 #[test]
 fn country_selection_keeps_only_its_trait_catalogue_and_remaps_gains() {
-    use replay::{
-        frame::TableView,
-        rows::{CountryLinkRow, CountryRow, TableRows, UnitLeaderTraitRow},
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::TableRows, rows::UnitLeaderTraitRow,
     };
+    use replay_frame::frame::TableView;
     let mut frame = dashboard_core::test_fixtures::source(1, 100, None);
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
         [(7, "excluded country"), (8, "selected country")]
@@ -890,10 +887,8 @@ fn country_selection_keeps_only_its_trait_catalogue_and_remaps_gains() {
 
 #[test]
 fn dates_and_gaps_do_not_invent_gains() {
-    use replay::{
-        frame::TableView,
-        rows::{TableRows, UnitLeaderTraitRow},
-    };
+    use replay_data::{rows::TableRows, rows::UnitLeaderTraitRow};
+    use replay_frame::frame::TableView;
     let reference = (5_u64 << 32) | 4713;
     let frames = [
         (100, 2, Some(vec!["mod_trait"])),
@@ -954,7 +949,7 @@ fn dates_and_gaps_do_not_invent_gains() {
 
 #[test]
 fn skill_ceiling_follows_every_defined_level() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let levels = (1..=5000)
         .map(|level| format!("{level}={{type=corps_commander cost=1}}"))
@@ -965,8 +960,8 @@ fn skill_ceiling_follows_every_defined_level() {
         "common/unit_leader/mod.txt",
         &text,
     )]);
-    let leaders: installed_content::unit_leader::Leaders =
-        installed_content::unit_leader::Leaders::load(&catalogue.content.layers, &|_| None).unwrap();
+    let leaders: installed_content_core::unit_leader::Leaders =
+        installed_content_core::unit_leader::Leaders::load(&catalogue.content.layers, &|_| None).unwrap();
     assert_eq!(maximum_skill(&leaders.skills, 1, 1), Some(5000));
 }
 
@@ -1000,7 +995,8 @@ fn captured_hidden_and_unresolved_visibility_are_withheld() {
 /// an unlinked owner or changed inputs; the core tables still refuse first.
 #[test]
 fn read_leader_visibility_reads_the_world_only_to_evaluate() {
-    use replay::{frame::TableView, rows::TableRows};
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
     fn hour<'a>(content: &'a ScriptedContent, frame: &'a DecodedFrame) -> HourWorld<'a> {
         HourWorld {
             content,
@@ -1104,10 +1100,8 @@ fn missing_command_name_is_unknown_without_fragmenting_the_command() {
 
 #[test]
 fn coverage_tracks_each_leaders_entry_hidden_reads_and_own_gaps() {
-    use replay::{
-        frame::TableView,
-        rows::{TableRows, UnitLeaderTraitRow},
-    };
+    use replay_data::{rows::TableRows, rows::UnitLeaderTraitRow};
+    use replay_frame::frame::TableView;
     let frames = (100..106)
         .map(|hour| {
             let mut frame = dashboard_core::test_fixtures::source(1, hour, None);
@@ -1173,12 +1167,12 @@ fn coverage_tracks_each_leaders_entry_hidden_reads_and_own_gaps() {
 
 #[test]
 fn scan_uses_layered_trait_skill_and_localisation_override_of_rank_key() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::{
-        frame::TableView,
-        rows::{OrdersGroupPlanRow, OrdersGroupRow, TableRows, UnitLeaderTraitRow},
+    use replay_data::{
+        rows::OrdersGroupPlanRow, rows::OrdersGroupRow, rows::TableRows, rows::UnitLeaderTraitRow,
     };
+    use replay_frame::frame::TableView;
     let (_, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/00.lua",
@@ -1203,11 +1197,11 @@ fn scan_uses_layered_trait_skill_and_localisation_override_of_rank_key() {
     .unwrap();
     std::fs::write(addon.join("localisation/replace/mod_l_english.yml"), "\u{feff}l_english:\n cc_leader:0 \"Star Commander\"\n orbital_tactician:0 \"Orbital Tactician\"\n SKILL_ATTACK:0 \"Mod Attack\"\n SKILL_DEFENSE:0 \"Mod Defence\"\n SKILL_PLANNING:0 \"Mod Planning\"\n SKILL_LOGISTICS:0 \"Mod Logistics\"\n").unwrap();
     let layers =
-        installed_content::ResolvedLayers::from_folders(&[(&folder.0, &[]), (&addon, &[])]).unwrap();
+        installed_content_core::ResolvedLayers::from_folders(&[(&folder.0, &[]), (&addon, &[])]).unwrap();
     let catalogue = Arc::new(Catalogue::of_layers(layers, "english").unwrap());
     let content = Content {
         politics: Arc::new(politics_content::PoliticsContent::load(catalogue.clone()).unwrap()),
-        leaders: installed_content::unit_leader::Leaders::load(&catalogue.content.layers, &|_| None)
+        leaders: installed_content_core::unit_leader::Leaders::load(&catalogue.content.layers, &|_| None)
             .unwrap(),
         catalogue,
     };
@@ -1234,7 +1228,7 @@ fn scan_uses_layered_trait_skill_and_localisation_override_of_rank_key() {
         TableView::Complete(TableRows::OrdersGroups(vec![OrdersGroupRow {
             handle: 70,
             leader: reference,
-            name: replay::rows::Recorded::Value(Some(b"Exact recorded formation".to_vec())),
+            name: replay_data::rows::Recorded::Value(Some(b"Exact recorded formation".to_vec())),
             ..Default::default()
         }]));
     *frame.tables[TableId::OrdersGroupPlans.index()] =
@@ -1251,7 +1245,7 @@ fn scan_uses_layered_trait_skill_and_localisation_override_of_rank_key() {
                 if let TableView::Complete(TableRows::OrdersGroups(rows)) =
                     &mut *read.tables[TableId::OrdersGroups.index()]
                 {
-                    rows[0].name = replay::rows::Recorded::Value(None);
+                    rows[0].name = replay_data::rows::Recorded::Value(None);
                 }
                 *read.tables[TableId::OrdersGroupPlans.index()] = TableView::Unavailable {
                     reason: "missing formation name read".into(),
@@ -1389,10 +1383,8 @@ fn combat_heavy_1500_country_fixture_fits_the_transport_budget() {
 
 #[test]
 fn naval_commands_join_the_roster_fleet_and_keep_observation_gaps() {
-    use replay::{
-        frame::TableView,
-        rows::{NavalMissionTaskForceRow, TableRows, TaskForceRow},
-    };
+    use replay_data::{rows::NavalMissionTaskForceRow, rows::TableRows, rows::TaskForceRow};
+    use replay_frame::frame::TableView;
     let reference = (5_u64 << 32) | 4713;
     let make = |hour| {
         let mut frame = dashboard_core::test_fixtures::source(1, hour, None);
@@ -1496,13 +1488,11 @@ fn naval_commands_join_the_roster_fleet_and_keep_observation_gaps() {
 
 #[test]
 fn requests_share_only_the_portrait_size_the_view_draws() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use base64::Engine;
-    use replay::{
-        frame::TableView,
-        rows::{CharacterPortrait, TableRows},
-    };
+    use replay_data::{rows::CharacterPortrait, rows::TableRows};
+    use replay_frame::frame::TableView;
     let mut tga = vec![0_u8; 18];
     tga[2] = 2;
     tga[12] = 128;
@@ -1530,11 +1520,11 @@ fn requests_share_only_the_portrait_size_the_view_draws() {
     ]);
     std::fs::create_dir_all(folder.0.join("gfx")).unwrap();
     std::fs::write(folder.0.join("gfx/mod.tga"), tga).unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&folder.0, &[])]).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&folder.0, &[])]).unwrap();
     let catalogue = Arc::new(Catalogue::of_layers(layers, "english").unwrap());
     let content = Content {
         politics: Arc::new(politics_content::PoliticsContent::load(catalogue.clone()).unwrap()),
-        leaders: installed_content::unit_leader::Leaders::load(&catalogue.content.layers, &|_| None)
+        leaders: installed_content_core::unit_leader::Leaders::load(&catalogue.content.layers, &|_| None)
             .unwrap(),
         catalogue,
     };
@@ -1556,7 +1546,7 @@ fn requests_share_only_the_portrait_size_the_view_draws() {
     ));
     *frame.tables[TableId::UnitLeaderTraits.index()] =
         TableView::Complete(TableRows::UnitLeaderTraits(vec![
-            replay::rows::UnitLeaderTraitRow {
+            replay_data::rows::UnitLeaderTraitRow {
                 leader_reference: (5_u64 << 32) | 4713,
                 token: b"orbital_tactician".to_vec(),
                 ..Default::default()
@@ -1569,7 +1559,7 @@ fn requests_share_only_the_portrait_size_the_view_draws() {
                     character: 9 + n,
                     portraits: vec![CharacterPortrait {
                         category: PORTRAIT_ARMY,
-                        size: replay::rows::PORTRAIT_LARGE,
+                        size: replay_data::rows::PORTRAIT_LARGE,
                         is_set: 1,
                         kind: 0,
                         identity: b"GFX_mod_portrait".to_vec(),
@@ -1644,13 +1634,11 @@ fn scan_fixture(
     periods: i32,
     fights: bool,
 ) -> UnitLeadersReply {
-    use replay::{
-        frame::TableView,
-        rows::{
-            CountryLinkRow, CountryRow, LandCombatDetailsRow, LandCombatSideDetails, TableRows,
-            UnitLeaderTraitRow,
-        },
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::LandCombatDetailsRow,
+        rows::LandCombatSideDetails, rows::TableRows, rows::UnitLeaderTraitRow,
     };
+    use replay_frame::frame::TableView;
     let start = 60_826_800;
     let frames = (0..periods)
         .map(|period| {
@@ -2168,10 +2156,8 @@ fn million_participation_leaderboard_fits_where_career_records_did_not() {
 
 #[test]
 fn country_selection_excludes_leaders_of_unrelated_alias_holders() {
-    use replay::{
-        frame::TableView,
-        rows::{CountryLinkRow, CountryRow, TableRows},
-    };
+    use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableRows};
+    use replay_frame::frame::TableView;
     let frames = (100..=102)
         .map(|hour| {
             let mut frame = dashboard_core::test_fixtures::source(1, hour, None);
@@ -2261,7 +2247,8 @@ fn country_selection_excludes_leaders_of_unrelated_alias_holders() {
 
 #[test]
 fn commands_have_coverage_even_when_the_recorded_inventory_is_empty() {
-    use replay::{frame::TableView, rows::TableRows};
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
     let frames = (100..103)
         .map(|hour| {
             let mut frame = dashboard_core::test_fixtures::source(1, hour, None);
@@ -2343,27 +2330,28 @@ fn leader_visibility_evaluations_are_reused_until_an_input_reads_differently() {
 
 fn reused_leader_visibility(checking: bool) {
     use dashboard_text::triggers::{ContentFacts, LeaderRoles};
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{CountryLinkRow, CountryRow, LexicalTokenRow, ScriptFlagRow, TableRows},
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow, rows::ScriptFlagRow,
+        rows::TableRows,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
     let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[(
         "common/defines/test.lua",
         "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
     )]);
     let content = catalogue.scripted_content().unwrap();
-    let names = installed_content::key_names::KeyNames::default();
-    let roles = LeaderRoles::new(vec![installed_content::characters::LeaderTemplate {
+    let names = installed_content_core::key_names::KeyNames::default();
+    let roles = LeaderRoles::new(vec![installed_content_core::characters::LeaderTemplate {
         path: "common/characters/mod.txt".into(),
         tag: "mod_commander".into(),
         line: Some(4),
         role: Ok(Some(
-            installed_content::triggers::read(b"has_country_flag = x", &names).items,
+            installed_content_core::triggers::read(b"has_country_flag = x", &names).items,
         )),
     }]);
-    let triggers = installed_content::trigger_keys::TriggerNames::default();
+    let triggers = installed_content_core::trigger_keys::TriggerNames::default();
     let dlcs = BTreeSet::new();
-    let aliases = Arc::new(installed_content::tag_aliases::TagAliases::default());
+    let aliases = Arc::new(installed_content_core::tag_aliases::TagAliases::default());
     // Countries 101 and 102; flag x (token 900) set on 101.
     let mut flagged = DecodedFrame {
         branch: 1,
@@ -2507,28 +2495,28 @@ fn leader_visibility_is_reused_without_a_world_when_only_unread_fields_change() 
 fn leader_visibility_from_changes(checking: bool) {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
     use dashboard_text::triggers::{ContentFacts, LeaderRoles, inputs::Since};
-    use replay::{
-        format::FormatVersion,
-        frame::{FrameEncoder, TableView},
-        rows::{CountryLinkRow, CountryRow, LexicalTokenRow, ScriptFlagRow, TableRows},
+    use replay_data::{
+        format::FormatVersion, rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow,
+        rows::ScriptFlagRow, rows::TableRows,
     };
+    use replay_frame::{frame::FrameEncoder, frame::TableView};
     let (catalogue, _folder) = dashboard_base::catalogue::tests::folder_catalogue(&[(
         "common/defines/test.lua",
         "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
     )]);
     let content = catalogue.scripted_content().unwrap();
-    let names = installed_content::key_names::KeyNames::default();
-    let roles = LeaderRoles::new(vec![installed_content::characters::LeaderTemplate {
+    let names = installed_content_core::key_names::KeyNames::default();
+    let roles = LeaderRoles::new(vec![installed_content_core::characters::LeaderTemplate {
         path: "common/characters/mod.txt".into(),
         tag: "mod_commander".into(),
         line: Some(4),
         role: Ok(Some(
-            installed_content::triggers::read(b"has_country_flag = x", &names).items,
+            installed_content_core::triggers::read(b"has_country_flag = x", &names).items,
         )),
     }]);
-    let triggers = installed_content::trigger_keys::TriggerNames::default();
+    let triggers = installed_content_core::trigger_keys::TriggerNames::default();
     let dlcs = BTreeSet::new();
-    let aliases = Arc::new(installed_content::tag_aliases::TagAliases::default());
+    let aliases = Arc::new(installed_content_core::tag_aliases::TagAliases::default());
     // Countries 101 and 102, with flag x (token 900) on 101 and y on 102.
     let frame = |hour, power, flag: i16, other: i16| {
         let mut frame = dashboard_base::test_fixtures::source(1, hour, None);
@@ -2679,11 +2667,12 @@ fn leader_visibility_from_changes(checking: bool) {
 /// its refusal, as the per-hour oracle does.
 #[test]
 fn a_blocked_kept_visibility_pass_leaves_the_whole_frame_its_refusals() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
     use dashboard_core::test_fixtures::{CAMPAIGN, records};
-    use replay::{frame::TableView, rows::TableRows};
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
     let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/00.lua",
@@ -2697,7 +2686,7 @@ fn a_blocked_kept_visibility_pass_leaves_the_whole_frame_its_refusals() {
     let catalogue = Arc::new(catalogue);
     let content = Content {
         politics: Arc::new(politics_content::PoliticsContent::load(catalogue.clone()).unwrap()),
-        leaders: installed_content::unit_leader::Leaders::load(&catalogue.content.layers, &|_| None)
+        leaders: installed_content_core::unit_leader::Leaders::load(&catalogue.content.layers, &|_| None)
             .unwrap(),
         catalogue,
     };

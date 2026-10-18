@@ -3,7 +3,7 @@ use crate::effect_description::tests::{Fixture, fresh};
 
 #[test]
 fn random_headers_weights_modifiers_and_member_seed_reset() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let out = fixture.render("random={chance=49.6 army_experience=2} random={chance=0 army_experience=3 add_political_power=4}", &mut fresh(), Content::default());
@@ -25,10 +25,10 @@ fn random_headers_weights_modifiers_and_member_seed_reset() {
 #[allow(clippy::field_reassign_with_default)]
 #[test]
 fn scripted_templates_ignore_call_boolean_and_refuse_recursive_cycles() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
-    let mut names = installed_content::key_names::KeyNames::default();
+    let mut names = installed_content_core::key_names::KeyNames::default();
     names.scripted_effects = [
         b"outer".to_vec(),
         b"inner".to_vec(),
@@ -38,7 +38,7 @@ fn scripted_templates_ignore_call_boolean_and_refuse_recursive_cycles() {
     ]
     .into();
     names.countries = [b"AAA".to_vec(), b"BBB".to_vec()].into();
-    let mut database = installed_content::scripted_effects::ScriptedEffects::default();
+    let mut database = installed_content_core::scripted_effects::ScriptedEffects::default();
     database.read_file(b"outer={if={limit={always=yes} inner=no}} inner={army_experience=2} cycle={cycle=yes} guarded={if={limit={always=no} inner=yes}} scoped={army_experience=2 if={limit={tag=AAA} BBB={scoped=yes}}}", &names);
     let content = Content {
         key_names: Some(&names),
@@ -65,19 +65,19 @@ fn scripted_templates_ignore_call_boolean_and_refuse_recursive_cycles() {
 
 #[test]
 fn meta_uses_native_reader_and_case_sensitive_parameter_substitution() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
-    *fixture.frame.tables[replay::rows::TableId::ScriptVariables.index()] =
-        replay::frame::TableView::Complete(replay::rows::TableRows::ScriptVariables(vec![
-            replay::rows::ScriptVariablesRow {
-                seed: replay::rows::Recorded::Value(None),
+    *fixture.frame.tables[replay_data::rows::TableId::ScriptVariables.index()] =
+        replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::ScriptVariables(
+            vec![replay_data::rows::ScriptVariablesRow {
+                seed: replay_data::rows::Recorded::Value(None),
                 scope_kind: 1,
                 scope_id: 100,
                 entries: Vec::new(),
-            },
-        ]));
-    let names = installed_content::key_names::KeyNames::default();
+            }],
+        ));
+    let names = installed_content_core::key_names::KeyNames::default();
     let out = fixture.render_native(
         "meta_effect={X=2.60000 text={army_experience=[X] add_political_power=1}}",
         &mut fresh(),
@@ -111,7 +111,7 @@ fn meta_uses_native_reader_and_case_sensitive_parameter_substitution() {
 
 #[test]
 fn array_loop_without_tooltip_does_not_read_and_override_keeps_children() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let out = fixture.render("for_each_scope_loop={array=unread break=yes army_experience=9} custom_override_tooltip={tooltip=TIP army_experience=2} custom_override_tooltip={tooltip=\"\" army_experience=3}", &mut fresh(), Content::default());
@@ -121,14 +121,15 @@ fn array_loop_without_tooltip_does_not_read_and_override_keeps_children() {
 
 #[test]
 fn array_selectors_decode_in_order_and_loop_keeps_links_with_default_seed() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::scripted_text::{EventObject, EventScope, Link};
-    use replay::{frame::TableView, rows::*};
+    use replay_data::rows::*;
+    use replay_frame::frame::TableView;
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
-            seed: replay::rows::Recorded::Value(None),
+            seed: replay_data::rows::Recorded::Value(None),
             scope_kind: 1,
             scope_id: 100,
             entries: vec![
@@ -176,13 +177,14 @@ fn array_selectors_decode_in_order_and_loop_keeps_links_with_default_seed() {
 
 #[test]
 fn random_list_maximum_weight_uses_native_invalid_chance_sentinel() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::{frame::TableView, rows::*};
+    use replay_data::rows::*;
+    use replay_frame::frame::TableView;
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
-            seed: replay::rows::Recorded::Value(None),
+            seed: replay_data::rows::Recorded::Value(None),
             scope_kind: 1,
             scope_id: 100,
             entries: vec![
@@ -220,10 +222,11 @@ fn random_list_maximum_weight_uses_native_invalid_chance_sentinel() {
 
 #[test]
 fn scripted_depth_is_bounded_when_this_keeps_changing() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::scripted_text::{EventObject, EventScope};
-    use replay::{frame::TableView, rows::*};
+    use replay_data::rows::*;
+    use replay_frame::frame::TableView;
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
         (1..=65)
@@ -235,9 +238,9 @@ fn scripted_depth_is_bounded_when_this_keeps_changing() {
             .collect(),
     ));
     fixture.neighbors = Some((1..65).map(|id| (id, vec![id + 1])).collect());
-    let mut names = installed_content::key_names::KeyNames::default();
+    let mut names = installed_content_core::key_names::KeyNames::default();
     names.scripted_effects.insert(b"walk".to_vec());
-    let mut database = installed_content::scripted_effects::ScriptedEffects::default();
+    let mut database = installed_content_core::scripted_effects::ScriptedEffects::default();
     database.read_file(b"walk={every_neighbor_state={walk=yes}}", &names);
     let mut graph = EventScopes::new(vec![EventScope::of(EventObject::State(1))]);
     let out = fixture.render(
@@ -265,17 +268,17 @@ fn scripted_depth_is_bounded_when_this_keeps_changing() {
 #[allow(clippy::field_reassign_with_default)]
 #[test]
 fn own_like_scripted_keys_are_not_removed_from_unrelated_bodies() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
-    let mut names = installed_content::key_names::KeyNames::default();
+    let mut names = installed_content_core::key_names::KeyNames::default();
     names.scripted_effects = [
         b"array".to_vec(),
         b"original_tag".to_vec(),
         b"prioritize".to_vec(),
     ]
     .into();
-    let mut database = installed_content::scripted_effects::ScriptedEffects::default();
+    let mut database = installed_content_core::scripted_effects::ScriptedEffects::default();
     database.read_file(b"array={army_experience=2} original_tag={army_experience=3} prioritize={army_experience=4}", &names);
     let out = fixture.render(
         "if={limit={always=yes} array=yes} effect_tooltip={original_tag=yes} prioritize=yes",
@@ -292,13 +295,14 @@ fn own_like_scripted_keys_are_not_removed_from_unrelated_bodies() {
 
 #[test]
 fn random_array_probe_recurses_through_its_children() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::{frame::TableView, rows::*};
+    use replay_data::rows::*;
+    use replay_frame::frame::TableView;
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
-            seed: replay::rows::Recorded::Value(None),
+            seed: replay_data::rows::Recorded::Value(None),
             scope_kind: 1,
             scope_id: 200,
             entries: vec![
@@ -324,13 +328,13 @@ fn random_array_probe_recurses_through_its_children() {
 
 #[test]
 fn empty_overrides_keep_inherited_multiple_probe() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
         let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
         for name in ["for_each_loop", "for_loop_effect", "while_loop_effect"] {
-            let item = installed_content::parser::parse(
+            let item = installed_content_core::parser::parse(
                 format!("{name}={{army_experience=2 add_political_power=3}}").as_bytes(),
             )
             .unwrap()

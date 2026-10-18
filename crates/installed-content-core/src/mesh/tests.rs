@@ -366,7 +366,10 @@ fn a_plain_redeclaration_ends_a_copy() {
         ],
         &[],
     );
-    assert_eq!(roster.descriptors.entities["skin"].mesh.as_deref(), Some("n"));
+    assert_eq!(
+        roster.descriptors.entities["skin"].mesh.as_deref(),
+        Some("n")
+    );
     assert!(!roster.clones.contains_key("skin"));
     assert_eq!(roster.clones["again"], "other");
 }

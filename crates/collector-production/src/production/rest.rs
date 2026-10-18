@@ -90,7 +90,7 @@ impl ProductionRestJob {
 
     /// Prepare only observed shortage and live census demand off-thread.
     pub fn grow(&mut self) {
-        engine::allocation::advisory(|| {
+        engine_allocation::advisory(|| {
             self.log.grow();
             let target = self
                 .census
@@ -257,7 +257,7 @@ fn copy_production_census(
         None => return false,
     };
     if log.worker_growth_enabled()
-        && engine::allocation::reserve(census, countries.count.saturating_sub(1) as usize).is_err()
+        && engine_allocation::reserve(census, countries.count.saturating_sub(1) as usize).is_err()
     {
         log.overflowed = true;
         return false;
@@ -536,12 +536,14 @@ fn copy_production_lines(
 /// `read_row`'s line kind by exact primary vtable.
 fn line_kind(rva: usize) -> Option<u8> {
     Some(match rva {
-        engine::cmilitary_production_line::VTABLE_RVA => cequipment_production_line::KIND_MILITARY,
-        engine::cnaval_production_line::VTABLE_RVA => cequipment_production_line::KIND_NAVAL,
-        engine::cship_refit_production_line::VTABLE_RVA => {
+        engine_native::cmilitary_production_line::VTABLE_RVA => {
+            cequipment_production_line::KIND_MILITARY
+        }
+        engine_native::cnaval_production_line::VTABLE_RVA => cequipment_production_line::KIND_NAVAL,
+        engine_native::cship_refit_production_line::VTABLE_RVA => {
             cequipment_production_line::KIND_SHIP_REFIT
         }
-        engine::crailway_gun_production_line::VTABLE_RVA => {
+        engine_native::crailway_gun_production_line::VTABLE_RVA => {
             cequipment_production_line::KIND_RAILWAY_GUN
         }
         _ => return None,
@@ -591,7 +593,7 @@ fn copy_max_factories(
     variant: usize,
     defines: &mut Option<[i32; 6]>,
 ) -> Option<i32> {
-    use engine::cequipment_type;
+    use engine_native::cequipment_type;
     let optional = match kind {
         cequipment_production_line::KIND_RAILWAY_GUN => {
             return copy_factory_define(log, memory, base, defines, 5);

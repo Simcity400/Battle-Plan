@@ -7,7 +7,7 @@ use super::{
     Decimal, GameDate, block, boolean, bytes, decimal, field, integer, invalid, required_block,
     required_bytes, scalar,
 };
-use installed_content::parser::{Item, Value};
+use installed_content_core::{parser::Item, parser::Value};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
@@ -489,7 +489,7 @@ fn parse_agency_upgrades(value: &Value) -> io::Result<Vec<AgencyUpgradeLevel>> {
                 String::from_utf8_lossy(token)
             ))
         };
-        if entry.operator != installed_content::parser::Operator::Equals {
+        if entry.operator != installed_content_core::parser::Operator::Equals {
             return Err(refuse());
         }
         let level = integer(scalar(&entry.value).map_err(|_| refuse())?).map_err(|_| refuse())?;
@@ -1436,7 +1436,7 @@ mod tests {
     use super::*;
 
     fn parsed(input: &[u8]) -> io::Result<Pack> {
-        parse(&installed_content::parser::parse(input)?.items)
+        parse(&installed_content_core::parser::parse(input)?.items)
     }
 
     #[test]
@@ -2338,7 +2338,7 @@ mod tests {
     }
     #[test]
     fn operative_inherited_cooldown_fields_keep_reason_and_both_dates() {
-        let items = installed_content::parser::parse(
+        let items = installed_content_core::parser::parse(
             br#"id={ id=27 type=4713 } state=on_cooldown
             cooldown_reason=forced_into_hiding leader_cooldown_start_date=1938.4.3.7
             leader_modifier_enable_date=1938.4.8.19"#,

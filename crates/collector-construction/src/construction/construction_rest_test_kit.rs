@@ -2,12 +2,17 @@ use super::{
     Capacities, Captured, ConstructionRestCopyContext, ConstructionRestCopyReport,
     ConstructionRestJob, N,
 };
-use engine::{
-    carmy_manpower_values, cbuilding, cbuilding_production_line, cbuilding_status, ccountry,
-    ccountry_collaboration_status, ccountry_occupation_data, ccountry_occupation_status,
-    cgame_state, cgeneral_production_line, coccupation_law, cproduction_line, cproduction_status,
-    crailway_production_line, cresistance, cstate, cstate_garrison_data, cstate_template,
-    msvc_string,
+use engine_intelligence::ccountry_collaboration_status;
+use engine_native::{
+    carmy_manpower_values, cbuilding, cbuilding_status, ccountry, cgame_state, cproduction_line,
+    cproduction_status, cstate, cstate_template, msvc_string,
+};
+use engine_occupation::{
+    ccountry_occupation_data, ccountry_occupation_status, coccupation_law, cresistance,
+    cstate_garrison_data,
+};
+use engine_production::{
+    cbuilding_production_line, cgeneral_production_line, crailway_production_line,
 };
 
 pub const BASE: usize = 0x1000;
@@ -524,7 +529,7 @@ pub fn capacities() -> Capacities {
     }
 }
 
-pub fn direct(memory: &impl engine::Memory, capacities: &Capacities) -> Captured {
+pub fn direct(memory: &impl engine_native::Memory, capacities: &Capacities) -> Captured {
     let mut captured = Captured::with_capacities(capacities);
     let mut buildings = captured.take_buildings();
     let ticks = buildings.capture(memory, 0, BASE, 0, true);
@@ -544,7 +549,7 @@ pub fn job() -> ConstructionRestJob {
 }
 
 pub fn split(
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     capacities: &Capacities,
 ) -> (Captured, ConstructionRestCopyReport, ConstructionRestJob) {
     let mut captured = Captured::with_capacities(capacities);

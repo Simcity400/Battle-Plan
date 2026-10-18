@@ -1,10 +1,12 @@
 use super::*;
-use replay::{
-    branches::{BranchReason, BranchStart, Gap, Parentage},
-    frame::{FrameEncoder, TableView},
-    identity::{Identity, Roster, SessionStart, Verification},
-    rows::{CampaignRow, ClockRow, NavalCombatRow, NavalResultRow, TableRows},
-    spool::Record,
+use replay::spool::Record;
+use replay_data::{
+    identity::Identity, identity::Roster, identity::SessionStart, identity::Verification,
+    rows::CampaignRow, rows::ClockRow, rows::NavalCombatRow, rows::NavalResultRow, rows::TableRows,
+};
+use replay_frame::{
+    branches::BranchReason, branches::BranchStart, branches::Gap, branches::Parentage,
+    frame::FrameEncoder, frame::TableView,
 };
 
 fn frame(
@@ -100,7 +102,7 @@ fn replay_of(frames: &[DecodedFrame]) -> Replay {
         process_id: 1,
         process_start_time: 1,
         qpc_frequency: 1,
-        sample_boundary: replay::identity::SampleBoundary::EndOfHour,
+        sample_boundary: replay_data::identity::SampleBoundary::EndOfHour,
         identity: Identity {
             game_version: "synthetic".into(),
             exe_hash: [1; 32],

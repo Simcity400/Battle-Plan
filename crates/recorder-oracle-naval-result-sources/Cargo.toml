@@ -10,8 +10,9 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-recorder-oracle-support.workspace = true
 replay.workspace = true
-
+replay-data.workspace = true
+replay-frame.workspace = true
+recorder-oracle-support.workspace = true
 [dev-dependencies]
 recorder-oracle-support = { workspace = true, features = ["test-support"] }

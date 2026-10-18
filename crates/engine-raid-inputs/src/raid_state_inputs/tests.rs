@@ -130,7 +130,11 @@ fn state_cores_read_the_state_s_and_its_provinces_strategic_locations() {
         m.u64(at + cprovince::STATE, state as u64);
         m.u32(at + cprovince::ID, id);
         let list = at + 0x1000;
-        m.array(at + cprovince::STRATEGIC_LOCATIONS, list, tokens.len() as u32);
+        m.array(
+            at + cprovince::STRATEGIC_LOCATIONS,
+            list,
+            tokens.len() as u32,
+        );
         for (index, &token) in tokens.iter().enumerate() {
             m.u32(list + index * 4, token);
         }
@@ -141,7 +145,16 @@ fn state_cores_read_the_state_s_and_its_provinces_strategic_locations() {
         let mut rows = [CoreRow::default(); 2];
         let mut links = vec![0; 16];
         let mut required = 0;
-        let outcome = state_cores(m, 0, GS, &[1, 2], &|_| true, &mut rows, &mut links, &mut required);
+        let outcome = state_cores(
+            m,
+            0,
+            GS,
+            &[1, 2],
+            &|_| true,
+            &mut rows,
+            &mut links,
+            &mut required,
+        );
         (outcome, rows, links, required)
     };
     let (outcome, rows, links, required) = run(&m);
@@ -157,10 +170,7 @@ fn state_cores_read_the_state_s_and_its_provinces_strategic_locations() {
         }
     );
     assert_eq!(required, 10);
-    assert_eq!(
-        &links[..10],
-        &[701, 31, 702, 32, 31, 801, 32, 802, 32, 803]
-    );
+    assert_eq!(&links[..10], &[701, 31, 702, 32, 31, 801, 32, 802, 32, 803]);
     // A province that names another state refuses the read.
     province(&mut m, 1, 0x4645_0000, 32, STATE_B, &[802]);
     assert!(matches!(run(&m).0, Outcome::Unavailable { .. }));

@@ -159,7 +159,7 @@ use super::*;
 
 #[test]
 fn foreign_division_icons_undeclared_selection_draws_no_type_quad_and_is_counted_by_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let guis = layout_gui(
         br#"guiTypes={
@@ -189,7 +189,7 @@ fn foreign_division_icons_undeclared_selection_draws_no_type_quad_and_is_counted
 
 #[test]
 fn dump_census_excludes_combat_window_quads() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let shared = Arc::new(ResolvedLayers::from_folders(&[]).unwrap());
     let registry = native::resources::Registry::load(&shared).unwrap();
@@ -236,18 +236,15 @@ fn dump_census_excludes_combat_window_quads() {
     );
     assert_eq!(assets.census(&map, &fonts, 1.), expected);
 }
-use replay::{
-    Hour,
-    frame::{Metrics, TableView},
-    rows::{
-        AirBaseRegistrationRow, AirBaseRow, AirWingRow, CountryLinkRow, LocalPlayerRow,
-        ProvinceRow, StateFlagRow, TableId, TableRows,
-    },
+use replay_data::{
+    Hour, rows::AirBaseRegistrationRow, rows::AirBaseRow, rows::AirWingRow, rows::CountryLinkRow,
+    rows::LocalPlayerRow, rows::ProvinceRow, rows::StateFlagRow, rows::TableId, rows::TableRows,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 
 #[test]
 fn window_size_applies_native_bounds_and_names_unsupported_constraints() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let guis = layout_gui(b"guiTypes={containerWindowType={name=test_icon size={width=20 height=30 min={width=40} max={height=15}}}}");
     assert_eq!(
@@ -272,9 +269,9 @@ fn layout_gui(bytes: &[u8]) -> native::Guis {
 
 #[test]
 fn port_slots_are_is_port_types_and_their_redirects() {
-    let definitions = installed_content::buildings::parse(
+    let definitions = installed_content_core::buildings::parse(
         b"buildings={Port={is_port=yes spawn_point=Harbour} depot={}} spawn_points={Harbour={}}",
-        &installed_content::key_names::KeyNames::default(),
+        &installed_content_core::key_names::KeyNames::default(),
     )
     .unwrap();
     assert_eq!(
@@ -297,7 +294,7 @@ fn a_template_with_unreadable_model_inputs_keeps_its_counter_icon() {
         };
         *frame.tables[TableId::DivisionTemplateIcons.index()] =
             TableView::Complete(TableRows::DivisionTemplateIcons(vec![
-                replay::rows::DivisionTemplateIconRow {
+                replay_data::rows::DivisionTemplateIconRow {
                     template: 50,
                     priority_unit: 7,
                     priority_unit_name: b"infantry".to_vec(),
@@ -314,7 +311,7 @@ fn a_template_with_unreadable_model_inputs_keeps_its_counter_icon() {
 
 #[test]
 fn only_the_viewing_countrys_peace_conference_hides_unit_sources() {
-    let country = |canonical_slot, peace_conference_participant| replay::rows::CountryRow {
+    let country = |canonical_slot, peace_conference_participant| replay_data::rows::CountryRow {
         canonical_slot,
         peace_conference_participant,
         ..Default::default()
@@ -493,15 +490,19 @@ pub(super) fn wings_frame(flags: TableView) -> (DecodedFrame, Vision) {
 /// icon, not the air-base one.
 #[test]
 fn the_air_base_icon_follows_the_state_s_base_not_a_type_name() {
-    use replay::rows::{AirBaseRow, BuildingRow, LexicalTokenRow};
+    use replay_data::{rows::AirBaseRow, rows::BuildingRow, rows::LexicalTokenRow};
     let (mut frame, _) = wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
     *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(
-        [(201, &b"mod_airfield"[..]), (202, b"rocket_site"), (203, b"air_base")]
-            .map(|(token, literal)| LexicalTokenRow {
-                token,
-                literal: literal.to_vec(),
-            })
-            .into(),
+        [
+            (201, &b"mod_airfield"[..]),
+            (202, b"rocket_site"),
+            (203, b"air_base"),
+        ]
+        .map(|(token, literal)| LexicalTokenRow {
+            token,
+            literal: literal.to_vec(),
+        })
+        .into(),
     ));
     *frame.tables[TableId::StateBuildings.index()] =
         TableView::Complete(TableRows::StateBuildings(vec![
@@ -564,7 +565,10 @@ fn the_air_base_icon_follows_the_state_s_base_not_a_type_name() {
 /// counts whatever it covers. Before, no radar icon was drawn.
 #[test]
 fn radar_icons_follow_the_viewer_s_search_and_the_state_s_controller() {
-    use replay::rows::{CountryAppearanceRow, FactionMemberRow, RadarCoverageRow, Recorded, StateRow};
+    use replay_data::{
+        rows::CountryAppearanceRow, rows::FactionMemberRow, rows::RadarCoverageRow, rows::Recorded,
+        rows::StateRow,
+    };
     let (mut frame, _) = wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
     // Raw countries 100 (the viewer), 101, 102 and 103 at slots 0 to 3.
     *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
@@ -653,7 +657,9 @@ fn radar_icons_follow_the_viewer_s_search_and_the_state_s_controller() {
     assert_eq!(radar.shown, BTreeSet::from([9]));
     assert_eq!(
         radar.notes,
-        ["3 radar host states are not drawn: the viewer's relations are not all recorded (FactionMembers)"]
+        [
+            "3 radar host states are not drawn: the viewer's relations are not all recorded (FactionMembers)"
+        ]
     );
 }
 
@@ -699,8 +705,10 @@ fn base_icons_need_a_controlled_province() {
         controller,
         ..Default::default()
     };
-    *frame.tables[TableId::Provinces.index()] =
-        TableView::Complete(TableRows::Provinces(vec![province(9, 100), province(10, 0)]));
+    *frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(vec![
+        province(9, 100),
+        province(10, 0),
+    ]));
     let controlled = province_controlled(&frame).unwrap();
     assert_eq!(
         (controlled(9), controlled(10), controlled(11)),
@@ -715,7 +723,7 @@ fn base_icons_need_a_controlled_province() {
 /// named. Before, a foreign anchor added an icon.
 #[test]
 fn strategic_locations_list_the_province_s_tokens_then_its_state_s() {
-    use replay::rows::{Recorded, StateCoreRow};
+    use replay_data::{rows::Recorded, rows::StateCoreRow};
     let (mut frame, _) = wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
     let pair = |high: u64, low: u64| high << 32 | low;
     let province = |id, state| ProvinceRow {
@@ -762,11 +770,7 @@ fn strategic_locations_list_the_province_s_tokens_then_its_state_s() {
     let (locations, notes) = strategic_locations(&frame).unwrap();
     assert_eq!(
         locations,
-        BTreeMap::from([
-            (31, vec![801, 802, 701]),
-            (32, vec![803]),
-            (33, vec![702]),
-        ])
+        BTreeMap::from([(31, vec![801, 802, 701]), (32, vec![803]), (33, vec![702]),])
     );
     assert_eq!(
         notes,
@@ -783,7 +787,7 @@ fn strategic_locations_list_the_province_s_tokens_then_its_state_s() {
 /// the air-base icon's count.
 #[test]
 fn each_base_icon_reads_its_own_state_base() {
-    use replay::rows::AirBaseRow;
+    use replay_data::rows::AirBaseRow;
     let (mut frame, vision) = wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
     *frame.tables[TableId::AirBases.index()] = TableView::Complete(TableRows::AirBases(vec![
         AirBaseRow {
@@ -810,10 +814,28 @@ fn each_base_icon_reads_its_own_state_base() {
     // Without access a site's buttons take frame 3; with it, frame 2 while
     // it holds a wing and frame 1 otherwise.
     assert_eq!(site_frame(&rocket), 3);
-    assert_eq!(site_frame(&AirBaseCount { shown: true, occupied: Some(true), ..rocket }), 2);
-    assert_eq!(site_frame(&AirBaseCount { shown: true, ..rocket }), 1);
     assert_eq!(
-        site_frame(&AirBaseCount { shown: true, occupied: None, planes: 1, ..rocket }),
+        site_frame(&AirBaseCount {
+            shown: true,
+            occupied: Some(true),
+            ..rocket
+        }),
+        2
+    );
+    assert_eq!(
+        site_frame(&AirBaseCount {
+            shown: true,
+            ..rocket
+        }),
+        1
+    );
+    assert_eq!(
+        site_frame(&AirBaseCount {
+            shown: true,
+            occupied: None,
+            planes: 1,
+            ..rocket
+        }),
         2
     );
 }
@@ -832,7 +854,10 @@ fn truncated_state_flags_hide_every_box_and_fall_back_the_badge() {
         missing: 1,
     });
     let states = wings_per_site(&frame, &vision).unwrap();
-    let count = states.get(&(7, building_facts::AIR_BASE)).copied().unwrap_or_default();
+    let count = states
+        .get(&(7, building_facts::AIR_BASE))
+        .copied()
+        .unwrap_or_default();
     assert!(!count.shown, "a missing state could be demilitarized");
     assert_eq!(count.stationed, Some(true));
     assert_eq!(count.occupied, Some(true));
@@ -855,7 +880,10 @@ fn unavailable_state_flags_do_not_invent_a_non_demilitarized_base() {
         reason: "state flags capture failed".into(),
     });
     let states = wings_per_site(&frame, &vision).unwrap();
-    let count = states.get(&(7, building_facts::AIR_BASE)).copied().unwrap_or_default();
+    let count = states
+        .get(&(7, building_facts::AIR_BASE))
+        .copied()
+        .unwrap_or_default();
     assert!(!count.shown);
     assert_eq!(count.stationed, Some(true));
 }
@@ -881,7 +909,10 @@ fn recorded_states_read_their_own_flag_row() {
     };
     registrations[0].wings.clear();
     let states = wings_per_site(&frame, &vision).unwrap();
-    let count = states.get(&(7, building_facts::AIR_BASE)).copied().unwrap_or_default();
+    let count = states
+        .get(&(7, building_facts::AIR_BASE))
+        .copied()
+        .unwrap_or_default();
     assert!(count.shown, "state 7 is recorded non-demilitarised");
     assert_eq!(count.stationed, Some(false));
     assert_eq!(
@@ -903,7 +934,10 @@ fn complete_state_flags_show_an_accessed_base() {
         },
     ])));
     let states = wings_per_site(&frame, &vision).unwrap();
-    let count = states.get(&(7, building_facts::AIR_BASE)).copied().unwrap_or_default();
+    let count = states
+        .get(&(7, building_facts::AIR_BASE))
+        .copied()
+        .unwrap_or_default();
     assert!(count.shown);
     assert_eq!(count.stationed, Some(true));
     assert_eq!(count.occupied, Some(true));
@@ -942,7 +976,10 @@ fn another_countrys_wings_take_the_flag_frame() {
     };
     wings[0].id = 0xC2;
     let states = wings_per_site(&frame, &vision).unwrap();
-    let count = states.get(&(7, building_facts::AIR_BASE)).copied().unwrap_or_default();
+    let count = states
+        .get(&(7, building_facts::AIR_BASE))
+        .copied()
+        .unwrap_or_default();
     assert!(count.shown, "our access row is still recorded");
     assert_eq!(count.stationed, Some(false));
     assert_eq!(count.foreign, Some(true));
@@ -1035,7 +1072,10 @@ fn truncated_registrations_keep_surviving_rows_decided() {
     *frame.tables[TableId::AirBaseRegistrations.index()] =
         TableView::Truncated { rows, missing: 3 };
     let states = wings_per_site(&frame, &vision).unwrap();
-    let count = states.get(&(7, building_facts::AIR_BASE)).copied().unwrap_or_default();
+    let count = states
+        .get(&(7, building_facts::AIR_BASE))
+        .copied()
+        .unwrap_or_default();
     assert!(count.shown, "our access row survived the truncation");
     assert_eq!(
         count.stationed,
@@ -1180,11 +1220,11 @@ fn sheet(name: &str, frames: u32, size: [u32; 2]) -> SpriteSheet {
 
 #[test]
 fn counter_action_anchor_draws_the_authored_child_frame_and_white_tint() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let strip = sheet("GFX_synthetic_actions", 12, [144, 13]);
     let action = counter_action::action_code(
-        &replay::rows::DivisionMovementRow {
+        &replay_data::rows::DivisionMovementRow {
             path_total: 1,
             naval_transfer: 1,
             ..Default::default()
@@ -1460,7 +1500,7 @@ pub(super) fn with_counter_inputs_fixture<R>(
         terrain: Default::default(),
         mission_content: Err("not needed".into()),
         port_mission_defines: viewer_foundation::map::port_mission_defines::Defines::read(
-            &installed_content::defines::Defines::new().unwrap(),
+            &installed_content_core::defines::Defines::new().unwrap(),
         ),
         anchors: Arc::new(Default::default()),
         default_anchors: Arc::new(Default::default()),
@@ -1532,7 +1572,7 @@ pub(super) fn with_counter_inputs_fixture<R>(
 
 #[test]
 fn stationary_counter_hovers_keep_hidden_members_at_both_zoom_levels() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut hidden = land_unit(7, 1, 10, 10, true);
     hidden.sight = Sight::Partial;
@@ -1551,16 +1591,16 @@ fn stationary_counter_hovers_keep_hidden_members_at_both_zoom_levels() {
 
 #[test]
 fn counter_action_current_hour_ladder_and_struck_ladder_draw_through_the_plate() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let strip = sheet("GFX_synthetic_actions", 12, [144, 13]);
     for (modifier, code) in [(0, 6), (100_000, 11)] {
-        let movement = replay::rows::DivisionMovementRow {
+        let movement = replay_data::rows::DivisionMovementRow {
             path_total: 1,
             strategic_redeployment: 1,
-            strategic_action: replay::rows::Recorded::Value(
-                replay::rows::StrategicAction::Available(
-                    replay::rows::StrategicRedeploymentInputs {
+            strategic_action: replay_data::rows::Recorded::Value(
+                replay_data::rows::StrategicAction::Available(
+                    replay_data::rows::StrategicRedeploymentInputs {
                         country_modifier: 0,
                         state_modifier: Some(0),
                         friendly_state_modifier: Some(modifier),
@@ -1589,7 +1629,7 @@ fn counter_action_current_hour_ladder_and_struck_ladder_draw_through_the_plate()
     }
     let mut unit = land_unit(1, 1, 10, 10, true);
     unit.action = counter_action::action_code(
-        &replay::rows::DivisionMovementRow {
+        &replay_data::rows::DivisionMovementRow {
             path_total: 1,
             strategic_redeployment: 1,
             ..Default::default()
@@ -1607,12 +1647,15 @@ fn counter_action_current_hour_ladder_and_struck_ladder_draw_through_the_plate()
 }
 
 fn strategic_action_frame(
-    rows: Vec<replay::rows::DivisionMovementRow>,
+    rows: Vec<replay_data::rows::DivisionMovementRow>,
     valid_layout: bool,
 ) -> DecodedFrame {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
-    use replay::rows::{DivisionRow, LexicalTokenRow, ModifierDefinitionRow, TableId, TableRows};
+    use replay_data::{
+        rows::DivisionRow, rows::LexicalTokenRow, rows::ModifierDefinitionRow, rows::TableId,
+        rows::TableRows,
+    };
     let mut frame = DecodedFrame {
         branch: 1,
         hour: 0,
@@ -1632,9 +1675,9 @@ fn strategic_action_frame(
         TableView::Complete(TableRows::Divisions(divisions));
     *frame.tables[TableId::DivisionMovement.index()] =
         TableView::Complete(TableRows::DivisionMovement(rows));
-    let keys: Vec<_> = engine::modifier_keys::all()
+    let keys: Vec<_> = engine_executable::modifier_keys::all()
         .filter(|key| {
-            replay::fixed_layout::STRATEGIC_ACTION
+            replay_derive::fixed_layout::STRATEGIC_ACTION
                 .keys
                 .contains(&key.index)
         })
@@ -1662,8 +1705,9 @@ fn strategic_action_frame(
 
 #[test]
 fn counter_action_layout_and_query_refusals_keep_other_movement_and_glyphs() {
-    use replay::rows::{
-        DivisionMovementRow, StrategicAction, StrategicActionFailure, StrategicRedeploymentInputs,
+    use replay_data::{
+        rows::DivisionMovementRow, rows::StrategicAction, rows::StrategicActionFailure,
+        rows::StrategicRedeploymentInputs,
     };
     let moving = |division, status| DivisionMovementRow {
         division,
@@ -1676,13 +1720,13 @@ fn counter_action_layout_and_query_refusals_keep_other_movement_and_glyphs() {
     let rows = vec![
         moving(
             1,
-            replay::rows::Recorded::Value(StrategicAction::Available(
+            replay_data::rows::Recorded::Value(StrategicAction::Available(
                 StrategicRedeploymentInputs::default(),
             )),
         ),
         moving(
             2,
-            replay::rows::Recorded::Value(StrategicAction::Available(
+            replay_data::rows::Recorded::Value(StrategicAction::Available(
                 StrategicRedeploymentInputs {
                     country_modifier: 1,
                     ..Default::default()
@@ -1691,7 +1735,7 @@ fn counter_action_layout_and_query_refusals_keep_other_movement_and_glyphs() {
         ),
         moving(
             3,
-            replay::rows::Recorded::Value(StrategicAction::Withheld(
+            replay_data::rows::Recorded::Value(StrategicAction::Withheld(
                 StrategicActionFailure::CountryModifier,
             )),
         ),
@@ -1748,7 +1792,7 @@ fn counter_action_layout_and_query_refusals_keep_other_movement_and_glyphs() {
 
 #[test]
 fn counter_action_centered_child_refuses_only_the_action_glyph() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut unit = land_unit(1, 1, 10, 10, true);
     unit.action = Ok(8);
@@ -2102,7 +2146,7 @@ fn gun_unit(id: u64, owner: u32, name: &str, join_action: u8, group: u64) -> Lan
 
 #[test]
 fn railway_gun_counters_keep_their_hover_at_both_zoom_levels() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let members = [
         gun_unit(5, 1, "synthetic_gun", 1, 0),
@@ -2214,8 +2258,8 @@ fn ability(
     caster: Option<u64>,
     phase: u8,
     token: &[u8],
-) -> replay::rows::ActiveAbilityRow {
-    replay::rows::ActiveAbilityRow {
+) -> replay_data::rows::ActiveAbilityRow {
+    replay_data::rows::ActiveAbilityRow {
         country,
         ordinal,
         caster,
@@ -2332,7 +2376,10 @@ fn a_mixed_column_takes_the_first_width_and_accumulated_heights() {
 /// owner. No controller or the owner itself is no enemy; missing relations cannot say.
 #[test]
 fn a_moving_guns_destination_is_enemy_only_when_its_controller_is_at_war() {
-    use replay::rows::{FactionMemberRow, RailwayGunCounterInputRow, SubjectRow, WarRelationRow};
+    use replay_data::{
+        rows::FactionMemberRow, rows::RailwayGunCounterInputRow, rows::SubjectRow,
+        rows::WarRelationRow,
+    };
     let gun = |id: u64, last: u32| RailwayGunCounterInputRow {
         gun: id,
         logical_owner: 100,
@@ -2369,8 +2416,9 @@ fn a_moving_guns_destination_is_enemy_only_when_its_controller_is_at_war() {
     *frame.tables[TableId::Subjects.index()] =
         TableView::Complete(TableRows::Subjects(Vec::<SubjectRow>::new()));
     let links = BTreeMap::from([(100, 1), (101, 1), (200, 2), (300, 3)]);
-    use replay::rows::{
-        CountryCounterInputRow, CountryLinkRow, CountryRow, DirectedWars, Recorded, WarCell,
+    use replay_data::{
+        rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryRow, rows::DirectedWars,
+        rows::Recorded, rows::WarCell,
     };
     *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
         links
@@ -2393,7 +2441,7 @@ fn a_moving_guns_destination_is_enemy_only_when_its_controller_is_at_war() {
                 .map(|(country, receiver_slot, active)| CountryCounterInputRow {
                     country,
                     directed_wars: Recorded::Value(Some(DirectedWars {
-                        sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+                        sample_hour: replay_data::rows::PacketHour::Stamped(frame.hour),
                         receiver_raw_id: country as i32,
                         receiver_slot,
                         matrix_count: 4,
@@ -2466,7 +2514,7 @@ fn gun_inputs(
 
 #[test]
 fn gun_sub_unit_tokens_name_their_authored_key_under_the_lexers_fold() {
-    use replay::rows::{LexicalTokenRow, RailwayGunCounterInputRow};
+    use replay_data::{rows::LexicalTokenRow, rows::RailwayGunCounterInputRow};
     let gun = |gun, subunit_token| RailwayGunCounterInputRow {
         gun,
         subunit_token,
@@ -2651,9 +2699,9 @@ fn task_force_refusals_reach_the_diagnostics_by_reason_and_id() {
 
 #[test]
 fn gun_inputs_need_the_whole_census_and_keep_rail_status_per_province() {
-    use replay::rows::{
-        LexicalTokenRow, RailCooldownRow, RailEdgeRow, RailwayGunCounterInputRow,
-        RailwaySelectionInputs, Recorded,
+    use replay_data::{
+        rows::LexicalTokenRow, rows::RailCooldownRow, rows::RailEdgeRow,
+        rows::RailwayGunCounterInputRow, rows::RailwaySelectionInputs, rows::Recorded,
     };
     let gun = RailwayGunCounterInputRow {
         gun: 5,
@@ -2806,7 +2854,7 @@ fn naval_context<'a>(
 /// the viewer's own fleets apart.
 #[test]
 fn sea_items_join_by_allegiance_and_own_fleets_stay_apart() {
-    use replay::rows::TaskForceRow;
+    use replay_data::rows::TaskForceRow;
     let countries = countries([
         (0, Allegiance::Ours),
         (1, Allegiance::Allied),
@@ -2983,11 +3031,12 @@ fn a_recorded_column_order_decides_the_merge_and_the_plate_order() {
     assert_eq!(split, vec![(1, 2), (2, 1)]);
 
     // The recorded province unit order walks Hungary first.
-    let order = counter_order::RecordedOrder::from_rows(&[replay::rows::ProvinceUnitOrderRow {
-        province: 500,
-        mixed: vec![0x20, 0x10, 0x11],
-        naval: Vec::new(),
-    }]);
+    let order =
+        counter_order::RecordedOrder::from_rows(&[replay_data::rows::ProvinceUnitOrderRow {
+            province: 500,
+            mixed: vec![0x20, 0x10, 0x11],
+            naval: Vec::new(),
+        }]);
     // As land_counters admits them: sorted by their recorded ordinal.
     let mut admitted: Vec<LandUnit> = [&rom_a, &rom_b, &hun]
         .into_iter()
@@ -3124,7 +3173,7 @@ fn mixed_plate_lead_follows_source_order_not_majority_or_strength() {
 /// no earlier format could produce. Format 23's operands give both, over every member.
 #[test]
 fn a_port_counter_sums_capitals_over_every_member_and_selects_its_hull() {
-    use replay::rows::{ShipCounterInputs, ShipModelRow};
+    use replay_data::{rows::ShipCounterInputs, rows::ShipModelRow};
     let model = |ship, ordinal, flags, variant, name: &str| ShipModelRow {
         ship,
         variant,
@@ -3204,7 +3253,7 @@ fn only_provinces_the_camera_admits_offer_unit_sources() {
     .on(MapSize::TEST, MapDefines::test());
     let bounds = edge_boxes();
     let divisions: Vec<_> = (0..=7)
-        .map(|province| replay::rows::DivisionRow {
+        .map(|province| replay_data::rows::DivisionRow {
             id: u64::from(province),
             province,
             ..Default::default()
@@ -3224,7 +3273,7 @@ fn only_provinces_the_camera_admits_offer_unit_sources() {
 /// and 6 with one; 2 and 3 with a resolved kind, 6 with an unplaced route), read through
 /// `LandMarkers::read` with an indexed flag.
 fn land_markers(attackers: Vec<u64>, flag: Engaged, sides: TableView) -> LandMarkers {
-    use replay::rows::{DivisionMovementRow, DivisionRow, LandCombatRow};
+    use replay_data::{rows::DivisionMovementRow, rows::DivisionRow, rows::LandCombatRow};
     let mut frame = DecodedFrame {
         branch: 1,
         hour: 5,
@@ -3293,7 +3342,7 @@ fn the_combat_wedge_points_from_the_first_attacker_with_a_map_entity() {
     use viewer_foundation::engaged::Engaged;
     let unseen = || {
         TableView::Complete(TableRows::LandCombatSides(vec![
-            replay::rows::LandCombatSideRow {
+            replay_data::rows::LandCombatSideRow {
                 combat: 62,
                 attacker_primary: vec![1],
                 defender_primary: vec![5],
@@ -3384,7 +3433,7 @@ fn an_icon_needs_its_side_row_and_counts_initial_frame_without_history() {
             );
         }
         let empty = TableView::Complete(TableRows::LandCombatSides(vec![
-            replay::rows::LandCombatSideRow {
+            replay_data::rows::LandCombatSideRow {
                 combat: 62,
                 defender_primary: vec![5],
                 ..Default::default()
@@ -3394,7 +3443,7 @@ fn an_icon_needs_its_side_row_and_counts_initial_frame_without_history() {
         assert!(markers.markers.is_empty() && markers.gaps.is_empty());
     }
     let live = TableView::Complete(TableRows::LandCombatSides(vec![
-        replay::rows::LandCombatSideRow {
+        replay_data::rows::LandCombatSideRow {
             combat: 62,
             attacker_primary: vec![1],
             defender_primary: vec![5],
@@ -3426,7 +3475,7 @@ fn an_icon_needs_its_side_row_and_counts_initial_frame_without_history() {
 /// partner; SOV (101 -> 1) is at war with it; ROM (103 -> 3) is neither.
 #[test]
 fn naval_progress_turns_by_the_first_attacker_the_walk_decides() {
-    use replay::rows::{FactionMemberRow, WarRelationRow};
+    use replay_data::{rows::FactionMemberRow, rows::WarRelationRow};
     use viewer_foundation::map::perspective::{Choice, Country};
     let links = BTreeMap::from([(100, 0), (101, 1), (102, 2), (103, 3)]);
     let tags = BTreeMap::from([
@@ -3545,7 +3594,7 @@ fn undecided_land_markers_reach_the_diagnostics_and_survive_assign() {
 /// flag for the viewer (1) on the attacking side draws the combat seen.
 #[test]
 fn a_load_rebuilt_engaged_flag_is_a_named_limitation() {
-    use replay::rows::{LandCombatRow, LandCombatSideRow};
+    use replay_data::{rows::LandCombatRow, rows::LandCombatSideRow};
     let mut frame = DecodedFrame {
         branch: 1,
         hour: 5,
@@ -3620,7 +3669,7 @@ fn a_load_rebuilt_engaged_flag_is_a_named_limitation() {
 /// negative is refused under that input.
 #[test]
 fn counter_parts_never_take_unknown_vision_sharing_as_no() {
-    use replay::rows::FactionMemberRow;
+    use replay_data::rows::FactionMemberRow;
     use viewer_foundation::map::perspective::{Choice, Country};
     let links = BTreeMap::from([(100, 0), (101, 1), (102, 2)]);
     let tags = BTreeMap::from([(0, "GER".to_owned()), (1, "SOV".into()), (2, "ITA".into())]);
@@ -3733,7 +3782,9 @@ fn counter_parts_never_take_unknown_vision_sharing_as_no() {
 /// the viewer itself still proves the defending side.
 #[test]
 fn a_defending_side_needs_whole_relations_to_prove_a_negative() {
-    use replay::rows::{DivisionRow, FactionMemberRow, LandCombatRow, LandCombatSideRow};
+    use replay_data::{
+        rows::DivisionRow, rows::FactionMemberRow, rows::LandCombatRow, rows::LandCombatSideRow,
+    };
     use viewer_foundation::map::perspective::{Choice, Country};
     let mut frame = DecodedFrame {
         branch: 1,
@@ -3773,7 +3824,7 @@ fn a_defending_side_needs_whole_relations_to_prove_a_negative() {
     set(
         TableId::DivisionMovement,
         TableView::Complete(TableRows::DivisionMovement(vec![
-            replay::rows::DivisionMovementRow {
+            replay_data::rows::DivisionMovementRow {
                 division: 10,
                 ..Default::default()
             },
@@ -3873,9 +3924,9 @@ fn a_seen_combat_takes_the_winning_losing_or_balanced_colour_from_its_side() {
 
 #[test]
 fn hq_portraits_require_runtime_leader_data_even_with_an_authored_character() {
-    use replay::rows::{
-        CharacterPortrait, CharacterPortraitRow, CharacterRow, LeaderPortraitRow, OrdersGroupRow,
-        UnitLeaderRow,
+    use replay_data::{
+        rows::CharacterPortrait, rows::CharacterPortraitRow, rows::CharacterRow,
+        rows::LeaderPortraitRow, rows::OrdersGroupRow, rows::UnitLeaderRow,
     };
     const LEADER: u64 = (5 << 32) | 11;
     let mut frame = DecodedFrame {
@@ -4067,7 +4118,7 @@ fn counter_cutoffs_preserve_visibility_and_limit_zoom_lift() {
 
 #[test]
 fn counter_defines_read_each_define_through_its_native_getter() {
-    let defines = installed_content::defines::Defines::new().unwrap();
+    let defines = installed_content_core::defines::Defines::new().unwrap();
     // Every other map mode's table: its icons' priorities count up from 40 + 12 * its index.
     let others = PriorityTable::ALL[1..]
         .iter()
@@ -4213,7 +4264,7 @@ fn counter_defines_read_each_define_through_its_native_getter() {
 
 #[test]
 fn children_take_their_declaration_order_and_their_font() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let document = layout_gui(
         br#"guiTypes = { containerWindowType = { name = "unit_counter"
@@ -4259,7 +4310,7 @@ fn children_take_their_declaration_order_and_their_font() {
 
 #[test]
 fn synthetic_counter_buttons_resolve_and_draw_count_bg() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // Independently authored windows share a synthetic button sprite while
     // retaining the control names required by the counter binders.
@@ -4311,7 +4362,7 @@ fn synthetic_counter_buttons_resolve_and_draw_count_bg() {
 
 #[test]
 fn counter_button_sprite_aliases_and_frames_match_native_button_drawing() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use viewer_foundation::map::native_gui::{PartKind, lifecycle::Instance};
     let plate_sheet = sheet("GFX_plate", 3, [60, 10]);
@@ -4484,7 +4535,7 @@ fn retained_naval_icon_limits_reach_the_warnings_when_drawn() {
 /// `centerPosition` starts false and retains its value on failed assignments.
 #[test]
 fn active_ability_center_position_is_a_native_boolean() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (fields, expected) in [
         ("", false),
@@ -4515,7 +4566,7 @@ fn active_ability_center_position_is_a_native_boolean() {
 
 #[test]
 fn the_gun_window_and_ability_grid_are_read_or_refused_by_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let document = layout_gui(
         br#"guiTypes = {
@@ -4577,7 +4628,7 @@ fn the_gun_window_and_ability_grid_are_read_or_refused_by_name() {
 
 #[test]
 fn the_layouts_name_every_sprite_the_pass_has_to_load_once_each() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let layouts = layouts();
     let names = layouts.sprite_names();
@@ -4621,7 +4672,7 @@ fn the_layouts_name_every_sprite_the_pass_has_to_load_once_each() {
 /// each `preserve_aspect_ratio` branch.
 #[test]
 fn a_size_block_evaluates_as_the_native_evaluator_does() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let evaluate = |size: &str, parent: [i32; 2], position: [i32; 2]| {
         let gui = native_gui(format!(
@@ -4690,7 +4741,7 @@ fn a_size_block_evaluates_as_the_native_evaluator_does() {
 /// hull and pride only from 150. A combat tile can hold members below 150.
 #[test]
 fn a_mission_item_shows_its_hull_and_pride_only_from_the_first_members_150() {
-    use replay::rows::TaskForceRow;
+    use replay_data::rows::TaskForceRow;
     let vision = Vision::default();
     let native = NativeInputs::default();
     let context = naval_context(&vision, &native, BTreeMap::new());
@@ -4780,7 +4831,7 @@ fn flag_fixture<const N: usize>(names: [&str; N]) -> Arc<LazyFlags> {
         .into();
     let pages = atlas_pages::CellPages::plan([10, 7], 8192, "flags").unwrap();
     let read: FlagReader = Arc::new(|_: &str| {
-        Some(installed_content::image::Rgba8Image {
+        Some(installed_content_image::Rgba8Image {
             width: 10,
             height: 7,
             pixels: vec![9; 280],
@@ -5009,7 +5060,7 @@ fn an_icon_wholly_outside_the_viewport_is_dropped() {
 /// dropping the keep, goes red.
 #[test]
 fn air_base_icons_hide_only_on_an_answered_no() {
-    use installed_content::map::MapData;
+    use installed_content_core::map::MapData;
     // Anchor [1,1] reads province 9; the controller slot 1 is foreign.
     let map = MapData {
         width: 4,
@@ -5056,10 +5107,10 @@ fn air_base_icons_hide_only_on_an_answered_no() {
             TableView::Complete(TableRows::CountryVisibility(Vec::new()));
         views[TableId::SimulationFeatures.index()] =
             TableView::Complete(TableRows::SimulationFeatures(vec![
-                replay::rows::SimulationFeatureRow {
+                replay_data::rows::SimulationFeatureRow {
                     dlc_mask: 0x20,
                     human_ai: 0,
-                    weather_suspend: replay::rows::Recorded::Value(None),
+                    weather_suspend: replay_data::rows::Recorded::Value(None),
                     ..Default::default()
                 },
             ]));
@@ -5114,7 +5165,7 @@ fn air_base_icons_hide_only_on_an_answered_no() {
 /// lookup the hide decision above stands on.
 #[test]
 fn province_lookup_truncates_and_rejects_what_is_not_a_province() {
-    use installed_content::map::MapData;
+    use installed_content_core::map::MapData;
     use std::collections::BTreeMap;
     // 4 wide, 3 high, rows stored north first; row flips like the lookup.
     let map = MapData {
@@ -5200,7 +5251,7 @@ fn the_air_base_badge_prefers_recorded_wings_over_the_fallback_reading() {
 
 #[test]
 fn counter_child_hovers_follow_presented_order_and_transparent_siblings() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = |transparent: &str, action_transparent: &str| {
         layout_gui(
@@ -5279,7 +5330,7 @@ fn counter_child_hovers_follow_presented_order_and_transparent_siblings() {
 
 #[test]
 fn counter_sprite_aliases_keep_the_selected_sprites_hit_flags() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = layout_gui(br#"guiTypes={
         containerWindowType={name=unit_counter_navy}
@@ -5323,7 +5374,7 @@ fn counter_sprite_aliases_keep_the_selected_sprites_hit_flags() {
 
 #[test]
 fn active_ability_hovers_keep_individual_bound_records_and_transparency() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let abilities = AbilityInputs::read(
         &ability_frame(TableView::Complete(TableRows::ActiveAbilities(vec![
@@ -5422,9 +5473,21 @@ fn the_resource_and_raid_modes_draw_no_unit_counters() {
         unit_counters: false,
         ..Visibility::POLITICAL
     };
-    assert!(unit_counters_shown(&political, visible(100.0, 900.0), false));
-    assert!(!unit_counters_shown(&political, visible(900.0, 900.0), false));
-    assert!(!unit_counters_shown(&political, visible(100.0, 900.0), true));
+    assert!(unit_counters_shown(
+        &political,
+        visible(100.0, 900.0),
+        false
+    ));
+    assert!(!unit_counters_shown(
+        &political,
+        visible(900.0, 900.0),
+        false
+    ));
+    assert!(!unit_counters_shown(
+        &political,
+        visible(100.0, 900.0),
+        true
+    ));
     for height in [0.0, 100.0, 899.0] {
         assert!(!unit_counters_shown(&hidden, visible(height, 900.0), false));
     }

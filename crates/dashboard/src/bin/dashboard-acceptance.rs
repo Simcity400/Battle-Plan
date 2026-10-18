@@ -17,11 +17,9 @@ use dashboard::{
     },
     transport::ProductRequest,
 };
-use replay::{
-    container::SeekResult,
-    frame::TableView,
-    rows::{TableId, tables},
-};
+use replay::container::SeekResult;
+use replay_data::{rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -1919,7 +1917,7 @@ fn run(options: Options) -> io::Result<bool> {
     let context = LoadContext {
         content: match (options.game, options.user) {
             (Some(game_dir), Some(user_dir)) => Some(ContentOptions {
-                options: installed_content::ResolveOptions {
+                options: installed_content_core::ResolveOptions {
                     game_dir,
                     user_dir,
                     cache_dir: path.join("cache/content"),
@@ -1932,7 +1930,7 @@ fn run(options: Options) -> io::Result<bool> {
     };
     fs::create_dir_all(path.join("cache/content"))?;
     if let Some(content) = &context.content {
-        engine::executable_tables::initialize(&content.options.game_dir)?;
+        engine_executable::executable_tables::initialize(&content.options.game_dir)?;
     }
     let canonical_recording = fs::canonicalize(options.recording)?;
     if let Some(serial) = options.preparation_measure {

@@ -50,14 +50,12 @@ use std::{
     io,
 };
 
-use installed_content::{map::MapData, movement::MovementMap};
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        ArmyOrderPlanRow, ArmyOrderRow, FrontRow, LandTheatreRow, OrdersGroupPlanRow,
-        OrdersGroupRow, TableId, tables,
-    },
+use installed_content_core::{map::MapData, movement::MovementMap};
+use replay_data::{
+    rows::ArmyOrderPlanRow, rows::ArmyOrderRow, rows::FrontRow, rows::LandTheatreRow,
+    rows::OrdersGroupPlanRow, rows::OrdersGroupRow, rows::TableId, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 #[cfg(test)]
 use self::fixed::Smoothing;

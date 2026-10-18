@@ -2,11 +2,9 @@
 //! constant time; the spool thread copies, decodes and writes its events and
 //! frees their lane space only after the frame is written.
 use crate::{map_events, spooling::unavailable};
-use engine::walk::Outcome;
-use replay::{
-    frame::{TableInput, TableView},
-    rows::{TableId, TableRows},
-};
+use engine_native::walk::Outcome;
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::{frame::TableInput, frame::TableView};
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::MapEvents];
@@ -77,7 +75,7 @@ impl Ledger {
         match row {
             Ok(row) => {
                 let mut rows = Vec::new();
-                if engine::allocation::reserve_exact(&mut rows, 1).is_err() {
+                if engine_allocation::reserve_exact(&mut rows, 1).is_err() {
                     map_events::interval::lost_output();
                     tables[TableId::MapEvents.index()] =
                         TableInput::Sampled(unavailable("map event interval allocation failed"));

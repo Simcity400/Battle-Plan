@@ -1,9 +1,9 @@
 //! Mesh input declarations, compact vertices and skin weights.
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
-use installed_content::pdxshader::{
-    Address,
-    program::{Filter, Sampler, Stage},
+use installed_content_core::{
+    pdxshader::Address, pdxshader::program::Filter, pdxshader::program::Sampler,
+    pdxshader::program::Stage,
 };
 use shader_pipeline::{
     ScalarKind, VertexInput, binding, gpu,
@@ -24,7 +24,7 @@ pub struct Geometry {
 }
 
 impl Geometry {
-    pub fn from_mesh(sub: &installed_content::mesh::SubMesh, scale: f32) -> io::Result<Self> {
+    pub fn from_mesh(sub: &installed_content_core::mesh::SubMesh, scale: f32) -> io::Result<Self> {
         let count = sub.vertex_count();
         if count == 0 {
             return Err(io::Error::other("native mesh has no positions"));
@@ -339,8 +339,8 @@ pub fn map_samplers() -> BTreeMap<u32, Sampler> {
 pub(crate) mod tests {
     use super::*;
 
-    fn triangle() -> installed_content::mesh::SubMesh {
-        installed_content::mesh::SubMesh {
+    fn triangle() -> installed_content_core::mesh::SubMesh {
+        installed_content_core::mesh::SubMesh {
             positions: vec![[1., 2., 3.], [4., 5., 6.], [7., 8., 9.]],
             normals: vec![[10., 11., 12.]; 3],
             tangents: vec![[20., 21., 22., 23.]; 3],
@@ -407,7 +407,7 @@ pub(crate) mod tests {
 
     #[test]
     fn imported_geometry_preserves_local_streams_and_native_repairs() {
-        let sub = installed_content::mesh::SubMesh {
+        let sub = installed_content_core::mesh::SubMesh {
             positions: vec![[1., -2., 3.], [4., 5., 6.]],
             normals: vec![[0., -0., 0.], [1., 2., 3.]],
             tangents: vec![[0., 0., 0., -0.], [2., 3., 4., -1.]],
@@ -427,7 +427,7 @@ pub(crate) mod tests {
         assert_eq!(geometry.indices, sub.indices);
         assert!(geometry.skin.is_empty());
         let without_uv1 =
-            Geometry::from_mesh(&installed_content::mesh::SubMesh { uv1: None, ..sub }, 1.).unwrap();
+            Geometry::from_mesh(&installed_content_core::mesh::SubMesh { uv1: None, ..sub }, 1.).unwrap();
         assert_eq!(without_uv1.vertices.len(), 24);
         assert!(!without_uv1.uv1);
     }
@@ -467,7 +467,7 @@ pub(crate) mod tests {
         Geometry,
     ) {
         use shader_pipeline::{Compiled, Shader, library::Effect};
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let input = |location, semantic: &str, components| VertexInput {
             kind: ScalarKind::Float,
@@ -490,7 +490,7 @@ pub(crate) mod tests {
         );
         let program = |name: &'static [u8], text: &'static [u8]| {
             Arc::new(
-                installed_content::pdxshader::program::read_with(name, &|path| {
+                installed_content_core::pdxshader::program::read_with(name, &|path| {
                     Some(if path == name {
                         text.to_vec()
                     } else {

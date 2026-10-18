@@ -2,8 +2,8 @@
 
 use super as production;
 use crate::table_capture::CaptureRows;
-use engine::{Memory, cequipment_variant, walk::Outcome};
-use replay::rows::TableId;
+use engine_native::{Memory, cequipment_variant, walk::Outcome};
+use replay_data::rows::TableId;
 
 pub struct Registry {
     rows: CaptureRows<cequipment_variant::RegistryRow>,
@@ -27,7 +27,7 @@ impl Registry {
     // Off-hours carry-forward hint keeps byte-identical spool output.
     pub fn mark_skipped(&mut self) {
         self.rows.outcome = Outcome::Unavailable {
-            reason: replay::cadence::SKIPPED_REASON,
+            reason: replay_data::cadence::SKIPPED_REASON,
         };
     }
     pub fn sources(&self) -> production::Sources<'_, cequipment_variant::RegistryRow> {

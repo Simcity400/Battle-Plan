@@ -88,7 +88,7 @@ impl Renderer<'_, '_, '_> {
                 } else {
                     'Y'
                 };
-                let number = installed_content::fixed5::fixed5_to_string(scaled, 1);
+                let number = installed_content_core::fixed5::fixed5_to_string(scaled, 1);
                 let value = format!(
                     "\u{11}{colour}{}{number}%\u{11}!",
                     if scaled < 0 { "" } else { "+" }
@@ -115,10 +115,10 @@ impl Renderer<'_, '_, '_> {
         let operand = scalar_operand(item)?;
         // literal %i or
         // signed fixed5 division, narrowed to i32. Shares the existing parser.
-        match installed_content::fixed5::int_operand(operand, item.quoted()) {
-            installed_content::fixed5::IntOperand::Integer(value) => Ok(value),
-            installed_content::fixed5::IntOperand::Constant(value) => Ok((value / 100_000) as i32),
-            installed_content::fixed5::IntOperand::Scoped => {
+        match installed_content_core::fixed5::int_operand(operand, item.quoted()) {
+            installed_content_core::fixed5::IntOperand::Integer(value) => Ok(value),
+            installed_content_core::fixed5::IntOperand::Constant(value) => Ok((value / 100_000) as i32),
+            installed_content_core::fixed5::IntOperand::Scoped => {
                 Ok((self.scoped_value(operand, scopes)? / 100_000) as i32)
             }
             _ => Err("integer effect operand was not stored".into()),
@@ -133,8 +133,11 @@ impl Renderer<'_, '_, '_> {
 
     // Capitalized definite country name.
     fn numeric_marked_country(&self, country: u32) -> Result<String, String> {
-        let name =
-            installed_content::localisation::crt_case_text(&self.country_name(country, true)?, true, true);
+        let name = installed_content_localisation::localisation::crt_case_text(
+            &self.country_name(country, true)?,
+            true,
+            true,
+        );
         Ok(format!("\u{12}{} {name}", self.tag(country)?))
     }
 
@@ -269,7 +272,7 @@ impl Renderer<'_, '_, '_> {
                 values.push(format!(
                     "\n{}: {}",
                     self.char_native_text(key, &[], scopes, false)?,
-                    installed_content::fixed5::fixed5_percent(value, -1, false)
+                    installed_content_core::fixed5::fixed5_percent(value, -1, false)
                 ));
             }
         }
@@ -309,7 +312,7 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         };
         let hour = self.context.text.frame().hour;
-        let day = hour.wrapping_sub(hour.wrapping_sub(engine::cdate::HOUR_EPOCH) % 24);
+        let day = hour.wrapping_sub(hour.wrapping_sub(engine_native::cdate::HOUR_EPOCH) % 24);
         let days = crate::triggers::fixed_round(self.numeric_field(item, "days", scopes)?) as i32;
         let (year, month, date) = numeric_date_parts(day.wrapping_add(days.wrapping_mul(24)));
         let month = self.char_native_text(month.as_bytes(), &[], scopes, false)?;
@@ -331,7 +334,7 @@ impl Renderer<'_, '_, '_> {
         let resource = field(fields, "resource")
             .and_then(|item| item.value.read_string())
             .unwrap_or_default();
-        let resource = installed_content::parser::text(resource).map_err(|why| why.to_string())?;
+        let resource = installed_content_core::parser::text(resource).map_err(|why| why.to_string())?;
         let resources = self
             .context
             .content
@@ -346,13 +349,13 @@ impl Renderer<'_, '_, '_> {
                 "create_import resource {resource} repeated native database record identity is unverified"
             ));
         }
-        let icon = definition.icon_frame.filter(|frame| *frame <= i32::MAX as u32).ok_or_else(|| format!("create_import resource {resource} signed/default icon_frame is not preserved by installed_content::resources"))?;
+        let icon = definition.icon_frame.filter(|frame| *frame <= i32::MAX as u32).ok_or_else(|| format!("create_import resource {resource} signed/default icon_frame is not preserved by installed_content_core::resources"))?;
         let amount = fields
             .iter()
             .filter(|item| item.keyword_is("amount"))
             .filter_map(
-                |item| match installed_content::crt::scan_i32(item.value.scalar()?) {
-                    installed_content::crt::Scanned::Stored(value) => Some(value),
+                |item| match installed_content_core::crt::scan_i32(item.value.scalar()?) {
+                    installed_content_core::crt::Scanned::Stored(value) => Some(value),
                     _ => None,
                 },
             )
@@ -371,7 +374,7 @@ impl Renderer<'_, '_, '_> {
         ];
         let mut date = String::new();
         if let Some(start) = field(fields, "start_date") {
-            let value = installed_content::parser::text(start.value.read_string().unwrap_or_default())
+            let value = installed_content_core::parser::text(start.value.read_string().unwrap_or_default())
                 .map_err(|why| why.to_string())?;
             let value = if value.split('.').count() == 3 {
                 format!("{value}.1")
@@ -441,11 +444,11 @@ impl Renderer<'_, '_, '_> {
 }
 
 pub(super) fn numeric_date_parts(hour: i32) -> (i32, &'static str, i32) {
-    let hours = hour.wrapping_sub(engine::cdate::HOUR_EPOCH);
+    let hours = hour.wrapping_sub(engine_native::cdate::HOUR_EPOCH);
     let mut day = hours / 24 % 365;
     let mut month = 0;
-    while month < 12 && day >= engine::cdate::MONTH_LENGTHS[month] {
-        day -= engine::cdate::MONTH_LENGTHS[month];
+    while month < 12 && day >= engine_native::cdate::MONTH_LENGTHS[month] {
+        day -= engine_native::cdate::MONTH_LENGTHS[month];
         month += 1;
     }
     let name = [

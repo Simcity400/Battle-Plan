@@ -1,5 +1,5 @@
 use super::*;
-use replay::rows::{LexicalTokenRow, NavalDamageSource};
+use replay_data::{rows::LexicalTokenRow, rows::NavalDamageSource};
 use viewer_foundation::tooltip_text::NoIcons;
 
 #[test]
@@ -47,7 +47,7 @@ fn flag_damage_summary_includes_naval_bomber_weapon_before_box_categories() {
 
 #[test]
 fn flag_damage_summary_uses_native_sections_and_sorted_source_types() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let loc: Localisation = [
         ("total_damage_dealt", "T $NUM$ $RATIO$;"),
@@ -133,7 +133,7 @@ fn flag_damage_summary_uses_native_sections_and_sorted_source_types() {
 
 #[test]
 fn flag_damage_summary_keeps_blank_null_type_and_empty_localisation_rows() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let loc: Localisation = [
         ("total_damage_dealt", "TOTAL $NUM$;"),
@@ -259,7 +259,7 @@ fn weapon_damage_summary_includes_piercing_in_native_order() {
         original_health: 400_000,
         ..Default::default()
     };
-    let defines = installed_content::naval_combat_defines::Defines {
+    let defines = installed_content_naval_combat_defines::naval_combat_defines::Defines {
         summary_fixed: [0; 14],
         summary_integer: [0; 3],
         silhouette_planes: [0; 6],
@@ -285,25 +285,25 @@ fn weapon_damage_summary_includes_piercing_in_native_order() {
 }
 
 fn tree_row(
-    kind: replay::naval_trees::Kind,
+    kind: replay_data::naval_trees::Kind,
     owner: u64,
     key: u32,
     value: i64,
     name: &[u8],
-) -> replay::rows::NavalModifierTreeRow {
-    replay::rows::NavalModifierTreeRow {
+) -> replay_data::rows::NavalModifierTreeRow {
+    replay_data::rows::NavalModifierTreeRow {
         kind: kind as u8,
         owner,
         sub: 0,
-        trees: vec![replay::rows::NavalModifierKeyTree {
+        trees: vec![replay_data::rows::NavalModifierKeyTree {
             key,
             nodes: vec![
-                replay::rows::ModifierBreakdownNode {
+                replay_data::rows::ModifierBreakdownNode {
                     children: 1,
                     value,
                     name: Vec::new(),
                 },
-                replay::rows::ModifierBreakdownNode {
+                replay_data::rows::ModifierBreakdownNode {
                     children: 0,
                     value,
                     name: name.to_vec(),
@@ -340,8 +340,8 @@ fn positioning_loc() -> Localisation {
 /// tree for an early defender; without recorded trees it refuses by name.
 #[test]
 fn positioning_hovers_list_the_side_sources_and_refuse_without_trees() {
-    use replay::naval_trees::Kind;
-    let detail = replay::rows::NavalCombatDetailsRow {
+    use replay_data::naval_trees::Kind;
+    let detail = replay_data::rows::NavalCombatDetailsRow {
         combat: 42,
         sides: [positioning_side(7, 66), positioning_side(8, 77)],
         ..Default::default()
@@ -351,7 +351,7 @@ fn positioning_hovers_list_the_side_sources_and_refuse_without_trees() {
         tree_row(Kind::Commander, 66, 0x1b2, 5_000, b"Superior tactician"),
         tree_row(Kind::Commander, 77, 0x5a, -20_000, b"Ambusher"),
     ];
-    let definitions = [0x1b2, 0x5a].map(|index| replay::rows::ModifierDefinitionRow {
+    let definitions = [0x1b2, 0x5a].map(|index| replay_data::rows::ModifierDefinitionRow {
         index,
         precision: 2,
         ..Default::default()
@@ -361,7 +361,7 @@ fn positioning_hovers_list_the_side_sources_and_refuse_without_trees() {
         &definitions,
         crate::naval_labels::english(),
     );
-    let defines = installed_content::naval_combat_defines::Defines {
+    let defines = installed_content_naval_combat_defines::naval_combat_defines::Defines {
         summary_fixed: [0; 14],
         summary_integer: [0; 3],
         silhouette_planes: [0; 6],
@@ -469,7 +469,7 @@ fn positioning_hovers_list_the_side_sources_and_refuse_without_trees() {
 /// branch; the carrier box and the other screen-box paths add none.
 #[test]
 fn screen_box_prefixes_the_country_correction_only_on_its_correction_branch() {
-    use replay::naval_trees::Kind;
+    use replay_data::naval_trees::Kind;
     let screening = |capital, country_bonus_applied| Screening {
         capital,
         carrier: 0,
@@ -487,7 +487,7 @@ fn screen_box_prefixes_the_country_correction_only_on_its_correction_branch() {
         20_000,
         b"Screening doctrine",
     )];
-    let definitions = [replay::rows::ModifierDefinitionRow {
+    let definitions = [replay_data::rows::ModifierDefinitionRow {
         index: 0x1b3,
         precision: 2,
         ..Default::default()
@@ -562,7 +562,7 @@ fn screen_box_prefixes_the_country_correction_only_on_its_correction_branch() {
     .map(|(key, value)| (key.to_owned(), value.to_owned()))
     .collect();
     loc.language = "english".into();
-    let defines = installed_content::naval_combat_defines::Defines {
+    let defines = installed_content_naval_combat_defines::naval_combat_defines::Defines {
         summary_fixed: [0; 14],
         summary_integer: [0; 3],
         silhouette_planes: [0; 6],
@@ -599,7 +599,7 @@ fn screening_hovers_keep_complete_submarine_counts_and_bonuses_without_unneeded_
     side.summary.countries = vec![1];
     side.positioning = 87_850;
     let ships = (0..8)
-        .map(|slot| replay::rows::NavalCombatShipRow {
+        .map(|slot| replay_data::rows::NavalCombatShipRow {
             combat: 42,
             side: 0,
             battle_slot: slot,
@@ -610,7 +610,7 @@ fn screening_hovers_keep_complete_submarine_counts_and_bonuses_without_unneeded_
             ..Default::default()
         })
         .collect::<Vec<_>>();
-    let defines = installed_content::naval_combat_defines::Defines {
+    let defines = installed_content_naval_combat_defines::naval_combat_defines::Defines {
         summary_fixed: {
             let mut values = [0; 14];
             values[7] = 50_000;
@@ -681,7 +681,7 @@ fn screening_hovers_keep_complete_submarine_counts_and_bonuses_without_unneeded_
         )
     );
     let definitions = [
-        replay::rows::ModifierDefinitionRow {
+        replay_data::rows::ModifierDefinitionRow {
             index: 1,
             name_key: b"sortie_bonus".to_vec(),
             flags: 3,
@@ -689,7 +689,7 @@ fn screening_hovers_keep_complete_submarine_counts_and_bonuses_without_unneeded_
             category_mask: 1,
             ..Default::default()
         },
-        replay::rows::ModifierDefinitionRow {
+        replay_data::rows::ModifierDefinitionRow {
             index: 2,
             name_key: b"retreat_bonus".to_vec(),
             flags: 3,
@@ -703,8 +703,8 @@ fn screening_hovers_keep_complete_submarine_counts_and_bonuses_without_unneeded_
         &[(b"sortie_bonus", 1), (b"retreat_bonus", 2)],
         None,
     );
-    let authored = installed_content::parser::parse(b"sortie_bonus=0.1 retreat_bonus=0.2").unwrap();
-    let authored = installed_content::modifiers::targeted(&authored.items).modifiers;
+    let authored = installed_content_core::parser::parse(b"sortie_bonus=0.1 retreat_bonus=0.2").unwrap();
+    let authored = installed_content_core::modifiers::targeted(&authored.items).modifiers;
     assert_eq!(
         screening_description(true, &census, &screening, &defines, "", Ok(&authored), Ok(&definitions), &NoIcons, &loc).unwrap(),
         (concat!("Battle Line: \u{11}H100%\u{11}!\nCombined: \u{11}H100%\u{11}!\n\n",

@@ -3,7 +3,7 @@ use std::cell::Cell;
 use viewer_foundation::map::camera::MapDefines;
 
 const W: f32 = 5632.0;
-use installed_content::adjacencies::{Adjacency, IMPASSABLE, SEA_CROSSING};
+use installed_content_core::{adjacencies::Adjacency, adjacencies::IMPASSABLE, adjacencies::SEA_CROSSING};
 
 fn link(from: u32, to: u32, kind: u8) -> Adjacency {
     Adjacency {
@@ -324,7 +324,7 @@ fn names_keep_the_camera_side_margin() {
 
 #[test]
 fn static_names_are_built_once_and_chunked_under_the_buffer_limit() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let placements = many_names(15_000);
     let (chunks, names) = static_names(&placements, u64::MAX);
@@ -426,10 +426,10 @@ fn a_placed_area_is_reused_until_the_byte_bound_evicts_the_oldest() {
 }
 
 fn name_frame(controllers: [u32; 2]) -> DecodedFrame {
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{CountryLinkRow, CountryRow, ProvinceRow, TableId, TableRows},
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::ProvinceRow, rows::TableId, rows::TableRows,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
     let mut tables: [TableView; TableId::ALL.len()] =
         std::array::from_fn(|_| TableView::Unavailable {
             reason: "not needed".into(),
@@ -482,10 +482,10 @@ fn named_areas_change_with_control_and_nothing_else() {
             .map(|id| {
                 (
                     id,
-                    installed_content::map::ProvinceDefinition {
+                    installed_content_core::map::ProvinceDefinition {
                         id,
                         rgb: [0; 3],
-                        kind: installed_content::map::ProvinceKind::Land,
+                        kind: installed_content_core::map::ProvinceKind::Land,
                         continent: 0,
                     },
                 )
@@ -565,8 +565,8 @@ fn named_areas_change_with_control_and_nothing_else() {
 
 #[test]
 fn state_areas_name_each_states_provinces_and_go_close_in() {
-    use replay::frame::TableView;
-    use replay::rows::{StateRow, TableId, TableRows};
+    use replay_data::{rows::StateRow, rows::TableId, rows::TableRows};
+    use replay_frame::frame::TableView;
     let map = MapData {
         width: 3,
         height: 1,
@@ -575,10 +575,10 @@ fn state_areas_name_each_states_provinces_and_go_close_in() {
             .map(|id| {
                 (
                     id,
-                    installed_content::map::ProvinceDefinition {
+                    installed_content_core::map::ProvinceDefinition {
                         id,
                         rgb: [0; 3],
-                        kind: installed_content::map::ProvinceKind::Land,
+                        kind: installed_content_core::map::ProvinceKind::Land,
                         continent: 0,
                     },
                 )

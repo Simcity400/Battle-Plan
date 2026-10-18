@@ -5,7 +5,7 @@ use super::{
     Buffer, Capacities, Captured, CharactersCopyContext, CharactersCopyReport, CharactersJob,
     copy_characters_refresh, walk_family,
 };
-use engine::{
+use engine_native::{
     cadvisor, carmy_leader, ccharacter, ccharacter_manager, ccountry_leader,
     character_advisor_node, character_leader_node, cnavy_leader, cunit_leader, cunit_leader_skill,
     msvc_string, msvc_tree_node,
@@ -25,8 +25,8 @@ pub(crate) const UNIT2: usize = 0x5200;
 const HEAD2L: usize = 0x2500;
 const HEAD2A: usize = 0x2530;
 
-pub(crate) fn memory(bytes: &[u8]) -> engine::memory::SliceMemory<'_> {
-    engine::memory::SliceMemory {
+pub(crate) fn memory(bytes: &[u8]) -> engine_native::memory::SliceMemory<'_> {
+    engine_native::memory::SliceMemory {
         base: ADDRESS,
         bytes,
     }
@@ -267,7 +267,7 @@ pub(crate) fn mapped_fixture() -> Vec<u8> {
 
 /// Reference typed walk with identical pooled capacities, outcomes and
 /// arenas installed exactly like `capture` installs them.
-pub(crate) fn direct(memory: &impl engine::Memory, capacities: &Capacities) -> Captured {
+pub(crate) fn direct(memory: &impl engine_native::Memory, capacities: &Capacities) -> Captured {
     let mut captured = Captured::with_capacities(capacities);
     let results = walk_family(memory, BASE, GAME_STATE, captured.family(), None, None);
     captured.characters.primary(results[0]);
@@ -280,7 +280,7 @@ pub(crate) fn direct(memory: &impl engine::Memory, capacities: &Capacities) -> C
 
 /// Capture one owned payload and decode into fresh pooled buffers.
 pub(crate) fn split(
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     capacities: &Capacities,
 ) -> (Captured, CharactersCopyReport, CharactersJob) {
     let mut captured = Captured::with_capacities(capacities);

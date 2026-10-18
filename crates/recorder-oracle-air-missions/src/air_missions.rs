@@ -9,10 +9,8 @@ use std::{
 };
 
 use installed_content_save::Save;
-use replay::{
-    frame::DecodedFrame,
-    rows::{AirSortieModifierRow, AirWingRow, Recorded, tables},
-};
+use replay_data::{rows::AirSortieModifierRow, rows::AirWingRow, rows::Recorded, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::{CountryContext, Report, complete, invalid};
 
@@ -22,7 +20,7 @@ pub fn compare(
     countries: &CountryContext<'_>,
     report: &mut Report,
 ) {
-    report.attempt_table(replay::rows::TableId::AirRegionalMissions, |report| {
+    report.attempt_table(replay_data::rows::TableId::AirRegionalMissions, |report| {
         report.compared("AirRegionalMissions", registrations(frame, countries)?);
         report.limitation(
             "The save stores each wing's mission, not CStrategicAir's per-region registration vectors. Membership, owner and region are checked against AirWings and the ordinals for contiguity; their native order needs a live comparison.",
@@ -30,7 +28,7 @@ pub fn compare(
         );
         Ok(())
     });
-    report.attempt_table(replay::rows::TableId::AirCountryRelations, |report| {
+    report.attempt_table(replay_data::rows::TableId::AirCountryRelations, |report| {
         let compared = relations(frame, save, countries, report)?;
         report.compared("AirCountryRelations", compared);
         report.limitation(
@@ -39,13 +37,14 @@ pub fn compare(
         );
         Ok(())
     });
-    report.attempt_table(replay::rows::TableId::AirReferenceWitnesses, |report| {
-        witnesses(frame, save, report)
-    });
-    report.attempt_table(replay::rows::TableId::NavalMineLevels, |report| {
+    report.attempt_table(
+        replay_data::rows::TableId::AirReferenceWitnesses,
+        |report| witnesses(frame, save, report),
+    );
+    report.attempt_table(replay_data::rows::TableId::NavalMineLevels, |report| {
         mines(frame, save, countries, report)
     });
-    report.attempt_table(replay::rows::TableId::AirMissionInputs, |report| {
+    report.attempt_table(replay_data::rows::TableId::AirMissionInputs, |report| {
         let rows = mission_inputs(frame, save, report)?;
         report.compared("AirMissionInputs", rows);
         for row in complete::<tables::AirMissionInputs>(frame)? {
@@ -80,7 +79,7 @@ pub fn compare(
         );
         Ok(())
     });
-    report.attempt_table(replay::rows::TableId::AirWings, |report| {
+    report.attempt_table(replay_data::rows::TableId::AirWings, |report| {
         let wings = complete::<tables::AirWings>(frame)?;
         for wing in wings.iter().filter(|wing| wing.mission_mask & 8 != 0) {
             let subject = format!("AirWings {} strategic_bombing_raw", wing.id);
@@ -139,14 +138,15 @@ fn naval_patrol(
 /// Value and refused rows retain native window-zero positions. Availability witnesses
 /// also cover null/reserved native slots, which need not have a saved tag.
 fn histories_structure(
-    rows: &[replay::rows::AirNavalPatrolHistoryRow],
+    rows: &[replay_data::rows::AirNavalPatrolHistoryRow],
     slots: &BTreeSet<u32>,
 ) -> io::Result<()> {
     let mut witnesses = BTreeSet::new();
     let mut values = BTreeSet::new();
     for row in rows {
         if row.is_availability_witness() {
-            if row != &replay::rows::AirNavalPatrolHistoryRow::availability_witness(row.country)
+            if row
+                != &replay_data::rows::AirNavalPatrolHistoryRow::availability_witness(row.country)
                 || !witnesses.insert(row.country)
             {
                 return Err(invalid(
@@ -157,7 +157,7 @@ fn histories_structure(
         }
         if !slots.contains(&row.country)
             || !row.has_values()
-            || row.index == replay::rows::AIR_HISTORY_AVAILABILITY_INDEX
+            || row.index == replay_data::rows::AIR_HISTORY_AVAILABILITY_INDEX
         {
             return Err(invalid(format!(
                 "air history {}:{}:{} names no live country, valid ring index or value",
@@ -202,7 +202,7 @@ fn mission_inputs(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io:
             .get(&row.wing)
             .ok_or_else(|| invalid("air mission input lacks its AirWings row"))?
             .mission_mask;
-        let membership = mask & replay::rows::AIR_MISSION_REACHED_IDS != 0;
+        let membership = mask & replay_data::rows::AIR_MISSION_REACHED_IDS != 0;
         if (membership && row.reached_provinces.len() != row.reached_count as usize)
             || (!membership && !row.reached_provinces.is_empty())
         {
@@ -461,7 +461,7 @@ fn relations(
     let mut vectors = BTreeMap::<u32, BTreeMap<u32, u32>>::new();
     for row in rows {
         if !slots.contains(&row.country)
-            || row.kind > replay::rows::AirCountryRelationRow::ENEMY
+            || row.kind > replay_data::rows::AirCountryRelationRow::ENEMY
             || !countries.links.contains_key(&row.other)
         {
             return Err(invalid(format!(
@@ -473,7 +473,7 @@ fn relations(
             .entry((row.country, row.kind))
             .or_default()
             .insert(row.ordinal);
-        if row.kind == replay::rows::AirCountryRelationRow::ENEMY {
+        if row.kind == replay_data::rows::AirCountryRelationRow::ENEMY {
             enemies
                 .entry(row.country)
                 .or_default()
@@ -565,7 +565,7 @@ fn witnesses(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Resu
                 .filter(|wing| {
                     wing.mission_mask == 0
                         || (wing.mission_region.is_none()
-                            && wing.mission_mask & replay::rows::AIR_MISSION_TRAINING != 0)
+                            && wing.mission_mask & replay_data::rows::AIR_MISSION_TRAINING != 0)
                 })
                 .map(|wing| wing.air_base),
         )
@@ -652,7 +652,7 @@ fn mines(
         let wing = wings
             .get(&registration.wing)
             .ok_or_else(|| invalid("registered air mission lacks its AirWings row"))?;
-        if wing.mission_mask & replay::rows::AIR_MISSION_LAY_MINES == 0 {
+        if wing.mission_mask & replay_data::rows::AIR_MISSION_LAY_MINES == 0 {
             continue;
         }
         let effective = if wing.country_override > 0 {
@@ -725,13 +725,11 @@ mod witness_tests;
 mod tests {
     use super::*;
     use installed_content_save::Decimal;
-    use replay::{
-        frame::TableView,
-        rows::{
-            AirCountryRelationRow, AirNavalPatrolHistoryRow, CountryLinkRow, CountryWarRow,
-            TableId, TableRows,
-        },
+    use replay_data::{
+        rows::AirCountryRelationRow, rows::AirNavalPatrolHistoryRow, rows::CountryLinkRow,
+        rows::CountryWarRow, rows::TableId, rows::TableRows,
     };
+    use replay_frame::frame::TableView;
 
     #[test]
     fn naval_patrol_histories_are_sparse_nonzero_entries() {
@@ -757,7 +755,7 @@ mod tests {
     #[test]
     fn scenario_histories_validate_empty_witnesses_and_new_channel_only_records() {
         let slots = BTreeSet::from([4]);
-        let witness = replay::rows::AirNavalPatrolHistoryRow::availability_witness;
+        let witness = replay_data::rows::AirNavalPatrolHistoryRow::availability_witness;
         let row = AirNavalPatrolHistoryRow {
             country: 4,
             region: 9,

@@ -37,12 +37,10 @@ use viewer_foundation::map::province_schedule::Schedule;
 #[cfg(test)]
 use viewer_foundation::map::test_support::gui;
 
-use installed_content::{
-    gui::native,
-    localisation::Localisation,
-    map::{MapData, ProvinceKind},
-};
-use replay::{frame::DecodedFrame, rows::tables};
+use installed_content_core::{gui::native, map::MapData, map::ProvinceKind};
+use installed_content_localisation::localisation::Localisation;
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 
 use viewer_foundation::map::{
     allegiance::{self, Allegiance},
@@ -74,7 +72,7 @@ pub struct LabelDefines {
 }
 
 impl LabelDefines {
-    pub fn load(defines: &installed_content::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
         let number = |section: &str, key: &str| -> io::Result<f32> {
             let value = defines.number(section, key)? as f32;
             if value.is_finite() {
@@ -121,7 +119,9 @@ impl LabelDefines {
             text_cutoff: [100.0, 800.0],
             max_points_for_percent: 22.0,
             capital_cutoff: [1100.0, 1000.0],
-            priorities: Priorities::uniform([10, 11, 5, 3, 3, 3, 3, 20, 20, 19, 13, 5, 3, 3, 10, 3, 10]),
+            priorities: Priorities::uniform([
+                10, 11, 5, 3, 3, 3, 3, 20, 20, 19, 13, 5, 3, 3, 10, 3, 10,
+            ]),
         }
     }
 }
@@ -208,7 +208,7 @@ pub struct LabelContent {
 impl LabelContent {
     /// Reads the defines; the anchors come from the finalised unit-stack
     /// table once it is seeded ([`LabelContent::set_anchors`]).
-    pub fn load(defines: &installed_content::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
         Ok(Self {
             defines: LabelDefines::load(defines)?,
             anchors: BTreeMap::new(),
@@ -284,7 +284,7 @@ pub struct LabelTables {
 
 /// Why a table's rows lack an entry: a complete table lacks it, a truncated
 /// or unavailable one may not have reached it.
-fn gap<T: replay::rows::TableSchema>(available: &Available<'_, T>) -> String {
+fn gap<T: replay_data::rows::TableSchema>(available: &Available<'_, T>) -> String {
     match available {
         Available::Complete(_) => "the complete table has no row for it".into(),
         Available::Truncated { missing, .. } => {
@@ -326,14 +326,15 @@ impl LabelTables {
                 let slot = *links.get(&row.country)?;
                 Some((
                     slot,
-                    installed_content::country_names::original_tag(by_slot.get(&slot)?, row)
+                    installed_content_country_names::country_names::original_tag(by_slot.get(&slot)?, row)
                         .map(str::to_owned),
                 ))
             })
             .collect();
         original_tags.insert(
             0,
-            installed_content::country_names::reserved_zero_original_tag(frame).map(str::to_owned),
+            installed_content_country_names::country_names::reserved_zero_original_tag(frame)
+                .map(str::to_owned),
         );
         Ok(Self {
             state_owners: states
@@ -803,10 +804,10 @@ pub(crate) mod tests {
     use viewer_foundation::map::test_support::localisation::loaded;
     #[test]
     fn occupied_capital_uses_the_independent_state_controller() {
-        use replay::{
-            frame::{Metrics, TableView},
-            rows::{PoliticsRow, ProvinceRow, StateRow, TableId, TableRows},
+        use replay_data::{
+            rows::PoliticsRow, rows::ProvinceRow, rows::StateRow, rows::TableId, rows::TableRows,
         };
+        use replay_frame::{frame::Metrics, frame::TableView};
         let mut frame = DecodedFrame {
             branch: 1,
             hour: 1,
@@ -871,7 +872,7 @@ pub(crate) mod tests {
 
     #[test]
     fn native_labels_draw_at_their_anchors_in_depth_order_across_both_pools() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = gui::fixture();
         let windows = gui::windows(
@@ -938,7 +939,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_label_s_name_stands_on_its_own_anchor_and_its_dot_on_the_label_s() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = gui::fixture();
         let windows = gui::windows(
@@ -1003,7 +1004,7 @@ pub(crate) mod tests {
 
     #[test]
     fn dump_icons_past_the_initial_pool_all_draw() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use viewer_foundation::map::icon_windows::DumpFrames;
         let resources = gui::fixture();
@@ -1059,7 +1060,7 @@ pub(crate) mod tests {
 
     #[test]
     fn missing_label_templates_are_named_and_counted_per_family() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = gui::fixture();
         let windows = gui::windows(b"");
@@ -1264,13 +1265,11 @@ pub(crate) mod tests {
     /// independently of dynamic naming gates and province controller.
     #[test]
     fn the_victory_point_tag_is_the_state_owners_original_tag() {
-        use replay::{
-            frame::{Metrics, TableView},
-            rows::{
-                CountryAppearanceRow, CountryLinkRow, CountryRow, Recorded,
-                ReservedCountryNamingRow, StateRow, TableId, TableRows,
-            },
+        use replay_data::{
+            rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow, rows::Recorded,
+            rows::ReservedCountryNamingRow, rows::StateRow, rows::TableId, rows::TableRows,
         };
+        use replay_frame::{frame::Metrics, frame::TableView};
         let mut frame = DecodedFrame {
             branch: 1,
             hour: 1,

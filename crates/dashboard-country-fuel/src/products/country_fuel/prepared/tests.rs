@@ -2,13 +2,15 @@ use super::super::tests::{fuel_frame, fuel_slot};
 use super::*;
 use dashboard_base::prepared::series::tests::Fixture;
 use dashboard_base::test_fixtures::{CAMPAIGN, records};
-use replay::{container::Replay, frame::TableView, rows::TableRows};
+use replay::container::Replay;
+use replay_data::rows::TableRows;
+use replay_frame::frame::TableView;
 
 #[test]
 fn preassembled_demand_preserves_fuel_state_and_named_part_failures() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use replay::rows::{FuelDemandRead, FuelDemandUnit, Recorded};
-    let format = replay::format::FormatVersion::CURRENT;
+    use replay_data::{rows::FuelDemandRead, rows::FuelDemandUnit, rows::Recorded};
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let mut direct = Prepared::default();
     let mut extracted = Prepared::default();
@@ -42,7 +44,7 @@ fn preassembled_demand_preserves_fuel_state_and_named_part_failures() {
             },
         };
         let changes = tracker.observe(&frame, format);
-        let demand = replay::rows::with_demand_parts(
+        let demand = replay_frame::rows::with_demand_parts(
             frame.complete::<tables::CountryFuel>().unwrap(),
             &frame.tables[TableId::FuelDemandParts.index()],
             format,
@@ -68,10 +70,10 @@ fn preassembled_demand_preserves_fuel_state_and_named_part_failures() {
 #[test]
 fn fuel_country_keys_skip_balance_only_recorded_deltas() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let mut frame = dashboard_base::test_fixtures::scale_frame(1, 100, 200);
-    let mut encoder = replay::frame::FrameEncoder::new();
-    let mut decoder = replay::frame::FrameDecoder::new();
+    let mut encoder = replay_frame::frame::FrameEncoder::new();
+    let mut decoder = replay_frame::frame::FrameDecoder::new();
     let mut tracker = FrameChangeTracker::new();
     let mut scan = Scan::default();
     for hour in 100..=102 {
@@ -114,8 +116,8 @@ fn phase_b_scaled_work(count: u32) {
         frame_changes::FrameChangeTracker,
         observer_tests::{assert_flat, scaled_work, unchanged_frames},
     };
-    use replay::rows::{FuelDemandHour, FuelDemandRead, Recorded};
-    let format = replay::format::FormatVersion::CURRENT;
+    use replay_data::{rows::FuelDemandHour, rows::FuelDemandRead, rows::Recorded};
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     for refused in [false, true] {
         let histories = scaled_work(8, |history| {
@@ -253,7 +255,7 @@ fn phase_b_fuel_work_is_flat_at_five_thousand_countries() {
 fn phase_b_link_changes_rebind_retained_operands_without_country_state_or_fuel_row_visits() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
     let first = fuel_slot(100);
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let base = fuel_frame(first, false, 9001, (11, 19, 23, 29));
     let mut prepared = Prepared::default();
@@ -309,9 +311,9 @@ fn phase_b_link_changes_rebind_retained_operands_without_country_state_or_fuel_r
 
 #[test]
 fn phase_b_equal_amounts_reopen_after_unknowns_across_two_commits_resume_and_append() {
-    use replay::rows::{FuelDemandHour, FuelDemandRead, Recorded};
+    use replay_data::{rows::FuelDemandHour, rows::FuelDemandRead, rows::Recorded};
     let first = fuel_slot(100);
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     for consumption in [false, true] {
         let mut base = fuel_frame(first, false, 9001, (11, 19, 23, 29));
@@ -412,9 +414,9 @@ fn phase_b_equal_amounts_reopen_after_unknowns_across_two_commits_resume_and_app
 
 #[test]
 fn phase_b_retained_diagnostics_count_identities_and_reads_after_two_commits_resume_and_append() {
-    use replay::rows::{CountryLinkRow, CountryRow};
+    use replay_data::{rows::CountryLinkRow, rows::CountryRow};
     let first = fuel_slot(100);
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let mut base = fuel_frame(first, false, 9001, (11, 19, 23, 29));
     base.metrics.table_ns.fill(0);
@@ -476,9 +478,9 @@ fn phase_b_retained_diagnostics_count_identities_and_reads_after_two_commits_res
 #[test]
 fn phase_b_shared_views_keep_fresh_reads_gaps_and_dormant_ownership_after_resume_and_append() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use replay::rows::Recorded;
+    use replay_data::rows::Recorded;
     let first = fuel_slot(100);
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let mut base = fuel_frame(first, false, 9001, (11, 19, 23, 29));
     base.metrics.table_ns.fill(0);
@@ -641,7 +643,7 @@ fn progressive_fuel_sampler_matches_observer_on_every_key_at_5000_countries() {
         let samples = sample(&frame, None).unwrap();
         assert_eq!(samples.len(), 10_000);
         prepared
-            .observe(&frame, replay::format::FormatVersion::CURRENT, &flag)
+            .observe(&frame, replay_data::format::FormatVersion::CURRENT, &flag)
             .unwrap();
         let identities: BTreeMap<_, _> = frame
             .complete::<tables::Countries>()
@@ -670,7 +672,7 @@ fn progressive_fuel_sampler_matches_observer_on_every_key_at_5000_countries() {
     }
 }
 
-fn reference(frames: &[replay::frame::DecodedFrame]) -> (Arc<Replay>, Source) {
+fn reference(frames: &[replay_frame::frame::DecodedFrame]) -> (Arc<Replay>, Source) {
     let replay =
         Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap());
     let source = Source::from_replay(
@@ -685,7 +687,11 @@ fn reference(frames: &[replay::frame::DecodedFrame]) -> (Arc<Replay>, Source) {
     .unwrap();
     (replay, source)
 }
-fn compare(fixture: &Fixture, frames: &[replay::frame::DecodedFrame], cancelled: &AtomicBool) {
+fn compare(
+    fixture: &Fixture,
+    frames: &[replay_frame::frame::DecodedFrame],
+    cancelled: &AtomicBool,
+) {
     let (replay, source) = reference(frames);
     let expected = scan_branch(&replay, 1, cancelled).unwrap();
     let mut reads = Reads::open(&fixture.store, &fixture.key, 1, cancelled)
@@ -921,7 +927,7 @@ fn a_gap_settles_country_dates_in_one_shared_batch_after_resume() {
                 }
             }
             let mut row = award_row(if hour == first { first } else { first + 1 });
-            if let replay::rows::Recorded::Value(day) = &mut row.award_day {
+            if let replay_data::rows::Recorded::Value(day) = &mut row.award_day {
                 day.continuity_start_hour = Some(first - (DAY_HOURS - 1));
             }
             if hour != first {
@@ -958,10 +964,13 @@ fn a_gap_settles_country_dates_in_one_shared_batch_after_resume() {
 )]
 fn five_thousand_countries_share_each_frame_and_keep_bounded_continuations() {
     use dashboard_base::test_fixtures::scale_frame;
-    use replay::rows::{CountryFuelRow, FuelDemandHour, FuelDemandRead, FuelDemandUnit, Recorded};
+    use replay_data::{
+        rows::CountryFuelRow, rows::FuelDemandHour, rows::FuelDemandRead, rows::FuelDemandUnit,
+        rows::Recorded,
+    };
     let count = 5000_u32;
     let slot = fuel_slot(1000);
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let fixture = Fixture::new();
     let flag = AtomicBool::new(false);
     let mut prepared = Prepared::default();
@@ -1072,8 +1081,9 @@ impl Drop for FileFixture {
 )]
 fn detail_products_use_summaries_after_two_commits_resume_and_file_append_without_branch_scan() {
     use super::super::tests::award_row;
-    use replay::rows::{
-        CountryLinkRow, CountryRow, FuelDemandHour, FuelDemandRead, FuelDemandUnit, Recorded,
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::FuelDemandHour, rows::FuelDemandRead,
+        rows::FuelDemandUnit, rows::Recorded,
     };
     let first = fuel_slot(30);
     let frames: Vec<_> = (first..=first + 850)
@@ -1238,7 +1248,7 @@ fn detail_products_use_summaries_after_two_commits_resume_and_file_append_withou
 #[test]
 fn a_conflicting_alias_outside_the_requested_window_keeps_both_histories_refused() {
     use super::super::tests::award_row;
-    use replay::rows::{CountryLinkRow, CountryRow, Recorded};
+    use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::Recorded};
     let first = fuel_slot(30);
     let mut frames: Vec<_> = [first, first + detail::DETAIL_HOURS]
         .into_iter()
@@ -1248,8 +1258,8 @@ fn a_conflicting_alias_outside_the_requested_window_keeps_both_histories_refused
             if let Recorded::Value(day) = &mut row.award_day {
                 day.continuity_start_hour = Some(first - (DAY_HOURS - 1));
             }
-            row.demand = Recorded::Value(replay::rows::FuelDemandRead {
-                hour: replay::rows::FuelDemandHour::Stamped(hour),
+            row.demand = Recorded::Value(replay_data::rows::FuelDemandRead {
+                hour: replay_data::rows::FuelDemandHour::Stamped(hour),
                 country_instance: Some(9),
                 ..Default::default()
             });
@@ -1346,9 +1356,9 @@ fn a_conflicting_alias_outside_the_requested_window_keeps_both_histories_refused
 #[test]
 fn quiet_spans_settle_and_carry_fuel_as_observing_every_hour() {
     use dashboard_base::prepared::frame_changes::{FrameChangeTracker, FrameChanges};
-    use replay::frame::DecodedFrame;
-    use replay::rows::StateRow;
-    let format = replay::format::FormatVersion::CURRENT;
+    use replay_data::rows::StateRow;
+    use replay_frame::frame::DecodedFrame;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let slot = fuel_slot(1000);
     // Germany's fuel grows at each daily slot.
@@ -1495,7 +1505,7 @@ fn check_deferred_fuel_settlement_work(count: u32) {
     use dashboard_base::prepared::{
         frame_changes::FrameChangeTracker, series::tests::assert_payloads_equal,
     };
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let mut frame = dashboard_base::test_fixtures::scale_frame(1, fuel_slot(1000), count);
     frame.metrics.table_ns.fill(0);
@@ -1602,7 +1612,7 @@ fn deferred_fuel_settlement_matches_hourly_bytes_through_gaps_restore_and_append
     use dashboard_base::prepared::{
         frame_changes::FrameChangeTracker, series::tests::assert_payloads_equal,
     };
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let slot = fuel_slot(1000);
     let frames: Vec<_> = (slot - 25..=slot + 80)
@@ -1723,7 +1733,7 @@ fn deferred_fuel_uses_hourly_publication_budget_after_flush() {
         pages::{BATCH_BYTES, publication_due},
         series::tests::assert_payloads_equal,
     };
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let slot = fuel_slot(1000);
     let mut frame = fuel_frame(slot, true, 9001, (100, 10_000, 19, 7));

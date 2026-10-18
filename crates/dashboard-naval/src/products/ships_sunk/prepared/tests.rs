@@ -1,6 +1,6 @@
 use super::*;
 use dashboard_base::prepared::series::tests::Fixture;
-use replay::rows::SunkShipEntry;
+use replay_data::rows::SunkShipEntry;
 
 fn ship(sink: i32, read: i32, token: u32) -> sinkings::ShipEvent {
     sinkings::ShipEvent {

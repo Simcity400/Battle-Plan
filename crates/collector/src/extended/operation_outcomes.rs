@@ -5,12 +5,10 @@ use crate::{
     spooling::unavailable,
     table_capture::{grow_capacity, grow_vec},
 };
-use engine::allocation::{copy_vec, map_slice, owned_vec};
-use engine::walk::Outcome;
-use replay::{
-    frame::{TableInput, TableView},
-    rows::{OperationCompletionRow, TableId, TableRows},
-};
+use engine_allocation::{copy_vec, map_slice, owned_vec};
+use engine_native::walk::Outcome;
+use replay_data::{rows::OperationCompletionRow, rows::TableId, rows::TableRows};
+use replay_frame::{frame::TableInput, frame::TableView};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub const N: usize = 1;

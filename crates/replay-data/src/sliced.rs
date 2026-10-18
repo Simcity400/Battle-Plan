@@ -30,7 +30,7 @@ use crate::rows::{
     SupplyNodeRow, TableId, TableRows, TradeRouteRow, TrainInventoryRow,
 };
 use crate::{codec::invalid_static as invalid, rows::RowCodec};
-use engine::allocation;
+use engine_allocation as allocation;
 use std::io;
 
 mod update;

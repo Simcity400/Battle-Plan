@@ -1,8 +1,6 @@
 //! Shared conventional-flight and raid-aircraft equipment selection.
-use replay::{
-    frame::DecodedFrame,
-    rows::{VariantDefinitionRow, WingEquipmentRow, tables},
-};
+use replay_data::{rows::VariantDefinitionRow, rows::WingEquipmentRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 /// Primary equipment is the largest signed
 /// amount in a nonempty bank, first native ordinal on ties; replay key order is unrelated.
@@ -126,14 +124,14 @@ pub fn prefixed(
 /// from the content by name.
 #[cfg(any(test, feature = "test-support"))]
 fn equipment_names(
-    content: &installed_content::equipment::Database,
+    content: &installed_content_core::equipment::Database,
     name: &str,
 ) -> Result<(String, String), String> {
     let kind = content
         .named(name)
         .ok_or_else(|| format!("equipment {name} is not in the content"))?;
     let text = |bytes: &[u8], what: &str| {
-        installed_content::parser::text(bytes)
+        installed_content_core::parser::text(bytes)
             .map(str::to_owned)
             .map_err(|refused| format!("equipment {name} {what}: {refused}"))
     };
@@ -156,9 +154,9 @@ fn equipment_names(
 /// Return `Ok(None)` when nothing is declared.
 #[cfg(any(test, feature = "test-support"))]
 pub fn designer_entity(
-    variant: &replay::rows::VariantDefinitionRow,
+    variant: &replay_data::rows::VariantDefinitionRow,
     equipment: &str,
-    content: &installed_content::equipment::Database,
+    content: &installed_content_core::equipment::Database,
     tag: &str,
     dlc_mask: u32,
     variant_model: &dyn Fn() -> Result<Option<String>, String>,
@@ -262,10 +260,8 @@ mod tests {
     #[test]
     fn recorded_primary_distinguishes_a_nonpositive_bank_from_empty_or_unavailable() {
         use crate::map::test_support::{test_frame, test_put as put};
-        use replay::{
-            frame::TableView,
-            rows::{TableId, TableRows},
-        };
+        use replay_data::{rows::TableId, rows::TableRows};
+        use replay_frame::frame::TableView;
         let mut frame = test_frame(42);
         put(
             &mut frame,

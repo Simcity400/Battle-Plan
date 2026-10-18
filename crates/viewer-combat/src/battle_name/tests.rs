@@ -5,13 +5,11 @@ use viewer_foundation::tooltip_text::NoIcons;
 /// from its independent exact suffix; missing rows are refused.
 #[test]
 fn the_victory_point_tag_is_the_state_owners_original_tag() {
-    use replay::{
-        frame::TableView,
-        rows::{
-            CountryAppearanceRow, CountryLinkRow, CountryRow, Recorded, ReservedCountryNamingRow,
-            StateRow, TableId, TableRows,
-        },
+    use replay_data::{
+        rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow, rows::Recorded,
+        rows::ReservedCountryNamingRow, rows::StateRow, rows::TableId, rows::TableRows,
     };
+    use replay_frame::frame::TableView;
     let mut frame = DecodedFrame {
         branch: 0,
         hour: 1,

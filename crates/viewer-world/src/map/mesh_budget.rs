@@ -17,7 +17,7 @@ pub struct Budget {
 
 impl Budget {
     /// The content's allowance.
-    pub fn read(defines: &installed_content::defines::Defines) -> std::io::Result<i32> {
+    pub fn read(defines: &installed_content_core::defines::Defines) -> std::io::Result<i32> {
         defines.int32("NGraphics", "MAX_MESHES_LOADED_PER_FRAME")
     }
 
@@ -79,11 +79,11 @@ mod tests {
         )
         .unwrap();
         let layers =
-            installed_content::ResolvedLayers::from_folders(&[(&base, &[]), (&addon, &[])]).unwrap();
-        let defines = installed_content::defines::read(&layers).unwrap();
+            installed_content_core::ResolvedLayers::from_folders(&[(&base, &[]), (&addon, &[])]).unwrap();
+        let defines = installed_content_core::defines::read(&layers).unwrap();
         let mut budget = Budget::new(Budget::read(&defines).unwrap(), false);
         assert_eq!((0..5).filter(|_| budget.take()).count(), 3);
-        let defines = installed_content::defines::Defines::new().unwrap();
+        let defines = installed_content_core::defines::Defines::new().unwrap();
         for file in [
             base.join("common/defines/00_base.lua"),
             addon.join("common/defines/zz_mod.lua"),

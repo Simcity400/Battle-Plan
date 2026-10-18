@@ -2,7 +2,7 @@
 //! for the rest.
 use super::eq;
 use super::*;
-use engine::naval_mission_inputs::{MISSION_KINDS, PRESENCE_WINDOW};
+use engine_native::{naval_mission_inputs::MISSION_KINDS, naval_mission_inputs::PRESENCE_WINDOW};
 
 pub fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     report.attempt_table(TableId::NavalMissionTaskForces, |r| {
@@ -187,7 +187,9 @@ fn presence(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()>
 mod tests {
     use super::*;
     use installed_content_save::naval_missions;
-    use replay::rows::{NavalMissionLedgerRow, NavalMissionTaskForceRow, TaskForceRow};
+    use replay_data::{
+        rows::NavalMissionLedgerRow, rows::NavalMissionTaskForceRow, rows::TaskForceRow,
+    };
 
     fn decimal(raw: i64) -> Decimal {
         Decimal {

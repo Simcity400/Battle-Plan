@@ -1,5 +1,6 @@
 use super::*;
-use replay::frame::{TABLE_COUNT, TableView};
+use replay_data::rows::TABLE_COUNT;
+use replay_frame::frame::TableView;
 
 fn frame(hour: i32) -> DecodedFrame {
     DecodedFrame {

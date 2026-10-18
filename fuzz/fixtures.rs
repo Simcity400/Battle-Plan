@@ -1,12 +1,14 @@
 use std::io;
 
-use replay::{
-    branches::{BranchReason, BranchStart, Parentage},
-    container::Replay,
-    frame::{Frame, Metrics, TableUpdate},
-    identity::{Identity, Roster, SampleBoundary, SessionStart, Verification},
-    rows::{CampaignRow, CountryLinkRow, CountryRow, TableId, TableRows},
-    spool::{ControlRecord, Record},
+use replay::{container::Replay, spool::ControlRecord, spool::Record};
+use replay_data::{
+    identity::Identity, identity::Roster, identity::SampleBoundary, identity::SessionStart,
+    identity::Verification, rows::CampaignRow, rows::CountryLinkRow, rows::CountryRow,
+    rows::TableId, rows::TableRows,
+};
+use replay_frame::{
+    branches::BranchReason, branches::BranchStart, branches::Parentage, frame::Frame,
+    frame::Metrics, frame::TableUpdate,
 };
 
 pub fn recording(partial: bool) -> io::Result<Replay> {
@@ -92,7 +94,7 @@ pub fn recording_sequence(partial: bool, sequence: bool) -> io::Result<Replay> {
         };
         let before = row.clone();
         row.command_power_raw = 1;
-        use replay::rows::RowCodec;
+        use replay_data::rows::RowCodec;
         next.tables[TableId::Countries.index()] = TableUpdate::Delta {
             baseline: 0,
             changed: vec![row.delta(Some(&before))?.unwrap()],

@@ -1,14 +1,17 @@
 //! Native power mutations and government commits. Writer/caller descriptors
-//! live in engine::politics_sites. No balance fall is turned into a spend.
+//! live in engine_events::politics_sites. No balance fall is turned into a spend.
 //! Hooks never select countries by player/human/AI status.
 use crate::{
     hook::{Hook, Registers, Tap},
     shared_lane::SharedLane,
 };
-use engine::{Memory, allocation, politics_sites as native};
-use replay::rows::{
-    GovernmentCause, PowerAction, PowerCause, PowerCurrency, PowerDailyCostKind, PowerObjectKind,
-    PowerOperation, PowerOriginKind, PowerSite,
+use engine_allocation as allocation;
+use engine_events::politics_sites as native;
+use engine_native::Memory;
+use replay_data::{
+    rows::GovernmentCause, rows::PowerAction, rows::PowerCause, rows::PowerCurrency,
+    rows::PowerDailyCostKind, rows::PowerObjectKind, rows::PowerOperation, rows::PowerOriginKind,
+    rows::PowerSite,
 };
 use std::{
     cell::{Cell, UnsafeCell},
@@ -537,30 +540,32 @@ fn failed(reason: &'static str) {
     COUNTERS[3].fetch_add(1, Ordering::Relaxed);
     invalidate();
 }
-fn memory() -> engine::memory::LiveMemory {
-    unsafe { engine::memory::LiveMemory::new() }
+fn memory() -> engine_native::memory::LiveMemory {
+    unsafe { engine_native::memory::LiveMemory::new() }
 }
 fn base() -> usize {
     BASE.load(Ordering::Relaxed)
 }
-fn read<T: engine::memory::Raw>(address: usize) -> Option<T> {
-    engine::read::<T>(&memory(), address)
+fn read<T: engine_native::memory::Raw>(address: usize) -> Option<T> {
+    engine_native::read::<T>(&memory(), address)
 }
 fn operand_memory() -> native::NativeOperands {
     // SAFETY: callers below read only the supported synchronous native operands.
     unsafe { native::NativeOperands::new() }
 }
 #[inline(always)]
-fn operand<T: engine::memory::Raw>(address: usize) -> Option<T> {
-    engine::read::<T>(&operand_memory(), address)
+fn operand<T: engine_native::memory::Raw>(address: usize) -> Option<T> {
+    engine_native::read::<T>(&operand_memory(), address)
 }
 fn operand_hour() -> Option<i32> {
-    let state = operand::<u64>(base().checked_add(engine::cgame_state::SINGLETON_RVA)?)? as usize;
-    operand::<i32>(state.checked_add(engine::cgame_state::CURRENT_HOUR)?)
+    let state =
+        operand::<u64>(base().checked_add(engine_native::cgame_state::SINGLETON_RVA)?)? as usize;
+    operand::<i32>(state.checked_add(engine_native::cgame_state::CURRENT_HOUR)?)
 }
 fn event_hour() -> Option<i32> {
-    let state = read::<u64>(base().checked_add(engine::cgame_state::SINGLETON_RVA)?)? as usize;
-    read::<i32>(state.checked_add(engine::cgame_state::CURRENT_HOUR)?)
+    let state =
+        read::<u64>(base().checked_add(engine_native::cgame_state::SINGLETON_RVA)?)? as usize;
+    read::<i32>(state.checked_add(engine_native::cgame_state::CURRENT_HOUR)?)
 }
 fn log() -> Option<&'static Log> {
     let pointer = LOG.load(Ordering::Acquire) as *const Log;
@@ -573,7 +578,7 @@ fn log() -> Option<&'static Log> {
 /// Off-thread only. Larger staging is offered to an hourly handoff; old
 /// generations remain alive until callbacks and capture workers quiesce.
 pub fn resize(entries: usize, keys: usize) {
-    engine::allocation::advisory(|| resize_storage(entries, keys));
+    engine_allocation::advisory(|| resize_storage(entries, keys));
 }
 
 fn resize_storage(entries: usize, keys: usize) {
@@ -1005,13 +1010,13 @@ pub struct Handoff {
 /// events, scanning countries, resolving identities or touching replay rows.
 #[cfg(any(test, feature = "test-support"))]
 pub fn handoff(cursors: &mut [LaneCursor]) -> Result<Handoff, &'static str> {
-    handoff_buffer(engine::walk::Buffer::Fixed(cursors))
+    handoff_buffer(engine_native::walk::Buffer::Fixed(cursors))
 }
 pub fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
-    handoff_buffer(engine::walk::Buffer::Growing(cursors))
+    handoff_buffer(engine_native::walk::Buffer::Growing(cursors))
 }
 fn handoff_buffer(
-    mut cursors: engine::walk::Buffer<'_, LaneCursor>,
+    mut cursors: engine_native::walk::Buffer<'_, LaneCursor>,
 ) -> Result<Handoff, &'static str> {
     if UNHOOKED.get().is_some() || !ENABLED.load(Ordering::Acquire) {
         return Err("politics hooks unavailable");
@@ -1060,11 +1065,11 @@ fn close_for_handoff(log: &Log, offered: &Log) -> bool {
 }
 #[cfg(any(test, feature = "test-support"))]
 fn handoff_from(log: &Log, cursors: &mut [LaneCursor]) -> Result<Handoff, &'static str> {
-    handoff_from_buffer(log, engine::walk::Buffer::Fixed(cursors))
+    handoff_from_buffer(log, engine_native::walk::Buffer::Fixed(cursors))
 }
 fn handoff_from_buffer(
     log: &Log,
-    mut cursors: engine::walk::Buffer<'_, LaneCursor>,
+    mut cursors: engine_native::walk::Buffer<'_, LaneCursor>,
 ) -> Result<Handoff, &'static str> {
     let count = log.registered.load(Ordering::Acquire).min(log.lanes.len());
     if !cursors.ensure(count)? {
@@ -1371,16 +1376,18 @@ fn observed_balance(
     let (address, reason) = match currency {
         PowerCurrency::Political => (
             owner.politics.and_then(|pointer| {
-                pointer.checked_add(engine::cpolitical_status::POLITICAL_POWER)
+                pointer.checked_add(engine_native::cpolitical_status::POLITICAL_POWER)
             }),
             "politics political power balance unreadable, absent or overflowed",
         ),
         PowerCurrency::Command => (
-            owner.pointer.checked_add(engine::ccountry::COMMAND_POWER),
+            owner
+                .pointer
+                .checked_add(engine_native::ccountry::COMMAND_POWER),
             "politics command power balance unreadable or overflowed",
         ),
     };
-    match address.and_then(|address| engine::read(memory, address)) {
+    match address.and_then(|address| engine_native::read(memory, address)) {
         Some(value) => Some(value),
         None => {
             failed(reason);
@@ -1513,7 +1520,7 @@ const FOCUS_ENTRY: usize = 36;
 const FOCUS_REFUND_ENTRY: usize = 37;
 
 /// Hook path: the political status family's notifications for an entry this
-/// family patches on its behalf ([`engine::political_status_mutations`]),
+/// family patches on its behalf ([`engine_mutations::political_status_mutations`]),
 /// with `receiver` its first argument: the country for
 /// `country appearance reset`, the `CPoliticalStatus` for the daily update,
 /// whose guard compares the status's last election after the original.
@@ -1745,7 +1752,7 @@ fn key(pointer: usize, offset: usize) -> native::Literal {
         })
 }
 #[inline(always)]
-fn item_read<T: engine::memory::Raw>(address: usize) -> Option<T> {
+fn item_read<T: engine_native::memory::Raw>(address: usize) -> Option<T> {
     read(address).or_else(|| {
         COUNTERS[4].fetch_add(1, Ordering::Relaxed);
         None
@@ -1762,7 +1769,7 @@ fn reference_with(
     offset: usize,
     expected_type: u32,
 ) -> Option<u64> {
-    let value = engine::read::<u64>(memory, at(pointer, offset)?).or_else(|| {
+    let value = engine_native::read::<u64>(memory, at(pointer, offset)?).or_else(|| {
         COUNTERS[4].fetch_add(1, Ordering::Relaxed);
         None
     })?;
@@ -1793,7 +1800,7 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
                 0x30
             };
             if let Some(idea) = at(a, offset).and_then(item_read::<u64>) {
-                identity.keys[0] = key(idea as usize, engine::cidea::TOKEN);
+                identity.keys[0] = key(idea as usize, engine_native::cidea::TOKEN);
             }
             identity.action = match scope {
                 Scope::AddIdea => PowerAction::Add,
@@ -1810,7 +1817,8 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
             };
             identity.set(
                 1,
-                reference(a, offset, engine::ccharacter::REFERENCE_TYPE).map(|r| (r >> 32) as u32),
+                reference(a, offset, engine_native::ccharacter::REFERENCE_TYPE)
+                    .map(|r| (r >> 32) as u32),
             );
             identity.keys[1] = key(
                 a,
@@ -1835,7 +1843,7 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
             } else {
                 a
             };
-            identity.keys[0] = key(decision, engine::cdecision::TOKEN);
+            identity.keys[0] = key(decision, engine_decisions::cdecision::TOKEN);
             identity.action = if scope == Scope::DecisionTimeout {
                 PowerAction::Timeout
             } else {
@@ -1893,7 +1901,7 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
                     .map(|pointer| pointer as usize)
             };
             if let Some(focus) = focus.filter(|pointer| *pointer != 0) {
-                identity.keys[0] = key(focus, engine::cnational_focus::TOKEN);
+                identity.keys[0] = key(focus, engine_focus::cnational_focus::TOKEN);
                 identity.origin_kind = PowerOriginKind::Focus;
                 identity.keys[2] = identity.keys[0];
                 identity.action = if scope == Scope::Focus {
@@ -1904,7 +1912,11 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
             }
         }
         Scope::LeaderPromotion | Scope::LeaderTrait => {
-            identity.set_reference(reference(a, 0x28, engine::cunit_leader::REFERENCE_TYPE));
+            identity.set_reference(reference(
+                a,
+                0x28,
+                engine_native::cunit_leader::REFERENCE_TYPE,
+            ));
             if identity.object_reference().is_some() {
                 identity.object_kind = PowerObjectKind::Leader;
             }
@@ -1918,8 +1930,11 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
             {
                 identity.set(
                     0,
-                    at(definition as usize, engine::cunit_leader_trait::TOKEN_ID)
-                        .and_then(item_read::<u32>),
+                    at(
+                        definition as usize,
+                        engine_native::cunit_leader_trait::TOKEN_ID,
+                    )
+                    .and_then(item_read::<u32>),
                 );
             }
         }
@@ -1981,10 +1996,9 @@ fn government_with_old(
             return;
         }
     };
-    let Some(old_party) = observed_old
-        .map(|p| p as u64)
-        .or_else(|| at(status, engine::cpolitical_status::RULING_PARTY).and_then(read::<u64>))
-    else {
+    let Some(old_party) = observed_old.map(|p| p as u64).or_else(|| {
+        at(status, engine_native::cpolitical_status::RULING_PARTY).and_then(read::<u64>)
+    }) else {
         failed("politics ruling party pointer unreadable or overflowed");
         return;
     };
@@ -2178,12 +2192,13 @@ fn relation_identity_with(memory: &impl Memory, relation: usize) -> Identity {
     let mut identity = Identity::default();
     identity.set(
         0,
-        at(relation, engine::crelation::TYPE_ID).and_then(|p| engine::read::<u32>(memory, p)),
+        at(relation, engine_native::crelation::TYPE_ID)
+            .and_then(|p| engine_native::read::<u32>(memory, p)),
     );
     identity.set(
         2,
-        at(relation, engine::crelation::SECOND_COUNTRY)
-            .and_then(|p| engine::read::<u32>(memory, p))
+        at(relation, engine_native::crelation::SECOND_COUNTRY)
+            .and_then(|p| engine_native::read::<u32>(memory, p))
             .filter(|id| *id != 0),
     );
     identity
@@ -2198,8 +2213,8 @@ fn mio_identity_with(memory: &impl Memory, organisation: usize) -> Identity {
     let reference = reference_with(
         memory,
         organisation,
-        engine::nindustrial_organisation_corganisation::REFERENCE,
-        engine::nindustrial_organisation_corganisation::REFERENCE_TYPE_ID,
+        engine_production::nindustrial_organisation_corganisation::REFERENCE,
+        engine_production::nindustrial_organisation_corganisation::REFERENCE_TYPE_ID,
     );
     identity.set_reference(reference);
     identity.object_kind = if reference.is_some() {
@@ -2211,9 +2226,9 @@ fn mio_identity_with(memory: &impl Memory, organisation: usize) -> Identity {
         0,
         at(
             organisation,
-            engine::nindustrial_organisation_corganisation::TOKEN,
+            engine_production::nindustrial_organisation_corganisation::TOKEN,
         )
-        .and_then(|p| engine::read::<u32>(memory, p)),
+        .and_then(|p| engine_native::read::<u32>(memory, p)),
     );
     identity
 }
@@ -2228,24 +2243,30 @@ fn upkeep_identity_with(memory: &impl Memory, record: usize) -> Identity {
         action: PowerAction::Upkeep,
         ..Default::default()
     };
-    if let Some(definition) = at(record, engine::active_ability_record::DEFINITION)
-        .and_then(|p| engine::read::<u64>(memory, p))
+    if let Some(definition) = at(
+        record,
+        engine_land_inputs::active_ability_record::DEFINITION,
+    )
+    .and_then(|p| engine_native::read::<u64>(memory, p))
     {
-        identity.keys[0] = native::literal(memory, definition as usize + engine::cability::TOKEN)
-            .unwrap_or_else(|_| {
-                COUNTERS[4].fetch_add(1, Ordering::Relaxed);
-                native::Literal::default()
-            });
+        identity.keys[0] = native::literal(
+            memory,
+            definition as usize + engine_land_inputs::cability::TOKEN,
+        )
+        .unwrap_or_else(|_| {
+            COUNTERS[4].fetch_add(1, Ordering::Relaxed);
+            native::Literal::default()
+        });
     }
-    if let Some(leader) = at(record, engine::active_ability_record::CASTER)
-        .and_then(|p| engine::read::<u64>(memory, p))
+    if let Some(leader) = at(record, engine_land_inputs::active_ability_record::CASTER)
+        .and_then(|p| engine_native::read::<u64>(memory, p))
         .filter(|p| *p != 0)
     {
         identity.set_reference(reference_with(
             memory,
             leader as usize,
-            engine::cunit_leader::TYPE,
-            engine::cunit_leader::REFERENCE_TYPE,
+            engine_native::cunit_leader::TYPE,
+            engine_native::cunit_leader::REFERENCE_TYPE,
         ));
         if identity.object_reference().is_some() {
             identity.object_kind = PowerObjectKind::Leader;
@@ -2364,8 +2385,8 @@ unsafe fn writer(
     {
         identity.set_reference(reference(
             leader,
-            engine::cunit_leader::TYPE,
-            engine::cunit_leader::REFERENCE_TYPE,
+            engine_native::cunit_leader::TYPE,
+            engine_native::cunit_leader::REFERENCE_TYPE,
         ));
         if identity.object_reference().is_some() {
             identity.object_kind = PowerObjectKind::Leader;
@@ -2385,14 +2406,14 @@ unsafe fn writer(
     }
     if index == 8 {
         cause = PowerCause::AbilityActivation;
-        identity.keys[0] = key(b, engine::cability::TOKEN);
+        identity.keys[0] = key(b, engine_land_inputs::cability::TOKEN);
         identity.action = PowerAction::Activate;
     }
     if index == 9 {
         cause = PowerCause::AirAction;
         identity.set(
             4,
-            at(b, engine::cstrategic_region::ID).and_then(read::<u32>),
+            at(b, engine_native::cstrategic_region::ID).and_then(read::<u32>),
         );
         identity.action = if d as i64 > 0 {
             PowerAction::Start
@@ -2566,8 +2587,11 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             // Bypassing the party loop leaves ZF clear. Exhaustion/empty
             // leaves ZF set and started from a null party.
             if registers.flags & (1 << 6) != 0 {
-                if let Some(party) =
-                    at(registers.r14, engine::cpolitical_status::RULING_PARTY).and_then(read::<u64>)
+                if let Some(party) = at(
+                    registers.r14,
+                    engine_native::cpolitical_status::RULING_PARTY,
+                )
+                .and_then(read::<u64>)
                 {
                     if party != 0 {
                         government_with_old(
@@ -2782,7 +2806,7 @@ impl Hooks {
     unsafe fn install(memory: &impl Memory, base: usize) -> Result<Self, String> {
         let sites = entry_sites();
         for site in sites.iter().chain(TAPS.iter()) {
-            if engine::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+            if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
                 COUNTERS[2].fetch_add(1, Ordering::Relaxed);
                 return Err(format!("politics {} sentinel differs", site.name));
             }
@@ -3335,7 +3359,7 @@ mod tests {
     #[test]
     fn worker_lane_handoff_grows_original_five_thousand_country_and_mod_sized_domains() {
         let _guard = staging_test();
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -3361,7 +3385,8 @@ mod tests {
                 Err("politics thread handoff staging short")
             ));
             let handoff =
-                handoff_from_buffer(&log, engine::walk::Buffer::Growing(&mut cursors)).unwrap();
+                handoff_from_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors))
+                    .unwrap();
             assert_eq!(handoff.lanes, count);
             assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
             let mut events = vec![Event::default(); count];
@@ -3388,7 +3413,7 @@ mod tests {
                 country: 5000,
                 ..Default::default()
             },
-            &engine::memory::SliceMemory {
+            &engine_native::memory::SliceMemory {
                 base: 0,
                 bytes: &[],
             },
@@ -3432,7 +3457,7 @@ mod tests {
     #[test]
     fn balance_faults_name_each_native_read_and_withdraw_coverage_without_allocation() {
         let _guard = staging_test();
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -3533,7 +3558,7 @@ mod tests {
     fn overflowing_one_lane_does_not_multiply_other_lane_capacity() {
         let _guard = staging_test();
         let log = Log::with_lanes(16, 1, 4);
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -3576,7 +3601,7 @@ mod tests {
         resize_checked(16, 1).unwrap();
         let before = log().unwrap();
         let capacity = before.lanes[0].slots.len();
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -3627,7 +3652,7 @@ mod tests {
             ..Default::default()
         };
         {
-            let memory = engine::memory::SliceMemory {
+            let memory = engine_native::memory::SliceMemory {
                 base: 0x1000,
                 bytes: &source,
             };
@@ -3637,7 +3662,7 @@ mod tests {
         }
         let (first, first_cursors) = seal_staging();
         {
-            let memory = engine::memory::SliceMemory {
+            let memory = engine_native::memory::SliceMemory {
                 base: 0x1000,
                 bytes: &source,
             };
@@ -3654,7 +3679,7 @@ mod tests {
             append_to(
                 fresh,
                 event(5001),
-                &engine::memory::SliceMemory {
+                &engine_native::memory::SliceMemory {
                     base: 0x1000,
                     bytes: &source,
                 },
@@ -3709,7 +3734,7 @@ mod tests {
         let _guard = staging_test();
         let old = Log::new(4, 1);
         let fresh = Log::new(8, 1);
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -3820,7 +3845,7 @@ mod tests {
         append_to(
             old,
             Event::default(),
-            &engine::memory::SliceMemory {
+            &engine_native::memory::SliceMemory {
                 base: 0,
                 bytes: &[],
             },
@@ -3838,7 +3863,7 @@ mod tests {
         append_to(
             fresh,
             Event::default(),
-            &engine::memory::SliceMemory {
+            &engine_native::memory::SliceMemory {
                 base: 0,
                 bytes: &[],
             },
@@ -3971,7 +3996,7 @@ mod tests {
     fn staging_shortage_retains_events_and_epoch_loss_recovers_past_holes() {
         let _guard = staging_test();
         let log = Log::new(2, 1);
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -4025,7 +4050,7 @@ mod tests {
         source[..9].copy_from_slice(b"mod_itemx");
         source[16..24].copy_from_slice(&9u64.to_le_bytes());
         source[24..32].copy_from_slice(&15u64.to_le_bytes());
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0x1000,
             bytes: &source,
         };
@@ -4060,7 +4085,7 @@ mod tests {
             for country in [5001, 5002] {
                 let log = &log;
                 scope.spawn(move || {
-                    let memory = engine::memory::SliceMemory {
+                    let memory = engine_native::memory::SliceMemory {
                         base: 0,
                         bytes: &[],
                     };
@@ -4087,7 +4112,7 @@ mod tests {
         );
         assert_eq!(output.iter().filter(|e| e.country == 5001).count(), 4);
         let log = Log::with_lanes(2, 1, 2);
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -4124,16 +4149,18 @@ mod tests {
     #[test]
     fn targeted_decision_uses_selector_and_definition_as_distinct_operands() {
         let _guard = staging_test();
-        let mut definition = vec![0u8; engine::cdecision::TOKEN + 32];
-        definition[engine::cdecision::TOKEN..engine::cdecision::TOKEN + 8]
+        let mut definition = vec![0u8; engine_decisions::cdecision::TOKEN + 32];
+        definition[engine_decisions::cdecision::TOKEN..engine_decisions::cdecision::TOKEN + 8]
             .copy_from_slice(b"decision");
-        definition[engine::cdecision::TOKEN + 16..engine::cdecision::TOKEN + 24]
+        definition
+            [engine_decisions::cdecision::TOKEN + 16..engine_decisions::cdecision::TOKEN + 24]
             .copy_from_slice(&8u64.to_le_bytes());
-        definition[engine::cdecision::TOKEN + 24..engine::cdecision::TOKEN + 32]
+        definition
+            [engine_decisions::cdecision::TOKEN + 24..engine_decisions::cdecision::TOKEN + 32]
             .copy_from_slice(&15u64.to_le_bytes());
         definition[8..12].copy_from_slice(&42i32.to_le_bytes());
         let mut selector = vec![0u8; definition.len()];
-        selector[engine::cdecision::TOKEN + 24..engine::cdecision::TOKEN + 32]
+        selector[engine_decisions::cdecision::TOKEN + 24..engine_decisions::cdecision::TOKEN + 32]
             .copy_from_slice(&15u64.to_le_bytes());
         for (country, state) in [(5001i32, 0u32), (0, 312)] {
             selector[8..12].copy_from_slice(&country.to_le_bytes());
@@ -4148,7 +4175,7 @@ mod tests {
             .identity;
             assert_eq!(
                 identity.keys[0].address,
-                definition.as_ptr() as usize + engine::cdecision::TOKEN
+                definition.as_ptr() as usize + engine_decisions::cdecision::TOKEN
             );
             assert_eq!(identity.keys[0].len, 8);
             assert_eq!(identity.keys[2], identity.keys[0]);
@@ -4275,7 +4302,7 @@ mod tests {
             for country in 1..=5_u32 {
                 let (log, source) = (&log, &source);
                 scope.spawn(move || {
-                    let memory = engine::memory::SliceMemory {
+                    let memory = engine_native::memory::SliceMemory {
                         base: 0x1000,
                         bytes: source,
                     };
@@ -4338,7 +4365,7 @@ mod tests {
     fn shared_records_merge_by_sequence_and_wait_for_an_unpublished_predecessor() {
         let _guard = staging_test();
         let log = Log::with_lanes(8, 1, 1);
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -4441,7 +4468,7 @@ mod tests {
         let held: Vec<_> = (0..capacity)
             .map(|_| log.shared.reserve().unwrap())
             .collect();
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

@@ -31,7 +31,7 @@ pub struct FieldDefines {
 }
 
 impl FieldDefines {
-    pub fn load(defines: &installed_content::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
         let number = |key: &str| -> io::Result<f32> {
             let value = defines.number("NGraphics", key)? as f32;
             if value.is_finite() {

@@ -758,7 +758,7 @@ fn visible(
 }
 
 fn month(hour: i32) -> (Option<i32>, i64) {
-    use engine::cdate::{HOUR_EPOCH, MONTH_LENGTHS};
+    use engine_native::{cdate::HOUR_EPOCH, cdate::MONTH_LENGTHS};
     if hour < HOUR_EPOCH {
         return (None, i64::from(hour) + 24);
     }

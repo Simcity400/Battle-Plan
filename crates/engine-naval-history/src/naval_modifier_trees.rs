@@ -19,7 +19,7 @@
 //! display bytes. No game function is called.
 //!
 //! [`ship_owner`] and [`side_owner`] are the one join both the collector and
-//! playback (`replay::naval_trees`) use, so a recorded combat finds its trees
+//! playback (`replay_data::naval_trees`) use, so a recorded combat finds its trees
 //! without a runtime address.
 use crate::{
     Memory, ccountry, cfex_air, cfex_member, cnaval_combat, cnaval_combatant, cpdx_array::Array,
@@ -50,7 +50,7 @@ pub const COUNTRY_TREE: usize = 0x5b8;
 /// The commander's movement accumulator, the commander tree (`naval_tree_mutations` writers).
 pub const COMMANDER_TREE: usize = 0x418;
 
-/// The kind of a source's owner identity (`replay::naval_trees::Owner`).
+/// The kind of a source's owner identity (`replay_data::naval_trees::Owner`).
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Kind {

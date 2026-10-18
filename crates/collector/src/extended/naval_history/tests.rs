@@ -494,7 +494,7 @@ fn first_hour_naval_memberships_handoff_all_wings_at_5000_countries() {
 fn naval_decode_grows_shared_memberships_from_the_original_census() {
     use super::naval_test_kit as kit;
     use crate::extended::air;
-    use engine::{cair_wing, cair_wing_pool, cstrategic_air};
+    use engine_native::{cair_wing, cair_wing_pool, cstrategic_air};
     let mut bytes = kit::fixture();
     let pointer = |bytes: &mut [u8], address: usize, value: usize| {
         bytes[address..address + 8].copy_from_slice(&(value as u64).to_le_bytes());
@@ -698,7 +698,7 @@ fn shared_wing_fallback_charges_acquisition_and_installation() {
     assert_eq!(captured.source_ticks[1], first_ticks + 23);
 }
 
-use engine::memory::SliceMemory;
+use engine_native::memory::SliceMemory;
 
 fn small() -> Captured {
     Captured::with_capacities(&Capacities {
@@ -857,11 +857,11 @@ fn sunk_history_preserves_duplicate_records_and_never_publishes_a_prefix() {
 #[test]
 fn hourly_land_theatre_headers_need_no_daily_details_or_wing_storage() {
     use super::naval_test_kit as kit;
-    struct NoTheatreDetails<'a>(engine::memory::SliceMemory<'a>);
+    struct NoTheatreDetails<'a>(engine_native::memory::SliceMemory<'a>);
     impl Memory for NoTheatreDetails<'_> {
         fn copy(&self, address: usize, bytes: &mut [u8]) -> bool {
             assert_ne!(address, kit::THEATRE + ctheatre::THEATER_GROUP_DATA);
-            assert_ne!(address, kit::C0 + engine::ccountry::AIR_THEATRES);
+            assert_ne!(address, kit::C0 + engine_native::ccountry::AIR_THEATRES);
             self.0.copy(address, bytes)
         }
     }
@@ -938,7 +938,7 @@ fn hourly_land_theatre_headers_need_no_daily_details_or_wing_storage() {
 #[test]
 fn roster_land_theatres_match_the_census_copy_and_the_typed_walk() {
     use super::naval_test_kit as kit;
-    use engine::{ccountry, cgame_state, country_memory::Cache, memory::SliceMemory};
+    use engine_native::{ccountry, cgame_state, country_memory::Cache, memory::SliceMemory};
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: Option<usize>,
@@ -975,7 +975,7 @@ fn roster_land_theatres_match_the_census_copy_and_the_typed_walk() {
     put(&mut base, LTAB + 12, &1_u32.to_le_bytes());
     put(
         &mut base,
-        0x40000 + engine::cstrategic_air_manager::COUNTRY_AIR + 8,
+        0x40000 + engine_native::cstrategic_air_manager::COUNTRY_AIR + 8,
         &[4, 0, 0, 0, 4, 0, 0, 0],
     );
     let mut variants: Vec<(&str, Vec<u8>, Option<usize>)> = vec![("clean", base.clone(), None)];
@@ -1125,7 +1125,7 @@ fn hourly_land_theatre_owner_fault_does_not_publish_a_header() {
 }
 #[test]
 fn land_theatre_headers_and_order_of_battle_are_hourly() {
-    use replay::rows::TableId;
+    use replay_data::rows::TableId;
     for (slot, table) in [
         TableId::LandTheatres,
         TableId::LandTheatreGroups,
@@ -1141,10 +1141,14 @@ fn land_theatre_headers_and_order_of_battle_are_hourly() {
     .enumerate()
     {
         let daily = (1..6).contains(&slot);
-        assert_eq!(replay::cadence::is_staggered(table), daily, "{table:?}");
+        assert_eq!(
+            replay_data::cadence::is_staggered(table),
+            daily,
+            "{table:?}"
+        );
         for hour in -24_i32..48 {
             assert_eq!(
-                replay::cadence::is_refresh(table, hour),
+                replay_data::cadence::is_refresh(table, hour),
                 !daily || hour.rem_euclid(24) == 13,
                 "{table:?} at {hour}"
             );
@@ -1165,7 +1169,7 @@ fn supremacy_and_sunk_offslot_jobs_skip_reads_and_decoding() {
     let mut captured = owned_failure_fixture();
     for hour in 0..24 {
         captured.prepare_hour(hour, false);
-        if !replay::cadence::is_refresh(replay::rows::TableId::NavalSupremacy, hour) {
+        if !replay_data::cadence::is_refresh(replay_data::rows::TableId::NavalSupremacy, hour) {
             let report = copy_supremacy_refresh(
                 &NoReads,
                 SupremacyCopyContext {
@@ -1183,7 +1187,7 @@ fn supremacy_and_sunk_offslot_jobs_skip_reads_and_decoding() {
             captured.decode_supremacy_payload(0, &supremacy, &mut ticks);
             assert_eq!((captured.supremacy.outcome, ticks), (SKIPPED, [0]));
         }
-        if !replay::cadence::is_refresh(replay::rows::TableId::SunkShips, hour) {
+        if !replay_data::cadence::is_refresh(replay_data::rows::TableId::SunkShips, hour) {
             let report = copy_sunk_refresh(
                 &NoReads,
                 SunkCopyContext {
@@ -1226,10 +1230,10 @@ fn naval_copy_sizes_cover_documented_read_set() {
     // the engine layout (headers 8-aligned, strings byte-packed).
     use super::naval_test_kit as kit;
     use super::{NavalCopyContext, NavalJob};
-    use engine::Memory;
+    use engine_native::Memory;
     use std::collections::BTreeSet;
     struct Recorder<'a> {
-        inner: engine::memory::SliceMemory<'a>,
+        inner: engine_native::memory::SliceMemory<'a>,
         sizes: std::cell::RefCell<BTreeSet<usize>>,
     }
     impl Memory for Recorder<'_> {
@@ -1321,12 +1325,12 @@ fn naval_split_copy_matches_direct_walk_under_truncation() {
 #[test]
 fn naval_split_copy_matches_direct_walk_on_fault_matrix() {
     use super::naval_test_kit as kit;
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: std::ops::Range<usize>,
     }
-    impl engine::Memory for Fault<'_> {
+    impl engine_native::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let Some(end) = address.checked_add(output.len()) else {
                 return false;
@@ -1338,7 +1342,7 @@ fn naval_split_copy_matches_direct_walk_on_fault_matrix() {
         }
     }
     for fault in [
-        kit::GAME_STATE + engine::cgame_state::COUNTRIES,
+        kit::GAME_STATE + engine_native::cgame_state::COUNTRIES,
         kit::THEATRE,
         kit::GROUP,
     ] {
@@ -1381,12 +1385,12 @@ fn naval_staging_overflow_falls_back_to_typed_walk() {
 
 #[test]
 fn rail_tables_are_hourly_tier_h_with_no_refresh_gate() {
-    use replay::rows::TableId;
+    use replay_data::rows::TableId;
     for table in [TableId::RailCooldowns, TableId::RailEdges] {
-        assert!(!replay::cadence::is_staggered(table), "{table:?}");
+        assert!(!replay_data::cadence::is_staggered(table), "{table:?}");
         for hour in [0, 1, 2, 3, 60_820_531] {
             assert!(
-                replay::cadence::is_refresh(table, hour),
+                replay_data::cadence::is_refresh(table, hour),
                 "{table:?} at {hour}"
             );
         }
@@ -1398,11 +1402,11 @@ fn supremacy_uses_slot_0() {
     // The sorted cache is rebuilt inside the update entered at hour 23
     // by the daily game update; slot 0 is the first
     // sample of its epoch.
-    use replay::rows::TableId;
-    assert!(replay::cadence::is_staggered(TableId::NavalSupremacy));
+    use replay_data::rows::TableId;
+    assert!(replay_data::cadence::is_staggered(TableId::NavalSupremacy));
     for hour in -24_i32..48 {
         assert_eq!(
-            replay::cadence::is_refresh(TableId::NavalSupremacy, hour),
+            replay_data::cadence::is_refresh(TableId::NavalSupremacy, hour),
             hour.rem_euclid(24) == 0
         );
     }
@@ -1411,7 +1415,7 @@ fn supremacy_uses_slot_0() {
 #[test]
 fn supremacy_split_copy_matches_direct_walk() {
     use super::supremacy_test_kit as kit;
-    use engine::memory::{CountedMemory, ReadCounts};
+    use engine_native::{memory::CountedMemory, memory::ReadCounts};
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let direct = kit::direct(&memory);
@@ -1438,7 +1442,7 @@ fn supremacy_split_copy_matches_direct_walk() {
     assert_eq!(counts, expected);
     let mut refreshes = 0;
     for hour in 0..24 {
-        if replay::cadence::is_refresh(anchor, hour) {
+        if replay_data::cadence::is_refresh(anchor, hour) {
             refreshes += 1;
             continue;
         }
@@ -1495,12 +1499,12 @@ fn supremacy_truncation_matrix_matches_direct_with_same_caps() {
 #[test]
 fn supremacy_split_copy_matches_direct_walk_on_fault_matrix() {
     use super::supremacy_test_kit as kit;
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: std::ops::Range<usize>,
     }
-    impl engine::Memory for Fault<'_> {
+    impl engine_native::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let Some(end) = address.checked_add(output.len()) else {
                 return false;
@@ -1512,10 +1516,10 @@ fn supremacy_split_copy_matches_direct_walk_on_fault_matrix() {
         }
     }
     for fault in [
-        kit::GAME_STATE + engine::cgame_state::STRATEGIC_REGIONS,
+        kit::GAME_STATE + engine_native::cgame_state::STRATEGIC_REGIONS,
         kit::REGION_OBJECT,
         kit::DOMINANCE,
-        kit::DOMINANCE + engine::cnaval_region_dominance::ENTRIES,
+        kit::DOMINANCE + engine_naval_history::cnaval_region_dominance::ENTRIES,
     ] {
         let bytes = kit::fixture();
         let memory = Fault {
@@ -1567,10 +1571,10 @@ fn supremacy_copy_sizes_cover_documented_read_set() {
     // and bulk value vectors (whole-vector takes, served in 32-entry
     // chunks at replay).
     use super::supremacy_test_kit as kit;
-    use engine::Memory;
+    use engine_native::Memory;
     use std::collections::BTreeSet;
     struct Recorder<'a> {
-        inner: engine::memory::SliceMemory<'a>,
+        inner: engine_native::memory::SliceMemory<'a>,
         sizes: std::cell::RefCell<BTreeSet<usize>>,
     }
     impl Memory for Recorder<'_> {
@@ -1597,11 +1601,11 @@ fn supremacy_copy_sizes_cover_documented_read_set() {
 
 #[test]
 fn sunk_ships_use_slot_19() {
-    use replay::rows::TableId;
-    assert!(replay::cadence::is_staggered(TableId::SunkShips));
+    use replay_data::rows::TableId;
+    assert!(replay_data::cadence::is_staggered(TableId::SunkShips));
     for hour in -24_i32..48 {
         assert_eq!(
-            replay::cadence::is_refresh(TableId::SunkShips, hour),
+            replay_data::cadence::is_refresh(TableId::SunkShips, hour),
             hour.rem_euclid(24) == 19
         );
     }
@@ -1610,7 +1614,7 @@ fn sunk_ships_use_slot_19() {
 #[test]
 fn sunk_split_copy_matches_direct_walk() {
     use super::sunk_test_kit as kit;
-    use engine::memory::{CountedMemory, ReadCounts};
+    use engine_native::{memory::CountedMemory, memory::ReadCounts};
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let direct = kit::direct(&memory);
@@ -1642,7 +1646,7 @@ fn sunk_split_copy_matches_direct_walk() {
     assert_eq!(counts, expected);
     let mut refreshes = 0;
     for hour in kit::HOUR..kit::HOUR + 24 {
-        if replay::cadence::is_refresh(anchor, hour) {
+        if replay_data::cadence::is_refresh(anchor, hour) {
             refreshes += 1;
             continue;
         }
@@ -1698,12 +1702,12 @@ fn sunk_truncation_matrix_matches_direct_with_same_caps() {
 #[test]
 fn sunk_split_copy_matches_direct_walk_on_fault_matrix() {
     use super::sunk_test_kit as kit;
-    use engine::memory::SliceMemory;
+    use engine_native::memory::SliceMemory;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: std::ops::Range<usize>,
     }
-    impl engine::Memory for Fault<'_> {
+    impl engine_native::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let Some(end) = address.checked_add(output.len()) else {
                 return false;
@@ -1715,11 +1719,11 @@ fn sunk_split_copy_matches_direct_walk_on_fault_matrix() {
         }
     }
     for fault in [
-        kit::GAME_STATE + engine::cgame_state::SUNK_SHIP_HISTORY,
+        kit::GAME_STATE + engine_native::cgame_state::SUNK_SHIP_HISTORY,
         kit::FIRST,
-        kit::FIRST + engine::csunk_ship_info::SINK_HOUR,
+        kit::FIRST + engine_naval_history::csunk_ship_info::SINK_HOUR,
         kit::CLASS,
-        kit::FIRST + engine::csunk_ship_info::SHIP_NAME,
+        kit::FIRST + engine_naval_history::csunk_ship_info::SHIP_NAME,
     ] {
         let bytes = kit::fixture();
         let memory = Fault {
@@ -1772,10 +1776,10 @@ fn sunk_copy_sizes_cover_documented_read_set() {
     // class headers (0x38), name bytes (1 + content) and province
     // words (8/4).
     use super::sunk_test_kit as kit;
-    use engine::Memory;
+    use engine_native::Memory;
     use std::collections::BTreeSet;
     struct Recorder<'a> {
-        inner: engine::memory::SliceMemory<'a>,
+        inner: engine_native::memory::SliceMemory<'a>,
         sizes: std::cell::RefCell<BTreeSet<usize>>,
     }
     impl Memory for Recorder<'_> {
@@ -1818,7 +1822,7 @@ fn growing_theatre_job_publishes_first_payload_from_empty_raw_and_typed_arenas()
     bytes[command_name..command_name + 3].copy_from_slice(b"OOB");
     bytes[command_name + 16..command_name + 24].copy_from_slice(&3_u64.to_le_bytes());
     bytes[command_name + 24..command_name + 32].copy_from_slice(&15_u64.to_le_bytes());
-    let memory = engine::memory::SliceMemory {
+    let memory = engine_native::memory::SliceMemory {
         base: 0,
         bytes: &bytes,
     };
@@ -1854,12 +1858,12 @@ fn growing_theatre_job_publishes_first_payload_from_empty_raw_and_typed_arenas()
 #[test]
 fn attempted_root_census_failure_is_terminal_for_naval_copy_and_decode() {
     struct NoRegistry<'a> {
-        inner: engine::memory::SliceMemory<'a>,
+        inner: engine_native::memory::SliceMemory<'a>,
         attempts: std::cell::Cell<usize>,
     }
     impl Memory for NoRegistry<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            let root = engine::creference_registry::LOW_ROOTS_RVA
+            let root = engine_native::creference_registry::LOW_ROOTS_RVA
                 + corders_group::REFERENCE_TYPE as usize * 8;
             if address == root {
                 self.attempts.set(self.attempts.get() + 1);
@@ -1870,7 +1874,7 @@ fn attempted_root_census_failure_is_terminal_for_naval_copy_and_decode() {
     }
     let bytes = naval_test_kit::fixture();
     let memory = NoRegistry {
-        inner: engine::memory::SliceMemory {
+        inner: engine_native::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         },

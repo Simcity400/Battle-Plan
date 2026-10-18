@@ -1,9 +1,12 @@
 use super::{Captured, DivisionsCopyContext, DivisionsCopyReport, DivisionsJob};
 use crate::extended::production::complete_source;
-use engine::{
-    Memory, army_upgrade_request_row, carmy, carmy_upgrades_requests, carmy_upgrades_status,
-    ccountry, cequipment_variant, cequipment_variant_pool, cgame_state, corders_group, cprovince,
-    creferenced_division_template, cunit, cupgrade_delivery, memory::SliceMemory, walk::Outcome,
+use engine_deployment::{
+    army_upgrade_request_row, carmy_upgrades_requests, carmy_upgrades_status, cupgrade_delivery,
+};
+use engine_native::{
+    Memory, carmy, ccountry, cequipment_variant, cequipment_variant_pool, cgame_state,
+    corders_group, cprovince, creferenced_division_template, cunit, memory::SliceMemory,
+    walk::Outcome,
 };
 
 pub(crate) const BASE: usize = 0;

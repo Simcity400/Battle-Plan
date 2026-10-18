@@ -13,15 +13,23 @@ doctest = false
 test-support = []
 
 [dependencies]
-engine.workspace = true
-replay.workspace = true
+engine-allocation.workspace = true
+engine-events.workspace = true
+engine-fuel.workspace = true
+engine-map-air.workspace = true
+engine-native.workspace = true
+engine-production.workspace = true
+engine-railways.workspace = true
+engine-resources.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
 collector-memory.workspace = true
 collector-primitives.workspace = true
 collector-projection.workspace = true
 collector-raw.workspace = true
 
 [dev-dependencies]
+engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-test-support.workspace = true
-engine = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-memory = { workspace = true, features = ["test-support"] }
 collector-primitives = { workspace = true, features = ["test-support"] }

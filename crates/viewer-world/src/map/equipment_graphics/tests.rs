@@ -3,14 +3,12 @@ use super::*;
 use std::time::Instant;
 use std::{collections::BTreeSet, io};
 
-fn country_frame(count: u32, cosmetic: &str) -> replay::frame::DecodedFrame {
-    use replay::{
-        frame::TableView,
-        rows::{
-            CountryAppearanceRow, CountryCounterInputRow, CountryLinkRow, CountryRow,
-            PoliticalPartyRow, TableId, TableRows,
-        },
+fn country_frame(count: u32, cosmetic: &str) -> replay_frame::frame::DecodedFrame {
+    use replay_data::{
+        rows::CountryAppearanceRow, rows::CountryCounterInputRow, rows::CountryLinkRow,
+        rows::CountryRow, rows::PoliticalPartyRow, rows::TableId, rows::TableRows,
     };
+    use replay_frame::frame::TableView;
     let mut frame = empty_frame();
     let tag = |i: u32| {
         vec![
@@ -49,7 +47,7 @@ fn country_frame(count: u32, cosmetic: &str) -> replay::frame::DecodedFrame {
             TableRows::CountryCounterInputs(
                 (0..count)
                     .map(|i| CountryCounterInputRow {
-                        forward_visibility: replay::rows::Recorded::NotRecorded,
+                        forward_visibility: replay_data::rows::Recorded::NotRecorded,
                         country: i + 1,
                         owned_state_count: 1,
                         ..Default::default()
@@ -91,7 +89,7 @@ fn country_frame(count: u32, cosmetic: &str) -> replay::frame::DecodedFrame {
 
 #[test]
 fn pool_choice_reads_this_hours_world_and_keeps_unknown_named() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let pools = content(br#"default = { tank = {
         pool = { weight = 1 models = { fallback } }
@@ -113,8 +111,8 @@ fn pool_choice_reads_this_hours_world_and_keeps_unknown_named() {
         });
     }
     let mut missing = country_frame(1, "costume");
-    *missing.tables[replay::rows::TableId::CountryAppearance.index()] =
-        replay::frame::TableView::Unavailable {
+    *missing.tables[replay_data::rows::TableId::CountryAppearance.index()] =
+        replay_frame::frame::TableView::Unavailable {
             reason: "not sampled".into(),
         };
     with_world(&missing, &[], |limits| {
@@ -128,7 +126,7 @@ fn pool_choice_reads_this_hours_world_and_keeps_unknown_named() {
 
 #[test]
 fn pool_check_starts_a_fresh_variable_context() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let pools = content(
         br#"default = { tank = {
@@ -137,16 +135,16 @@ fn pool_check_starts_a_fresh_variable_context() {
     )
     .unwrap();
     let mut frame = empty_frame();
-    use replay::{
-        frame::TableView,
-        rows::{ScriptVariableEntry, ScriptVariablesRow, TableRows, tables},
+    use replay_data::{
+        rows::ScriptVariableEntry, rows::ScriptVariablesRow, rows::TableRows, rows::tables,
     };
-    *frame.tables[replay::rows::TableId::ScriptVariables.index()] =
+    use replay_frame::frame::TableView;
+    *frame.tables[replay_data::rows::TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::from_rows::<tables::ScriptVariables>(vec![
             ScriptVariablesRow {
                 scope_kind: 0,
                 scope_id: 0,
-                seed: replay::rows::Recorded::Value(None),
+                seed: replay_data::rows::Recorded::Value(None),
                 entries: vec![ScriptVariableEntry {
                     name: b"pool_ready".to_vec(),
                     value_raw: 100_000,
@@ -164,8 +162,8 @@ fn pool_check_starts_a_fresh_variable_context() {
             "ready"
         );
     });
-    *frame.tables[replay::rows::TableId::ScriptVariables.index()] =
-        replay::frame::TableView::Unavailable {
+    *frame.tables[replay_data::rows::TableId::ScriptVariables.index()] =
+        replay_frame::frame::TableView::Unavailable {
             reason: "not sampled".into(),
         };
     with_world(&frame, &[], |limits| {
@@ -179,7 +177,7 @@ fn pool_check_starts_a_fresh_variable_context() {
 #[test]
 #[ignore = "release timing; run without concurrent builds"]
 fn pool_limits_builder_budget() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut text = String::from("default = { tank = {");
     for i in 0..510 {
@@ -236,7 +234,7 @@ fn context<'a>(country: Option<&'a str>, factions: &'a [String]) -> Context<'a> 
 
 #[test]
 fn filters_and_dlc_limits_decide_pools_and_unknown_predicates_fail() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let pools = content(
         br#"

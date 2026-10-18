@@ -61,12 +61,12 @@ fn air_superiority_dissolved_rosters_do_not_supply_historical_anchors_before_rea
         if hour >= 101 {
             *frame.tables[TableId::WarRelations.index()] =
                 TableView::Complete(TableRows::WarRelations(vec![
-                    replay::rows::WarRelationRow {
+                    replay_data::rows::WarRelationRow {
                         first_country: 44,
                         second_country: 66,
                         ..Default::default()
                     },
-                    replay::rows::WarRelationRow {
+                    replay_data::rows::WarRelationRow {
                         first_country: 9001,
                         second_country: 66,
                         ..Default::default()
@@ -171,14 +171,14 @@ fn air_superiority_moment_transports_native_look_bounds_and_an_absent_coalition_
                 TableView::Complete(TableRows::FactionMembers(vec![]));
             let mut wars = vec![];
             if hour >= 1 {
-                wars.push(replay::rows::WarRelationRow {
+                wars.push(replay_data::rows::WarRelationRow {
                     first_country: 44,
                     second_country: 66,
                     ..Default::default()
                 });
             }
             if hour <= 1 {
-                wars.push(replay::rows::WarRelationRow {
+                wars.push(replay_data::rows::WarRelationRow {
                     first_country: 9001,
                     second_country: 66,
                     ..Default::default()
@@ -235,13 +235,13 @@ fn air_superiority_moment_transports_native_look_bounds_and_an_absent_coalition_
 fn air_superiority_historical_keys_match_cold_incremental_and_moment_scans() {
     let frame = |hour, joined| {
         let mut frame = air(hour, 200_000);
-        let mut wars = vec![replay::rows::WarRelationRow {
+        let mut wars = vec![replay_data::rows::WarRelationRow {
             first_country: 9001,
             second_country: 66,
             ..Default::default()
         }];
         if joined {
-            wars.push(replay::rows::WarRelationRow {
+            wars.push(replay_data::rows::WarRelationRow {
                 first_country: 44,
                 second_country: 66,
                 ..Default::default()
@@ -453,10 +453,11 @@ fn air_superiority_region_choices_ignore_viewpoint_and_preserve_group_retention(
 }
 use dashboard_base::products::country_groups;
 use dashboard_core::test_fixtures::{CAMPAIGN, continuation_records, ownership_frame, records};
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{AirWingRow, FactionMemberRow, FactionRow, RaidAirScoreRow, TableRows},
+use replay_data::{
+    rows::AirWingRow, rows::FactionMemberRow, rows::FactionRow, rows::RaidAirScoreRow,
+    rows::TableRows,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 pub(super) fn params(view: AirView, first: i32, last: i32) -> AirParams {
     AirParams {
@@ -627,7 +628,7 @@ fn air_superiority_indexed_daily_snapshots_match_full_reconstruction() {
                 .find(|link| link.id == 9001)
                 .unwrap()
                 .canonical_slot;
-            links.push(replay::rows::CountryLinkRow {
+            links.push(replay_data::rows::CountryLinkRow {
                 id: 10000,
                 canonical_slot,
             });
@@ -1368,15 +1369,17 @@ fn theatre_projection_distinguishes_outside_regions_and_missing_theatre_reads() 
             ..Default::default()
         }]));
     *frame.tables[TableId::AirTheatres.index()] =
-        TableView::Complete(TableRows::AirTheatres(vec![replay::rows::AirTheatreRow {
-            id: 700,
-            owner: 9001,
-            name: b"Modded theatre".to_vec(),
-            ..Default::default()
-        }]));
+        TableView::Complete(TableRows::AirTheatres(vec![
+            replay_data::rows::AirTheatreRow {
+                id: 700,
+                owner: 9001,
+                name: b"Modded theatre".to_vec(),
+                ..Default::default()
+            },
+        ]));
     *frame.tables[TableId::AirTheatreGroups.index()] =
         TableView::Complete(TableRows::AirTheatreGroups(vec![
-            replay::rows::AirTheatreGroupRow {
+            replay_data::rows::AirTheatreGroupRow {
                 id: 701,
                 theatre: 700,
                 ..Default::default()
@@ -1384,7 +1387,7 @@ fn theatre_projection_distinguishes_outside_regions_and_missing_theatre_reads() 
         ]));
     *frame.tables[TableId::AirTheatreMembers.index()] =
         TableView::Complete(TableRows::AirTheatreMembers(vec![
-            replay::rows::AirTheatreMemberRow {
+            replay_data::rows::AirTheatreMemberRow {
                 wing: 17,
                 group: 701,
                 ..Default::default()
@@ -1491,9 +1494,10 @@ fn recorded_content_stack_supports_extra_regions_and_overridden_mod_faction_name
     let base = folder.0.join("base");
     let modification = folder.0.join("mod");
     let layers =
-        installed_content::ResolvedLayers::from_folders(&[(&base, &[]), (&modification, &[])]).unwrap();
-    let regions = installed_content::regions::read(&layers).unwrap();
-    let loc = installed_content::localisation::read(&layers, "english").unwrap();
+        installed_content_core::ResolvedLayers::from_folders(&[(&base, &[]), (&modification, &[])])
+            .unwrap();
+    let regions = installed_content_regions::regions::read(&layers).unwrap();
+    let loc = installed_content_localisation::localisation::read(&layers, "english").unwrap();
     assert_eq!(
         catalogue::localised(
             &loc,
@@ -1521,7 +1525,7 @@ fn recorded_content_stack_supports_extra_regions_and_overridden_mod_faction_name
     }
     *frame.tables[TableId::LexicalTokens.index()] =
         TableView::Complete(TableRows::LexicalTokens(vec![
-            replay::rows::LexicalTokenRow {
+            replay_data::rows::LexicalTokenRow {
                 token: 17,
                 literal: b"mod_template".to_vec(),
             },
@@ -1674,7 +1678,7 @@ fn timeline_dates_are_refused_only_when_their_json_exceeds_the_reply_budget() {
 
 #[test]
 fn selected_5000_countries_are_served_and_oversize_replies_are_never_truncated() {
-    use replay::rows::{CountryLinkRow, CountryRow};
+    use replay_data::{rows::CountryLinkRow, rows::CountryRow};
     let mut frame = air(0, 200_000);
     let countries: Vec<_> = (0..5000)
         .map(|index| CountryRow {
@@ -2049,9 +2053,10 @@ fn top_region_ranking_preserves_single_fixed5_unit_differences_above_f64_precisi
 
 #[test]
 fn theatre_read_dates_follow_daily_slot_reads_and_survive_off_slot_keyframes() {
-    use replay::{frame::FrameEncoder, spool::Record};
+    use replay::spool::Record;
+    use replay_frame::frame::FrameEncoder;
     let first_read = (0..DAY_HOURS)
-        .find(|&hour| replay::cadence::is_refresh(TableId::AirTheatres, hour))
+        .find(|&hour| replay_data::cadence::is_refresh(TableId::AirTheatres, hour))
         .expect("air theatres have a recorded daily refresh slot");
     let next_read = first_read + 2;
     let theatre_frame = |hour, name: &[u8]| {
@@ -2065,15 +2070,17 @@ fn theatre_read_dates_follow_daily_slot_reads_and_survive_off_slot_keyframes() {
                 ..Default::default()
             }]));
         *frame.tables[TableId::AirTheatres.index()] =
-            TableView::Complete(TableRows::AirTheatres(vec![replay::rows::AirTheatreRow {
-                id: 700,
-                owner: 9001,
-                name: name.to_vec(),
-                ..Default::default()
-            }]));
+            TableView::Complete(TableRows::AirTheatres(vec![
+                replay_data::rows::AirTheatreRow {
+                    id: 700,
+                    owner: 9001,
+                    name: name.to_vec(),
+                    ..Default::default()
+                },
+            ]));
         *frame.tables[TableId::AirTheatreGroups.index()] =
             TableView::Complete(TableRows::AirTheatreGroups(vec![
-                replay::rows::AirTheatreGroupRow {
+                replay_data::rows::AirTheatreGroupRow {
                     id: 701,
                     theatre: 700,
                     ..Default::default()
@@ -2081,7 +2088,7 @@ fn theatre_read_dates_follow_daily_slot_reads_and_survive_off_slot_keyframes() {
             ]));
         *frame.tables[TableId::AirTheatreMembers.index()] =
             TableView::Complete(TableRows::AirTheatreMembers(vec![
-                replay::rows::AirTheatreMemberRow {
+                replay_data::rows::AirTheatreMemberRow {
                     wing: 17,
                     group: 701,
                     ..Default::default()
@@ -2096,19 +2103,19 @@ fn theatre_read_dates_follow_daily_slot_reads_and_survive_off_slot_keyframes() {
     changed.metrics.table_ns[TableId::AirTheatres.index()] = 1;
     let carried_again = theatre_frame(next_read + 1, b"Changed theatre read");
     assert!(!dashboard_text::metadata::slot_read(
-        replay::format::FormatVersion::CURRENT,
+        replay_data::format::FormatVersion::CURRENT,
         &carried.metrics,
         TableId::AirTheatres,
         carried.hour
     ));
     assert!(dashboard_text::metadata::slot_read(
-        replay::format::FormatVersion::CURRENT,
+        replay_data::format::FormatVersion::CURRENT,
         &changed.metrics,
         TableId::AirTheatres,
         changed.hour
     ));
     assert!(!dashboard_text::metadata::slot_read(
-        replay::format::FormatVersion::CURRENT,
+        replay_data::format::FormatVersion::CURRENT,
         &carried_again.metrics,
         TableId::AirTheatres,
         carried_again.hour
@@ -2419,14 +2426,14 @@ fn air_superiority_coalition_key_survives_departure_of_its_first_current_member(
 
 #[test]
 fn air_superiority_region_names_reuse_the_source_content_key_and_invalidate_on_language_change() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[(
         "settings.txt",
         "language=\"l_english\"",
     )]);
     let content = dashboard_core::config::ContentOptions {
-        options: installed_content::ResolveOptions {
+        options: installed_content_core::ResolveOptions {
             game_dir: folder.0.join("missing-game"),
             user_dir: folder.0.clone(),
             cache_dir: folder.0.join("cache"),
@@ -2513,87 +2520,86 @@ fn air_superiority_region_names_reuse_the_source_content_key_and_invalidate_on_l
 
 #[test]
 fn air_superiority_alliance_split_resolves_faction_and_country_collisions_in_every_scan() {
-    let frame =
-        |hour, split, factions| {
-            let mut frame = air(hour, 200_000);
-            if let TableView::Complete(TableRows::Countries(rows)) =
-                &mut *frame.tables[TableId::Countries.index()]
-            {
-                for (id, slot, tag) in [(77, 12, "X"), (88, 13, "Y")] {
-                    rows.push(replay::rows::CountryRow {
+    let frame = |hour, split, factions| {
+        let mut frame = air(hour, 200_000);
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            for (id, slot, tag) in [(77, 12, "X"), (88, 13, "Y")] {
+                rows.push(replay_data::rows::CountryRow {
+                    id,
+                    canonical_slot: slot,
+                    tag: tag.as_bytes().into(),
+                    ..Default::default()
+                });
+            }
+            rows.sort_by_key(|row| row.id);
+        }
+        if let TableView::Complete(TableRows::CountryLinks(rows)) =
+            &mut *frame.tables[TableId::CountryLinks.index()]
+        {
+            rows.extend([(77, 12), (88, 13)].map(|(id, canonical_slot)| {
+                replay_data::rows::CountryLinkRow { id, canonical_slot }
+            }));
+            rows.sort_by_key(|row| row.id);
+        }
+        *frame.tables[TableId::Factions.index()] =
+            TableView::Complete(TableRows::Factions(if factions {
+                [9, 10, 11]
+                    .map(|id| FactionRow {
                         id,
-                        canonical_slot: slot,
-                        tag: tag.as_bytes().into(),
+                        name: format!("Pact {id}").into_bytes(),
                         ..Default::default()
-                    });
-                }
-                rows.sort_by_key(|row| row.id);
-            }
-            if let TableView::Complete(TableRows::CountryLinks(rows)) =
-                &mut *frame.tables[TableId::CountryLinks.index()]
-            {
-                rows.extend([(77, 12), (88, 13)].map(|(id, canonical_slot)| {
-                    replay::rows::CountryLinkRow { id, canonical_slot }
-                }));
-                rows.sort_by_key(|row| row.id);
-            }
-            *frame.tables[TableId::Factions.index()] =
-                TableView::Complete(TableRows::Factions(if factions {
-                    [9, 10, 11]
-                        .map(|id| FactionRow {
-                            id,
-                            name: format!("Pact {id}").into_bytes(),
-                            ..Default::default()
-                        })
-                        .into()
-                } else {
-                    vec![]
-                }));
-            *frame.tables[TableId::FactionMembers.index()] =
-                TableView::Complete(TableRows::FactionMembers(if factions {
-                    [(44, 10), (55, 9), (9001, 11)]
-                        .map(|(country, faction)| FactionMemberRow {
-                            country,
-                            faction,
-                            ordinal: 0,
-                        })
-                        .into()
-                } else {
-                    vec![]
-                }));
-            let pairs = if split {
-                vec![(44, 77), (9001, 77), (55, 88), (66, 88)]
+                    })
+                    .into()
             } else {
-                vec![(55, 77), (44, 77), (9001, 77)]
-            };
-            let mut wars: Vec<_> = pairs
-                .into_iter()
-                .map(
-                    |(first_country, second_country)| replay::rows::WarRelationRow {
-                        first_country,
-                        second_country,
-                        ..Default::default()
-                    },
-                )
-                .collect();
-            wars.sort_by_key(|row| (row.first_country, row.second_country));
-            *frame.tables[TableId::WarRelations.index()] =
-                TableView::Complete(TableRows::WarRelations(wars));
-            if let TableView::Complete(TableRows::RaidAirScores(rows)) =
-                &mut *frame.tables[TableId::RaidAirScores.index()]
-            {
-                rows.iter_mut()
-                    .find(|row| row.country == 55)
-                    .unwrap()
-                    .region = 7000;
-                rows.iter_mut()
-                    .find(|row| row.country == 55)
-                    .unwrap()
-                    .friendly = 75_000;
-                rows.sort_by_key(|row| (row.country, row.region));
-            }
-            frame
+                vec![]
+            }));
+        *frame.tables[TableId::FactionMembers.index()] =
+            TableView::Complete(TableRows::FactionMembers(if factions {
+                [(44, 10), (55, 9), (9001, 11)]
+                    .map(|(country, faction)| FactionMemberRow {
+                        country,
+                        faction,
+                        ordinal: 0,
+                    })
+                    .into()
+            } else {
+                vec![]
+            }));
+        let pairs = if split {
+            vec![(44, 77), (9001, 77), (55, 88), (66, 88)]
+        } else {
+            vec![(55, 77), (44, 77), (9001, 77)]
         };
+        let mut wars: Vec<_> = pairs
+            .into_iter()
+            .map(
+                |(first_country, second_country)| replay_data::rows::WarRelationRow {
+                    first_country,
+                    second_country,
+                    ..Default::default()
+                },
+            )
+            .collect();
+        wars.sort_by_key(|row| (row.first_country, row.second_country));
+        *frame.tables[TableId::WarRelations.index()] =
+            TableView::Complete(TableRows::WarRelations(wars));
+        if let TableView::Complete(TableRows::RaidAirScores(rows)) =
+            &mut *frame.tables[TableId::RaidAirScores.index()]
+        {
+            rows.iter_mut()
+                .find(|row| row.country == 55)
+                .unwrap()
+                .region = 7000;
+            rows.iter_mut()
+                .find(|row| row.country == 55)
+                .unwrap()
+                .friendly = 75_000;
+            rows.sort_by_key(|row| (row.country, row.region));
+        }
+        frame
+    };
     let cancelled = AtomicBool::new(false);
     for factions in [true, false] {
         let first = recording(vec![frame(23, false, factions)]);
@@ -2870,7 +2876,7 @@ fn air_superiority_all_request_modes_reuse_one_country_group_scan() {
 
 #[test]
 fn air_superiority_faction_names_follow_native_operands_and_dictionary_reads() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
         (
@@ -2887,9 +2893,9 @@ fn air_superiority_faction_names_follow_native_operands_and_dictionary_reads() {
         ),
         ("settings.txt", "language=\"l_english\""),
     ]);
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
     let options = dashboard_core::config::ContentOptions {
-        options: installed_content::ResolveOptions {
+        options: installed_content_core::ResolveOptions {
             game_dir: folder.0.clone(),
             user_dir: folder.0.clone(),
             cache_dir: folder.0.join("cache"),
@@ -2911,11 +2917,11 @@ fn air_superiority_faction_names_follow_native_operands_and_dictionary_reads() {
             }
             *frame.tables[TableId::LexicalTokens.index()] =
                 TableView::Complete(TableRows::LexicalTokens(vec![
-                    replay::rows::LexicalTokenRow {
+                    replay_data::rows::LexicalTokenRow {
                         token: 17,
                         literal: b"demo".to_vec(),
                     },
-                    replay::rows::LexicalTokenRow {
+                    replay_data::rows::LexicalTokenRow {
                         token: if hour == 0 { 31 } else { 47 },
                         literal: b"member".to_vec(),
                     },
@@ -2935,7 +2941,7 @@ fn air_superiority_faction_names_follow_native_operands_and_dictionary_reads() {
     .unwrap();
     source.set_test_content(
         options.options.clone(),
-        Arc::new(installed_content::content::ResolvedContent {
+        Arc::new(installed_content_core::content::ResolvedContent {
             layers,
             stats: Default::default(),
         }),
@@ -2969,7 +2975,7 @@ fn air_superiority_faction_names_follow_native_operands_and_dictionary_reads() {
 
 #[test]
 fn air_superiority_region_names_preserve_empty_results_and_distinguish_missing_keys() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
         (
@@ -2991,7 +2997,7 @@ fn air_superiority_region_names_preserve_empty_results_and_distinguish_missing_k
         ("settings.txt", "language=\"l_english\""),
     ]);
     let options = dashboard_core::config::ContentOptions {
-        options: installed_content::ResolveOptions {
+        options: installed_content_core::ResolveOptions {
             game_dir: folder.0.clone(),
             user_dir: folder.0.clone(),
             cache_dir: folder.0.join("cache"),
@@ -3010,8 +3016,8 @@ fn air_superiority_region_names_preserve_empty_results_and_distinguish_missing_k
     .unwrap();
     source.set_test_content(
         options.options.clone(),
-        Arc::new(installed_content::content::ResolvedContent {
-            layers: installed_content::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap(),
+        Arc::new(installed_content_core::content::ResolvedContent {
+            layers: installed_content_core::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap(),
             stats: Default::default(),
         }),
     );
@@ -3046,7 +3052,7 @@ fn air_superiority_region_names_preserve_empty_results_and_distinguish_missing_k
 
 #[test]
 fn air_superiority_theatre_names_preserve_raw_bytes_and_guard_the_recording_language() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
         (
@@ -3056,7 +3062,7 @@ fn air_superiority_theatre_names_preserve_raw_bytes_and_guard_the_recording_lang
         ("settings.txt", "language=\"l_english\""),
     ]);
     let options = dashboard_core::config::ContentOptions {
-        options: installed_content::ResolveOptions {
+        options: installed_content_core::ResolveOptions {
             game_dir: folder.0.clone(),
             user_dir: folder.0.clone(),
             cache_dir: folder.0.join("cache"),
@@ -3068,7 +3074,7 @@ fn air_superiority_theatre_names_preserve_raw_bytes_and_guard_the_recording_lang
         [b"Synthetic theatre".to_vec(), vec![0xff], vec![]]
             .into_iter()
             .enumerate()
-            .map(|(index, name)| replay::rows::AirTheatreRow {
+            .map(|(index, name)| replay_data::rows::AirTheatreRow {
                 id: 700 + index as u64,
                 owner: 9001,
                 name,
@@ -3090,10 +3096,10 @@ fn air_superiority_theatre_names_preserve_raw_bytes_and_guard_the_recording_lang
         &AtomicBool::new(false),
     )
     .unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
     source.set_test_content(
         options.options.clone(),
-        Arc::new(installed_content::content::ResolvedContent {
+        Arc::new(installed_content_core::content::ResolvedContent {
             layers,
             stats: Default::default(),
         }),
@@ -3168,7 +3174,7 @@ fn air_superiority_native_coalition_survives_rename_without_inheriting_reused_ta
                 else {
                     panic!()
                 };
-                rows.push(replay::rows::CountryLinkRow {
+                rows.push(replay_data::rows::CountryLinkRow {
                     id: 9002,
                     canonical_slot: 7,
                 });
@@ -3185,7 +3191,7 @@ fn air_superiority_native_coalition_survives_rename_without_inheriting_reused_ta
         let mut wars: Vec<_> = pairs
             .into_iter()
             .map(
-                |(first_country, second_country)| replay::rows::WarRelationRow {
+                |(first_country, second_country)| replay_data::rows::WarRelationRow {
                     first_country,
                     second_country,
                     ..Default::default()
@@ -3242,12 +3248,12 @@ fn air_superiority_cached_rosters_split_native_replacements_with_unchanged_tags_
             TableView::Complete(TableRows::FactionMembers(vec![]));
         *frame.tables[TableId::WarRelations.index()] =
             TableView::Complete(TableRows::WarRelations(vec![
-                replay::rows::WarRelationRow {
+                replay_data::rows::WarRelationRow {
                     first_country: 44,
                     second_country: 66,
                     ..Default::default()
                 },
-                replay::rows::WarRelationRow {
+                replay_data::rows::WarRelationRow {
                     first_country: 44,
                     second_country: 9001,
                     ..Default::default()
@@ -3263,7 +3269,7 @@ fn air_superiority_cached_rosters_split_native_replacements_with_unchanged_tags_
                 let mut replacements = Vec::new();
                 for row in rows.iter_mut().filter(|row| row.id == 66 || row.id == 9001) {
                     row.id += 1;
-                    replacements.push(replay::rows::CountryLinkRow {
+                    replacements.push(replay_data::rows::CountryLinkRow {
                         id: row.id,
                         canonical_slot: row.canonical_slot,
                     });

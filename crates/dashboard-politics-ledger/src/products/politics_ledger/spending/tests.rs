@@ -1,5 +1,6 @@
 use super::*;
-use replay::frame::{TABLE_COUNT, TableView};
+use replay_data::rows::TABLE_COUNT;
+use replay_frame::frame::TableView;
 pub(super) fn frame(hour: i32, count: u32) -> DecodedFrame {
     let mut frame = DecodedFrame {
         branch: 1,

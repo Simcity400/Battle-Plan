@@ -56,7 +56,7 @@ impl ShipAssets {
     pub(super) fn load(
         layers: &ResolvedLayers,
         roster: &mesh::Roster,
-        warnings: &mut Vec<installed_content::Diagnostic>,
+        warnings: &mut Vec<installed_content_core::Diagnostic>,
     ) -> io::Result<Self> {
         let config =
             combat_content::Config::read(&layers.read_uncovered(NAVAL_COMBAT_FILE)?, warnings);
@@ -68,7 +68,7 @@ impl ShipAssets {
         let (root, nodes) = formation_nodes(layers, descriptors, &formation)?;
         let combat = combat_content::CombatAssets::load(descriptors, &config)
             .map_err(|error| error.to_string());
-        let combat_rotations = installed_content::positions::read_unit_stacks(layers)?
+        let combat_rotations = installed_content_core::positions::read_unit_stacks(layers)?
             .into_iter()
             .filter(|stack| stack.kind == 0)
             .map(|stack| (stack.province, stack.rotation))
@@ -90,7 +90,7 @@ impl ShipAssets {
 #[cfg(test)]
 fn read_formation(
     bytes: &[u8],
-    warnings: &mut Vec<installed_content::Diagnostic>,
+    warnings: &mut Vec<installed_content_core::Diagnostic>,
 ) -> io::Result<(String, f32)> {
     combat_content::Config::read(bytes, warnings).formation()
 }
@@ -228,7 +228,7 @@ impl UnitModelAssets {
     fn ship_slot<'t>(
         &self,
         tag: impl FnOnce() -> Result<&'t str, String>,
-        row: &replay::rows::ShipModelRow,
+        row: &replay_data::rows::ShipModelRow,
         graphics: &[u8],
         definition: Option<(u32, u32)>,
         hour: Option<&Hour<'_>>,
@@ -446,7 +446,7 @@ impl UnitModelAssets {
                             .ok_or(
                                 "naval_formation_model_country: native model owner is unavailable",
                             )?;
-                        installed_content::parser::text(installed_content::parser::c_string(&country.tag))
+                        installed_content_core::parser::text(installed_content_core::parser::c_string(&country.tag))
                             .map_err(|error| format!("naval_formation_model_country: {error}"))
                     },
                     model,
@@ -568,7 +568,7 @@ impl UnitModelAssets {
         world: Option<&counter_move::RouteWorld<'_>>,
         places: &ShipPlaces<'_>,
         links: &BTreeMap<u32, u32>,
-        clock: Option<&replay::rows::ClockRow>,
+        clock: Option<&replay_data::rows::ClockRow>,
         sources: &mut Sources,
         report: &mut ModelReport,
     ) -> io::Result<()> {
@@ -758,7 +758,7 @@ impl UnitModelAssets {
 /// An empty route initializes at zero without reading the game clock.
 fn animator_min_arc(
     path: &[u32],
-    clock: Option<&replay::rows::ClockRow>,
+    clock: Option<&replay_data::rows::ClockRow>,
     report: &mut ModelReport,
 ) -> Option<f32> {
     if path.is_empty() {
@@ -802,8 +802,8 @@ fn representative_priority(vision: &Vision, owner: u32, target: u32) -> Option<(
 /// supports. Live attachments retain their handles/graphics in unit_history::naval;
 /// only support locators use client-specific RNG.
 fn formation_slots<'a>(
-    roster: &[&'a replay::rows::ShipModelRow],
-) -> Vec<(usize, &'a replay::rows::ShipModelRow)> {
+    roster: &[&'a replay_data::rows::ShipModelRow],
+) -> Vec<(usize, &'a replay_data::rows::ShipModelRow)> {
     let recorded = !roster.is_empty() && roster.iter().all(|row| row.counter.is_some());
     if !recorded {
         return Vec::new();
@@ -827,8 +827,8 @@ fn formation_slots<'a>(
 }
 
 fn support_ships<'a>(
-    roster: &[&'a replay::rows::ShipModelRow],
-) -> Vec<&'a replay::rows::ShipModelRow> {
+    roster: &[&'a replay_data::rows::ShipModelRow],
+) -> Vec<&'a replay_data::rows::ShipModelRow> {
     let mut selected = Vec::new();
     for mask in [1u64 << 8, (1u64 << 7) | (1u64 << 39)] {
         for &row in roster {
@@ -838,7 +838,7 @@ fn support_ships<'a>(
             if row.formation_flags & mask != 0
                 && !selected
                     .iter()
-                    .any(|r: &&replay::rows::ShipModelRow| r.ship == row.ship)
+                    .any(|r: &&replay_data::rows::ShipModelRow| r.ship == row.ship)
             {
                 selected.push(row);
             }

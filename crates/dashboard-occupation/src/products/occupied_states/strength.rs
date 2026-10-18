@@ -1,4 +1,4 @@
-use replay::rows::{GarrisonEquipment, Recorded, StateGarrisonRow};
+use replay_data::{rows::GarrisonEquipment, rows::Recorded, rows::StateGarrisonRow};
 
 const ONE: i64 = 100_000;
 
@@ -90,7 +90,7 @@ fn shortage_power(shortage: i64, power: i32) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::GarrisonEquipmentInputs;
+    use replay_data::rows::GarrisonEquipmentInputs;
 
     fn row(allocated: i64, required: i64, weight: i64) -> StateGarrisonRow {
         StateGarrisonRow {

@@ -1,11 +1,14 @@
 //! Recordings, sessions and decoded frames built for tests.
 
-use replay::{
-    branches::{BranchReason, BranchStart, Parentage},
-    frame::{DecodedFrame, FrameEncoder, Metrics, TableView},
-    identity::{Identity, Roster, SampleBoundary, SessionStart, Verification},
-    rows::{CampaignRow, CountryLinkRow, CountryRow, TableId, TableRows},
-    spool::Record,
+use replay::spool::Record;
+use replay_data::{
+    identity::Identity, identity::Roster, identity::SampleBoundary, identity::SessionStart,
+    identity::Verification, rows::CampaignRow, rows::CountryLinkRow, rows::CountryRow,
+    rows::TableId, rows::TableRows,
+};
+use replay_frame::{
+    branches::BranchReason, branches::BranchStart, branches::Parentage, frame::DecodedFrame,
+    frame::FrameEncoder, frame::Metrics, frame::TableView,
 };
 
 pub const CAMPAIGN: &[u8] = b"analytics-test";
@@ -35,7 +38,7 @@ pub fn ownership_frame(branch: u64, hour: i32, owner: u32) -> DecodedFrame {
         rows.sort_by_key(|row| row.id);
     }
     *frame.tables[TableId::States.index()] =
-        TableView::Complete(TableRows::States(vec![replay::rows::StateRow {
+        TableView::Complete(TableRows::States(vec![replay_data::rows::StateRow {
             id: 1,
             owner,
             controller: 55,
@@ -81,7 +84,7 @@ pub fn source(branch: u64, hour: i32, power: Option<i64>) -> DecodedFrame {
         }]));
     tables[TableId::Countries.index()] =
         TableView::Complete(TableRows::Countries(vec![CountryRow {
-            border_land_doctrine_level: replay::rows::Recorded::Value(None),
+            border_land_doctrine_level: replay_data::rows::Recorded::Value(None),
             id: 9001,
             canonical_slot: 7,
             tag: b"GER".to_vec(),
@@ -165,7 +168,7 @@ pub fn continuation_records(
 }
 
 pub fn fixture_research_inputs(frame: &mut DecodedFrame) {
-    use replay::rows::{ResearchInputRow, tables};
+    use replay_data::{rows::ResearchInputRow, rows::tables};
     let input = (|| {
         let slots = frame.complete::<tables::ResearchSlots>().ok()?;
         let techs = frame.complete::<tables::ResearchTechnologies>().ok()?;
@@ -187,12 +190,13 @@ pub fn fixture_research_inputs(frame: &mut DecodedFrame) {
                 if s.technology_present != 0 {
                     let t = techs.iter().find(|t| {
                         t.country == s.country
-                            && s.database_index == replay::rows::Recorded::Value(t.database_index)
+                            && s.database_index
+                                == replay_data::rows::Recorded::Value(t.database_index)
                     })?;
                     row.token = definitions
                         .iter()
                         .find(|d| {
-                            s.database_index == replay::rows::Recorded::Value(d.database_index)
+                            s.database_index == replay_data::rows::Recorded::Value(d.database_index)
                         })?
                         .id
                         .clone();
@@ -226,7 +230,7 @@ pub fn fixture_research_inputs(frame: &mut DecodedFrame) {
                 TableId::ResearchModifiers,
                 TableId::ResearchTechnologies,
             ]
-            .map(|table| replay::rows::SliceReadRow {
+            .map(|table| replay_data::rows::SliceReadRow {
                 table: table.index() as u32,
                 owner: country,
                 sample_hour: frame.hour,
@@ -269,7 +273,7 @@ pub fn scale_frame(branch: u64, hour: i32, count: u32) -> DecodedFrame {
     ));
     *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
         (0..count)
-            .map(|index| replay::rows::StateRow {
+            .map(|index| replay_data::rows::StateRow {
                 id: index + 1,
                 owner: 100_000 + index,
                 controller: 100_000 + index,
@@ -281,8 +285,8 @@ pub fn scale_frame(branch: u64, hour: i32, count: u32) -> DecodedFrame {
     frame
 }
 
-pub fn stability_inputs() -> replay::rows::CountryStabilityInputRow {
-    replay::rows::CountryStabilityInputRow {
+pub fn stability_inputs() -> replay_data::rows::CountryStabilityInputRow {
+    replay_data::rows::CountryStabilityInputRow {
         country: 9001,
         stability_raw: 50_000,
         war_support_raw: 40_000,
@@ -321,9 +325,9 @@ pub fn stability_inputs() -> replay::rows::CountryStabilityInputRow {
 
 pub fn stability_frame(
     hour: i32,
-    inputs: replay::rows::CountryStabilityInputRow,
+    inputs: replay_data::rows::CountryStabilityInputRow,
     read: i32,
-    lines: Vec<replay::rows::CountryStabilityLineRow>,
+    lines: Vec<replay_data::rows::CountryStabilityLineRow>,
 ) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1));
     let reads = [
@@ -332,7 +336,7 @@ pub fn stability_frame(
     ]
     .into_iter()
     .filter(|table| *table == TableId::CountryStabilityInputs || !lines.is_empty())
-    .map(|table| replay::rows::SliceReadRow {
+    .map(|table| replay_data::rows::SliceReadRow {
         table: table.index() as u32,
         owner: 9001,
         sample_hour: read,
@@ -345,7 +349,7 @@ pub fn stability_frame(
         TableView::Complete(TableRows::CountryStabilityLines(lines));
     *frame.tables[TableId::ModifierDefinitions.index()] =
         TableView::Complete(TableRows::ModifierDefinitions(vec![
-            replay::rows::ModifierDefinitionRow {
+            replay_data::rows::ModifierDefinitionRow {
                 index: 0x8d,
                 token: 1,
                 flags: 3,
@@ -366,7 +370,10 @@ pub fn stockpile_frame(
     stock: &[(u64, i64)],
     lines: Option<&[(u64, i64, i64, u8)]>,
 ) -> DecodedFrame {
-    use replay::rows::{LexicalTokenRow, ProductionLineRow, StockpileRow, VariantDefinitionRow};
+    use replay_data::{
+        rows::LexicalTokenRow, rows::ProductionLineRow, rows::StockpileRow,
+        rows::VariantDefinitionRow,
+    };
     let mut frame = source(1, hour, Some(1));
     *frame.tables[TableId::CountryLinks.index()] =
         TableView::Complete(TableRows::CountryLinks(vec![
@@ -453,7 +460,7 @@ pub fn stockpile_frame(
     }
     // The initial stockpile frame reads variants too; later reads follow their cadence.
     if hour == slot_hour(TableId::Stockpiles)
-        || replay::cadence::is_refresh(TableId::VariantDefinitions, hour)
+        || replay_data::cadence::is_refresh(TableId::VariantDefinitions, hour)
     {
         frame.metrics.table_ns[TableId::VariantModules.index()] = 1;
     }
@@ -462,16 +469,16 @@ pub fn stockpile_frame(
 
 /// The hour of a daily table's slot on day 1000.
 pub fn slot_hour(table: TableId) -> i32 {
-    let replay::cadence::Cadence::Daily(slot) = replay::cadence::cadence(table) else {
+    let replay_data::cadence::Cadence::Daily(slot) = replay_data::cadence::cadence(table) else {
         panic!("{table:?} is read in a daily slot");
     };
-    1000 * replay::cadence::STAGGER_PERIOD + slot as i32
+    1000 * replay_data::cadence::STAGGER_PERIOD + slot as i32
 }
 
 /// A stockpile frame whose variant 20 is named `name`, or whose variant table is
 /// unavailable (`None`) though its read was due.
 pub fn named_frame(hour: i32, name: Option<&[u8]>) -> DecodedFrame {
-    use replay::rows::VariantDefinitionRow;
+    use replay_data::rows::VariantDefinitionRow;
     let mut frame = stockpile_frame(hour, false, &[(20, 100_000)], Some(&[]));
     // The variant table's slot-mate walked: its read was due at this hour.
     frame.metrics.table_ns[TableId::VariantModules.index()] = 1;
@@ -518,9 +525,9 @@ pub fn equipment_types(texts: &[&[u8]]) -> std::io::Result<installed_content_cor
 }
 
 // Start these scenarios on the production slot, as the shared reader dates it.
-pub const PRODUCTION_HOUR: i32 = 4 * replay::cadence::STAGGER_PERIOD
-    + match replay::cadence::cadence(TableId::ProductionLines) {
-        replay::cadence::Cadence::Daily(slot) => slot as i32,
+pub const PRODUCTION_HOUR: i32 = 4 * replay_data::cadence::STAGGER_PERIOD
+    + match replay_data::cadence::cadence(TableId::ProductionLines) {
+        replay_data::cadence::Cadence::Daily(slot) => slot as i32,
         _ => panic!("production lines have a daily slot"),
     };
 
@@ -546,9 +553,9 @@ pub fn production_frame(
     lines: &[LineFixture],
     output: Option<&[OutputFixture]>,
 ) -> DecodedFrame {
-    use replay::rows::{
-        CountryAppearanceRow, IndustrialOrganisationRow, LexicalTokenRow, ProductionLineOutputRow,
-        ProductionLineRow, VariantDefinitionRow,
+    use replay_data::{
+        rows::CountryAppearanceRow, rows::IndustrialOrganisationRow, rows::LexicalTokenRow,
+        rows::ProductionLineOutputRow, rows::ProductionLineRow, rows::VariantDefinitionRow,
     };
     let mut frame = source(1, hour, Some(1));
     let country = |id, canonical_slot, tag: &[u8]| CountryRow {
@@ -682,8 +689,9 @@ pub fn resource_frame(
     germany: u32,
     deals: &[(u64, u32, u32, i64)],
 ) -> DecodedFrame {
-    use replay::rows::{
-        CountryResourceRow, LexicalTokenRow, ResourceDefinitionRow, ResourceExchangeRow,
+    use replay_data::{
+        rows::CountryResourceRow, rows::LexicalTokenRow, rows::ResourceDefinitionRow,
+        rows::ResourceExchangeRow,
     };
     let mut frame = source(1, hour, Some(1));
     let country = |id, canonical_slot, tag: &[u8]| CountryRow {

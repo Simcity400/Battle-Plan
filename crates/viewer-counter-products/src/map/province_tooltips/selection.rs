@@ -4,10 +4,8 @@ mod movement;
 mod travel;
 
 use super::{Arg, Context, Localisation, Tooltip, localise, units};
-use replay::{
-    frame::DecodedFrame,
-    rows::{Recorded, tables},
-};
+use replay_data::{rows::Recorded, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use {crate::map::division_eta::CounterQueries, viewer_foundation::unit_handle::Unit};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -294,7 +292,7 @@ fn railway_second(
     gate: RailwaySecondGate<'_>,
     loc: &Localisation,
     mut source: impl FnMut(u64) -> Result<u32, String>,
-    query: impl FnOnce() -> Result<installed_content::unit_path::selected_transport::Outputs, String>,
+    query: impl FnOnce() -> Result<installed_content_unit_path::unit_path::selected_transport::Outputs, String>,
 ) {
     let RailwaySecondGate { travel, rejection } = gate;
     let needed = (|| {
@@ -326,7 +324,7 @@ fn railway_second(
             match query() {
                 Ok(outputs) => {
                     let mut bytes = std::mem::take(&mut out.title).into_bytes();
-                    installed_content::unit_path::selected_transport::append_railway_second(
+                    installed_content_unit_path::unit_path::selected_transport::append_railway_second(
                         &mut bytes, &outputs,
                     );
                     out.title =
@@ -400,7 +398,7 @@ pub(super) fn build(context: &Context<'_>, selected: &[Unit], nato: bool) -> Too
     match queries.selected_transport_message(selected, context.province.id) {
         Ok(outputs) => {
             let mut bytes = std::mem::take(&mut out.title).into_bytes();
-            installed_content::unit_path::selected_transport::append_first(&mut bytes, &outputs);
+            installed_content_unit_path::unit_path::selected_transport::append_first(&mut bytes, &outputs);
             out.title = String::from_utf8(bytes).expect("transport localisation preserves UTF-8");
         }
         Err(reason) => refuse(&mut out, "transport", reason),
@@ -467,9 +465,9 @@ pub(super) fn append(out: &mut Tooltip, selected: Tooltip, loc: &Localisation) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{
-        DivisionMovementRow, DivisionRow, OrdersGroupCounterInputRow, RailwayGunCounterInputRow,
-        TableRows,
+    use replay_data::{
+        rows::DivisionMovementRow, rows::DivisionRow, rows::OrdersGroupCounterInputRow,
+        rows::RailwayGunCounterInputRow, rows::TableRows,
     };
     use viewer_foundation::map::test_support::{test_frame, test_put as put};
 
@@ -1019,10 +1017,12 @@ mod tests {
             |_| Ok(2),
             || {
                 calls += 1;
-                Ok(installed_content::unit_path::selected_transport::Outputs {
-                    primary: b"\nRisk\ncontinued".to_vec(),
-                    secondary: b"unappended".to_vec(),
-                })
+                Ok(
+                    installed_content_unit_path::unit_path::selected_transport::Outputs {
+                        primary: b"\nRisk\ncontinued".to_vec(),
+                        secondary: b"unappended".to_vec(),
+                    },
+                )
             },
         );
         assert_eq!(calls, 1);

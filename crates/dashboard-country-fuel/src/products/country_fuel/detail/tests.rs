@@ -1,11 +1,11 @@
 use super::super::tests::{award_row, fuel_frame, replay_source};
 use super::*;
-use replay::frame::TableView;
-use replay::rows::{Recorded, TableRows};
+use replay_data::{rows::Recorded, rows::TableRows};
+use replay_frame::frame::TableView;
 
 #[test]
 fn recipient_history_follows_native_aliases_without_crossing_reset_boundaries() {
-    use replay::rows::{CountryLinkRow, CountryRow};
+    use replay_data::{rows::CountryLinkRow, rows::CountryRow};
     let cancelled = AtomicBool::new(false);
     let first = (1000..1000 + DAY_HOURS)
         .find(|&hour| cadence::is_refresh(TableId::CountryFuel, hour))
@@ -187,7 +187,7 @@ fn history_uses_one_visible_all_country_window_and_authenticates_basis_and_keys(
             let mut frame = fuel_frame(at, at == hour, 9001, (1, 2, 3, 4));
             *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
                 (1..=count)
-                    .map(|id| replay::rows::CountryRow {
+                    .map(|id| replay_data::rows::CountryRow {
                         id,
                         canonical_slot: id,
                         tag: format!("C{id:04}").into_bytes(),
@@ -198,7 +198,7 @@ fn history_uses_one_visible_all_country_window_and_authenticates_basis_and_keys(
             *frame.tables[TableId::CountryLinks.index()] =
                 TableView::Complete(TableRows::CountryLinks(
                     (1..=count)
-                        .map(|id| replay::rows::CountryLinkRow {
+                        .map(|id| replay_data::rows::CountryLinkRow {
                             id,
                             canonical_slot: id,
                         })

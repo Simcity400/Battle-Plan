@@ -10,10 +10,10 @@ use crate::{
     mission_changes::{Counts, Watches},
     sampled_verify::{Check, ROTATION},
 };
-use engine::{
-    cair_regional_mission::{FailureContext, Row, walk_carried, walk_with_diagnostic},
-    cgame_state as gs, cpdx_array, cstrategic_air,
-    memory::SliceMemory,
+use engine_native::{
+    cair_regional_mission::FailureContext, cair_regional_mission::Row,
+    cair_regional_mission::walk_carried, cair_regional_mission::walk_with_diagnostic,
+    cgame_state as gs, cpdx_array, cstrategic_air, memory::SliceMemory,
 };
 use std::cell::RefCell;
 
@@ -243,7 +243,7 @@ fn walk_with(
         0,
         GS,
         census,
-        engine::walk::Buffer::Growing(&mut rows),
+        engine_native::walk::Buffer::Growing(&mut rows),
         &mut failure,
         &mut reuse,
     );
@@ -265,7 +265,7 @@ fn walk(world: &World, store: &mut MissionStore, watches: &Watches, check: Check
 /// What a fresh walk publishes.
 fn fresh(world: &World, census: &[WingIdentity]) -> (Outcome, Vec<Row>) {
     let mut rows = Vec::new();
-    let outcome = engine::cair_regional_mission::walk_with_diagnostic_growing(
+    let outcome = engine_native::cair_regional_mission::walk_with_diagnostic_growing(
         &SliceMemory {
             base: 0,
             bytes: &world.bytes,
@@ -379,7 +379,7 @@ fn a_writer_that_keeps_every_header_is_still_seen() {
     first_hour(&world, &mut store, &watches);
     let headers = |world: &World| {
         let at = air(3) + cstrategic_air::REGIONAL_MISSIONS;
-        world.bytes[at..at + engine::cair_regional_mission::HEADERS].to_vec()
+        world.bytes[at..at + engine_native::cair_regional_mission::HEADERS].to_vec()
     };
     let before = headers(&world);
     let replacement = world.wing(3, 5);

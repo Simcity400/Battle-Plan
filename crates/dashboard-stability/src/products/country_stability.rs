@@ -36,12 +36,12 @@ use dashboard_text::{
     metadata::{mapped_slot, validate_campaign},
     scripted_text::ScriptedText,
 };
-use installed_content::characters::BuiltTemplate;
-use replay::{
-    container::Replay,
-    frame::FrameDecoder,
-    rows::{CountryStabilityInputRow, CountryStabilityLineRow, TableId, tables},
+use installed_content_core::characters::BuiltTemplate;
+use replay::container::Replay;
+use replay_data::{
+    rows::CountryStabilityInputRow, rows::CountryStabilityLineRow, rows::TableId, rows::tables,
 };
+use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -358,12 +358,12 @@ pub fn histories(
 const GOOD_FLAG: u32 = 0x2;
 
 pub(super) struct BreakdownInput<'a> {
-    pub decoded: &'a replay::frame::DecodedFrame,
+    pub decoded: &'a replay_frame::frame::DecodedFrame,
     pub hour: i32,
     pub row: &'a CountryStabilityInputRow,
     pub slot: u32,
     pub read_hour: i32,
-    pub reads: &'a [replay::rows::SliceReadRow],
+    pub reads: &'a [replay_data::rows::SliceReadRow],
     pub tag: &'a str,
 }
 
@@ -381,7 +381,7 @@ pub(super) fn breakdown_of(
         reads,
         tag,
     } = input;
-    let read_hour = |table, owner| replay::sliced::read_hour(reads, table, owner);
+    let read_hour = |table, owner| replay_data::sliced::read_hour(reads, table, owner);
     // SliceReads names an owner only while it has rows: a
     // country read with no lines has none.
     let lines_read = read_hour(TableId::CountryStabilityLines, row.country);
@@ -436,9 +436,9 @@ pub(super) fn breakdown_of(
 
 /// The engine's arithmetic over one inputs row.
 pub mod formula {
-    use replay::rows::{CountryCommandPowerRow, CountryStabilityInputRow};
+    use replay_data::{rows::CountryCommandPowerRow, rows::CountryStabilityInputRow};
 
-    pub use replay::fixed_point::{fixed5_to_q15, q15_to_fixed5};
+    pub use replay_data::{fixed_point::fixed5_to_q15, fixed_point::q15_to_fixed5};
 
     fn clamp(value: i64, minimum: i64, maximum: i64) -> i64 {
         if value < minimum {
@@ -626,11 +626,11 @@ pub mod formula {
     /// same frame (the stability row's native country ID mapped through
     /// CountryLinks); `None` when the table is not complete or has no row.
     pub fn command_power(
-        decoded: &replay::frame::DecodedFrame,
+        decoded: &replay_frame::frame::DecodedFrame,
         slot: u32,
     ) -> Option<&CountryCommandPowerRow> {
         let rows = decoded
-            .complete::<replay::rows::tables::CountryCommandPower>()
+            .complete::<replay_data::rows::tables::CountryCommandPower>()
             .ok()?;
         rows.binary_search_by_key(&slot, |row| row.canonical_slot)
             .ok()
@@ -675,7 +675,7 @@ fn kind(kind: u8) -> &'static str {
 /// `refused` by `tag` and line identity.
 pub fn modifiers(
     row: &CountryStabilityInputRow,
-    launch: Option<&replay::rows::CountryCommandPowerRow>,
+    launch: Option<&replay_data::rows::CountryCommandPowerRow>,
     lines: Option<&[CountryStabilityLineRow]>,
     good: impl Fn(u32) -> Option<bool>,
     tag: &str,
@@ -826,7 +826,8 @@ fn breakdowns(
     // Characters are named as recorded at the read behind the values, not at the
     // hour asked for, so a breakdown depends only on its read (the viewer caches it
     // by read). A read whose own hour cannot be decoded leaves them unnamed.
-    let mut read_frames: BTreeMap<i32, Option<Box<replay::frame::DecodedFrame>>> = BTreeMap::new();
+    let mut read_frames: BTreeMap<i32, Option<Box<replay_frame::frame::DecodedFrame>>> =
+        BTreeMap::new();
     // The names are expanded in each country's scope at its read hour; a
     // tag scope there needs the exact native _CountriesForOriginalTags
     // snapshot at that read (dashboard_text::scope::OriginalTagLists).
@@ -839,7 +840,7 @@ fn breakdowns(
                 let index = inputs
                     .binary_search_by_key(&country.id, |row| row.country)
                     .ok()?;
-                replay::sliced::read_hour(
+                replay_data::sliced::read_hour(
                     reads,
                     TableId::CountryStabilityInputs,
                     inputs[index].country,
@@ -863,7 +864,7 @@ fn breakdowns(
         };
         let row = &inputs[index];
         let Some(read) =
-            replay::sliced::read_hour(reads, TableId::CountryStabilityInputs, row.country)
+            replay_data::sliced::read_hour(reads, TableId::CountryStabilityInputs, row.country)
         else {
             continue;
         };
@@ -1026,8 +1027,8 @@ fn built<'a>(character: Option<&'a RecordedCharacter>) -> Result<&'a BuiltTempla
 
 pub(super) fn recorded_character<'a>(
     line: &BreakdownLine,
-    characters: Option<&'a [replay::rows::CharacterRow]>,
-    lexical: Option<&'a [replay::rows::LexicalTokenRow]>,
+    characters: Option<&'a [replay_data::rows::CharacterRow]>,
+    lexical: Option<&'a [replay_data::rows::LexicalTokenRow]>,
 ) -> Option<RecordedCharacter<'a>> {
     let rows = characters?;
     let index = rows
@@ -1037,8 +1038,8 @@ pub(super) fn recorded_character<'a>(
 }
 
 pub(super) fn recorded_character_row<'a>(
-    row: &'a replay::rows::CharacterRow,
-    lexical: Option<&'a [replay::rows::LexicalTokenRow]>,
+    row: &'a replay_data::rows::CharacterRow,
+    lexical: Option<&'a [replay_data::rows::LexicalTokenRow]>,
 ) -> RecordedCharacter<'a> {
     RecordedCharacter {
         script: lexical.and_then(|rows| character_script_token(row, rows)),
@@ -1169,13 +1170,13 @@ pub(crate) struct Scan {
 #[derive(Default)]
 pub(super) struct Native {
     keys: Option<dashboard_text::metadata::CountryKeys>,
-    countries: Option<Vec<replay::rows::CountryRow>>,
-    links: Option<Vec<replay::rows::CountryLinkRow>>,
+    countries: Option<Vec<replay_data::rows::CountryRow>>,
+    links: Option<Vec<replay_data::rows::CountryLinkRow>>,
     pub(super) roster: BTreeMap<u32, (String, u32)>,
     pub(super) slots: BTreeMap<u32, Vec<u32>>,
     pub(super) inputs: Option<BTreeMap<u32, CountryStabilityInputRow>>,
     pub(super) reads: Option<BTreeMap<u32, i32>>,
-    command: Option<BTreeMap<u32, replay::rows::CountryCommandPowerRow>>,
+    command: Option<BTreeMap<u32, replay_data::rows::CountryCommandPowerRow>>,
     pub(super) membership_changed: bool,
     #[cfg(test)]
     pub(super) work: dashboard_base::prepared::observer_tests::Work,
@@ -1204,7 +1205,7 @@ static COUNTRY_KEY_FIELDS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|
 
 /// An hour's recorded changed rows and deleted keys of one table
 /// (`FrameChanges::rows`).
-pub(super) type Delta<'a> = (&'a [replay::rows::DeltaRow], &'a [u128]);
+pub(super) type Delta<'a> = (&'a [replay_data::rows::DeltaRow], &'a [u128]);
 
 /// `held`, the hour before's rows of a table keyed by one id (the row key),
 /// made this hour's `rows` from the hour's recorded changes: the ids whose
@@ -1261,7 +1262,7 @@ pub(super) fn apply_rows<R: Clone + PartialEq>(
 /// `rows`.
 pub(super) fn apply_reads(
     held: &mut BTreeMap<u32, i32>,
-    rows: &[replay::rows::SliceReadRow],
+    rows: &[replay_data::rows::SliceReadRow],
     table: TableId,
     (changed, deleted): Delta<'_>,
     dirty: &mut BTreeSet<u32>,
@@ -1271,7 +1272,7 @@ pub(super) fn apply_reads(
         .iter()
         .filter(|delta| of_table(delta.key))
         .map(|delta| {
-            rows.binary_search_by_key(&delta.key, replay::rows::SliceReadRow::key)
+            rows.binary_search_by_key(&delta.key, replay_data::rows::SliceReadRow::key)
                 .ok()
                 .map(|at| &rows[at])
         })
@@ -1307,7 +1308,7 @@ fn same_keys<T>(old: &Option<BTreeMap<u32, T>>, new: &Option<BTreeMap<u32, T>>) 
     }
 }
 impl Native {
-    pub(super) fn country(&self, id: u32) -> Option<&replay::rows::CountryRow> {
+    pub(super) fn country(&self, id: u32) -> Option<&replay_data::rows::CountryRow> {
         let rows = self.countries.as_ref()?;
         rows.binary_search_by_key(&id, |row| row.id)
             .ok()
@@ -1315,11 +1316,11 @@ impl Native {
     }
     pub(super) fn refresh(
         &mut self,
-        frame: &replay::frame::DecodedFrame,
+        frame: &replay_frame::frame::DecodedFrame,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
         command_power: bool,
     ) -> BTreeSet<u32> {
-        let _cpu = ::replay::cpu::scope_phase("stability:observe_apply");
+        let _cpu = ::replay_frame::cpu::scope_phase("stability:observe_apply");
         self.membership_changed = false;
         // These operands use their rows/status. Supplying dates are explicit
         // SliceReads rows; an equal fresh acquisition changes no operand here.
@@ -1468,7 +1469,7 @@ impl Native {
                     apply_rows(
                         held,
                         rows,
-                        replay::rows::CountryCommandPowerRow::key,
+                        replay_data::rows::CountryCommandPowerRow::key,
                         delta,
                         &mut slots,
                     )
@@ -1501,7 +1502,7 @@ impl Native {
 impl Scan {
     pub(crate) fn step(
         &mut self,
-        decoded: &replay::frame::DecodedFrame,
+        decoded: &replay_frame::frame::DecodedFrame,
         tags: Option<&BTreeSet<String>>,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
         mut sink: impl FnMut(
@@ -1761,7 +1762,7 @@ pub fn display_text(bytes: &[u8]) -> Result<String, String> {
 #[cfg(test)]
 mod display_text_tests {
     use super::{display_text, modifiers};
-    use replay::rows::{CountryStabilityInputRow, CountryStabilityLineRow};
+    use replay_data::{rows::CountryStabilityInputRow, rows::CountryStabilityLineRow};
 
     #[test]
     fn engine_colour_codes_and_icons_become_plain_text() {

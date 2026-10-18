@@ -1,5 +1,5 @@
 //! Native allocations and initialized bytes, independent of authored member names.
-use installed_content::pdxshader::program::Stage;
+use installed_content_core::pdxshader::program::Stage;
 use shader_pipeline::{binding, gpu};
 use std::ops::Range;
 

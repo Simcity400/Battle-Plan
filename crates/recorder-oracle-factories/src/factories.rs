@@ -16,12 +16,10 @@ use std::{
     io,
 };
 
-use installed_content::buildings::Buildings;
+use installed_content_core::buildings::Buildings;
 use installed_content_save::{PartialMapMembership, Save, StateControlEmission};
-use replay::{
-    frame::DecodedFrame,
-    rows::{CountryRow, tables},
-};
+use replay_data::{rows::CountryRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use super::{Report, complete, invalid, required_country_tag};
 

@@ -6,13 +6,11 @@ use crate::map::{
     native_windows::{NAVAL_COMBAT_WINDOW, NAVY_WINDOW, NativeWindows},
     sprites::SpriteSheet,
 };
-use installed_content::{
-    gui::native::{
-        self, Element,
-        fonts::{FontFacts, TextColors},
-    },
-    localisation::Localisation,
+use installed_content_core::{
+    gui::native, gui::native::Element, gui::native::fonts::FontFacts,
+    gui::native::fonts::TextColors,
 };
+use installed_content_localisation::localisation::Localisation;
 use std::collections::HashMap;
 
 /// The sprites, font and effects the layouts draw from.

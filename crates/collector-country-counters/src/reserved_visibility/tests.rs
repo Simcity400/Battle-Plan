@@ -1,5 +1,5 @@
 use super::*;
-use engine::{
+use engine_native::{
     cdiplomacy_status as diplomacy, cgame_state, crelation, csubject_relation, memory::SliceMemory,
     walk::Outcome,
 };
@@ -169,7 +169,7 @@ fn short_matrix_and_failed_prefix_skip_body_keep_full_demand_and_clear_previous_
     assert_eq!(memory.body_reads.get(), old_reads);
     assert!(capture.cells.first.iter().all(|cell| cell.value.is_none()));
     assert!(capture.projection().unwrap().is_none());
-    assert_eq!(owned.sample_hour, replay::rows::PacketHour::Host);
+    assert_eq!(owned.sample_hour, replay_data::rows::PacketHour::Host);
     assert!(
         owned.cells[0].is_some(),
         "off-thread projection owns its values"

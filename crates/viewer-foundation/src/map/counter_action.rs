@@ -12,13 +12,11 @@ use std::{
     io,
 };
 
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        DivisionMovementRow, NavalCombatTransferRow, NavalTransferUnitRow, StrategicAction,
-        StrategicActionFailure, tables,
-    },
+use replay_data::{
+    rows::DivisionMovementRow, rows::NavalCombatTransferRow, rows::NavalTransferUnitRow,
+    rows::StrategicAction, rows::StrategicActionFailure, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 use crate::map::{directed_wars::Owner, tables::rows};
 
@@ -238,8 +236,10 @@ impl Actions {
             hostility.links,
             ours.map(|_| &own),
         )?;
-        let strategic_layout =
-            replay::fixed_layout::validate_recording(frame, replay::fixed_layout::STRATEGIC_ACTION);
+        let strategic_layout = replay_derive::fixed_layout::validate_recording(
+            frame,
+            replay_derive::fixed_layout::STRATEGIC_ACTION,
+        );
         let by_division = movements
             .rows()
             .iter()
@@ -296,7 +296,7 @@ impl Actions {
 /// does not inspect combat-side unit membership.
 fn recorded_standing(
     frame: &DecodedFrame,
-    packet: &replay::rows::UnitCombatReferences,
+    packet: &replay_data::rows::UnitCombatReferences,
     owner: u32,
     links: &BTreeMap<u32, u32>,
 ) -> Option<bool> {
@@ -353,7 +353,7 @@ fn standing_attacks(
                 && (movement.combat_count as i32) > 0
         })
         .filter_map(|movement| {
-            use replay::rows::Recorded;
+            use replay_data::rows::Recorded;
             let attack = match &movement.combat_references {
                 Recorded::NotRecorded => return Some(movement.division),
                 Recorded::Value(Some(packet))
@@ -491,10 +491,11 @@ pub fn action_frame(code: u8, own: bool) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{DivisionRow, LandCombatRow, LandCombatSideRow, ProvinceRow, TableId, TableRows},
+    use replay_data::{
+        rows::DivisionRow, rows::LandCombatRow, rows::LandCombatSideRow, rows::ProvinceRow,
+        rows::TableId, rows::TableRows,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     fn read_actions(frame: &DecodedFrame, links: &BTreeMap<u32, u32>) -> io::Result<Actions> {
         Actions::read(frame, &DestinationHostility::read(frame, links)?, None)
@@ -510,8 +511,9 @@ mod tests {
         countries: &[(u32, u32)],
         cells: &[(u32, u32, bool)],
     ) {
-        use replay::rows::{
-            CountryCounterInputRow, CountryLinkRow, CountryRow, DirectedWars, Recorded, WarCell,
+        use replay_data::{
+            rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryRow,
+            rows::DirectedWars, rows::Recorded, rows::WarCell,
         };
         set(
             frame,
@@ -544,7 +546,7 @@ mod tests {
                     .map(|&(country, slot)| CountryCounterInputRow {
                         country,
                         directed_wars: Recorded::Value(Some(DirectedWars {
-                            sample_hour: replay::rows::PacketHour::Stamped(sample_hour),
+                            sample_hour: replay_data::rows::PacketHour::Stamped(sample_hour),
                             receiver_raw_id: country as i32,
                             receiver_slot: slot,
                             matrix_count: 4,
@@ -610,7 +612,7 @@ mod tests {
             path_total: 1,
             target: 8,
             strategic_redeployment: 1,
-            strategic_action: replay::rows::Recorded::NotRecorded,
+            strategic_action: replay_data::rows::Recorded::NotRecorded,
             ..Default::default()
         };
         assert_eq!(action_code(&movement, None, Ok(false), None), Ok(3));
@@ -901,7 +903,7 @@ mod tests {
             combat_role: 2,
             // This exercises historical inverse proofs. A current refused packet
             // must not fall back to LandCombats membership.
-            combat_references: replay::rows::Recorded::NotRecorded,
+            combat_references: replay_data::rows::Recorded::NotRecorded,
             ..Default::default()
         };
         let combats = vec![
@@ -1001,7 +1003,7 @@ mod tests {
 
     #[test]
     fn current_standing_references_keep_native_order_and_never_retry_a_refused_packet() {
-        use replay::rows::{Recorded, UnitCombatReference, UnitCombatReferences};
+        use replay_data::{rows::Recorded, rows::UnitCombatReference, rows::UnitCombatReferences};
         let mut frame = frame();
         set(
             &mut frame,
@@ -1014,7 +1016,7 @@ mod tests {
         let owners = BTreeMap::from([(7, 100)]);
         let links = BTreeMap::new();
         let packet = |entries| UnitCombatReferences {
-            sample_hour: replay::rows::PacketHour::Stamped(10),
+            sample_hour: replay_data::rows::PacketHour::Stamped(10),
             entries,
         };
         let mut movement = DivisionMovementRow {
@@ -1077,15 +1079,16 @@ mod tests {
 
     #[test]
     fn current_standing_naval_uses_only_ordered_attacker_primary_countries() {
-        use replay::rows::{
-            NavalCombatDetailsRow, Recorded, UnitCombatReference, UnitCombatReferences,
+        use replay_data::{
+            rows::NavalCombatDetailsRow, rows::Recorded, rows::UnitCombatReference,
+            rows::UnitCombatReferences,
         };
         let mut frame = frame();
         let movement = DivisionMovementRow {
             division: 7,
             combat_count: 1,
             combat_references: Recorded::Value(Some(UnitCombatReferences {
-                sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+                sample_hour: replay_data::rows::PacketHour::Stamped(frame.hour),
                 entries: vec![UnitCombatReference {
                     combat: 41,
                     kind: 2,
@@ -1140,8 +1143,9 @@ mod tests {
 
     #[test]
     fn current_standing_naval_preserves_mixed_reference_order_and_partial_row_proofs() {
-        use replay::rows::{
-            NavalCombatDetailsRow, Recorded, UnitCombatReference, UnitCombatReferences,
+        use replay_data::{
+            rows::NavalCombatDetailsRow, rows::Recorded, rows::UnitCombatReference,
+            rows::UnitCombatReferences,
         };
         let mut frame = frame();
         let owners = BTreeMap::from([(7, 100)]);
@@ -1150,7 +1154,7 @@ mod tests {
             division: 7,
             combat_count: 3,
             combat_references: Recorded::Value(Some(UnitCombatReferences {
-                sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+                sample_hour: replay_data::rows::PacketHour::Stamped(frame.hour),
                 entries: vec![
                     UnitCombatReference {
                         combat: 41,
@@ -1220,7 +1224,9 @@ mod tests {
 
     #[test]
     fn current_standing_naval_country_list_scales_to_live_country_count() {
-        use replay::rows::{NavalCombatDetailsRow, UnitCombatReference, UnitCombatReferences};
+        use replay_data::{
+            rows::NavalCombatDetailsRow, rows::UnitCombatReference, rows::UnitCombatReferences,
+        };
         let mut frame = frame();
         let mut naval = NavalCombatDetailsRow {
             combat: 41,
@@ -1230,7 +1236,7 @@ mod tests {
         naval.sides[0].summary.countries = (1..=5_000).collect();
         set(&mut frame, TableRows::NavalCombatDetails(vec![naval]));
         let packet = UnitCombatReferences {
-            sample_hour: replay::rows::PacketHour::Stamped(frame.hour),
+            sample_hour: replay_data::rows::PacketHour::Stamped(frame.hour),
             entries: vec![UnitCombatReference {
                 combat: 41,
                 kind: 2,

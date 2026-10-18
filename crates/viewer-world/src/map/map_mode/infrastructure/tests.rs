@@ -1,5 +1,5 @@
 use super::*;
-use installed_content::{key_names::KeyNames, technology::Definition};
+use installed_content_core::{key_names::KeyNames, technology::Definition};
 
 fn defines() -> Defines {
     let defines = Defines::new().unwrap();
@@ -27,10 +27,10 @@ fn read(
     locations: &str,
     technologies: Result<Vec<Definition>, String>,
 ) -> Content {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let names = KeyNames::default();
-    let buildings = installed_content::buildings::parse(buildings.as_bytes(), &names).unwrap();
+    let buildings = installed_content_core::buildings::parse(buildings.as_bytes(), &names).unwrap();
     let categories = state_categories::parse(categories.as_bytes(), &names).unwrap();
     let locations = strategic_locations::parse(locations.as_bytes(), &names).unwrap();
     let catalog = technologies.map(|definitions| {
@@ -183,10 +183,10 @@ fn a_type_no_state_status_can_hold_needs_no_limit_operand() {
 
 #[test]
 fn a_partly_read_technology_catalogue_refuses_the_layer() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let names = KeyNames::default();
-    let buildings = installed_content::buildings::parse(ROADS.as_bytes(), &names).unwrap();
+    let buildings = installed_content_core::buildings::parse(ROADS.as_bytes(), &names).unwrap();
     let categories = state_categories::parse(b"", &names).unwrap();
     let locations = strategic_locations::parse(b"", &names).unwrap();
     // The definitions read so far enable nothing; the refusal names the unread file.

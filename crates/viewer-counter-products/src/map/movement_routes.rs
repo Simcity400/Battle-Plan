@@ -14,11 +14,9 @@ use viewer_foundation::map::test_support::test_frame;
 use viewer_foundation::map::test_support::test_put;
 use viewer_foundation::movement_timing::MovementContent;
 
-use replay::{
-    eta_derive::{self, ProvinceOperands},
-    frame::DecodedFrame,
-    rows::{Recorded, TableSchema, tables},
-};
+use replay_data::{rows::Recorded, rows::TableSchema, rows::tables};
+use replay_derive::{eta_derive, eta_derive::ProvinceOperands};
+use replay_frame::frame::DecodedFrame;
 
 use crate::map::counter_content::Content;
 use viewer_foundation::map::movement_routes::Route;
@@ -485,9 +483,9 @@ mod tests {
 
     #[test]
     fn selected_arrow_uses_logical_to_controller_direction_and_unknown_is_not_move() {
-        use replay::rows::{
-            CountryCounterInputRow, CountryLinkRow, CountryRow, DirectedWars, ProvinceRow,
-            TableRows, WarCell,
+        use replay_data::{
+            rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryRow,
+            rows::DirectedWars, rows::ProvinceRow, rows::TableRows, rows::WarCell,
         };
         let mut frame = test_frame(12);
         test_put(
@@ -542,7 +540,7 @@ mod tests {
                 CountryCounterInputRow {
                     country: 100,
                     directed_wars: Recorded::Value(Some(DirectedWars {
-                        sample_hour: replay::rows::PacketHour::Stamped(12),
+                        sample_hour: replay_data::rows::PacketHour::Stamped(12),
                         receiver_raw_id: 100,
                         receiver_slot: 1,
                         matrix_count: 3,
@@ -560,7 +558,7 @@ mod tests {
                 CountryCounterInputRow {
                     country: 200,
                     directed_wars: Recorded::Value(Some(DirectedWars {
-                        sample_hour: replay::rows::PacketHour::Stamped(12),
+                        sample_hour: replay_data::rows::PacketHour::Stamped(12),
                         receiver_raw_id: 200,
                         receiver_slot: 2,
                         matrix_count: 3,

@@ -1,11 +1,10 @@
 use super::*;
 use dashboard_base::prepared::series::tests::Fixture;
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{
-        CountryLinkRow, SunkConvoyRow, SunkShipEntry, SunkShipsRow, TableId, TableRows, tables,
-    },
+use replay_data::{
+    rows::CountryLinkRow, rows::SunkConvoyRow, rows::SunkShipEntry, rows::SunkShipsRow,
+    rows::TableId, rows::TableRows, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 fn samples(reply: &NavalLossesReply, hour: i32) -> BTreeMap<String, (Option<i64>, Option<i64>)> {
     reply
@@ -115,9 +114,9 @@ fn parity(countries: usize, baseline_step: usize) {
     };
     for (step, frame) in frames.iter().enumerate() {
         let changes = history.prepare(
-            replay::format::FormatVersion::default(),
+            replay_data::format::FormatVersion::default(),
             frame,
-            &tracker.observe(frame, replay::format::FormatVersion::default()),
+            &tracker.observe(frame, replay_data::format::FormatVersion::default()),
         );
         prepared
             .observe_changes(
@@ -255,10 +254,10 @@ fn changed_contribution_arithmetic_refuses_overflow() {
     let frame = inputs(3, 0).remove(0);
     let mut history = sinkings::ShipHistory::new(frame.hour);
     let changes = history.prepare(
-        replay::format::FormatVersion::default(),
+        replay_data::format::FormatVersion::default(),
         &frame,
         &dashboard_base::prepared::frame_changes::FrameChangeTracker::new()
-            .observe(&frame, replay::format::FormatVersion::default()),
+            .observe(&frame, replay_data::format::FormatVersion::default()),
     );
     let params = selection(1, 0);
     let change = changes
@@ -314,10 +313,10 @@ fn changed_contributions_preserve_missing_country_precedence_over_prefix_overflo
     let frame = inputs(3, 0).remove(0);
     let mut history = sinkings::ShipHistory::new(frame.hour);
     let mut changes = history.prepare(
-        replay::format::FormatVersion::default(),
+        replay_data::format::FormatVersion::default(),
         &frame,
         &dashboard_base::prepared::frame_changes::FrameChangeTracker::new()
-            .observe(&frame, replay::format::FormatVersion::default()),
+            .observe(&frame, replay_data::format::FormatVersion::default()),
     );
     changes.push(sinkings::Change {
         key: (false, 100),
@@ -377,7 +376,7 @@ fn restored_losses_close_a_holder_that_leaves_at_the_first_hour_after_a_commit()
     const VICTIM: Identity = (2, 100_002);
     type Pair = (sinkings::ShipHistory, Prepared);
     let flag = AtomicBool::new(false);
-    let format = replay::format::FormatVersion::default();
+    let format = replay_data::format::FormatVersion::default();
     let first = month_start(1940 * 12 + 1).unwrap() + 100;
     let frames: Vec<DecodedFrame> = (0..8)
         .map(|offset| {

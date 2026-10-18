@@ -13,14 +13,13 @@ use std::{
 use viewer_foundation::map::textures::load_uploadable;
 
 use eframe::wgpu;
-use installed_content::{
-    ResolvedLayers,
-    adjacencies::{Adjacency, IMPASSABLE},
-    image::{dds, native::Decode},
-    map::{MapData, ProvinceKind},
-    regions::StrategicRegion,
-    states::StateDefinition,
+use installed_content_core::{
+    ResolvedLayers, adjacencies::Adjacency, adjacencies::IMPASSABLE, map::MapData,
+    map::ProvinceKind,
 };
+use installed_content_image::{dds, native::Decode};
+use installed_content_regions::regions::StrategicRegion;
+use installed_content_states::states::StateDefinition;
 
 use {
     super::{
@@ -67,7 +66,7 @@ impl BorderAssets {
     /// content is hash-verified.
     pub fn load(
         layers: &ResolvedLayers,
-        defines: &installed_content::defines::Defines,
+        defines: &installed_content_core::defines::Defines,
         map: [u32; 2],
         texture_quality: u8,
         decode: Decode,
@@ -106,7 +105,7 @@ impl BorderAssets {
 
 /// Use the configured faction-highlight palette index. Custom RGBA entries begin at palette
 /// index 10.
-fn faction_highlight_color(defines: &installed_content::defines::Defines) -> io::Result<[f32; 4]> {
+fn faction_highlight_color(defines: &installed_content_core::defines::Defines) -> io::Result<[f32; 4]> {
     let index = defines.int32("NMapMode", "FACTION_THEATER_HIGHLIGHT_COLOR_INDEX")?;
     if !(0..=i32::from(u8::MAX) - 10).contains(&index) {
         return Err(invalid(
@@ -455,7 +454,7 @@ pub fn strait_quads(
     map: &MapData,
     land: &dyn Fn(u32) -> bool,
 ) -> io::Result<Vec<StraitVertex>> {
-    let raster = installed_content::movement::raster_neighbours(
+    let raster = installed_content_core::movement::raster_neighbours(
         map.width as usize,
         map.height as usize,
         &map.province_ids,

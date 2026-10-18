@@ -3,13 +3,13 @@
 //! localisation, adjacency rules).
 //!
 //! A trigger body is read as its content's reader reads it
-//! ([`installed_content::triggers`]); each child is dispatched through
-//! [`installed_content::trigger_keys::TriggerNames::dispatch`]:
+//! ([`installed_content_core::triggers`]); each child is dispatched through
+//! [`installed_content_core::trigger_keys::TriggerNames::dispatch`]:
 //! a coded trigger by its static keyword, a scope of the key's text
 //! (resolved over the hour by [`crate::scope::RecordedScopes`]), a
 //! content count trigger, a scripted trigger, or no child. A coded trigger is
 //! checked against its class's accepted
-//! scopes first ([`installed_content::trigger_keys::trigger_class`]),
+//! scopes first ([`installed_content_core::trigger_keys::trigger_class`]),
 //! false in a scope it does not accept.
 //!
 //! Each input is read from the table the game itself reads, joined through
@@ -19,8 +19,8 @@
 
 use std::collections::BTreeSet;
 
-use installed_content::parser::Item;
-use replay::Hour;
+use installed_content_core::parser::Item;
+use replay_data::Hour;
 
 mod aliases;
 mod carriers;
@@ -58,79 +58,79 @@ pub const REFUSED: &str = "refused token: ";
 /// Recorded operands used by World, scope promotion, character predicates and
 /// scripted text. Products evaluating authored triggers select this shared kit
 /// alongside their own data, so a present operand is never discarded locally.
-pub const RECORDED_TABLES: &[replay::rows::TableId] = &[
-    replay::rows::TableId::ActiveIdeas,
-    replay::rows::TableId::AdvisorTokens,
-    replay::rows::TableId::ArmyOrderPlans,
-    replay::rows::TableId::ArmyOrders,
-    replay::rows::TableId::Autonomy,
-    replay::rows::TableId::CharacterOperatives,
-    replay::rows::TableId::CharacterRoleTraits,
-    replay::rows::TableId::Characters,
-    replay::rows::TableId::CompletedFocuses,
-    replay::rows::TableId::Countries,
-    replay::rows::TableId::CountryAppearance,
-    replay::rows::TableId::CountryBuildingResources,
-    replay::rows::TableId::CountryCharacters,
-    replay::rows::TableId::CountryCivilWars,
-    replay::rows::TableId::CountryCounterInputs,
-    replay::rows::TableId::CountryFactories,
-    replay::rows::TableId::CountryLeaderRoles,
-    replay::rows::TableId::CountryLinks,
-    replay::rows::TableId::CountryResources,
-    replay::rows::TableId::CountryRetiredCharacters,
-    replay::rows::TableId::CountryWars,
-    replay::rows::TableId::DivisionStatus,
-    replay::rows::TableId::DivisionTemplateIcons,
-    replay::rows::TableId::DivisionTemplates,
-    replay::rows::TableId::DynamicModifiers,
-    replay::rows::TableId::FactionAdvisors,
-    replay::rows::TableId::FactionMembers,
-    replay::rows::TableId::Factions,
-    replay::rows::TableId::Focus,
-    replay::rows::TableId::GlobalSavedEventTargets,
-    replay::rows::TableId::HiredAdvisors,
-    replay::rows::TableId::IndustrialOrganisations,
-    replay::rows::TableId::IntelligenceAgencies,
-    replay::rows::TableId::InvasionPreparations,
-    replay::rows::TableId::LandTheatres,
-    replay::rows::TableId::LexicalTokens,
-    replay::rows::TableId::LocalPlayer,
-    replay::rows::TableId::ModifierDefinitions,
-    replay::rows::TableId::Nukes,
-    replay::rows::TableId::OrdersGroupPlans,
-    replay::rows::TableId::OrdersGroups,
-    replay::rows::TableId::PartyLeaders,
-    replay::rows::TableId::PoliticalParties,
-    replay::rows::TableId::Politics,
-    replay::rows::TableId::PowerBalanceMembers,
-    replay::rows::TableId::PowerBalanceModifierBreakdowns,
-    replay::rows::TableId::PowerBalances,
-    replay::rows::TableId::Projects,
-    replay::rows::TableId::ProvinceBuildings,
-    replay::rows::TableId::ProvinceNames,
-    replay::rows::TableId::Provinces,
-    replay::rows::TableId::RaidTooltipOperands,
-    replay::rows::TableId::Raids,
-    replay::rows::TableId::RelationOpinions,
-    replay::rows::TableId::ResearchTechnologies,
-    replay::rows::TableId::ReservedCountryNaming,
-    replay::rows::TableId::ResourceDefinitions,
-    replay::rows::TableId::ScriptFlags,
-    replay::rows::TableId::ScriptVariables,
-    replay::rows::TableId::SimulationFeatures,
-    replay::rows::TableId::StateBaseResources,
-    replay::rows::TableId::StateBuildings,
-    replay::rows::TableId::StateCores,
-    replay::rows::TableId::StateDynamicModifiers,
-    replay::rows::TableId::StateResourceInputs,
-    replay::rows::TableId::StateResources,
-    replay::rows::TableId::States,
-    replay::rows::TableId::Subjects,
-    replay::rows::TableId::TechnologyDefinitions,
-    replay::rows::TableId::UnitLeaderTraits,
-    replay::rows::TableId::UnitLeaders,
-    replay::rows::TableId::WarRelations,
+pub const RECORDED_TABLES: &[replay_data::rows::TableId] = &[
+    replay_data::rows::TableId::ActiveIdeas,
+    replay_data::rows::TableId::AdvisorTokens,
+    replay_data::rows::TableId::ArmyOrderPlans,
+    replay_data::rows::TableId::ArmyOrders,
+    replay_data::rows::TableId::Autonomy,
+    replay_data::rows::TableId::CharacterOperatives,
+    replay_data::rows::TableId::CharacterRoleTraits,
+    replay_data::rows::TableId::Characters,
+    replay_data::rows::TableId::CompletedFocuses,
+    replay_data::rows::TableId::Countries,
+    replay_data::rows::TableId::CountryAppearance,
+    replay_data::rows::TableId::CountryBuildingResources,
+    replay_data::rows::TableId::CountryCharacters,
+    replay_data::rows::TableId::CountryCivilWars,
+    replay_data::rows::TableId::CountryCounterInputs,
+    replay_data::rows::TableId::CountryFactories,
+    replay_data::rows::TableId::CountryLeaderRoles,
+    replay_data::rows::TableId::CountryLinks,
+    replay_data::rows::TableId::CountryResources,
+    replay_data::rows::TableId::CountryRetiredCharacters,
+    replay_data::rows::TableId::CountryWars,
+    replay_data::rows::TableId::DivisionStatus,
+    replay_data::rows::TableId::DivisionTemplateIcons,
+    replay_data::rows::TableId::DivisionTemplates,
+    replay_data::rows::TableId::DynamicModifiers,
+    replay_data::rows::TableId::FactionAdvisors,
+    replay_data::rows::TableId::FactionMembers,
+    replay_data::rows::TableId::Factions,
+    replay_data::rows::TableId::Focus,
+    replay_data::rows::TableId::GlobalSavedEventTargets,
+    replay_data::rows::TableId::HiredAdvisors,
+    replay_data::rows::TableId::IndustrialOrganisations,
+    replay_data::rows::TableId::IntelligenceAgencies,
+    replay_data::rows::TableId::InvasionPreparations,
+    replay_data::rows::TableId::LandTheatres,
+    replay_data::rows::TableId::LexicalTokens,
+    replay_data::rows::TableId::LocalPlayer,
+    replay_data::rows::TableId::ModifierDefinitions,
+    replay_data::rows::TableId::Nukes,
+    replay_data::rows::TableId::OrdersGroupPlans,
+    replay_data::rows::TableId::OrdersGroups,
+    replay_data::rows::TableId::PartyLeaders,
+    replay_data::rows::TableId::PoliticalParties,
+    replay_data::rows::TableId::Politics,
+    replay_data::rows::TableId::PowerBalanceMembers,
+    replay_data::rows::TableId::PowerBalanceModifierBreakdowns,
+    replay_data::rows::TableId::PowerBalances,
+    replay_data::rows::TableId::Projects,
+    replay_data::rows::TableId::ProvinceBuildings,
+    replay_data::rows::TableId::ProvinceNames,
+    replay_data::rows::TableId::Provinces,
+    replay_data::rows::TableId::RaidTooltipOperands,
+    replay_data::rows::TableId::Raids,
+    replay_data::rows::TableId::RelationOpinions,
+    replay_data::rows::TableId::ResearchTechnologies,
+    replay_data::rows::TableId::ReservedCountryNaming,
+    replay_data::rows::TableId::ResourceDefinitions,
+    replay_data::rows::TableId::ScriptFlags,
+    replay_data::rows::TableId::ScriptVariables,
+    replay_data::rows::TableId::SimulationFeatures,
+    replay_data::rows::TableId::StateBaseResources,
+    replay_data::rows::TableId::StateBuildings,
+    replay_data::rows::TableId::StateCores,
+    replay_data::rows::TableId::StateDynamicModifiers,
+    replay_data::rows::TableId::StateResourceInputs,
+    replay_data::rows::TableId::StateResources,
+    replay_data::rows::TableId::States,
+    replay_data::rows::TableId::Subjects,
+    replay_data::rows::TableId::TechnologyDefinitions,
+    replay_data::rows::TableId::UnitLeaderTraits,
+    replay_data::rows::TableId::UnitLeaders,
+    replay_data::rows::TableId::WarRelations,
 ];
 
 /// `reason` marked as a refused token.
@@ -361,7 +361,7 @@ impl Scopes {
     /// copies the calling scope's members, and ROOT/FROM/PREV copy
     /// their linked scope's members. A character target without a scope
     /// country leaves the copy of the calling scope.
-    pub fn entered(self, target: &installed_content::scope::Scope, this: Scope) -> Self {
+    pub fn entered(self, target: &installed_content_core::scope::Scope, this: Scope) -> Self {
         let mut scopes = self.with_this(this);
         if relinks(target) && self.root != Scope::Combat {
             scopes.unknown.from = true;
@@ -370,15 +370,15 @@ impl Scopes {
             Carried::Kept => self.bare,
             Carried::Retained => false,
             Carried::Cleared => {
-                !matches!(target, installed_content::scope::Scope::Character(_)) || this != self.this
+                !matches!(target, installed_content_core::scope::Scope::Character(_)) || this != self.this
             }
         };
         scopes
     }
 
     /// ROOT, FROM or PREV, or why the caller cannot say which scope it is.
-    pub fn link(&self, keyword: installed_content::scope::Keyword) -> Result<Option<Scope>, String> {
-        use installed_content::scope::Keyword;
+    pub fn link(&self, keyword: installed_content_core::scope::Keyword) -> Result<Option<Scope>, String> {
+        use installed_content_core::scope::Keyword;
         let (scope, unknown) = match keyword {
             Keyword::Root => (Some(self.root), self.unknown.root),
             Keyword::From => (self.from, self.unknown.from),
@@ -405,8 +405,8 @@ enum Carried {
     Cleared,
 }
 
-fn carried(target: &installed_content::scope::Scope) -> Carried {
-    use installed_content::scope::{Keyword, Scope as Parsed};
+fn carried(target: &installed_content_core::scope::Scope) -> Carried {
+    use installed_content_core::{scope::Keyword, scope::Scope as Parsed};
     let keyword = |keyword: &Keyword| match keyword {
         Keyword::This => Carried::Kept,
         Keyword::Root | Keyword::From | Keyword::Prev => Carried::Retained,
@@ -428,8 +428,8 @@ fn carried(target: &installed_content::scope::Scope) -> Carried {
 
 /// Whether a target passes through ROOT, FROM or PREV, whose scope's links
 /// it takes.
-fn relinks(target: &installed_content::scope::Scope) -> bool {
-    use installed_content::scope::{Keyword, Scope as Parsed};
+fn relinks(target: &installed_content_core::scope::Scope) -> bool {
+    use installed_content_core::{scope::Keyword, scope::Scope as Parsed};
     let link = |keyword: &Keyword| matches!(keyword, Keyword::Root | Keyword::From | Keyword::Prev);
     match target {
         Parsed::Keyword(keyword) => link(keyword),

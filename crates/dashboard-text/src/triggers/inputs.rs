@@ -11,7 +11,7 @@
 //! reads inside, its tables, lazily built indexes and time comparisons, is
 //! not recorded: the result already holds its whole effect. Any other table
 //! read during an evaluation is recorded whole ([`Key::Table`]), through
-//! [`replay::frame::view_reads`], or by the fields it reads ([`fields`]).
+//! [`replay_frame::frame::view_reads`], or by the fields it reads ([`fields`]).
 //!
 //! Each input also declares what its value is a function of
 //! ([`Key::dependence`]): some fields of some rows of some tables, their keys
@@ -30,12 +30,11 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use replay::{
-    BranchId, Hour,
-    container::{QuietHours, TableFields},
-    frame::{DecodedFrame, TableView, ViewIdentity, view_reads},
-    rows::{DeltaRow, RowCodec, TableId, full_mask, tables},
+use replay::{container::QuietHours, container::TableFields};
+use replay_data::{
+    BranchId, Hour, rows::DeltaRow, rows::RowCodec, rows::TableId, rows::full_mask, rows::tables,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView, frame::ViewIdentity, frame::view_reads};
 
 /// Evaluations run, reused, and (in check mode) reused but run anyway,
 /// and of those, any that changed.
@@ -291,7 +290,7 @@ fn owner_links() -> TableRead {
 
 /// Whether `links` (a `CountryLinks` table's rows, ascending by raw id)
 /// maps a row keyed `key` to `owner`'s country or to none.
-fn owned(links: &[replay::rows::CountryLinkRow], owner: Owner, key: u128) -> bool {
+fn owned(links: &[replay_data::rows::CountryLinkRow], owner: Owner, key: u128) -> bool {
     // The raw country, the 32 bits above the shift.
     let country = key.checked_shr(owner.shift).unwrap_or(0) as u32;
     match links.binary_search_by_key(&country, |link| link.id) {
@@ -556,7 +555,7 @@ fn touches(table: TableId, fields: u64, row: &DeltaRow) -> bool {
 /// so a relation ongoing at `from` is not at `to`
 /// ([`crate::triggers::ongoing`]). Every other table may.
 fn ended(frame: &DecodedFrame, read: &TableRead, from: Hour, to: Hour) -> bool {
-    fn any<T: replay::rows::TableSchema>(
+    fn any<T: replay_data::rows::TableSchema>(
         view: &TableView,
         read: &TableRead,
         span: impl Fn(&T::Row) -> (i32, i32),

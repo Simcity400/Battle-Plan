@@ -1,8 +1,8 @@
 use super::*;
-use replay::rows::OrderChildFrontInputs;
+use replay_data::rows::OrderChildFrontInputs;
 
-const GROUP: u64 = (1 << 32) | engine::corders_group::REFERENCE_TYPE as u64;
-const CHILD: u64 = (2 << 32) | engine::corders_group::REFERENCE_TYPE as u64;
+const GROUP: u64 = (1 << 32) | engine_native::corders_group::REFERENCE_TYPE as u64;
+const CHILD: u64 = (2 << 32) | engine_native::corders_group::REFERENCE_TYPE as u64;
 fn plan(area: i32, sections: Vec<OrderChildFront>) -> ArmyOrderPlanRow {
     ArmyOrderPlanRow {
         owner_group: GROUP,

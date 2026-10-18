@@ -16,6 +16,6 @@ pub mod unit_selection {
 }
 
 #[cfg(test)]
-pub mod scene_failure_tests;
-#[cfg(test)]
 mod player_model_tests;
+#[cfg(test)]
+pub mod scene_failure_tests;

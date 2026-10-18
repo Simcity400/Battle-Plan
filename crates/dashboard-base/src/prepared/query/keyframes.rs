@@ -12,11 +12,9 @@
 //! decodes are allowed.
 
 use crate::{Source, metadata::check_cancel, products::country_groups::HourSpan};
-use replay::{
-    container::BlockIndex,
-    frame::{DecodedFrame, FrameDecoder},
-    rows::TableId,
-};
+use replay::container::BlockIndex;
+use replay_data::rows::TableId;
+use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
 use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
@@ -376,7 +374,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let calls = AtomicUsize::new(0);
         let mut recording = replay(vec![frame(1, 0, None), frame(1, 1, None)]);
-        recording.gaps.push(replay::branches::Gap {
+        recording.gaps.push(replay_frame::branches::Gap {
             branch: 1,
             first_hour: 0,
             last_hour: 0,

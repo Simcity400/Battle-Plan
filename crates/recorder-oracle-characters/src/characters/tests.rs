@@ -1,18 +1,16 @@
 use super::*;
 use installed_content_save::{Decimal, GameDate};
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{
-        ActiveAbilityRow, CharacterRow, Recorded, TableId, TableRows, UnitLeaderRow,
-        UnitLeaderTraitRow,
-    },
+use replay_data::{
+    rows::ActiveAbilityRow, rows::CharacterRow, rows::Recorded, rows::TableId, rows::TableRows,
+    rows::UnitLeaderRow, rows::UnitLeaderTraitRow,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 
 const NO_TRAITS: Result<&LeaderTraits, &str> = Err("outside this fixture");
 
 #[test]
 fn current_leader_ideology_compares_by_signed_map_order() {
-    use replay::rows::CountryLeaderRoleRow;
+    use replay_data::rows::CountryLeaderRoleRow;
     let (mut frame, mut pack, country) = fixture();
     let manager = pack.manager.as_mut().unwrap();
     manager
@@ -91,7 +89,7 @@ fn current_leader_ideology_compares_by_signed_map_order() {
 
 #[test]
 fn advisor_tooltip_keys_check_content_without_withholding_existing_fields() {
-    use replay::rows::{AdvisorRoleRow, CharacterRoleTraitRow};
+    use replay_data::{rows::AdvisorRoleRow, rows::CharacterRoleTraitRow};
     let (mut frame, mut pack, country) = fixture();
     let manager = pack.manager.as_mut().unwrap();
     manager
@@ -157,7 +155,7 @@ fn advisor_tooltip_keys_check_content_without_withholding_existing_fields() {
 
 #[test]
 fn advisor_modifier_cache_distinguishes_not_recorded_from_native_unavailable() {
-    use replay::rows::{AdvisorModifierCache, AdvisorRoleRow};
+    use replay_data::{rows::AdvisorModifierCache, rows::AdvisorRoleRow};
     let (mut frame, mut pack, country) = fixture();
     let manager = pack.manager.as_mut().unwrap();
     let character = manager.characters.get_mut(&handle(73, u32::MAX)).unwrap();
@@ -212,7 +210,7 @@ fn advisor_modifier_cache_distinguishes_not_recorded_from_native_unavailable() {
 #[test]
 fn operative_codename_oracle_checks_both_hosts_and_saved_omissions() {
     use installed_content_save::{DivisionName, intel};
-    use replay::rows::{CharacterOperativeRow, NameOperands};
+    use replay_data::{rows::CharacterOperativeRow, rows::NameOperands};
     let (mut frame, _, _) = fixture();
     let naming = NameOperands {
         kind: 2,
@@ -318,7 +316,7 @@ fn operative_codename_oracle_checks_both_hosts_and_saved_omissions() {
 
 #[test]
 fn operative_name_and_codename_compatibility_gaps_are_named_and_counted() {
-    use replay::rows::CharacterOperativeRow;
+    use replay_data::rows::CharacterOperativeRow;
     let (mut frame, _, _) = fixture();
     *frame.tables[TableId::CharacterOperatives.index()] =
         TableView::Complete(TableRows::CharacterOperatives(
@@ -379,7 +377,7 @@ fn operative_name_and_codename_compatibility_gaps_are_named_and_counted() {
 
 #[test]
 fn operative_name_and_codename_native_absence_is_named_separately() {
-    use replay::rows::CharacterOperativeRow;
+    use replay_data::rows::CharacterOperativeRow;
     let (mut frame, _, _) = fixture();
     *frame.tables[TableId::CharacterOperatives.index()] =
         TableView::Complete(TableRows::CharacterOperatives(vec![
@@ -434,8 +432,8 @@ fn leader_traits(text: &str) -> LeaderTraits {
     let file = root.join("common/country_leader/traits.txt");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, text).unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let (traits, _) = installed_content::leader_traits::read(&layers).unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let (traits, _) = installed_content_core::leader_traits::read(&layers).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
     traits
 }
@@ -501,7 +499,7 @@ fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
     *frame.tables[TableId::UnitLeaderTraitExperience.index()] = TableView::Unavailable {
         reason: format!(
             "UnitLeaderTraitExperience retired at format {0}; this recording is format {0}",
-            replay::FORMAT_VERSION
+            replay_data::FORMAT_VERSION
         ),
     };
     let pack = saved::Pack {
@@ -572,8 +570,8 @@ fn character_tables_are_compared_at_every_hour() {
         TableId::UnitLeaderTraits,
     ] {
         assert_eq!(
-            replay::cadence::cadence(table),
-            replay::cadence::Cadence::Hourly,
+            replay_data::cadence::cadence(table),
+            replay_data::cadence::Cadence::Hourly,
             "{table:?}"
         );
     }
@@ -681,7 +679,7 @@ fn leader_oracle_checks_full_backlinks_and_independent_traits() {
 /// the operative reference with the saved `operative`.
 #[test]
 fn role_traits_and_operative_references_compare_with_the_save() {
-    use replay::rows::{CharacterOperativeRow, CharacterRoleTraitRow as Row};
+    use replay_data::{rows::CharacterOperativeRow, rows::CharacterRoleTraitRow as Row};
     let (mut frame, mut pack, country) = fixture();
     let links = BTreeMap::from([(102, &country)]);
     let tokens = BTreeMap::from([
@@ -737,7 +735,7 @@ fn role_traits_and_operative_references_compare_with_the_save() {
         ]));
     *frame.tables[TableId::CountryLeaderRoles.index()] =
         TableView::Complete(TableRows::CountryLeaderRoles(vec![
-            replay::rows::CountryLeaderRoleRow {
+            replay_data::rows::CountryLeaderRoleRow {
                 character: u32::MAX,
                 country: 102,
                 ideology: 20,
@@ -746,7 +744,7 @@ fn role_traits_and_operative_references_compare_with_the_save() {
         ]));
     *frame.tables[TableId::AdvisorRoles.index()] =
         TableView::Complete(TableRows::AdvisorRoles(vec![
-            replay::rows::AdvisorRoleRow {
+            replay_data::rows::AdvisorRoleRow {
                 character: u32::MAX,
                 country: 102,
                 ..Default::default()
@@ -793,7 +791,7 @@ fn role_traits_and_operative_references_compare_with_the_save() {
 /// limitation, and a key the lexer refuses makes token 0.
 #[test]
 fn advisor_traits_compare_by_the_content_key_at_their_ordinal() {
-    use replay::rows::CharacterRoleTraitRow as Row;
+    use replay_data::rows::CharacterRoleTraitRow as Row;
     let (mut frame, mut pack, country) = fixture();
     let links = BTreeMap::from([(102, &country)]);
     let saved = pack
@@ -810,7 +808,7 @@ fn advisor_traits_compare_by_the_content_key_at_their_ordinal() {
     }];
     *frame.tables[TableId::AdvisorRoles.index()] =
         TableView::Complete(TableRows::AdvisorRoles(vec![
-            replay::rows::AdvisorRoleRow {
+            replay_data::rows::AdvisorRoleRow {
                 character: u32::MAX,
                 country: 102,
                 ..Default::default()
@@ -871,7 +869,7 @@ fn advisor_traits_compare_by_the_content_key_at_their_ordinal() {
 /// one an extra array, and trait names compare as bytes.
 #[test]
 fn missing_extra_and_byte_different_role_traits_are_differences() {
-    use replay::rows::CharacterRoleTraitRow as Row;
+    use replay_data::rows::CharacterRoleTraitRow as Row;
     let (mut frame, mut pack, country) = fixture();
     let links = BTreeMap::from([(102, &country)]);
     let character = handle(73, u32::MAX);
@@ -890,7 +888,7 @@ fn missing_extra_and_byte_different_role_traits_are_differences() {
     }];
     *frame.tables[TableId::CountryLeaderRoles.index()] =
         TableView::Complete(TableRows::CountryLeaderRoles(vec![
-            replay::rows::CountryLeaderRoleRow {
+            replay_data::rows::CountryLeaderRoleRow {
                 character: u32::MAX,
                 country: 102,
                 ideology: 20,
@@ -1043,7 +1041,7 @@ fn leader_owner_and_captured_byte_compare_with_the_save() {
     let navy = run(&edit(&|row| row.captured = 1), &pack);
     assert!(navy.len() == 1 && navy[0].contains("captured"), "{navy:?}");
     let captured = edit(&|row| {
-        row.kind = engine::cunit_leader::KIND_ARMY;
+        row.kind = engine_native::cunit_leader::KIND_ARMY;
         row.captured = 1;
     });
     let free = run(&captured, &pack);
@@ -1077,7 +1075,7 @@ fn exile_country_tag_compares_exactly_and_nonpositive_omission_is_limited() {
         compare_leaders(frame, pack.manager.as_ref().unwrap(), &links, &mut report).unwrap();
         report
     };
-    set(&mut frame, replay::rows::Recorded::Value(102));
+    set(&mut frame, replay_data::rows::Recorded::Value(102));
     let report = run(&frame, &pack);
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(report.differences[0].contains("government_in_exile_tag"));
@@ -1090,7 +1088,7 @@ fn exile_country_tag_compares_exactly_and_nonpositive_omission_is_limited() {
         .unwrap()
         .government_in_exile_tag = Some(b"GER".to_vec());
     assert!(run(&frame, &pack).differences.is_empty());
-    set(&mut frame, replay::rows::Recorded::Value(-1));
+    set(&mut frame, replay_data::rows::Recorded::Value(-1));
     pack.manager
         .as_mut()
         .unwrap()

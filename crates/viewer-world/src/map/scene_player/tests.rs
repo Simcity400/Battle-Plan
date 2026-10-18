@@ -36,9 +36,19 @@ fn a_player_high_across_the_seam_takes_its_own_copy() {
     copies(&camera, VIEWPORT, plane, &mut offsets);
     assert_eq!(offsets, [width]);
     // On the map's own copy in front of the eye it takes that copy alone; behind it, none.
-    copies(&eye(100.0, 200.0, 0.5), VIEWPORT, ([180.0, 260.0, 1000.0], 2.0), &mut offsets);
+    copies(
+        &eye(100.0, 200.0, 0.5),
+        VIEWPORT,
+        ([180.0, 260.0, 1000.0], 2.0),
+        &mut offsets,
+    );
     assert_eq!(offsets, [0.0]);
-    copies(&eye(100.0, 200.0, 0.5), VIEWPORT, ([20.0, 260.0, 1000.0], 2.0), &mut offsets);
+    copies(
+        &eye(100.0, 200.0, 0.5),
+        VIEWPORT,
+        ([20.0, 260.0, 1000.0], 2.0),
+        &mut offsets,
+    );
     assert!(offsets.is_empty(), "{offsets:?}");
 }
 

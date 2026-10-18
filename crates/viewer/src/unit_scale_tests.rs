@@ -1,9 +1,7 @@
 //! Opt-in layer measurements against the synthetic replay example's output.
-use replay::{
-    container::SeekResult,
-    frame::TableView,
-    rows::{TableId, tables},
-};
+use replay::container::SeekResult;
+use replay_data::{rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -43,7 +41,7 @@ fn unit_scale_replay_layers() {
     let path = |name| PathBuf::from(std::env::var_os(name).expect(name));
     let document = Document::load(
         &path("BATTLE_PLAN_UNIT_REPLAY"),
-        &installed_content::ResolveOptions {
+        &installed_content_core::ResolveOptions {
             game_dir: path("BATTLE_PLAN_UNIT_GAME"),
             user_dir: path("BATTLE_PLAN_UNIT_USER"),
             cache_dir: path("BATTLE_PLAN_UNIT_CACHE"),

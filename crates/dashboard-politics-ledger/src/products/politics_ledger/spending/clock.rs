@@ -84,7 +84,7 @@ pub(super) struct Clock {
 
 impl Scanned {
     pub(super) fn advance(&mut self, hour: i32) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:clock_advance");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:clock_advance");
         if self
             .clock
             .through
@@ -176,7 +176,7 @@ impl Scanned {
     /// Country balances are not identity operands. The shared projection avoids
     /// joins when only those unrelated fields supplied a new allocation.
     pub(super) fn inputs_changed(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> bool {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:inputs_changed");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:inputs_changed");
         self.clock.advancing_deadlines = None;
         self.clock.window_deadlines = None;
         let refused_tags: Vec<_> = if changes.rows_changed[TableId::Countries.index()]
@@ -263,7 +263,7 @@ impl Scanned {
         advanced: &Arc<[(u32, i32)]>,
         day_due: bool,
     ) -> bool {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:certified_check");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:certified_check");
         if advanced.is_empty() || !self.certifies_join(frame, changes, day_due) {
             return false;
         }
@@ -328,7 +328,7 @@ impl Scanned {
         window: &Arc<inputs::WindowAdvance>,
         day_due: bool,
     ) -> bool {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:window_certificate");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:window_certificate");
         if !self.certifies_join(frame, changes, day_due) {
             return false;
         }
@@ -342,7 +342,7 @@ impl Scanned {
             held.through = frame.hour;
             return !held.next.is_some_and(|next| next <= frame.hour);
         }
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:window_capture_deadlines");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:window_capture_deadlines");
         let next = self
             .inputs
             .deadlines
@@ -372,7 +372,7 @@ impl Scanned {
         changes: &FrameChanges,
         window: &Arc<inputs::WindowAdvance>,
     ) {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:inputs_window");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:inputs_window");
         Arc::make_mut(&mut self.inputs).refresh_window(frame, changes, window);
         #[cfg(test)]
         {
@@ -393,7 +393,7 @@ impl Scanned {
             assert_eq!(due, self.inputs.due_after_advance(next, hour, captures));
             return due;
         }
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:capture_deadlines");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:capture_deadlines");
         let due = self.inputs.deadlines.range(next..).find_map(|(&at, raws)| {
             raws.iter()
                 .any(|raw| {
@@ -440,7 +440,7 @@ impl Scanned {
         changes: &FrameChanges,
         advanced: &Arc<[(u32, i32)]>,
     ) -> bool {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:inputs_advanced");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:inputs_advanced");
         Arc::make_mut(&mut self.inputs).refresh_advanced(frame, changes, advanced);
         #[cfg(test)]
         {
@@ -458,7 +458,7 @@ impl Scanned {
     }
 
     pub(super) fn begin_accounting(&mut self, frame: &DecodedFrame) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:accounting_begin");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:accounting_begin");
         self.clock.selected = self
             .inputs
             .slots
@@ -559,7 +559,7 @@ impl Scanned {
         frame: &DecodedFrame,
         content: Option<&PoliticsContent>,
     ) -> io::Result<()> {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:advance_accounting");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:advance_accounting");
         let hour = frame.hour;
         // As begin_accounting with nothing selected.
         self.clock.selected.clear();
@@ -586,7 +586,7 @@ impl Scanned {
     }
 
     pub(super) fn end_accounting(&mut self, hour: i32) {
-        let _cpu = ::replay::cpu::scope_phase("politics_ledger:accounting_end");
+        let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:accounting_end");
         if self.clock.presence_refreshed {
             // A refused alias before its first valid alias has no known tag on
             // the first read. Subsequent equal censuses use the final known tag.
@@ -759,9 +759,9 @@ mod deadline_tests {
         inputs.deadlines.insert(1, (1..=count).collect());
         inputs.deadlines.insert(6, BTreeSet::from([count + 1]));
         let changes = FrameChanges {
-            rows_changed: [false; replay::frame::TABLE_COUNT],
-            table_read: [false; replay::frame::TABLE_COUNT],
-            slot_read: [false; replay::frame::TABLE_COUNT],
+            rows_changed: [false; replay_data::rows::TABLE_COUNT],
+            table_read: [false; replay_data::rows::TABLE_COUNT],
+            slot_read: [false; replay_data::rows::TABLE_COUNT],
             updates: None,
         };
         let mut frame = super::super::tests::frame(1, 1);

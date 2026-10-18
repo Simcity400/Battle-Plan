@@ -1,9 +1,7 @@
 use dashboard_core::test_fixtures::{CAMPAIGN, records, source};
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, TableView},
-    rows::{TableId, TableRows},
-};
+use replay::container::Replay;
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::{
     path::Path,
     sync::{Arc, atomic::AtomicBool},
@@ -34,8 +32,8 @@ pub(crate) fn building_line(
     amount: i32,
     repair_levels: i32,
     factories: i32,
-) -> replay::rows::BuildingConstructionRow {
-    replay::rows::BuildingConstructionRow {
+) -> replay_data::rows::BuildingConstructionRow {
+    replay_data::rows::BuildingConstructionRow {
         id,
         country: 11,
         active_factories: factories,
@@ -48,7 +46,7 @@ pub(crate) fn building_line(
         } else {
             CIVILIAN
         },
-        target_flags: engine::cbuilding_status::STATE_FLAG,
+        target_flags: engine_native::cbuilding_status::STATE_FLAG,
         target_location: state,
         target_state: state,
         repair_levels,
@@ -61,8 +59,8 @@ pub(crate) fn building_at(
     location: u32,
     building_type: u32,
     levels: (i16, i16),
-) -> replay::rows::BuildingRow {
-    replay::rows::BuildingRow {
+) -> replay_data::rows::BuildingRow {
+    replay_data::rows::BuildingRow {
         location,
         building_type,
         level: levels.0,
@@ -77,12 +75,12 @@ pub(crate) fn building_at(
 pub(crate) fn construction_frame(
     hour: i32,
     read: bool,
-    mut lines: Vec<replay::rows::BuildingConstructionRow>,
-    mut rails: Vec<replay::rows::RailwayConstructionRow>,
-    states: Option<Vec<replay::rows::BuildingRow>>,
-    mut provinces: Vec<replay::rows::BuildingRow>,
+    mut lines: Vec<replay_data::rows::BuildingConstructionRow>,
+    mut rails: Vec<replay_data::rows::RailwayConstructionRow>,
+    states: Option<Vec<replay_data::rows::BuildingRow>>,
+    mut provinces: Vec<replay_data::rows::BuildingRow>,
 ) -> DecodedFrame {
-    use replay::rows::{LexicalTokenRow, ProvinceRow};
+    use replay_data::{rows::LexicalTokenRow, rows::ProvinceRow};
     let mut frame = source(1, hour, Some(1));
     lines.sort_by_key(|line| line.id);
     rails.sort_by_key(|line| line.id);
@@ -116,7 +114,7 @@ pub(crate) fn construction_frame(
             (MOD_REACTOR, "mod_reactor"),
             (INFRASTRUCTURE, "infrastructure"),
             (
-                engine::cbuilding_database::RAILWAY_TEMPLATE_TOKEN,
+                engine_native::cbuilding_database::RAILWAY_TEMPLATE_TOKEN,
                 "rail_way",
             ),
             (CIVILIAN, "industrial_complex"),
@@ -175,7 +173,7 @@ fn construction_projects_keep_runs_and_bound_departures_without_native_outcomes(
             lines.push(building_line(8, 11, 1, 0, 3));
             // 9: a country the links do not resolve.
             if hour >= 124 {
-                lines.push(replay::rows::BuildingConstructionRow {
+                lines.push(replay_data::rows::BuildingConstructionRow {
                     country: 77,
                     ..building_line(9, 12, 1, 0, 1)
                 });
@@ -321,8 +319,8 @@ pub(crate) fn railway_line(
     id: u64,
     route: &[u32],
     amount: i32,
-) -> replay::rows::RailwayConstructionRow {
-    replay::rows::RailwayConstructionRow {
+) -> replay_data::rows::RailwayConstructionRow {
+    replay_data::rows::RailwayConstructionRow {
         id,
         country: 11,
         active_factories: 4,
@@ -342,7 +340,7 @@ fn railway_live_amount_falls_are_counted_but_route_rises_do_not_prove_completion
     use crate::products::construction_log::{
         EndKind, LevelsBuilt, ProjectKind, tests::timed_scan as scan,
     };
-    let rail = engine::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
+    let rail = engine_native::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
     let reads = [100, 124, 148];
     let frames = (100..=150)
         .map(|hour| {
@@ -518,7 +516,7 @@ pub(crate) fn construction_frames(last: i32, frame: impl Fn(i32, bool) -> Decode
 
 #[test]
 fn construction_log_live_reply_warns_only_for_unproven_state_reading() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::construction_log::{ConstructionLogManifest, content_names, scanned};
     use dashboard_base::products::{BranchParams, Product};
@@ -596,7 +594,7 @@ fn construction_log_live_reply_warns_only_for_unproven_state_reading() {
         Ok("STATE_KEPT")
     );
     assert!(state_content.warnings.iter().any(|note| {
-        note.kind == installed_content::DiagnosticKind::Warning
+        note.kind == installed_content_core::DiagnosticKind::Warning
             && note.message.contains("state 5 is defined by both")
     }));
     let proven: Vec<_> = state_content
@@ -655,7 +653,7 @@ fn construction_log_live_reply_warns_only_for_unproven_state_reading() {
     for note in state_content
         .warnings
         .iter()
-        .filter(|note| note.cause.is_none() && note.kind != installed_content::DiagnosticKind::Warning)
+        .filter(|note| note.cause.is_none() && note.kind != installed_content_core::DiagnosticKind::Warning)
     {
         assert!(
             reply
@@ -776,7 +774,7 @@ fn levels_lost_while_the_building_was_not_recorded_are_unaccounted_not_erased() 
 #[test]
 fn a_project_first_listed_at_the_same_place_makes_a_rise_nobody_s() {
     use crate::products::construction_log::{EndKind, UnknownEnd, tests::timed_scan as scan};
-    let rail = engine::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
+    let rail = engine_native::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
     // A (1 left at 100) leaves before 124; B, created at 110 at the same
     // building, builds a level at 120 and is first listed at 124 with one left.
     // Railway R leaves before 124 and S, first listed at 124 (created at 95),
@@ -793,16 +791,16 @@ fn a_project_first_listed_at_the_same_place_makes_a_rise_nobody_s() {
             rails.push(railway_line(10, &[3001, 3002], 1));
             rails.push(railway_line(12, &[4001, 4002], 1));
         } else {
-            lines.push(replay::rows::BuildingConstructionRow {
+            lines.push(replay_data::rows::BuildingConstructionRow {
                 created_hour: 110,
                 ..building_line(2, 20, 1, 0, 15)
             });
-            lines.push(replay::rows::BuildingConstructionRow {
+            lines.push(replay_data::rows::BuildingConstructionRow {
                 created_hour: 121,
                 ..building_line(4, 21, 1, 0, 15)
             });
             rails.push(railway_line(11, &[3002, 3003], 1));
-            rails.push(replay::rows::RailwayConstructionRow {
+            rails.push(replay_data::rows::RailwayConstructionRow {
                 created_hour: 122,
                 ..railway_line(13, &[4002, 4003], 1)
             });
@@ -905,7 +903,7 @@ fn fixture_dds(tga: &[u8]) -> Vec<u8> {
 
 #[test]
 fn construction_icons_follow_strip_direction_and_the_gui_repair_frame() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::construction_log::{ContentView, named};
     use dashboard_text::catalogue::tests::folder_catalogue;
@@ -998,12 +996,13 @@ fn construction_icons_follow_strip_direction_and_the_gui_repair_frame() {
 
 #[test]
 fn construction_icons_use_cached_guis_and_the_native_fallback_and_refuse_unknown_decode() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::construction_log::{ContentView, named};
     use dashboard_text::catalogue::tests::folder_catalogue;
     use std::collections::BTreeSet;
-    let fallback = std::str::from_utf8(installed_content::gui::native::resources::FALLBACK_SPRITE).unwrap();
+    let fallback =
+        std::str::from_utf8(installed_content_core::gui::native::resources::FALLBACK_SPRITE).unwrap();
     let gfx = format!(
         r#"spriteTypes = {{ spriteType = {{ name = "{fallback}" texturefile = "gfx/fallback.tga" noOfFrames = 2 }} }}"#
     );
@@ -1176,7 +1175,7 @@ fn construction_titles_preserve_empty_and_key_equal_localisations() {
 
 #[test]
 fn a_modded_content_stack_names_and_pictures_its_own_buildings_and_refuses_what_it_cannot() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::construction_log::{ContentView, named};
     use std::collections::{BTreeMap, BTreeSet};
@@ -1280,7 +1279,8 @@ fn a_modded_content_stack_names_and_pictures_its_own_buildings_and_refuses_what_
         br#"state = { id = 900 name = "STATE_900" }"#,
     );
     let layers =
-        installed_content::ResolvedLayers::from_folders(&[(&base, &[][..]), (&modded, &[][..])]).unwrap();
+        installed_content_core::ResolvedLayers::from_folders(&[(&base, &[][..]), (&modded, &[][..])])
+            .unwrap();
     let catalogue = dashboard_text::catalogue::tests::layers_catalogue(layers);
     let texts = BTreeMap::from([
         ("industrial_complex", "Civilian Factory"),
@@ -1380,19 +1380,19 @@ fn a_modded_content_stack_names_and_pictures_its_own_buildings_and_refuses_what_
     for (prefix, expected) in [
         (
             "1 building types give a negative icon_frame",
-            installed_content::DiagnosticKind::Refused,
+            installed_content_core::DiagnosticKind::Refused,
         ),
         (
             "2 building types are declared more than once",
-            installed_content::DiagnosticKind::Ambiguous,
+            installed_content_core::DiagnosticKind::Ambiguous,
         ),
         (
             "1 building types have icon_frame 0",
-            installed_content::DiagnosticKind::Fallback,
+            installed_content_core::DiagnosticKind::Fallback,
         ),
         (
             "3 building types have no name",
-            installed_content::DiagnosticKind::Fallback,
+            installed_content_core::DiagnosticKind::Fallback,
         ),
     ] {
         assert_eq!(
@@ -1427,7 +1427,7 @@ fn levels_left_when_a_project_leaves_unknowably_stay_unaccounted_on_every_path()
             } else {
                 (Vec::new(), Vec::new())
             };
-            let rail = engine::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
+            let rail = engine_native::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
             let provinces = vec![
                 building_at(1001, rail, (1, 1)),
                 building_at(1002, rail, (1, 1)),
@@ -1512,7 +1512,7 @@ fn a_progress_fall_keeps_build_and_addition_only_possible() {
     let replay = construction_frames(150, |hour, read| {
         let mut lines = Vec::new();
         if hour < 148 {
-            lines.push(replay::rows::BuildingConstructionRow {
+            lines.push(replay_data::rows::BuildingConstructionRow {
                 produced: if hour < 124 {
                     1_000_000_000
                 } else {
@@ -1569,7 +1569,7 @@ fn a_line_that_repairs_then_builds_is_classified_per_stretch() {
     // and the new level under way, the new level rises at 144, gone at 148.
     let replay = construction_frames(150, |hour, read| {
         let lines = if hour < 148 {
-            vec![replay::rows::BuildingConstructionRow {
+            vec![replay_data::rows::BuildingConstructionRow {
                 building_type: CIVILIAN,
                 ..building_line(1, 5, 1, if hour < 124 { 1 } else { 0 }, 15)
             }]
@@ -1630,15 +1630,16 @@ fn a_rise_the_line_does_not_show_it_made_is_not_claimed() {
     // keeps `produced` at zero, so the fall is no completion, and the rise at 110
     // is not the line's; the damage is added to its repair.
     let replay = construction_frames(150, |hour, read| {
-        let line =
-            |id, state, amount, repair_levels, produced| replay::rows::BuildingConstructionRow {
+        let line = |id, state, amount, repair_levels, produced| {
+            replay_data::rows::BuildingConstructionRow {
                 produced,
                 building_type: CIVILIAN,
                 ..building_line(id, state, amount, repair_levels, 0)
-            };
+            }
+        };
         let before = hour < 124;
         let lines = vec![
-            replay::rows::BuildingConstructionRow {
+            replay_data::rows::BuildingConstructionRow {
                 speed: 0,
                 ..line(1, 5, 1, 0, 300_000_000)
             },
@@ -1746,7 +1747,7 @@ fn a_line_s_opening_work_is_zero_only_when_its_opening_stretch_shows_no_daily_ri
                 (7, 11, 110),
             ] {
                 if id != 1 || hour < 145 {
-                    lines.push(replay::rows::BuildingConstructionRow {
+                    lines.push(replay_data::rows::BuildingConstructionRow {
                         created_hour: created,
                         ..building_line(id, state, 1, 0, 15)
                     });
@@ -1802,13 +1803,13 @@ fn a_lost_opening_hour_stays_unknown_until_a_successful_read_resets_it() {
             .map(|hour| {
                 let mut lines = Vec::new();
                 if hour >= 124 {
-                    lines.push(replay::rows::BuildingConstructionRow {
+                    lines.push(replay_data::rows::BuildingConstructionRow {
                         created_hour: 110,
                         ..building_line(1, 5, 1, 0, 15)
                     });
                 }
                 if hour >= 148 {
-                    lines.push(replay::rows::BuildingConstructionRow {
+                    lines.push(replay_data::rows::BuildingConstructionRow {
                         created_hour: 130,
                         ..building_line(2, 6, 1, 0, 15)
                     });
@@ -1842,7 +1843,7 @@ fn an_opening_stretch_keeps_changes_through_a_failed_queue_read() {
     let replay = construction_frames_failing(150, &[100, 124, 148], &[124], |hour, read| {
         let lines = if hour >= 148 {
             [1, 2]
-                .map(|id| replay::rows::BuildingConstructionRow {
+                .map(|id| replay_data::rows::BuildingConstructionRow {
                     created_hour: 110,
                     ..building_line(id, id as u32 + 4, 1, 0, 15)
                 })
@@ -1865,17 +1866,17 @@ fn an_opening_stretch_keeps_changes_through_a_failed_queue_read() {
 #[test]
 fn a_railway_s_opening_work_is_checked_over_its_route_and_its_own_reads() {
     use crate::products::construction_log::{EndKind, tests::timed_scan as scan};
-    let rail = engine::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
+    let rail = engine_native::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
     let replay = construction_frames(150, |hour, read| {
         let mut rails = vec![railway_line(3, &[2001, 2002], 1)];
         if (124..145).contains(&hour) {
-            rails.push(replay::rows::RailwayConstructionRow {
+            rails.push(replay_data::rows::RailwayConstructionRow {
                 created_hour: 110,
                 ..railway_line(1, &[1001, 1002, 1003], 1)
             });
         }
         if hour >= 124 {
-            rails.push(replay::rows::RailwayConstructionRow {
+            rails.push(replay_data::rows::RailwayConstructionRow {
                 created_hour: 110,
                 ..railway_line(2, &[3001, 3002], 1)
             });
@@ -1907,7 +1908,7 @@ fn a_railway_s_opening_work_is_checked_over_its_route_and_its_own_reads() {
     // A successful building read must not clear a failed railway read's stretch.
     let replay = construction_frames(150, |hour, read| {
         let rails = if hour >= 148 {
-            vec![replay::rows::RailwayConstructionRow {
+            vec![replay_data::rows::RailwayConstructionRow {
                 created_hour: 110,
                 ..railway_line(4, &[1001, 1002], 1)
             }]
@@ -1945,7 +1946,7 @@ fn a_replacement_that_repaired_before_its_first_read_makes_the_repair_nobody_s()
             lines.push(building_line(1, 5, 0, 1, 0));
         }
         if hour >= 124 {
-            lines.push(replay::rows::BuildingConstructionRow {
+            lines.push(replay_data::rows::BuildingConstructionRow {
                 created_hour: 111,
                 building_type: INFRASTRUCTURE,
                 ..building_line(2, 5, 1, 0, 0)
@@ -1978,7 +1979,7 @@ fn sampled_speed_cannot_choose_between_possible_completion_dates() {
     // More factories for a day can complete either at 120, followed by a focus
     // supplying 144. Both completions are dated by the read, never at 144.
     let replay = construction_frames_failing(150, &[100, 124, 148], &[124], |hour, read| {
-        let line = |id, state, speed| replay::rows::BuildingConstructionRow {
+        let line = |id, state, speed| replay_data::rows::BuildingConstructionRow {
             cost: 100,
             produced: 40,
             speed,
@@ -2017,7 +2018,7 @@ fn extra_possible_completions_of_a_listed_line_widen_built_and_added_counts() {
     // Two left at 100, one at 148, unchanged progress. Both daily rises may be
     // built with a level added, or one may be supplied by a focus or event.
     let replay = construction_frames_failing(150, &[100, 148], &[], |hour, read| {
-        let lines = vec![replay::rows::BuildingConstructionRow {
+        let lines = vec![replay_data::rows::BuildingConstructionRow {
             produced: 40,
             cost: 100,
             ..building_line(1, 5, if hour < 148 { 2 } else { 1 }, 0, 15)
@@ -2081,12 +2082,12 @@ fn a_repair_started_and_finished_between_reads_is_counted() {
 
 #[test]
 fn construction_queue_reads_follow_cadence_without_a_timed_slot_walk() {
-    let replay::cadence::Cadence::Daily(slot) =
-        replay::cadence::cadence(TableId::BuildingConstruction)
+    let replay_data::cadence::Cadence::Daily(slot) =
+        replay_data::cadence::cadence(TableId::BuildingConstruction)
     else {
         panic!("BuildingConstruction is read in a daily slot");
     };
-    let hour = 1000 * replay::cadence::STAGGER_PERIOD + slot as i32;
+    let hour = 1000 * replay_data::cadence::STAGGER_PERIOD + slot as i32;
     let frame = |hour, factories| {
         construction_frame(
             hour,
@@ -2118,8 +2119,8 @@ pub(crate) fn spending_line(
     amount: i32,
     produced: i64,
     created_hour: i32,
-) -> replay::rows::BuildingConstructionRow {
-    replay::rows::BuildingConstructionRow {
+) -> replay_data::rows::BuildingConstructionRow {
+    replay_data::rows::BuildingConstructionRow {
         cost: 100_000_000,
         produced,
         created_hour,
@@ -2401,7 +2402,7 @@ fn a_window_does_not_grow_with_the_branch() {
 
 #[test]
 fn a_project_s_first_repair_advance_is_its_first_output_read_counting_one() {
-    use replay::rows::ConstructionLineOutputRow;
+    use replay_data::rows::ConstructionLineOutputRow;
     let replay = construction_frames(148, |hour, read| {
         let mut frame = construction_frame(
             hour,

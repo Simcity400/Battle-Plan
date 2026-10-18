@@ -1,15 +1,13 @@
 //! Native naval environment selection and displayed gun/depth totals.
-use engine::modifier_keys as keys;
-use installed_content::localisation::Argument;
-use installed_content::localisation::Localisation;
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        CountryCounterInputRow, NavalCombatShipRow, NavalCombatSideDetails,
-        NavalShipModifierSource, NavalShipWeaponContext, ShipModelRow, ShipRow, TaskForceRow,
-        WeatherRegionRow, tables,
-    },
+use engine_executable::modifier_keys as keys;
+use installed_content_localisation::localisation::Argument;
+use installed_content_localisation::localisation::Localisation;
+use replay_data::{
+    rows::CountryCounterInputRow, rows::NavalCombatShipRow, rows::NavalCombatSideDetails,
+    rows::NavalShipModifierSource, rows::NavalShipWeaponContext, rows::ShipModelRow, rows::ShipRow,
+    rows::TaskForceRow, rows::WeatherRegionRow, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -377,21 +375,21 @@ const CONVOY_WEAPON_STATS: [&str; 4] = ["lg_attack", "hg_attack", "torpedo_attac
 /// the equipment fields unmodified. Format 22 lacks the equipment identity and
 /// selected weapon field, so each convoy contributes a value in this range.
 ///
-/// Read equipment through [`installed_content::equipment::Database`], preserving directory
+/// Read equipment through [`installed_content_core::equipment::Database`], preserving directory
 /// and file order, generated archetype duplicates and default module categories.
 /// Effective type uses the own type, else the archetype's, plus module additions;
 /// convoys have category bit 1. The second value reports each place the read loses
 /// alignment. `Err` identifies an unsupported block, statement, parent-dependent
 /// slot or link cycle that leaves the remaining content unknown.
 #[cfg(test)]
-fn convoy_weapon_bound(layers: &installed_content::ResolvedLayers) -> io::Result<ConvoyBound> {
+fn convoy_weapon_bound(layers: &installed_content_core::ResolvedLayers) -> io::Result<ConvoyBound> {
     Ok(convoy_weapon_bound_from_database(
-        &installed_content::equipment::Database::load(layers)?,
+        &installed_content_core::equipment::Database::load(layers)?,
     ))
 }
 
 pub(super) fn convoy_weapon_bound_from_database(
-    database: &installed_content::equipment::Database,
+    database: &installed_content_core::equipment::Database,
 ) -> ConvoyBound {
     let misreads = database.misreads.clone();
     if let Some(lost) = &database.lost {
@@ -399,7 +397,7 @@ pub(super) fn convoy_weapon_bound_from_database(
     }
     let stats: Vec<usize> = CONVOY_WEAPON_STATS
         .iter()
-        .filter_map(|name| installed_content::equipment::stat_index(name.as_bytes()))
+        .filter_map(|name| installed_content_core::equipment::stat_index(name.as_bytes()))
         .collect();
     let mut range = [0_i64; 2];
     for equipment in database
@@ -588,7 +586,7 @@ fn opposing_silhouette(
     ships: &[&NavalCombatShipRow],
     models: Keyed<'_, ShipModelRow>,
     side: u8,
-    defines: &installed_content::naval_combat_defines::Defines,
+    defines: &installed_content_naval_combat_defines::naval_combat_defines::Defines,
 ) -> Result<i32, String> {
     // Round each forward group's silhouette and add with wrapping i32 arithmetic.
     let groups: BTreeSet<_> = ships
@@ -606,7 +604,7 @@ fn silhouette_group(
     models: Keyed<'_, ShipModelRow>,
     side: u8,
     group: u32,
-    defines: &installed_content::naval_combat_defines::Defines,
+    defines: &installed_content_naval_combat_defines::naval_combat_defines::Defines,
 ) -> Result<i32, String> {
     let [capital, screen, carrier, support, convoy, submarine] = defines.silhouette_planes;
     let mut capitals = 0_i32;
@@ -683,7 +681,7 @@ fn carrier_penalty_values(
     opposing: &[&NavalCombatShipRow],
     models: Keyed<'_, ShipModelRow>,
     opposing_side: u8,
-    defines: &installed_content::naval_combat_defines::Defines,
+    defines: &installed_content_naval_combat_defines::naval_combat_defines::Defines,
 ) -> Result<(i64, i32), String> {
     let opposing_count = opposing_silhouette(opposing, models, opposing_side, defines)?;
     let threshold = defines.summary_integer[2].max(opposing_count);
@@ -794,9 +792,9 @@ pub(super) fn bind(
     let Some(detail) = details.rows().iter().find(|r| r.combat == id) else {
         return Ok(());
     };
-    let weapons_admitted = match replay::fixed_layout::validate_recording(
+    let weapons_admitted = match replay_derive::fixed_layout::validate_recording(
         frame,
-        replay::fixed_layout::NAVAL_WEAPONS,
+        replay_derive::fixed_layout::NAVAL_WEAPONS,
     ) {
         Ok(()) => true,
         Err(reason) => {
@@ -1137,9 +1135,9 @@ fn weather_icon_text(text: &str) -> Result<Option<(&str, u32)>, String> {
     let mut parts = text.split(':');
     let sprite = parts.next().unwrap_or_default();
     // Frames use signed decimal prefix parsing.
-    let frame = parts
-        .next()
-        .map_or(1, |text| installed_content::fixed5::decimal_i32(text.as_bytes()));
+    let frame = parts.next().map_or(1, |text| {
+        installed_content_core::fixed5::decimal_i32(text.as_bytes())
+    });
     let frame = u32::try_from(frame)
         .ok()
         .filter(|frame| *frame >= 1)
@@ -1156,7 +1154,7 @@ fn weather_tooltip(
     block: &Block,
     definitions: &Definitions<'_>,
     icons: &dyn TextIcons,
-    localisation: &installed_content::localisation::Localisation,
+    localisation: &installed_content_localisation::localisation::Localisation,
 ) -> Result<String, String> {
     let name = token(icons, localisation, name.as_bytes())?;
     let description = block
@@ -1381,7 +1379,7 @@ fn weather_icons(
 /// Localise a weather key (an absent key shows its own bytes), then read
 /// [`weather_icon_text`]. Errors name why the icon is refused.
 fn weather_icon(
-    localisation: &installed_content::localisation::Localisation,
+    localisation: &installed_content_localisation::localisation::Localisation,
     key: &str,
     has_sprite: impl Fn(&str) -> bool,
 ) -> Result<Option<(String, u32)>, String> {

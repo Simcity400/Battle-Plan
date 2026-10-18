@@ -1,5 +1,5 @@
 //! Allocation-free notifications from the native writers of each character's
-//! country-leader and advisor role rows ([`engine::character_role_mutations`]
+//! country-leader and advisor role rows ([`engine_mutations::character_role_mutations`]
 //! and the advisor family's sites, [`crate::advisor_changes`], which owns the
 //! patches and forwards every call here). A detour only notifies the shared
 //! watch registry ([`WatchRegistry`]) for the character it names, counts its
@@ -10,7 +10,8 @@
 //! poisoned, a refused registration, an epoch change, a running writer)
 //! makes the capture read afresh.
 use crate::watch_registry::{Notification, WatchRegistry};
-use engine::{ccharacter, character_role_mutations::MUTATIONS};
+use engine_mutations::character_role_mutations::MUTATIONS;
+use engine_native::ccharacter;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static WATCHES: Watches = Watches::new();
@@ -314,9 +315,9 @@ pub fn advisor_map(map: usize) -> Notification<'static> {
 /// The guarded parent field of a live role at `role + offset`; `None` when
 /// it does not read, so the writer revokes every certificate.
 pub fn role_character(role: usize, offset: usize) -> Option<usize> {
-    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     role.checked_add(offset)
-        .and_then(|address| engine::read::<u64>(&memory, address))
+        .and_then(|address| engine_native::read::<u64>(&memory, address))
         .and_then(|character| usize::try_from(character).ok())
         .filter(|&character| character != 0)
 }

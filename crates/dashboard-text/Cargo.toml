@@ -13,25 +13,65 @@ doctest = false
 # Tests that take more than about two seconds; see AGENTS.md.
 slow-tests = []
 # The catalogue and scope fixtures, for the tests of crates above this one.
-test-support = ["dashboard-core/test-support", "installed-content/test-support"]
+test-support = ["dashboard-core/test-support", "installed-content-abilities/test-support", "installed-content-core/test-support", "installed-content-country-names/test-support", "installed-content-division-names/test-support", "installed-content-equipment-graphics/test-support", "installed-content-events/test-support", "installed-content-focus/test-support", "installed-content-gfx/test-support", "installed-content-image/test-support", "installed-content-localisation/test-support", "installed-content-raids/test-support", "installed-content-regions/test-support", "installed-content-scripted-localisation/test-support", "installed-content-settings/test-support", "installed-content-state-categories/test-support", "installed-content-states/test-support", "installed-content-wargoals/test-support"]
 
 [dependencies]
+replay.workspace = true
+engine-allocation.workspace = true
+engine-executable.workspace = true
+engine-native.workspace = true
+engine-power-balance.workspace = true
+engine-projects.workspace = true
+engine-research.workspace = true
+installed-content-abilities.workspace = true
+installed-content-core.workspace = true
+installed-content-country-names.workspace = true
+installed-content-division-names.workspace = true
+installed-content-equipment-graphics.workspace = true
+installed-content-events.workspace = true
+installed-content-focus.workspace = true
+installed-content-gfx.workspace = true
+installed-content-image.workspace = true
+installed-content-localisation.workspace = true
+installed-content-raids.workspace = true
+installed-content-regions.workspace = true
+installed-content-scripted-localisation.workspace = true
+installed-content-settings.workspace = true
+installed-content-state-categories.workspace = true
+installed-content-states.workspace = true
+installed-content-wargoals.workspace = true
+replay-data.workspace = true
+replay-derive.workspace = true
+replay-frame.workspace = true
 job-priority.workspace = true
 base64 = "0.22.1"
 dashboard-core.workspace = true
-engine.workspace = true
-installed-content.workspace = true
 installed-content-save.workspace = true
 png.workspace = true
-replay.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
 shader-pipeline = { path = "../shader-pipeline" }
 
 [dev-dependencies]
+installed-content-abilities = { workspace = true, features = ["test-support"] }
+installed-content-core = { workspace = true, features = ["test-support"] }
+installed-content-country-names = { workspace = true, features = ["test-support"] }
+installed-content-division-names = { workspace = true, features = ["test-support"] }
+installed-content-equipment-graphics = { workspace = true, features = ["test-support"] }
+installed-content-events = { workspace = true, features = ["test-support"] }
+installed-content-focus = { workspace = true, features = ["test-support"] }
+installed-content-gfx = { workspace = true, features = ["test-support"] }
+installed-content-image = { workspace = true, features = ["test-support"] }
+installed-content-localisation = { workspace = true, features = ["test-support"] }
+installed-content-raids = { workspace = true, features = ["test-support"] }
+installed-content-regions = { workspace = true, features = ["test-support"] }
+installed-content-scripted-localisation = { workspace = true, features = ["test-support"] }
+installed-content-settings = { workspace = true, features = ["test-support"] }
+installed-content-state-categories = { workspace = true, features = ["test-support"] }
+installed-content-states = { workspace = true, features = ["test-support"] }
+installed-content-wargoals = { workspace = true, features = ["test-support"] }
 # Recording containers the metadata tests corrupt and re-checksum.
 crc32fast = "1"
 zstd = "0.13"
 dashboard-core = { workspace = true, features = ["test-support"] }
 # Folder layers, so tests load localisation files as the game content does.
-installed-content = { workspace = true, features = ["test-support"] }

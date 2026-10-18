@@ -852,7 +852,7 @@ impl labels::LabelFont for Square {
 }
 
 /// The label operands of the bench: a named move order and an army.
-fn bench_localisation() -> installed_content::localisation::Localisation {
+fn bench_localisation() -> installed_content_localisation::localisation::Localisation {
     [
         (
             "MAP_ARROWS_LOCALIZATION",
@@ -1080,11 +1080,11 @@ fn bench_synthetic_1943_plan() {
 /// refusal and no-arrow case counted once per order.
 #[test]
 fn one_hour_builds_the_paradrop_and_counts_every_refusal_once() {
-    use installed_content::movement::{Neighbour, ProvinceTerrain};
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{OrderExecutionInputs, ProvinceRow, Recorded, TableRows},
+    use installed_content_core::{movement::Neighbour, movement::ProvinceTerrain};
+    use replay_data::{
+        rows::OrderExecutionInputs, rows::ProvinceRow, rows::Recorded, rows::TableRows,
     };
+    use replay_frame::{frame::Metrics, frame::TableView};
     // Provinces 1..=4 in a row of 2x2-pixel blocks, then 5 to keep the
     // hop from 1 to 4 off the map seam; 9 has no pixels.
     let width = 16u32;
@@ -1327,10 +1327,8 @@ fn assignment_count_preserves_virtual_and_empty_paths_but_requires_demanded_hq()
 
 #[test]
 fn own_order_count_preserves_decoded_admission_and_table_gaps() {
-    use replay::{
-        frame::TableView,
-        rows::{CountryLinkRow, TableRows},
-    };
+    use replay_data::{rows::CountryLinkRow, rows::TableRows};
+    use replay_frame::frame::TableView;
 
     let mut frame = DecodedFrame {
         branch: 1,

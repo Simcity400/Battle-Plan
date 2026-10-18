@@ -26,7 +26,7 @@ fn put_u32(bytes: &mut [u8], at: usize, value: u32) {
 /// receivers read through guarded live reads.
 fn country(id: u32) -> Box<[u8; 0x1000]> {
     let mut bytes = Box::new([0_u8; 0x1000]);
-    put_u32(&mut bytes[..], engine::ccountry::ID, id);
+    put_u32(&mut bytes[..], engine_native::ccountry::ID, id);
     bytes
 }
 
@@ -98,24 +98,24 @@ fn a_shared_level_marks_every_country_sharing_research_over_its_call() {
     let mut status = Box::new([0_u8; 0x200]);
     put(
         &mut own[..],
-        engine::ccountry::DIPLOMACY_STATUS,
+        engine_native::ccountry::DIPLOMACY_STATUS,
         diplomacy.as_ptr() as u64,
     );
     put(
         &mut diplomacy[..],
-        engine::cdiplomacy_status::FACTION,
+        engine_native::cdiplomacy_status::FACTION,
         faction.as_ptr() as u64,
     );
     put(
         &mut faction[..],
-        engine::cfaction::MEMBERS,
+        engine_native::cfaction::MEMBERS,
         members.as_ptr() as u64,
     );
-    put_u32(&mut faction[..], engine::cfaction::MEMBERS + 8, 2);
-    put_u32(&mut faction[..], engine::cfaction::MEMBERS + 12, 2);
+    put_u32(&mut faction[..], engine_native::cfaction::MEMBERS + 8, 2);
+    put_u32(&mut faction[..], engine_native::cfaction::MEMBERS + 12, 2);
     put(
         &mut status[..],
-        engine::ctechnology_status::COUNTRY,
+        engine_research::ctechnology_status::COUNTRY,
         own.as_ptr() as u64,
     );
     let epoch = take(&domain, Table::Research).0;
@@ -128,7 +128,11 @@ fn a_shared_level_marks_every_country_sharing_research_over_its_call() {
     assert_eq!(take(&domain, Table::Technologies), (technologies, vec![9]));
     assert_eq!(take(&domain, Table::Stability).1, Vec::<usize>::new());
     // Without a faction, the country alone.
-    put(&mut diplomacy[..], engine::cdiplomacy_status::FACTION, 0);
+    put(
+        &mut diplomacy[..],
+        engine_native::cdiplomacy_status::FACTION,
+        0,
+    );
     drop(domain.notify(site("research_completed"), status.as_ptr() as usize, 0));
     assert_eq!(take(&domain, Table::Research), (epoch, vec![9]));
     drop((own, member, diplomacy, faction, members, status));
@@ -143,7 +147,7 @@ fn slot_sync_marks_only_a_changed_roster() {
     let mut status = Box::new([0_u8; 0x200]);
     put(
         &mut status[..],
-        engine::ctechnology_status::COUNTRY,
+        engine_research::ctechnology_status::COUNTRY,
         own.as_ptr() as u64,
     );
     let address = status.as_ptr() as usize;
@@ -207,11 +211,11 @@ fn faction_sharing_base_marks_the_faction_only_when_it_changed() {
     let members = Box::new([first.as_ptr() as u64, second.as_ptr() as u64]);
     put(
         &mut faction[..],
-        engine::cfaction::MEMBERS,
+        engine_native::cfaction::MEMBERS,
         members.as_ptr() as u64,
     );
-    put_u32(&mut faction[..], engine::cfaction::MEMBERS + 8, 2);
-    put_u32(&mut faction[..], engine::cfaction::MEMBERS + 12, 2);
+    put_u32(&mut faction[..], engine_native::cfaction::MEMBERS + 8, 2);
+    put_u32(&mut faction[..], engine_native::cfaction::MEMBERS + 12, 2);
     let mut group = Box::new([0_u8; 0x100]);
     put(&mut group[..], 0x48, faction.as_ptr() as u64);
     let address = group.as_ptr() as usize;
@@ -264,7 +268,7 @@ fn the_domain_observes_only_with_its_hooks_and_every_forwarder() {
 /// family's site index maps to the writer its name says.
 #[test]
 fn forwarded_sites_reach_their_tables() {
-    use engine::political_status_mutations::MUTATIONS as STATUS;
+    use engine_mutations::political_status_mutations::MUTATIONS as STATUS;
     let names: Vec<&str> = STATUS.iter().map(|(site, _, _)| site.name).collect();
     assert_eq!(
         names,
@@ -335,7 +339,7 @@ fn forwarded_sites_reach_their_tables() {
     assert_eq!(Forward::WartimeAllies.receiver(), Receiver::DiplomacyStatus);
     // The territory, raid and advisor pool site indices name the writers
     // they forward.
-    let territory: Vec<(&str, Option<Forward>)> = engine::territory_mutations::MUTATIONS
+    let territory: Vec<(&str, Option<Forward>)> = engine_mutations::territory_mutations::MUTATIONS
         .iter()
         .enumerate()
         .filter_map(|(index, (site, _))| {
@@ -350,21 +354,21 @@ fn forwarded_sites_reach_their_tables() {
             ("reset_state", Some(Forward::StateReset)),
         ]
     );
-    let raid: Vec<&str> = engine::raid_mutations::MUTATIONS
+    let raid: Vec<&str> = engine_mutations::raid_mutations::MUTATIONS
         .iter()
         .enumerate()
         .filter(|(index, _)| raid_forward(*index) == Some(Forward::Cores))
         .map(|(_, (site, _))| site.name)
         .collect();
     assert_eq!(raid, ["add_core", "remove_core"]);
-    let pool: Vec<&str> = engine::advisor_pool_mutations::MUTATIONS
+    let pool: Vec<&str> = engine_mutations::advisor_pool_mutations::MUTATIONS
         .iter()
         .enumerate()
         .filter(|(index, _)| pool_forward(*index) == Some(Forward::CountryCharacters))
         .map(|(_, (site, _))| site.name)
         .collect();
     assert_eq!(pool, ["construct_pool", "destroy_pool"]);
-    use engine::character_role_mutations as roles;
+    use engine_mutations::character_role_mutations as roles;
     for site in [
         roles::COUNTRY_LEADER_MODIFIERS,
         roles::COUNTRY_LEADER_DESTROY,
@@ -386,7 +390,7 @@ fn forwarded_sites_reach_their_tables() {
     );
     assert_eq!(Forward::CharacterIdentity.tables(), Tables::RESEARCH);
     assert_eq!(Forward::CharacterIdentity.receiver(), Receiver::Character);
-    use engine::character_roster_mutations as roster;
+    use engine_mutations::character_roster_mutations as roster;
     assert_eq!(roster_forward(roster::PUSH, 1, 2), None);
     assert_eq!(roster_forward(roster::CLEAR, 1, 2), None);
     assert_eq!(
@@ -628,7 +632,7 @@ fn the_subject_rebuild_names_its_new_overlord_on_return() {
     let mut diplomacy = Box::new([0_u8; 0x400]);
     put(
         &mut diplomacy[..],
-        engine::cdiplomacy_status::COUNTRY,
+        engine_native::cdiplomacy_status::COUNTRY,
         country.as_ptr() as u64,
     );
     let receiver = diplomacy.as_ptr() as usize;
@@ -638,7 +642,11 @@ fn the_subject_rebuild_names_its_new_overlord_on_return() {
     let running = domain.notify(site("rebuild_subjects"), receiver, 0);
     assert_eq!(take(&domain, Table::Appearance), (None, vec![]));
     // The rebuild links an overlord; no game state resolves it here.
-    put_u32(&mut diplomacy[..], engine::cdiplomacy_status::OVERLORD, 7);
+    put_u32(
+        &mut diplomacy[..],
+        engine_native::cdiplomacy_status::OVERLORD,
+        7,
+    );
     drop(running);
     let (moved, ids) = take(&domain, Table::Appearance);
     assert!(moved.is_some() && moved != epoch);
@@ -658,13 +666,13 @@ fn counter_forwards_reach_the_counter_set() {
     let mut diplomacy = Box::new([0_u8; 0x400]);
     put(
         &mut diplomacy[..],
-        engine::cdiplomacy_status::COUNTRY,
+        engine_native::cdiplomacy_status::COUNTRY,
         owner.as_ptr() as u64,
     );
     let mut status = Box::new([0_u8; 0x400]);
     put(
         &mut status[..],
-        engine::crelation_status::DIPLOMACY_STATUS,
+        engine_native::crelation_status::DIPLOMACY_STATUS,
         diplomacy.as_ptr() as u64,
     );
     let state = Box::new([0_u8; 0x200]);
@@ -774,7 +782,7 @@ fn weather_writers_move_the_weather_count_on_entry_and_return() {
 fn a_state_owner_change_reaches_the_drifting_families() {
     let domain = Domain::enabled(64);
     let mut state = Box::new([0_u8; 0x200]);
-    put_u32(&mut state[..], engine::cstate::OWNER, 5);
+    put_u32(&mut state[..], engine_native::cstate::OWNER, 5);
     let tables = [
         Table::Technologies,
         Table::Focus,
@@ -804,13 +812,13 @@ fn only_an_effects_progress_marks_its_country() {
     let mut status = Box::new([0_u8; 0x200]);
     put(
         &mut status[..],
-        engine::ctechnology_status::COUNTRY,
+        engine_research::ctechnology_status::COUNTRY,
         owner.as_ptr() as u64,
     );
     let mut technology = Box::new([0_u8; 0x200]);
     put(
         &mut technology[..],
-        engine::ctechnology::STATUS,
+        engine_research::ctechnology::STATUS,
         status.as_ptr() as u64,
     );
     let first = technology.as_ptr() as usize;

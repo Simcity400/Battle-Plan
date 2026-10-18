@@ -3,11 +3,9 @@ use crate::{
     catalogue::tests::folder_catalogue,
     triggers::{Combat, ContentFacts, Eval, World},
 };
-use installed_content::trigger_keys::TriggerNames;
-use replay::{
-    frame::TableView,
-    rows::{TableId, TableRows},
-};
+use installed_content_core::trigger_keys::TriggerNames;
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::frame::TableView;
 use std::{
     collections::BTreeSet,
     sync::{Arc, Mutex},
@@ -92,13 +90,13 @@ fn run(source: &str, scripted: &str, entries: &str, extra: &str) -> Result<Strin
         }
     }
     let names = TriggerNames {
-        scripted: installed_content::scripted_triggers::read(&content.layers.layers).unwrap(),
+        scripted: installed_content_core::scripted_triggers::read(&content.layers.layers).unwrap(),
         counts: Some(Default::default()),
     };
     let dlcs = BTreeSet::new();
     let aliases = Arc::default();
     let roles = crate::triggers::LeaderRoles::new(
-        installed_content::characters::leader_templates(&content.layers.layers).unwrap(),
+        installed_content_core::characters::leader_templates(&content.layers.layers).unwrap(),
     );
     let mut facts = ContentFacts::content_only(&dlcs, &names, &aliases);
     facts.leader_roles = Ok(&roles);
@@ -106,7 +104,9 @@ fn run(source: &str, scripted: &str, entries: &str, extra: &str) -> Result<Strin
     let side = Side::default();
     let evaluator = Evaluator::new(&world, Some(&side));
     let text = ScriptedText::new(&frame, &catalogue.localisation, content, 0);
-    let items = installed_content::parser::parse(source.as_bytes()).unwrap().items;
+    let items = installed_content_core::parser::parse(source.as_bytes())
+        .unwrap()
+        .items;
     let mut refusals = BTreeMap::new();
     let result = describe(
         &items,
@@ -131,7 +131,7 @@ fn run(source: &str, scripted: &str, entries: &str, extra: &str) -> Result<Strin
 
 #[test]
 fn groups_share_evaluation_and_reset_descendant_mode() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(
         run(
@@ -157,7 +157,7 @@ fn groups_share_evaluation_and_reset_descendant_mode() {
 
 #[test]
 fn operands_use_integer_fixed5_and_stored_phase_names() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(
         run(
@@ -173,7 +173,7 @@ fn operands_use_integer_fixed5_and_stored_phase_names() {
 
 #[test]
 fn conditional_entry_keeps_combat_world_and_tls_across_large_stack_handoff() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut entries = String::new();
     let mut loc = String::new();
@@ -192,7 +192,7 @@ fn conditional_entry_keeps_combat_world_and_tls_across_large_stack_handoff() {
 
 #[test]
 fn empty_combat_scope_heading_and_counted_refusal_do_not_invent_country() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(
         run("ROOT={is_attacker=yes}", "", "", "").unwrap(),
@@ -212,7 +212,7 @@ fn empty_combat_scope_heading_and_counted_refusal_do_not_invent_country() {
 
 #[test]
 fn refused_conditional_taints_later_temp_read_but_keeps_pure_siblings() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let result = run(
         "if={limit={set_temp_variable={x=7}} is_attacker=yes} if={limit={night=yes} set_temp_variable={x=8}} custom_trigger_tooltip={tooltip=TIP is_attacker=yes} has_reserves=no",

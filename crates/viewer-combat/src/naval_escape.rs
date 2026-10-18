@@ -3,13 +3,11 @@
 //! operands, while the content stack supplies NNavy defines. A member
 //! without a live ship takes its side's source sum through modifier formatting
 //! ([`super::naval_trees::Sources::side`]).
-use engine::modifier_keys;
-use installed_content::{
-    ResolvedLayers,
-    static_modifiers::{self, Request},
-};
-use replay::rows::{
-    ModifierDefinitionRow, NavalCombatShipRow, NavalCombatSideDetails, NavalShipWeaponContext,
+use engine_executable::modifier_keys;
+use installed_content_core::{ResolvedLayers, static_modifiers, static_modifiers::Request};
+use replay_data::{
+    rows::ModifierDefinitionRow, rows::NavalCombatShipRow, rows::NavalCombatSideDetails,
+    rows::NavalShipWeaponContext,
 };
 use std::collections::BTreeMap;
 
@@ -42,7 +40,7 @@ impl Screening {
             .flat_map(|&modifier| {
                 ESCAPE_KEYS.iter().map(move |&key| Request {
                     modifier,
-                    key: engine::modifier_keys::names()[key as usize],
+                    key: engine_executable::modifier_keys::names()[key as usize],
                 })
             })
             .collect();
@@ -183,7 +181,7 @@ pub(super) struct Defines {
 }
 
 impl Defines {
-    pub(super) fn read(numbers: &installed_content::defines::Defines) -> Result<Self, String> {
+    pub(super) fn read(numbers: &installed_content_core::defines::Defines) -> Result<Self, String> {
         let fixed = |name| {
             numbers
                 .fixed5("NNavy", name)
@@ -388,7 +386,7 @@ mod tests {
             escape_speed_base: 200_000,
             weapon_context: NavalShipWeaponContext {
                 fuel: [50_000, 100_000],
-                sources: vec![replay::rows::NavalShipModifierSource {
+                sources: vec![replay_data::rows::NavalShipModifierSource {
                     scope: 20,
                     movement: 10_000,
                     ..Default::default()

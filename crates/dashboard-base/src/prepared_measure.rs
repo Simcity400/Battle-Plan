@@ -5,8 +5,8 @@ use crate::prepared::{
     series::{self, Accumulator, Run},
 };
 use crate::products::country_measure::{BalanceDrop, MEASURE_DECIMALS, Measure};
-use replay::frame::DecodedFrame;
-use replay::rows::{CountryLinkRow, CountryRow, tables};
+use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
 use ts_rs::TS;
@@ -14,10 +14,10 @@ use ts_rs::TS;
 pub mod query;
 
 /// The complete recorded tables needed by the stateless balance sampler.
-pub const TABLES: &[replay::rows::TableId] = &[
-    replay::rows::TableId::Campaign,
-    replay::rows::TableId::Countries,
-    replay::rows::TableId::CountryLinks,
+pub const TABLES: &[replay_data::rows::TableId] = &[
+    replay_data::rows::TableId::Campaign,
+    replay_data::rows::TableId::Countries,
+    replay_data::rows::TableId::CountryLinks,
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -335,9 +335,9 @@ impl MeasureAccumulator {
                 .complete::<tables::Countries>()
                 .ok()
                 .zip(frame.complete::<tables::CountryLinks>().ok()),
-            changes.rows_changed[replay::rows::TableId::Countries.index()]
-                || changes.rows_changed[replay::rows::TableId::CountryLinks.index()],
-            changes.rows_changed[replay::rows::TableId::CountryLinks.index()],
+            changes.rows_changed[replay_data::rows::TableId::Countries.index()]
+                || changes.rows_changed[replay_data::rows::TableId::CountryLinks.index()],
+            changes.rows_changed[replay_data::rows::TableId::CountryLinks.index()],
         )
     }
 
@@ -346,7 +346,7 @@ impl MeasureAccumulator {
         let changes = self
             .test_changes
             .get_or_insert_with(crate::prepared::frame_changes::FrameChangeTracker::new)
-            .observe(frame, replay::format::FormatVersion::CURRENT);
+            .observe(frame, replay_data::format::FormatVersion::CURRENT);
         self.observe_changes(frame, &changes)
     }
 

@@ -6,7 +6,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 
 #[test]
 fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{ContentOptions, LoadContext};
     use replay::spool::Record;
@@ -27,7 +27,7 @@ fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products
     ]);
     std::fs::create_dir(folder.0.join("dlc")).unwrap();
     let options = ContentOptions {
-        options: installed_content::ResolveOptions {
+        options: installed_content_core::ResolveOptions {
             game_dir: folder.0.clone(),
             user_dir: folder.0.join("user"),
             cache_dir: folder.0.join("cache"),
@@ -35,7 +35,7 @@ fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products
         allow_unverified: true,
     };
     // At recording time only policy-2 paths exist, so this is its exact hash.
-    let gathered = installed_content::gather(&installed_content::GatherOptions {
+    let gathered = installed_content_core::gather(&installed_content_core::GatherOptions {
         game_dir: options.options.game_dir.clone(),
         user_dir: options.options.user_dir.clone(),
         cache_dir: options.options.cache_dir.clone(),
@@ -92,7 +92,7 @@ fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products
     );
     let layers = &catalogue.content.layers;
     // The event reader loads headers/body lazily, after the catalogue was built.
-    let events = installed_content::events::LazyEvents::new(Arc::new(layers.clone()));
+    let events = installed_content_events::events::LazyEvents::new(Arc::new(layers.clone()));
     assert!(events.get(b"s.1").unwrap().refused.is_none());
     let expected = layers.read_warnings().warning().unwrap();
     assert!(expected.contains("Content: 1 file(s)"));

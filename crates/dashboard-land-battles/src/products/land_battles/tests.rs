@@ -1,11 +1,9 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{
-        CountryLinkRow, CountryRow, LandCombatProgressRow, LandCombatRow, LandCombatSideRow,
-        LandEquipmentLoss, Recorded, TableRows,
-    },
+use replay_data::{
+    rows::CountryLinkRow, rows::CountryRow, rows::LandCombatProgressRow, rows::LandCombatRow,
+    rows::LandCombatSideRow, rows::LandEquipmentLoss, rows::Recorded, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 
 mod newest;
 mod speed;
@@ -99,18 +97,18 @@ fn result_frame(hour: i32, winners: u8) -> DecodedFrame {
     let mut sample = frame(hour, 5000, 0);
     *sample.tables[TableId::LandCombatResults.index()] =
         TableView::Complete(TableRows::LandCombatResults(vec![
-            replay::rows::LandCombatResultsRow {
+            replay_data::rows::LandCombatResultsRow {
                 id: 1,
                 combat: 1,
                 province: 1,
                 end_hour: hour,
                 duration: 13,
                 winners,
-                sides: std::array::from_fn(|index| replay::rows::LandResultSide {
+                sides: std::array::from_fn(|index| replay_data::rows::LandResultSide {
                     countries: vec![index as u32 + 1],
                     ..Default::default()
                 }),
-                losses: std::array::from_fn(|index| replay::rows::LandSideLosses {
+                losses: std::array::from_fn(|index| replay_data::rows::LandSideLosses {
                     manpower: 10 + index as i32,
                     equipment: Vec::new(),
                 }),
@@ -119,7 +117,7 @@ fn result_frame(hour: i32, winners: u8) -> DecodedFrame {
         ]));
     *sample.tables[TableId::LandEventCoverage.index()] =
         TableView::Complete(TableRows::LandEventCoverage(vec![
-            replay::rows::LandEventCoverageRow {
+            replay_data::rows::LandEventCoverageRow {
                 from_hour: hour - 1,
                 to_hour: hour,
                 complete: true,
@@ -568,7 +566,7 @@ fn measure_land_battles(provinces: u32) {
     let original_countries = sample.tables[TableId::Countries.index()].clone();
     let mut changed = sample.complete::<tables::Countries>().unwrap().to_vec();
     changed[0].political_power_raw = Some(1);
-    let changed_countries: replay::frame::SharedView =
+    let changed_countries: replay_frame::frame::SharedView =
         TableView::Complete(TableRows::Countries(changed)).into();
     let mut census = Census::default();
     let mut nanos = Vec::with_capacity(9 * 365 * 24);
@@ -593,7 +591,7 @@ fn measure_land_battles(provinces: u32) {
         nanos.push(start.elapsed().as_nanos());
     }
     nanos.sort_unstable();
-    let step = replay::KEYFRAME_INTERVAL as i32;
+    let step = replay_frame::KEYFRAME_INTERVAL as i32;
     let windows: Vec<_> = (100..=sample.hour)
         .step_by(step as usize)
         .map(|first| BattleWindow {
@@ -678,7 +676,7 @@ fn measure_land_battles(provinces: u32) {
     // Reuse a synthetic wire cycle over nine years; handles reappear only after
     // recorded absence. Encoding stays outside timing. Block parsing and
     // decompression are amortized across its built hours, as in a cold scan.
-    let frames = (0..replay::KEYFRAME_INTERVAL as i32)
+    let frames = (0..replay_frame::KEYFRAME_INTERVAL as i32)
         .map(|elapsed| {
             sample.hour = 100 + elapsed;
             sample.tables[TableId::Countries.index()] = if elapsed % 2 == 0 {
@@ -719,8 +717,10 @@ fn measure_land_battles(provinces: u32) {
                 frame.hour += offset;
                 for update in &mut frame.tables {
                     match update {
-                        replay::frame::TableUpdate::Delta { baseline, .. }
-                        | replay::frame::TableUpdate::Unchanged { baseline } => *baseline += offset,
+                        replay_frame::frame::TableUpdate::Delta { baseline, .. }
+                        | replay_frame::frame::TableUpdate::Unchanged { baseline } => {
+                            *baseline += offset
+                        }
                         _ => {}
                     }
                 }
@@ -1334,7 +1334,7 @@ fn busy_progress(combat: u32, elapsed: i32) -> LandCombatProgressRow {
 }
 #[test]
 fn land_battles_busy_block_sends_changed_losses_far_below_their_full_reads() {
-    let (battles, hours) = (30, replay::KEYFRAME_INTERVAL as i32);
+    let (battles, hours) = (30, replay_frame::KEYFRAME_INTERVAL as i32);
     let mut sample = frame(100, 5000, battles);
     let mut census = Census::default();
     for elapsed in 0..hours {
@@ -1682,8 +1682,8 @@ fn land_battles_fresh_censuses_number_designs_in_combat_order() {
 #[test]
 fn duration_deltas_reuse_roster_counts_and_match_full_observation_across_resume_and_gaps() {
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, prepass};
-    use replay::frame::{FrameDecoder, FrameEncoder};
-    let format = replay::format::FormatVersion::CURRENT;
+    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
+    let format = replay_data::format::FormatVersion::CURRENT;
     let (mut sparse, mut whole) = (Census::new(format), Census::new(format));
     let mut encoder = FrameEncoder::default();
     let mut decoder = FrameDecoder::default();

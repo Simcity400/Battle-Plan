@@ -99,7 +99,7 @@ pub const ICON_OVERRIDE_TOKEN: usize = 0x458;
 /// Recorded icon bytes: active flag, kind and string header.
 ///
 /// The remaining rule uses content and recorded country values; see
-/// `replay::rows::VariantDefinitionRow`. An active valid override binds first.
+/// `replay_data::rows::VariantDefinitionRow`. An active valid override binds first.
 /// Otherwise type, origin or creator country, classifier and size select the
 /// content name search. Dynamic creators use their original tag.
 /// Auto-design resolves graphic pools using type, ruling ideology and 3D culture.

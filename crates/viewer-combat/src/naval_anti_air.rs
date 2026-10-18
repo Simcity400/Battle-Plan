@@ -1,6 +1,6 @@
 //! Fresh anti-air value displayed by the active naval-combat window.
-use engine::modifier_keys as keys;
-use replay::rows::NavalCombatShipRow;
+use engine_executable::modifier_keys as keys;
+use replay_data::rows::NavalCombatShipRow;
 
 const ONE: i64 = 100_000;
 
@@ -54,7 +54,7 @@ pub(super) fn calculate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{NavalShipModifierSource, NavalShipModifierTerm};
+    use replay_data::{rows::NavalShipModifierSource, rows::NavalShipModifierTerm};
 
     fn ship(state: u32, source: u8, group: u32) -> NavalCombatShipRow {
         NavalCombatShipRow {

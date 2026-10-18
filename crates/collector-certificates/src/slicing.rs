@@ -1,7 +1,7 @@
-//! Owner selection for [`replay::cadence::Cadence::Sliced`] tables.
+//! Owner selection for [`replay_data::cadence::Cadence::Sliced`] tables.
 //!
 //! A sliced family reads, at each hour, the owners of that hour's slice
-//! ([`replay::cadence::slice_active`]), every owner on a full hour, and every
+//! ([`replay_data::cadence::slice_active`]), every owner on a full hour, and every
 //! owner whose change fingerprint differs from its last observation, including
 //! an owner seen for the first time. A fingerprint only adds reads: an equal
 //! value never skips a slice read, so every emitted row is a complete read
@@ -12,7 +12,7 @@
 //! one kind per family ([`OwnerKind`]). Each family has its own
 //! [`SliceSelection`] per frame and its own [`SliceFingerprints`] store for the
 //! attachment, so country 5, slot 5 and state 5 never share storage. Register a family in [`FAMILIES`]; the spool
-//! then merges its tables by owner ([`replay::sliced::merge_slice`]).
+//! then merges its tables by owner ([`replay_data::sliced::merge_slice`]).
 //!
 //! A read that was selected but not published (failed, truncated or dropped)
 //! must be invalidated ([`SliceSelection::invalidate`]) so its owners are read
@@ -38,7 +38,7 @@
 //! marked is compared with its previous read ([`SliceSelection::compare`]):
 //! a difference is a write no hook saw.
 
-use replay::rows::TableId;
+use replay_data::rows::TableId;
 use std::collections::HashMap;
 
 /// What a family's owner IDs are.
@@ -235,7 +235,7 @@ pub const FAMILIES: [SliceFamily; 16] = [
 /// store every country is read, and so is every country of an hour whose
 /// census could not be read whole.
 pub fn scan_countries(
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
     hour: i32,
@@ -248,7 +248,7 @@ pub fn scan_countries(
         return;
     };
     let started = crate::clock::qpc();
-    let census = match engine::ccountry::Reader::new(memory, base, game_state) {
+    let census = match engine_native::ccountry::Reader::new(memory, base, game_state) {
         Err(_) => false,
         Ok(countries) => {
             let mut complete = true;
@@ -286,7 +286,7 @@ fn insert_owner(owners: &mut Vec<u32>, owner: u32) -> bool {
             Err(index) => index,
         },
     };
-    if engine::allocation::reserve_push_batch(owners, 1).is_err() {
+    if engine_allocation::reserve_push_batch(owners, 1).is_err() {
         return false;
     }
     owners.insert(index, owner);
@@ -380,7 +380,7 @@ impl SliceSelection {
     pub fn reset_daily(&mut self, hour: i32, force_full: bool) {
         self.reset(hour, force_full);
         self.daily = true;
-        self.boundary = hour.rem_euclid(replay::cadence::STAGGER_PERIOD) == 0;
+        self.boundary = hour.rem_euclid(replay_data::cadence::STAGGER_PERIOD) == 0;
     }
 
     /// [`Self::scan_drifting`] reading `drifts` only when it decides
@@ -489,7 +489,7 @@ impl SliceSelection {
     /// The scan visited every live owner: owners it did not see are gone, and
     /// the store forgets them, so a returning or reused ID is new at once.
     pub fn finish_census(&mut self, fingerprints: &mut SliceFingerprints) {
-        if self.out_of_range != 0 || engine::allocation::capture_stopped() {
+        if self.out_of_range != 0 || engine_allocation::capture_stopped() {
             self.force_full = true;
             return;
         }
@@ -529,7 +529,7 @@ impl SliceSelection {
             || if self.daily {
                 self.boundary
             } else {
-                replay::cadence::slice_active(owner, self.hour, false)
+                replay_data::cadence::slice_active(owner, self.hour, false)
             }
     }
 
@@ -596,7 +596,7 @@ impl SliceSelection {
         for owner in &self.marked {
             store.content.remove(owner);
         }
-        if engine::allocation::reserve_map(&mut store.content, hashes.len()).is_err() {
+        if engine_allocation::reserve_map(&mut store.content, hashes.len()).is_err() {
             store.content.clear();
             return (0, 0);
         }
@@ -649,7 +649,7 @@ impl SliceSelection {
         } else if self.daily {
             0
         } else {
-            1 << self.hour.rem_euclid(replay::cadence::STAGGER_PERIOD)
+            1 << self.hour.rem_euclid(replay_data::cadence::STAGGER_PERIOD)
         };
         // A change-driven family's take this hour spent marks of owners it
         // may not have read: the next hour certifies nothing and reads every
@@ -761,7 +761,7 @@ impl SliceFingerprints {
     /// every hour until its fingerprint reads again, and that read publishes
     /// its exact rows or its failure.
     fn observe(&mut self, owner: u32, value: Option<u64>) -> bool {
-        let stale_slice = self.stale_slices & (1 << replay::cadence::slice_of(owner)) != 0;
+        let stale_slice = self.stale_slices & (1 << replay_data::cadence::slice_of(owner)) != 0;
         let next = Fingerprint {
             value,
             stale: value.is_none(),
@@ -771,7 +771,7 @@ impl SliceFingerprints {
             *previous = next;
             return changed || stale_slice;
         }
-        if engine::allocation::reserve_map(&mut self.values, 1).is_ok() {
+        if engine_allocation::reserve_map(&mut self.values, 1).is_ok() {
             self.values.insert(owner, next);
         }
         true
@@ -780,7 +780,7 @@ impl SliceFingerprints {
     /// Whether `owner`'s print is held and current: known, not invalidated,
     /// readable, and its slice not stale.
     fn holds(&self, owner: u32) -> bool {
-        self.stale_slices & (1 << replay::cadence::slice_of(owner)) == 0
+        self.stale_slices & (1 << replay_data::cadence::slice_of(owner)) == 0
             && self
                 .values
                 .get(&owner)
@@ -903,7 +903,7 @@ impl Changed {
             self.verified += 1;
             self.mismatches += u64::from(differs);
         }
-        if held.is_some() || engine::allocation::reserve_map(&mut store.held.digests, 1).is_ok() {
+        if held.is_some() || engine_allocation::reserve_map(&mut store.held.digests, 1).is_ok() {
             store.held.digests.insert(owner, digest);
         }
         differs
@@ -926,7 +926,7 @@ impl Changed {
         let differs = self.read(store, owner, digest.finish());
         let held = store.held.groups.get(&owner);
         let first = held.and_then(|held| held.iter().zip(groups).position(|(a, b)| a != b));
-        if held.is_some() || engine::allocation::reserve_map(&mut store.held.groups, 1).is_ok() {
+        if held.is_some() || engine_allocation::reserve_map(&mut store.held.groups, 1).is_ok() {
             store.held.groups.insert(owner, *groups);
         }
         differs.then_some(first)
@@ -960,7 +960,7 @@ pub fn select_changed(
     let mut overflow = false;
     let epoch = take(&mut |id| match u32::try_from(id) {
         Ok(id) => {
-            if engine::allocation::reserve_push_batch(marked, 1).is_ok() {
+            if engine_allocation::reserve_push_batch(marked, 1).is_ok() {
                 marked.push(id);
             } else {
                 overflow = true;
@@ -1281,12 +1281,12 @@ mod tests {
                 .count();
             assert_eq!(
                 families,
-                usize::from(replay::cadence::is_sliced(table)),
+                usize::from(replay_data::cadence::is_sliced(table)),
                 "{table:?}"
             );
             assert_eq!(
                 family_of(table).is_some(),
-                replay::cadence::is_sliced(table)
+                replay_data::cadence::is_sliced(table)
             );
         }
         assert_eq!(FAMILIES[RESEARCH].name, "research");

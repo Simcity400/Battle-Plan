@@ -73,7 +73,7 @@
 //!   `numeric_value` keeps its existing fixed5 signature.
 //!   The modifier/number formatters share localisation arguments
 //!   and `crate::modifier_text::value_text`.
-//!   `Argument` and `installed_content::fixed5::{fixed5_to_string, fixed5_percent}` retain
+//!   `Argument` and `installed_content_core::fixed5::{fixed5_to_string, fixed5_percent}` retain
 //!   native modifier/number formatting.
 //! `Renderer::group`, `append_description`, `indent_nonempty_lines`,
 //!   `trim_description`, and `Context::{with_variable_session,
@@ -111,12 +111,9 @@ use crate::{
     scripted_text::{EventObject, EventScopes, ExpansionScopes, Link, ScriptedText},
     triggers::{Evaluator, Scopes, World},
 };
-use installed_content::{
-    localisation::{Argument, Localisation},
-    parser::Item,
-    scope::{Keyword, Scope as Parsed},
-};
-use replay::rows::{GlobalSavedEventTargetRow, StateRow, tables};
+use installed_content_core::{parser::Item, scope::Keyword, scope::Scope as Parsed};
+use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use replay_data::{rows::GlobalSavedEventTargetRow, rows::StateRow, rows::tables};
 
 mod ability;
 mod characters;
@@ -190,33 +187,34 @@ pub struct Description {
 }
 
 /// Resolves an event id to its parsed event, or why it cannot be.
-pub type EventLookup<'a> = dyn Fn(&[u8]) -> Result<Arc<installed_content::events::Event>, String> + 'a;
+pub type EventLookup<'a> =
+    dyn Fn(&[u8]) -> Result<Arc<installed_content_events::events::Event>, String> + 'a;
 
 /// Content already cached by the caller. Referenced events remain lazy.
 #[derive(Default, Clone, Copy)]
 pub struct Content<'a> {
-    pub doctrines: Option<&'a installed_content::doctrines::Database>,
-    pub decisions: Option<&'a installed_content::decisions::Database>,
-    pub ideas: Option<&'a installed_content::ideas::IdeaContent>,
-    pub static_modifiers: Option<&'a installed_content::static_modifiers::Descriptions>,
-    pub dynamic_modifiers: Option<&'a installed_content::dynamic_modifiers::Database>,
-    pub opinion_modifiers: Option<&'a installed_content::opinion_modifiers::Database>,
-    pub power_balances: Option<&'a installed_content::power_balance::Database>,
-    pub name_lists: Option<&'a installed_content::names::NameLists>,
+    pub doctrines: Option<&'a installed_content_core::doctrines::Database>,
+    pub decisions: Option<&'a installed_content_core::decisions::Database>,
+    pub ideas: Option<&'a installed_content_core::ideas::IdeaContent>,
+    pub static_modifiers: Option<&'a installed_content_core::static_modifiers::Descriptions>,
+    pub dynamic_modifiers: Option<&'a installed_content_core::dynamic_modifiers::Database>,
+    pub opinion_modifiers: Option<&'a installed_content_core::opinion_modifiers::Database>,
+    pub power_balances: Option<&'a installed_content_core::power_balance::Database>,
+    pub name_lists: Option<&'a installed_content_core::names::NameLists>,
     pub events: Option<&'a EventLookup<'a>>,
-    pub key_names: Option<&'a installed_content::key_names::KeyNames>,
-    pub scripted_effects: Option<&'a installed_content::scripted_effects::ScriptedEffects>,
-    pub industrial_organisations: Option<&'a installed_content::industrial_organisations::Database>,
-    pub collections: Option<&'a installed_content::collections::Database>,
-    pub country_scorers: Option<&'a installed_content::country_scorers::Database>,
-    pub buildings: Option<&'a installed_content::buildings::Buildings>,
-    pub resources: Option<&'a [installed_content::resources::Resource]>,
+    pub key_names: Option<&'a installed_content_core::key_names::KeyNames>,
+    pub scripted_effects: Option<&'a installed_content_core::scripted_effects::ScriptedEffects>,
+    pub industrial_organisations: Option<&'a installed_content_core::industrial_organisations::Database>,
+    pub collections: Option<&'a installed_content_core::collections::Database>,
+    pub country_scorers: Option<&'a installed_content_core::country_scorers::Database>,
+    pub buildings: Option<&'a installed_content_core::buildings::Buildings>,
+    pub resources: Option<&'a [installed_content_core::resources::Resource]>,
     pub max_railway_level: Option<i32>,
-    pub equipment: Option<&'a installed_content::equipment::Database>,
-    pub autonomy_states: Option<&'a installed_content::autonomy::AutonomyStates>,
-    pub state_categories: Option<&'a installed_content::state_categories::Database>,
-    pub division_names: Option<&'a installed_content::division_names::Database>,
-    pub wargoals: Option<&'a installed_content::wargoals::Database>,
+    pub equipment: Option<&'a installed_content_core::equipment::Database>,
+    pub autonomy_states: Option<&'a installed_content_core::autonomy::AutonomyStates>,
+    pub state_categories: Option<&'a installed_content_state_categories::state_categories::Database>,
+    pub division_names: Option<&'a installed_content_division_names::division_names::Database>,
+    pub wargoals: Option<&'a installed_content_wargoals::wargoals::Database>,
     pub gaps: Option<&'a BTreeMap<&'static str, String>>,
 }
 
@@ -224,38 +222,38 @@ pub struct Content<'a> {
 pub struct CachedContent {
     politics: politics::PoliticsContent,
     characters: characters::CharacterContent,
-    doctrines: Option<installed_content::doctrines::Database>,
-    decisions: Option<installed_content::decisions::Database>,
-    ideas: Option<installed_content::ideas::IdeaContent>,
-    static_modifiers: installed_content::static_modifiers::Descriptions,
-    dynamic_modifiers: Option<installed_content::dynamic_modifiers::Database>,
-    opinion_modifiers: Option<installed_content::opinion_modifiers::Database>,
-    power_balances: Option<installed_content::power_balance::Database>,
+    doctrines: Option<installed_content_core::doctrines::Database>,
+    decisions: Option<installed_content_core::decisions::Database>,
+    ideas: Option<installed_content_core::ideas::IdeaContent>,
+    static_modifiers: installed_content_core::static_modifiers::Descriptions,
+    dynamic_modifiers: Option<installed_content_core::dynamic_modifiers::Database>,
+    opinion_modifiers: Option<installed_content_core::opinion_modifiers::Database>,
+    power_balances: Option<installed_content_core::power_balance::Database>,
     /// Advisor templates from the same ideas read.
-    pub advisor_templates: Option<installed_content::characters::Characters>,
-    name_lists: Option<installed_content::names::NameLists>,
-    key_names: Option<std::sync::Arc<installed_content::key_names::KeyNames>>,
-    scripted_effects: Option<installed_content::scripted_effects::ScriptedEffects>,
-    industrial_organisations: Option<installed_content::industrial_organisations::Database>,
-    collections: Option<installed_content::collections::Database>,
-    country_scorers: Option<installed_content::country_scorers::Database>,
-    buildings: Option<installed_content::buildings::Buildings>,
-    resources: Option<Vec<installed_content::resources::Resource>>,
+    pub advisor_templates: Option<installed_content_core::characters::Characters>,
+    name_lists: Option<installed_content_core::names::NameLists>,
+    key_names: Option<std::sync::Arc<installed_content_core::key_names::KeyNames>>,
+    scripted_effects: Option<installed_content_core::scripted_effects::ScriptedEffects>,
+    industrial_organisations: Option<installed_content_core::industrial_organisations::Database>,
+    collections: Option<installed_content_core::collections::Database>,
+    country_scorers: Option<installed_content_core::country_scorers::Database>,
+    buildings: Option<installed_content_core::buildings::Buildings>,
+    resources: Option<Vec<installed_content_core::resources::Resource>>,
     max_railway_level: Option<i32>,
     /// Only a raid name needs the raid database; keep it lazy per content stack.
-    raids: std::sync::OnceLock<Result<installed_content::raids::Catalog, String>>,
-    equipment: Option<installed_content::equipment::Database>,
-    autonomy_states: Option<installed_content::autonomy::AutonomyStates>,
-    state_categories: Option<installed_content::state_categories::Database>,
-    division_names: Option<installed_content::division_names::Database>,
-    wargoals: Option<installed_content::wargoals::Database>,
+    raids: std::sync::OnceLock<Result<installed_content_raids::raids::Catalog, String>>,
+    equipment: Option<installed_content_core::equipment::Database>,
+    autonomy_states: Option<installed_content_core::autonomy::AutonomyStates>,
+    state_categories: Option<installed_content_state_categories::state_categories::Database>,
+    division_names: Option<installed_content_division_names::division_names::Database>,
+    wargoals: Option<installed_content_wargoals::wargoals::Database>,
     gaps: BTreeMap<&'static str, String>,
     pub notes: Vec<String>,
 }
 
 impl CachedContent {
     pub(crate) fn read(
-        layers: &installed_content::ResolvedLayers,
+        layers: &installed_content_core::ResolvedLayers,
         environment: &crate::scripted_text::Environment,
     ) -> std::io::Result<Self> {
         fn keep<T>(
@@ -269,59 +267,67 @@ impl CachedContent {
             .ok()
         }
         let mut gaps = BTreeMap::new();
-        let mut doctrines = keep(installed_content::doctrines::read(layers), "doctrines", &mut gaps);
-        let decisions = keep(installed_content::decisions::read(layers), "decisions", &mut gaps);
+        let mut doctrines = keep(
+            installed_content_core::doctrines::read(layers),
+            "doctrines",
+            &mut gaps,
+        );
+        let decisions = keep(
+            installed_content_core::decisions::read(layers),
+            "decisions",
+            &mut gaps,
+        );
         let defines = environment.defines();
         if let Some(doctrines) = &mut doctrines {
             doctrines.tactic_sources.default_reward_mastery =
                 defines.fixed5("NDoctrines", "DEFAULT_REWARD_MASTERY").ok();
         }
         let dynamic_modifiers = keep(
-            installed_content::dynamic_modifiers::read(layers),
+            installed_content_core::dynamic_modifiers::read(layers),
             "dynamic modifiers",
             &mut gaps,
         );
         let opinion_modifiers = keep(
-            installed_content::opinion_modifiers::read(layers, defines),
+            installed_content_core::opinion_modifiers::read(layers, defines),
             "opinion modifiers",
             &mut gaps,
         );
         let power_balances = keep(
-            installed_content::power_balance::read_descriptions(layers),
+            installed_content_core::power_balance::read_descriptions(layers),
             "power balances",
             &mut gaps,
         );
         let read_ideas = || {
             let officers = defines.strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
-            installed_content::ideas::read(layers, &officers)
+            installed_content_core::ideas::read(layers, &officers)
         };
         let ideas = keep(read_ideas(), "ideas", &mut gaps);
         let maximum = defines.int32("NSupply", "MAX_RAILWAY_LEVEL");
         let max_railway_level = keep(maximum, "MAX_RAILWAY_LEVEL", &mut gaps);
         let equipment = keep(
-            installed_content::equipment::Database::load_complete(layers),
+            installed_content_core::equipment::Database::load_complete(layers),
             "equipment",
             &mut gaps,
         );
         let autonomy_states = keep(
-            installed_content::autonomy::read(layers),
+            installed_content_core::autonomy::read(layers),
             "autonomy states",
             &mut gaps,
         );
         let state_categories = keep(
-            installed_content::state_categories::read(layers),
+            installed_content_state_categories::state_categories::read(layers),
             "state categories",
             &mut gaps,
         );
         let wargoals = keep(
-            installed_content::wargoals::read(layers),
+            installed_content_wargoals::wargoals::read(layers),
             "Wargoal definitions",
             &mut gaps,
         );
         let division_names = keep(
-            installed_content::division_names::read_directories::<String>(
+            installed_content_division_names::division_names::read_directories::<String>(
                 layers,
-                &installed_content::division_names::DIRECTORIES,
+                &installed_content_division_names::division_names::DIRECTORIES,
             ),
             "division name groups",
             &mut gaps,
@@ -374,18 +380,18 @@ impl CachedContent {
             }
             None => (None, None),
         };
-        let name_lists = keep(installed_content::names::read(layers), "name lists", &mut gaps);
+        let name_lists = keep(installed_content_core::names::read(layers), "name lists", &mut gaps);
         let key_names = keep(layers.key_names(), "effect key names", &mut gaps);
         let scripted_effects = key_names.as_ref().and_then(|names| {
             keep(
-                installed_content::scripted_effects::read(layers, names),
+                installed_content_core::scripted_effects::read(layers, names),
                 "scripted effects",
                 &mut gaps,
             )
         });
         let industrial_organisations = key_names.as_ref().and_then(|names| {
             keep(
-                installed_content::industrial_organisations::read(layers, names),
+                installed_content_core::industrial_organisations::read(layers, names),
                 "industrial organisation visibility",
                 &mut gaps,
             )
@@ -395,7 +401,7 @@ impl CachedContent {
         }
         let collections = key_names.as_ref().and_then(|names| {
             keep(
-                installed_content::collections::read(layers, names),
+                installed_content_core::collections::read(layers, names),
                 "collections",
                 &mut gaps,
             )
@@ -405,7 +411,7 @@ impl CachedContent {
         }
         let country_scorers = key_names.as_ref().and_then(|names| {
             keep(
-                installed_content::country_scorers::read(layers, names),
+                installed_content_core::country_scorers::read(layers, names),
                 "country scorers",
                 &mut gaps,
             )
@@ -413,32 +419,39 @@ impl CachedContent {
         if let Some(database) = &country_scorers {
             notes.extend(database.notes.clone());
         }
-        let buildings = keep(installed_content::buildings::read(layers), "buildings", &mut gaps);
-        let resources = keep(installed_content::resources::read(layers), "resources", &mut gaps).and_then(
-            |(resources, warnings)| {
-                let refused = warnings.iter().any(|(kind, _)| {
-                    matches!(
-                        kind,
-                        installed_content::DiagnosticKind::ParseFailure
-                            | installed_content::DiagnosticKind::Unsettled
-                            | installed_content::DiagnosticKind::Unsupported
-                            | installed_content::DiagnosticKind::Refused
-                    )
-                });
-                if refused {
-                    gaps.insert(
-                        "resources",
-                        warnings
-                            .iter()
-                            .map(|(_, why)| why.as_str())
-                            .collect::<Vec<_>>()
-                            .join("; "),
-                    );
-                }
-                notes.extend(warnings.into_iter().map(|(_, why)| why));
-                (!refused).then_some(resources)
-            },
+        let buildings = keep(
+            installed_content_core::buildings::read(layers),
+            "buildings",
+            &mut gaps,
         );
+        let resources = keep(
+            installed_content_core::resources::read(layers),
+            "resources",
+            &mut gaps,
+        )
+        .and_then(|(resources, warnings)| {
+            let refused = warnings.iter().any(|(kind, _)| {
+                matches!(
+                    kind,
+                    installed_content_core::DiagnosticKind::ParseFailure
+                        | installed_content_core::DiagnosticKind::Unsettled
+                        | installed_content_core::DiagnosticKind::Unsupported
+                        | installed_content_core::DiagnosticKind::Refused
+                )
+            });
+            if refused {
+                gaps.insert(
+                    "resources",
+                    warnings
+                        .iter()
+                        .map(|(_, why)| why.as_str())
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                );
+            }
+            notes.extend(warnings.into_iter().map(|(_, why)| why));
+            (!refused).then_some(resources)
+        });
         let politics = politics::PoliticsContent::read(layers);
         notes.extend(politics.notes.iter().cloned());
         let characters = characters::CharacterContent::read(
@@ -455,7 +468,7 @@ impl CachedContent {
             doctrines,
             decisions,
             ideas,
-            static_modifiers: installed_content::static_modifiers::Descriptions::default(),
+            static_modifiers: installed_content_core::static_modifiers::Descriptions::default(),
             dynamic_modifiers,
             opinion_modifiers,
             power_balances,
@@ -667,14 +680,14 @@ pub(super) fn fixed_field(items: &[Item], name: &str, default: i64) -> i64 {
     items
         .iter()
         .filter(|item| item.keyword_is(name))
-        .filter_map(|item| installed_content::fixed5::script_fixed5(item.value.scalar()?))
+        .filter_map(|item| installed_content_core::fixed5::script_fixed5(item.value.scalar()?))
         .next_back()
         .unwrap_or(default) // fixed-point parsing retains the previous value on failure.
 }
 
 fn integer(text: &[u8]) -> i32 {
-    match installed_content::crt::scan_i32(text) {
-        installed_content::crt::Scanned::Stored(value) => value,
+    match installed_content_core::crt::scan_i32(text) {
+        installed_content_core::crt::Scanned::Stored(value) => value,
         _ => 0,
     }
 }
@@ -766,11 +779,11 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         } else {
             let token = item
                 .keyword()
-                .and_then(|key| installed_content::effect_keys::registered(&key.folded()));
+                .and_then(|key| installed_content_core::effect_keys::registered(&key.folded()));
             // These custom value/key readers own target outside KEY_READERS.
             if !token.is_some_and(|token| {
-                installed_content::effect_keys::is_own_field(token, b"target")
-                    || installed_content::effect_keys::class(token).is_some_and(
+                installed_content_core::effect_keys::is_own_field(token, b"target")
+                    || installed_content_core::effect_keys::class(token).is_some_and(
                         |(value_reader, key_reader)| {
                             value_reader == 0x1403A9C70 // Make puppet's value reader.
                                 || matches!(
@@ -869,7 +882,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     .context
                     .text
                     .recorded()
-                    .saved_country(row.country, installed_content::parser::c_string(name))?,
+                    .saved_country(row.country, installed_content_core::parser::c_string(name))?,
                 _ => None,
             },
             None => self
@@ -887,8 +900,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let mut fields = children(item).iter().filter(|field| field.keyword_is(name));
         let chains = item
             .keyword()
-            .and_then(|key| installed_content::effect_keys::registered(&key.folded()))
-            .and_then(installed_content::effect_keys::class)
+            .and_then(|key| installed_content_core::effect_keys::registered(&key.folded()))
+            .and_then(installed_content_core::effect_keys::class)
             .is_some_and(|(_, reader)| reader == 0x1403AF5F0);
         if fields.clone().nth(1).is_some()
             && fields.clone().any(|field| {
@@ -928,7 +941,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         name: &[u8],
         scopes: Scopes,
     ) -> Result<Option<EffectSavedTarget<'_>>, String> {
-        let name = installed_content::parser::c_string(name);
+        let name = installed_content_core::parser::c_string(name);
         if let Some(mut at) = scopes.cursor {
             let graph = self.graph.borrow();
             // use terminal FROM storage.
@@ -1242,7 +1255,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 
     pub(super) fn effect_children(&mut self, item: &Item) -> Vec<Item> {
-        match installed_content::effect_keys::description_fields(item) {
+        match installed_content_core::effect_keys::description_fields(item) {
             Ok(body) => body,
             Err(why) => {
                 self.refuse(&key(item), why);

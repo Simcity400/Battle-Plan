@@ -4,11 +4,10 @@
 //! Ordinary pool job over the authenticated country roster view, never on the game thread;
 //! rows and token bytes grow from the original headers before publication.
 use crate::sampling::qpc;
-use engine::{Memory, active_ability_record, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{TableId, tables},
-};
+use engine_land_inputs::active_ability_record;
+use engine_native::{Memory, walk::Outcome};
+use replay_data::{rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 
 use super::characters::{Buffer, ability_row, valid, view, walk_abilities_growing};
 
@@ -101,15 +100,15 @@ impl Captured {
 mod tests {
     use super::super::characters::walk_abilities;
     use super::*;
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
 
     #[test]
     fn first_and_later_hours_grow_from_5000_country_headers() {
-        use engine::{ccountry, cgame_state};
+        use engine_native::{ccountry, cgame_state};
         let mut bytes = world(5_000, 1);
         let mut captured = Captured::with_capacities(&Capacities { rows: 0, bytes: 0 });
         captured.capture(
-            &engine::memory::SliceMemory {
+            &engine_native::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -129,7 +128,7 @@ mod tests {
             bytes[header + offset..header + offset + 4].copy_from_slice(&4_096_u32.to_le_bytes());
         }
         captured.capture(
-            &engine::memory::SliceMemory {
+            &engine_native::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -190,7 +189,8 @@ mod tests {
     /// A synthetic world of `countries` live countries; every `active_every`th one holds one
     /// ability record without caster or region.
     fn world(countries: u32, active_every: u32) -> Vec<u8> {
-        use engine::{cability, ccountry, cgame_state};
+        use engine_land_inputs::cability;
+        use engine_native::{ccountry, cgame_state};
         let put = |bytes: &mut Vec<u8>, at: usize, value: &[u8]| {
             bytes[at..at + value.len()].copy_from_slice(value)
         };
@@ -271,21 +271,27 @@ mod tests {
     /// census, so the per-country cost is the ability array header alone.
     #[test]
     fn the_hourly_walk_on_the_cached_roster_view_costs_one_call_per_country() {
-        use engine::read_counts::{CountedMemory, ReadCounts};
+        use engine_native::{read_counts::CountedMemory, read_counts::ReadCounts};
         for countries in [1_500_u32, 5_000] {
             let bytes = world(countries, 10);
-            let memory = engine::memory::SliceMemory {
+            let memory = engine_native::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             };
             // Sized for every census read, as the collector sizes it from the live registry.
             let mut storage = std::sync::Arc::new(
-                engine::country_memory::Cache::try_with_capacity((countries as usize + 1) * 16)
-                    .unwrap(),
+                engine_native::country_memory::Cache::try_with_capacity(
+                    (countries as usize + 1) * 16,
+                )
+                .unwrap(),
             );
-            let cache =
-                engine::country_memory::Cache::prepare_shared(&mut storage, &memory, 0, GAME_STATE)
-                    .unwrap();
+            let cache = engine_native::country_memory::Cache::prepare_shared(
+                &mut storage,
+                &memory,
+                0,
+                GAME_STATE,
+            )
+            .unwrap();
             assert!(
                 cache
                     .roster_view(&memory)

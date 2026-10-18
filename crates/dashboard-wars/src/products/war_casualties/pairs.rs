@@ -1483,10 +1483,10 @@ mod tests {
     #[test]
     fn casualty_pair_product_manifest_windows_selection_and_read_dates_agree() {
         use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-        use replay::{
-            frame::TableView,
-            rows::{CountryLinkRow, CountryRow, TableRows, WarRelationRow},
+        use replay_data::{
+            rows::CountryLinkRow, rows::CountryRow, rows::TableRows, rows::WarRelationRow,
         };
+        use replay_frame::frame::TableView;
         let frames = (100..=102)
             .map(|hour| {
                 let mut frame = source(1, hour, None);

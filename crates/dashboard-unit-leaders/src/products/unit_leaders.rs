@@ -55,14 +55,14 @@ use dashboard_text::{
     scripted_text::ScriptedContent,
     triggers::{Eval, Evaluator, LeaderVisibility, World, core_gap},
 };
-use replay::{
-    container::Replay,
-    format::FormatVersion,
-    frame::{DecodedFrame, FrameDecoder, SharedView, ViewIdentity},
-    rows::{
-        CharacterPortraitRow, CharacterRow, LandCombatDetailsRow, NavalCombatDetailsRow, Recorded,
-        TableId, UnitLeaderRow, UnitLeaderTraitRow, full_mask, tables,
-    },
+use replay::container::Replay;
+use replay_data::{
+    format::FormatVersion, rows::CharacterPortraitRow, rows::CharacterRow,
+    rows::LandCombatDetailsRow, rows::NavalCombatDetailsRow, rows::Recorded, rows::TableId,
+    rows::UnitLeaderRow, rows::UnitLeaderTraitRow, rows::full_mask, rows::tables,
+};
+use replay_frame::{
+    frame::DecodedFrame, frame::FrameDecoder, frame::SharedView, frame::ViewIdentity,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -121,10 +121,10 @@ impl LeaderKinds {
         match self {
             Self::All => matches!(
                 kind,
-                engine::cunit_leader::KIND_ARMY | engine::cunit_leader::KIND_NAVY
+                engine_native::cunit_leader::KIND_ARMY | engine_native::cunit_leader::KIND_NAVY
             ),
-            Self::Land => kind == engine::cunit_leader::KIND_ARMY,
-            Self::Navy => kind == engine::cunit_leader::KIND_NAVY,
+            Self::Land => kind == engine_native::cunit_leader::KIND_ARMY,
+            Self::Navy => kind == engine_native::cunit_leader::KIND_NAVY,
         }
     }
 }
@@ -503,7 +503,7 @@ fn rank_key(category: i32) -> Option<&'static str> {
 }
 
 fn maximum_skill(
-    skills: &installed_content::unit_leader::Skills,
+    skills: &installed_content_core::unit_leader::Skills,
     level: i32,
     category: i32,
 ) -> Option<i32> {
@@ -693,7 +693,7 @@ pub(crate) struct Kept<'a> {
 /// The queries and table fields that defeat a visibility proof. Only a
 /// measured rejection walks the keys or formats their names.
 fn rejected_inputs(inputs: &Inputs, since: &Since<'_>) {
-    if !replay::cpu::enabled() {
+    if !replay_frame::cpu::enabled() {
         return;
     }
     let mut tables = BTreeSet::new();
@@ -704,7 +704,7 @@ fn rejected_inputs(inputs: &Inputs, since: &Since<'_>) {
                 for read in reads {
                     if since.changed(&read) {
                         tables.insert(read.table);
-                        let _input = replay::cpu::scope_named(
+                        let _input = replay_frame::cpu::scope_named(
                             "leaders.rejected-input",
                             &rejected_input_label(key, Some(&read)),
                         );
@@ -714,7 +714,7 @@ fn rejected_inputs(inputs: &Inputs, since: &Since<'_>) {
             None => {
                 declared = false;
                 block::rejected("leaders.reject.undeclared-input");
-                let _input = replay::cpu::scope_named(
+                let _input = replay_frame::cpu::scope_named(
                     "leaders.undeclared-input",
                     &rejected_input_label(key, None),
                 );
@@ -745,8 +745,9 @@ fn rejected_input_label(
 }
 
 fn rejected_table(table: TableId) {
-    if replay::cpu::enabled() {
-        let _input = replay::cpu::scope_named("leaders.rejected-table", &format!("{table:?}"));
+    if replay_frame::cpu::enabled() {
+        let _input =
+            replay_frame::cpu::scope_named("leaders.rejected-table", &format!("{table:?}"));
     }
 }
 
@@ -1004,7 +1005,9 @@ fn visible_reusing(
     linked: bool,
 ) -> Result<bool, Option<String>> {
     // The optional role gate checks recorded capture state.
-    if row.kind == engine::cunit_leader::KIND_ARMY && (row.category as u32) < 2 && row.captured != 0
+    if row.kind == engine_native::cunit_leader::KIND_ARMY
+        && (row.category as u32) < 2
+        && row.captured != 0
     {
         return Ok(false);
     }
@@ -1079,7 +1082,7 @@ fn reply_bytes(reply: &UnitLeadersReply) -> io::Result<usize> {
 pub struct Content {
     catalogue: Arc<Catalogue>,
     politics: Arc<politics_content::PoliticsContent>,
-    leaders: installed_content::unit_leader::Leaders,
+    leaders: installed_content_core::unit_leader::Leaders,
 }
 
 #[cfg(test)]
@@ -1111,7 +1114,8 @@ impl Content {
     ) -> io::Result<Self> {
         #[cfg(test)]
         CONTENT_LOADS.with(|loads| loads.set(loads.get() + 1));
-        let leaders = installed_content::unit_leader::Leaders::load(&catalogue.content.layers, &|_| None)?;
+        let leaders =
+            installed_content_core::unit_leader::Leaders::load(&catalogue.content.layers, &|_| None)?;
         Ok(Self {
             catalogue,
             politics,
@@ -1161,8 +1165,8 @@ pub fn check_content(
         }
     }
     for kind in [
-        engine::cunit_leader::KIND_ARMY,
-        engine::cunit_leader::KIND_NAVY,
+        engine_native::cunit_leader::KIND_ARMY,
+        engine_native::cunit_leader::KIND_NAVY,
     ] {
         attribute_names(kind, Some(&content.catalogue));
     }
@@ -1770,7 +1774,7 @@ pub(crate) fn experience_field() -> u64 {
 /// The scan's read mask of an hour: which of its tables were read there.
 pub(crate) fn read_mask(
     format: FormatVersion,
-    metrics: &replay::frame::Metrics,
+    metrics: &replay_frame::frame::Metrics,
     hour: i32,
     career: bool,
 ) -> u32 {
@@ -2001,7 +2005,7 @@ impl Scan {
             block::rejected("leaders.reject.check-mode");
             return Ok(false);
         }
-        let cpu = ::replay::cpu::scope_phase("leaders:carry_proof");
+        let cpu = ::replay_frame::cpu::scope_phase("leaders:carry_proof");
         let since = Since::hour_before(decoded, tables);
         let moved = |read: &TableRead| since.as_ref().is_none_or(|since| since.changed(read));
         let holders_changed = self.refresh_holders(decoded, &moved);
@@ -2098,7 +2102,7 @@ impl Scan {
         land: Option<&[LandCombatDetailsRow]>,
         navy: Option<&[NavalCombatDetailsRow]>,
     ) {
-        let _cpu = ::replay::cpu::scope_phase("leaders:battles");
+        let _cpu = ::replay_frame::cpu::scope_phase("leaders:battles");
         let hour = decoded.hour;
         #[cfg(not(test))]
         let eager = false;
@@ -2366,7 +2370,7 @@ impl Scan {
         kept: Option<&Kept<'_>>,
         admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
     ) -> io::Result<bool> {
-        let _cpu = ::replay::cpu::scope_phase("leaders:rows");
+        let _cpu = ::replay_frame::cpu::scope_phase("leaders:rows");
         self.active_commands.clear();
         self.commands_continuous = true;
         self.evaluated.clear();
@@ -2836,7 +2840,7 @@ impl Scan {
             let battle_gap = previous_hour.is_some_and(|h| {
                 missing_battles[usize::from(row.kind - 1)].is_some_and(|m| m >= h)
             });
-            let current_battles_missing = if row.kind == engine::cunit_leader::KIND_ARMY {
+            let current_battles_missing = if row.kind == engine_native::cunit_leader::KIND_ARMY {
                 land.is_none()
             } else {
                 navy.is_none()
@@ -3090,7 +3094,7 @@ impl Scan {
                     || state
                         .last_read
                         .as_ref()
-                        .is_none_or(|last| last.row.kind != engine::cunit_leader::KIND_NAVY)
+                        .is_none_or(|last| last.row.kind != engine_native::cunit_leader::KIND_NAVY)
                 {
                     continue;
                 }
@@ -3151,7 +3155,7 @@ impl Scan {
                     && state
                         .last_read
                         .as_ref()
-                        .is_some_and(|last| last.row.kind == engine::cunit_leader::KIND_NAVY)
+                        .is_some_and(|last| last.row.kind == engine_native::cunit_leader::KIND_NAVY)
                 {
                     let (command, repeated, bytes) =
                         append_command(state, fleet, LeaderFormationKind::Fleet, None, hour);
@@ -3621,7 +3625,7 @@ fn trait_info(token: &str, content: Option<&Content>) -> LeaderTraitInfo {
 
 // Army and navy trait-window localisation keys.
 fn attribute_names(kind: u8, content: Option<&Catalogue>) -> [Option<String>; 4] {
-    let keys = if kind == engine::cunit_leader::KIND_NAVY {
+    let keys = if kind == engine_native::cunit_leader::KIND_NAVY {
         [
             "SKILL_NAVY_LEADER_ATTACK",
             "SKILL_NAVY_LEADER_DEFENSE",

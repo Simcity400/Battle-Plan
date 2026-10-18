@@ -420,7 +420,8 @@ mod tests {
     #[test]
     fn gaps_after_keeps_a_terminal_gap_beyond_the_last_recorded_frame() {
         use crate::test_fixtures::{CAMPAIGN, records};
-        use replay::{branches::Gap, container::Replay, spool::Record};
+        use replay::{container::Replay, spool::Record};
+        use replay_frame::branches::Gap;
 
         let mut recorded = records(1, vec![frame(1, 1, None), frame(1, 2, None)]);
         recorded.push(Record::Gap(Gap {
@@ -445,7 +446,8 @@ mod tests {
             prepared::query::{keyframes, progressive},
             test_fixtures::{CAMPAIGN, records},
         };
-        use replay::{branches::Gap, container::Replay, spool::Record};
+        use replay::{container::Replay, spool::Record};
+        use replay_frame::branches::Gap;
 
         let mut records = records(1, vec![frame(1, 1, Some(1)), frame(1, 2, Some(2))]);
         records.push(Record::Gap(Gap {
@@ -658,7 +660,7 @@ mod tests {
     #[test]
     fn gaps_inside_a_block_are_never_pending() {
         let mut replay = replay((0..=3).map(|hour| frame(1, hour, None)).collect());
-        replay.gaps.push(replay::branches::Gap {
+        replay.gaps.push(replay_frame::branches::Gap {
             branch: 1,
             first_hour: 1,
             last_hour: 2,

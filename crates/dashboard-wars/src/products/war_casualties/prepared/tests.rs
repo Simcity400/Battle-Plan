@@ -1,7 +1,7 @@
 use super::*;
 use dashboard_base::prepared::series::tests::Fixture;
 use dashboard_base::test_fixtures::{CAMPAIGN, records, scale_frame};
-use replay::rows::{TableRows, WarRelationRow};
+use replay_data::{rows::TableRows, rows::WarRelationRow};
 
 impl Prepared {
     fn work(&self) -> dashboard_base::prepared::observer_tests::Work {
@@ -292,7 +292,7 @@ fn static_casualty_label_is_bound_once_for_success_empty_text_and_refusal() {
         )]);
         let catalogue = Arc::new(catalogue);
         let options = dashboard_core::config::ContentOptions {
-            options: installed_content::ResolveOptions {
+            options: installed_content_core::ResolveOptions {
                 game_dir: folder.0.clone(),
                 user_dir: folder.0.clone(),
                 cache_dir: folder.0.join("cache"),
@@ -371,7 +371,7 @@ fn restored_casualties_publish_what_continuous_observation_publishes() {
     )]);
     let catalogue = Arc::new(catalogue);
     let options = dashboard_core::config::ContentOptions {
-        options: installed_content::ResolveOptions {
+        options: installed_content_core::ResolveOptions {
             game_dir: folder.0.clone(),
             user_dir: folder.0.clone(),
             cache_dir: folder.0.join("cache"),
@@ -439,7 +439,7 @@ fn catalogue_refusal_is_bound_before_casualty_observation() {
     let source = source(std::slice::from_ref(&first));
     let (_, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[]);
     let options = dashboard_core::config::ContentOptions {
-        options: installed_content::ResolveOptions {
+        options: installed_content_core::ResolveOptions {
             game_dir: folder.0.clone(),
             user_dir: folder.0.clone(),
             cache_dir: folder.0.join("cache"),

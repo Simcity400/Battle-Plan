@@ -5,23 +5,21 @@
 //! (CountryRetiredCharacters) and its roles' traits (CharacterRoleTraits).
 
 use crate::state_resources::Links;
-use installed_content::{leader_traits::LeaderTraits, unit_leader::Traits};
-use replay::{
-    frame::DecodedFrame,
-    rows::{
-        CharacterOperativeRow, CharacterRoleTraitRow, CharacterRow, CountryCharacterRow,
-        UnitLeaderRow, UnitLeaderTraitRow, tables,
-    },
+use installed_content_core::{leader_traits::LeaderTraits, unit_leader::Traits};
+use replay_data::{
+    rows::CharacterOperativeRow, rows::CharacterRoleTraitRow, rows::CharacterRow,
+    rows::CountryCharacterRow, rows::UnitLeaderRow, rows::UnitLeaderTraitRow, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 type Evaluation<T> = Result<T, String>;
 
 /// The fields of each table [`Tables`] reads, by
-/// [`replay::rows::TableId::field_name`]: the row keys besides, and nothing
+/// [`replay_data::rows::TableId::field_name`]: the row keys besides, and nothing
 /// else of their rows. An evaluation reading through [`Tables`] reads these
 /// ([`crate::triggers::inputs::fields`]).
-pub const FIELDS: [(replay::rows::TableId, &[&str]); 6] = {
-    use replay::rows::TableId;
+pub const FIELDS: [(replay_data::rows::TableId, &[&str]); 6] = {
+    use replay_data::rows::TableId;
     [
         (TableId::Characters, &["country", "name_token_id"]),
         (
@@ -130,10 +128,10 @@ impl Default for Tables<'_> {
 }
 
 impl<'a> Tables<'a> {
-    /// The hour's tables, each hourly (replay::cadence): their writers run at
+    /// The hour's tables, each hourly (replay_data::cadence): their writers run at
     /// any hour.
     pub fn read(frame: &'a DecodedFrame) -> Self {
-        fn table<'f, T: replay::rows::TableSchema>(
+        fn table<'f, T: replay_data::rows::TableSchema>(
             frame: &'f DecodedFrame,
             name: &str,
         ) -> Result<&'f [T::Row], String> {

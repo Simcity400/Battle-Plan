@@ -19,7 +19,7 @@ impl Memory for Source<'_> {
             out.fill(0xff);
             return false;
         }
-        engine::memory::SliceMemory {
+        engine_native::memory::SliceMemory {
             base: 0,
             bytes: self.bytes,
         }
@@ -153,12 +153,14 @@ fn batched_core_province_persistent_faults_keep_serial_reason_and_prefix() {
 fn batched_core_province_one_shot_refuses_no_more_and_counts_fallback() {
     let (bytes, seeds) = world(65);
     for at in [seeds[20].location.unwrap() + cprovince::ID, SLOTS + 21 * 8] {
-        let before =
-            engine::batch_fallback::count(engine::batch_fallback::Batch::DivisionProvinces);
+        let before = engine_native::batch_fallback::count(
+            engine_native::batch_fallback::Batch::DivisionProvinces,
+        );
         let actual = capture(&bytes, &seeds, true, Some(at), true).0;
         assert_eq!(
-            engine::batch_fallback::count(engine::batch_fallback::Batch::DivisionProvinces)
-                - before,
+            engine_native::batch_fallback::count(
+                engine_native::batch_fallback::Batch::DivisionProvinces
+            ) - before,
             1
         );
         let serial = capture(&bytes, &seeds, false, Some(at), true).0;
@@ -223,7 +225,7 @@ fn batched_core_projection_capacity_alias_duplicates_and_faults_equal_serial() {
             .copy_from_slice(&(pointer as u64).to_le_bytes());
     }
     for pointer in [kit::A1, kit::A2] {
-        let at = pointer + engine::cunit::ROSTER_OWNER;
+        let at = pointer + engine_native::cunit::ROSTER_OWNER;
         bytes[at..at + 4].copy_from_slice(&3_u32.to_le_bytes());
     }
     for invalid in 0..4 {

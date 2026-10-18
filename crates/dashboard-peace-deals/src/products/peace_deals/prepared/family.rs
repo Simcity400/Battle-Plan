@@ -28,11 +28,13 @@ use dashboard_base::prepared::{
 };
 use dashboard_text::metadata::slot_read;
 use replay::{
-    container::{BlockIndex, QuietHours, Replay, TableFields},
-    format::FormatVersion,
-    frame::DecodedFrame,
-    rows::{CountryCounterInputRow, CountryRow, ProvinceRow, StateRow, TableId, TableRows, tables},
+    container::BlockIndex, container::QuietHours, container::Replay, container::TableFields,
 };
+use replay_data::{
+    format::FormatVersion, rows::CountryCounterInputRow, rows::CountryRow, rows::ProvinceRow,
+    rows::StateRow, rows::TableId, rows::TableRows, rows::tables,
+};
+use replay_frame::frame::DecodedFrame;
 use std::{any::Any, io, ops::Range};
 
 /// The tables the peace observer reads.
@@ -241,7 +243,7 @@ fn subject_end(frame: &DecodedFrame) -> Option<i32> {
 /// The first hour after `hour` at which the roster's table is scheduled to be
 /// read in a recording of `format`; None for a table never read on schedule.
 fn next_roster_read(format: FormatVersion, hour: i32) -> Option<i32> {
-    let cadence = replay::cadence::cadence_in(TableId::PeaceConferences, format);
+    let cadence = replay_data::cadence::cadence_in(TableId::PeaceConferences, format);
     // Every schedule repeats within a week of hours.
     (1..=24 * 7)
         .filter_map(|step| hour.checked_add(step))
@@ -362,9 +364,9 @@ pub fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let facts = {
-        let _cpu = ::replay::cpu::scope("fold facts", None);
+        let _cpu = ::replay_frame::cpu::scope("fold facts", None);
         facts
             .downcast::<BlockFacts>()
             .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -375,7 +377,7 @@ pub fn fold(
     // The last observed hour's frame, whose rows the hours of a span hold.
     let mut last_frame: Option<DecodedFrame> = None;
     for hour in facts.hours {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         check()?;
         match hour {
             Hour::Observed { frame, changes } => {
@@ -383,7 +385,7 @@ pub fn fold(
                 #[cfg(any(test, feature = "test-support"))]
                 dashboard_base::prepared::kept::note_observed(FAMILY.name);
                 let result = {
-                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     prepared.observe_changed(&frame, &changes)
                 };
                 let live = observed(frame.hour, result)?;
@@ -394,7 +396,7 @@ pub fn fold(
             }
             Hour::Quiet { first, last, reads } => {
                 let advanced = {
-                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     match &last_frame {
                         Some(frame) => prepared.advance_quiet(frame, first, last, &reads),
                         None => Ok(false),
@@ -434,7 +436,7 @@ pub fn observe_block(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     observe_hours(
         replay,
         index,

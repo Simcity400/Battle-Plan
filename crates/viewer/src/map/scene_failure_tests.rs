@@ -32,7 +32,7 @@ pub(crate) struct Input {
     user: PathBuf,
     cache: PathBuf,
     output: PathBuf,
-    pub(crate) branch: replay::BranchId,
+    pub(crate) branch: replay_data::BranchId,
     pub(crate) hour: i32,
     camera: [f32; 3],
 }
@@ -81,7 +81,7 @@ impl Fixture {
         // Same covered-content check and recorded DLC/mod order as --dump. No override.
         let document = crate::document::Document::load(
             &input.replay,
-            &installed_content::ResolveOptions {
+            &installed_content_core::ResolveOptions {
                 game_dir: input.game.clone(),
                 user_dir: input.user.clone(),
                 cache_dir: input.cache.clone(),

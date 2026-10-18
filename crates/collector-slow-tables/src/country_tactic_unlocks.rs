@@ -8,13 +8,14 @@ use crate::{
     table_capture::{Arena, CaptureRows, grow_capacity},
     table_conversion::{table, unavailable},
 };
-use engine::allocation::{copy_vec, owned_vec};
-use engine::{Memory, country_tactic_unlocks as native, walk::Outcome};
-use replay::{
-    cadence::{SKIPPED_REASON, should_walk},
-    frame::TableView,
-    rows::{CountryTacticUnlockRow, TableId, tables},
+use engine_allocation::{copy_vec, owned_vec};
+use engine_land_inputs::country_tactic_unlocks as native;
+use engine_native::{Memory, walk::Outcome};
+use replay_data::{
+    cadence::SKIPPED_REASON, cadence::should_walk, rows::CountryTacticUnlockRow, rows::TableId,
+    rows::tables,
 };
+use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::CountryTacticUnlocks];
@@ -195,7 +196,7 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
 
     #[test]
     fn country_lists_preserve_empty_rows_and_native_unlock_order() {

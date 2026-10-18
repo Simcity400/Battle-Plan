@@ -5,10 +5,8 @@ use crate::{
     icon_frames::{self, IconHour, IconInput},
     map::tables::rows,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{NavalCombatDetailsRow, NavalCombatShipRow, tables},
-};
+use replay_data::{rows::NavalCombatDetailsRow, rows::NavalCombatShipRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 
 /// The naval combat icons' hour for the engaged index ([`icon_frames`]): `alive`

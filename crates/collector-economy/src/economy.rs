@@ -8,21 +8,19 @@ use crate::{
     table_capture::{Arena, CaptureRows, bounded, grow_vec},
     table_conversion::unavailable,
 };
-use engine::{
-    Memory,
-    allocation::{copy_vec, filled, owned_vec},
-    ccountry, ccountry_experience_status, ccountry_fuel_status, ccountry_resources,
-    ccountry_supply_system, cgame_state,
-    cpdx_array::Array,
-    cpurchase_contract, cresource_exchange, cstrategic_resource, disrupted_supply_bucket,
-    foreign_homebase_node, fuel_consumer_data, fuel_history_entry, hub_motorization_entry,
-    market_contract_manager, msvc_string, sprovince_supply_data, supply_node_record,
-    walk::Outcome,
+use engine_allocation::{copy_vec, filled, owned_vec};
+use engine_events::ccountry_experience_status;
+use engine_fuel::{ccountry_fuel_status, fuel_consumer_data, fuel_history_entry};
+use engine_map_air::foreign_homebase_node;
+use engine_native::{
+    Memory, ccountry, ccountry_supply_system, cgame_state, cpdx_array::Array,
+    hub_motorization_entry, msvc_string, supply_node_record, walk::Outcome,
 };
-use replay::{
-    frame::TableInput,
-    rows::{self, TableId, tables},
-};
+use engine_production::{cpurchase_contract, market_contract_manager};
+use engine_railways::{disrupted_supply_bucket, sprovince_supply_data};
+use engine_resources::{ccountry_resources, cresource_exchange, cstrategic_resource};
+use replay_data::{rows, rows::TableId, rows::tables};
+use replay_frame::frame::TableInput;
 use std::mem::size_of;
 
 pub const N: usize = 12;
@@ -46,7 +44,7 @@ pub const TABLES: [TableId; N] = [
 /// Definitions are authenticated once and reused by the two dependent walks.
 /// Their read time is charged to ResourceDefinitions, not charged again to each
 /// consumer. CountryResources, ResourceExchanges and the definitions are hourly
-/// (replay::cadence): the census is walked every hour for its two consumers
+/// (replay_data::cadence): the census is walked every hour for its two consumers
 /// and published with them. The consumers' own timings include their
 /// additional native reads.
 /// One fuel walk reads each country's status once for both its tables and is
@@ -343,8 +341,8 @@ impl Captured {
                 memory,
                 base,
                 game_state,
-                engine::walk::Buffer::for_worker(&mut self.foreign.rows, growing),
-                engine::walk::Buffer::for_worker(&mut self.sources.first, growing),
+                engine_native::walk::Buffer::for_worker(&mut self.foreign.rows, growing),
+                engine_native::walk::Buffer::for_worker(&mut self.sources.first, growing),
             );
             self.foreign.outcome = bounded(acquired.outcome, self.foreign.rows.len());
             self.sources.len = acquired.bytes_len;
@@ -368,7 +366,7 @@ impl Captured {
                 cstrategic_resource::walk_buffer(
                     memory,
                     base,
-                    engine::walk::Buffer::for_worker(rows, growing),
+                    engine_native::walk::Buffer::for_worker(rows, growing),
                 )
             });
             ticks[6] = elapsed(begin);
@@ -385,7 +383,7 @@ impl Captured {
                         base,
                         game_state,
                         descriptors,
-                        engine::walk::Buffer::for_worker(rows, growing),
+                        engine_native::walk::Buffer::for_worker(rows, growing),
                     )
                 });
             } else {
@@ -401,8 +399,11 @@ impl Captured {
                         base,
                         game_state,
                         descriptors,
-                        engine::walk::Buffer::for_worker(&mut self.exchanges.rows, growing),
-                        engine::walk::Buffer::for_worker(&mut self.exchange_scratch, growing),
+                        engine_native::walk::Buffer::for_worker(&mut self.exchanges.rows, growing),
+                        engine_native::walk::Buffer::for_worker(
+                            &mut self.exchange_scratch,
+                            growing,
+                        ),
                     ),
                     self.exchanges.rows.len(),
                 );
@@ -419,8 +420,8 @@ impl Captured {
                     memory,
                     base,
                     game_state,
-                    engine::walk::Buffer::for_worker(rows, growing),
-                    engine::walk::Buffer::for_worker(&mut self.purchase_scratch, growing),
+                    engine_native::walk::Buffer::for_worker(rows, growing),
+                    engine_native::walk::Buffer::for_worker(&mut self.purchase_scratch, growing),
                 )
             });
             ticks[9] = elapsed(begin);
@@ -441,14 +442,14 @@ impl Captured {
             base,
             game_state,
             if growing {
-                engine::walk::Buffer::Growing(&mut self.fuel.rows)
+                engine_native::walk::Buffer::Growing(&mut self.fuel.rows)
             } else {
-                engine::walk::Buffer::Fixed(&mut self.fuel.rows)
+                engine_native::walk::Buffer::Fixed(&mut self.fuel.rows)
             },
             if growing {
-                engine::walk::Buffer::Growing(&mut self.fuel_consumers.rows)
+                engine_native::walk::Buffer::Growing(&mut self.fuel_consumers.rows)
             } else {
-                engine::walk::Buffer::Fixed(&mut self.fuel_consumers.rows)
+                engine_native::walk::Buffer::Fixed(&mut self.fuel_consumers.rows)
             },
         );
         self.fuel.outcome = bounded(outcomes.fuel, self.fuel.rows.len());
@@ -457,17 +458,18 @@ impl Captured {
 
     fn set_schedule(&mut self, hour: i32, force_full: bool) {
         self.resources_active =
-            replay::cadence::should_walk(TableId::CountryResources, hour, force_full);
+            replay_data::cadence::should_walk(TableId::CountryResources, hour, force_full);
         // The exchanges are walked with the pools; both are hourly.
         debug_assert_eq!(
             self.resources_active,
-            replay::cadence::should_walk(TableId::ResourceExchanges, hour, force_full)
+            replay_data::cadence::should_walk(TableId::ResourceExchanges, hour, force_full)
         );
         debug_assert_eq!(
             self.resources_active,
-            replay::cadence::should_walk(TableId::ResourceDefinitions, hour, force_full)
+            replay_data::cadence::should_walk(TableId::ResourceDefinitions, hour, force_full)
         );
-        self.other_active = replay::cadence::should_walk(TableId::CountryFuel, hour, force_full);
+        self.other_active =
+            replay_data::cadence::should_walk(TableId::CountryFuel, hour, force_full);
         self.mark_inactive();
     }
 
@@ -696,14 +698,14 @@ impl Captured {
             Err(error) => {
                 // OOM follows the existing terminal ownership policy. A named
                 // demand refusal must never discard the independently known prefix.
-                let _ = engine::allocation::owned_vec::<()>(Err(error));
+                let _ = engine_allocation::owned_vec::<()>(Err(error));
             }
         }
         tables
     }
 
     #[cfg(test)]
-    pub fn tables(&self) -> [replay::frame::TableView; N] {
+    pub fn tables(&self) -> [replay_frame::frame::TableView; N] {
         self.table_inputs(None).map(|input| match input {
             TableInput::Sampled(view) => view,
             _ => unreachable!("projection disabled"),

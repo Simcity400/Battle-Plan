@@ -6,13 +6,13 @@ mod lifecycle;
 mod line_reader;
 mod pending;
 
-pub use gamepad::start_gamepad;
 use dashboard::protocol::{
     DashboardMapView, MAX_MESSAGE_BYTES, NativeCommand, ViewBounds, ViewerState, replay_revision,
     validate_map_views,
 };
 #[cfg(test)]
 use dashboard::transport::DataCommand;
+pub use gamepad::start_gamepad;
 use lifecycle::Process;
 use pending::{Pending, SeekTarget};
 use serde::Serialize;
@@ -307,7 +307,10 @@ impl NativeHost {
         if inner.process.is_none() || inner.shutting_down {
             return;
         }
-        inner.pending.actions.retain(|queued| !same_display(queued, &action));
+        inner
+            .pending
+            .actions
+            .retain(|queued| !same_display(queued, &action));
         inner.pending.actions.push_back(action);
         drop(inner);
         self.shared.1.notify_all();

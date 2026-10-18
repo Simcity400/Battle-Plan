@@ -538,7 +538,7 @@ fn sample_roster(
             branch,
             frame.hour,
             TableId::VariantDefinitions,
-            replay::cadence::STAGGER_PERIOD,
+            replay_data::cadence::STAGGER_PERIOD,
             &VariantCatalogue::TABLES,
             cancelled,
         )? {
@@ -791,7 +791,7 @@ mod tests {
     use super::*;
     use dashboard_base::prepared::series::tests::Fixture;
     use dashboard_core::test_fixtures::{CAMPAIGN, continuation_records, records, scale_frame};
-    use replay::rows::{AceDeath, TableRows};
+    use replay_data::{rows::AceDeath, rows::TableRows};
     use std::num::NonZeroU32;
 
     fn work(state: &Prepared) -> dashboard_base::prepared::observer_tests::Work {
@@ -809,10 +809,8 @@ mod tests {
 
     fn intervening_country_identity(count: u32) {
         use dashboard_base::prepared::frame_changes::{FrameChangeTracker, FrameChanges};
-        use replay::{
-            frame::{FrameDecoder, FrameEncoder},
-            rows::CountryRow,
-        };
+        use replay_data::rows::CountryRow;
+        use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
         for invalidation in [
             "rename",
             "rename_without_delta",
@@ -1098,7 +1096,7 @@ mod tests {
             .read_block_selected(&source.replay_ref().index[block], &TableId::ALL)
             .unwrap();
         let frame_count = updates.len();
-        let mut decoder = replay::frame::FrameDecoder::for_tables(&TableId::ALL);
+        let mut decoder = replay_frame::frame::FrameDecoder::for_tables(&TableId::ALL);
         let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
         for (next, update) in updates.into_iter().enumerate() {
             let frame = decoder.advance(&update).unwrap();

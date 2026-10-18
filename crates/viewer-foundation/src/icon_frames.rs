@@ -29,7 +29,8 @@
 //! authored frame.
 
 use crate::engagement_progress::sides as engagement_progress_sides;
-use replay::{frame::DecodedFrame, rows::tables};
+use replay_data::rows::tables;
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 use {crate::engaged::Continuity, crate::engaged::Engaged, crate::map::tables::rows};
 

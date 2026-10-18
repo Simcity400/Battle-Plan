@@ -28,12 +28,10 @@ use crate::{
     country_input_changes::{self as changes, Changes, Counts, Mismatch, Table},
     sampled_verify::Check,
 };
-use engine::{
-    allocation,
-    capture_text::Owned,
-    ccountry::{AppearanceGlobals, Country, OwnedAppearanceRow},
-    cpdx_array::Array,
-    walk::Outcome,
+use engine_allocation as allocation;
+use engine_native::{
+    capture_text::Owned, ccountry::AppearanceGlobals, ccountry::Country,
+    ccountry::OwnedAppearanceRow, cpdx_array::Array, walk::Outcome,
 };
 
 /// One canonical slot's held read.

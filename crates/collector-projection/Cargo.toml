@@ -10,8 +10,10 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-engine.workspace = true
-replay.workspace = true
+engine-allocation.workspace = true
+engine-native.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
 serde = { workspace = true, features = ["derive"] }
 collector-status.workspace = true
 collector-memory.workspace = true

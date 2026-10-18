@@ -4,11 +4,10 @@ use std::{
 };
 
 use installed_content_save::Save;
-use replay::{
-    frame::DecodedFrame,
-    identity::SampleBoundary,
-    rows::{CountryRow, StateRow, TableId, tables},
+use replay_data::{
+    identity::SampleBoundary, rows::CountryRow, rows::StateRow, rows::TableId, rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 use super::{
     ContentRead, Report, complete, convoy_total, country_tag, invalid, lexical_tokens,
@@ -22,7 +21,7 @@ pub fn compare_province_names(
 ) -> io::Result<()> {
     let rows = complete::<tables::ProvinceNames>(frame)?;
     if !report.refresh_is_current(TableId::ProvinceNames, frame.hour) {
-        report.limitation(replay::cadence::STAGGER_LIMITATION, "ProvinceNames");
+        report.limitation(replay_data::cadence::STAGGER_LIMITATION, "ProvinceNames");
         return Ok(());
     }
     let mut remaining: BTreeMap<u32, &[u8]> = save
@@ -62,7 +61,7 @@ pub fn compare_province_names(
 
 pub fn compare_countries(
     save: &Save,
-    equipment: &ContentRead<'_, installed_content::equipment::Database>,
+    equipment: &ContentRead<'_, installed_content_core::equipment::Database>,
     by_tag: &BTreeMap<&[u8], &CountryRow>,
     report: &mut Report,
 ) {
@@ -457,8 +456,8 @@ fn compare_state_scalars(actual: &StateRow, saved: &installed_content_save::Stat
 pub fn compare_railway_infrastructure(
     frame: &DecodedFrame,
     save: &Save,
-    buildings: &installed_content::buildings::Buildings,
-    defines: &installed_content::defines::Defines,
+    buildings: &installed_content_core::buildings::Buildings,
+    defines: &installed_content_core::defines::Defines,
     names: &BTreeMap<u32, &[u8]>,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -477,7 +476,7 @@ pub fn compare_railway_infrastructure(
             continue;
         };
         let name = *names
-            .get(&engine::cbuilding_database::INFRASTRUCTURE_TOKEN)
+            .get(&engine_native::cbuilding_database::INFRASTRUCTURE_TOKEN)
             .ok_or_else(|| invalid("infrastructure token has no recorded spelling"))?;
         let token =
             std::str::from_utf8(name).map_err(|_| invalid("infrastructure token is not UTF-8"))?;
@@ -579,7 +578,7 @@ pub fn compare_players(
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
-    let mut users = BTreeMap::<&[u8], Vec<&replay::rows::PlayerRow>>::new();
+    let mut users = BTreeMap::<&[u8], Vec<&replay_data::rows::PlayerRow>>::new();
     let mut keys = BTreeSet::new();
     for player in frame.complete::<tables::Players>()? {
         if player.id == -1 || !keys.insert(player.id) {

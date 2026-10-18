@@ -12,8 +12,9 @@
 //! camera changes only place and draw the prepared icons.
 
 use super::*;
-use replay::rows::{
-    NavalCombatDetailsRow, NavalCombatShipRow, NavalProvinceCombatRow, NavalResultRow,
+use replay_data::{
+    rows::NavalCombatDetailsRow, rows::NavalCombatShipRow, rows::NavalProvinceCombatRow,
+    rows::NavalResultRow,
 };
 use std::cell::OnceCell;
 use viewer_foundation::map::gui_resources::HitRectangle;
@@ -181,7 +182,10 @@ pub(super) fn naval_gap(
 }
 
 /// Why `table` is not whole this hour, if it is not.
-fn whole<T: replay::rows::TableSchema>(table: &Available<'_, T>, name: &str) -> Option<String> {
+fn whole<T: replay_data::rows::TableSchema>(
+    table: &Available<'_, T>,
+    name: &str,
+) -> Option<String> {
     match table {
         Available::Complete(_) => None,
         Available::Truncated { missing, .. } => Some(format!(
@@ -194,7 +198,7 @@ fn whole<T: replay::rows::TableSchema>(table: &Available<'_, T>, name: &str) -> 
 }
 
 /// How `table` lacks the row for `key` this hour.
-fn missing<T: replay::rows::TableSchema>(
+fn missing<T: replay_data::rows::TableSchema>(
     table: &Available<'_, T>,
     name: &str,
     key: impl std::fmt::Display,
@@ -210,7 +214,7 @@ fn missing<T: replay::rows::TableSchema>(
 
 /// A task force the HQ frame reads: the row and its attached naval-HQ count, or which census
 /// lacks it.
-type ForceInput<'a> = Result<(&'a replay::rows::TaskForceRow, i32), String>;
+type ForceInput<'a> = Result<(&'a replay_data::rows::TaskForceRow, i32), String>;
 
 /// The side whose primary list holds the viewer (attacker first) shows the HQ
 /// frame when any live ship in its forward groups belongs to a viewer-owned task

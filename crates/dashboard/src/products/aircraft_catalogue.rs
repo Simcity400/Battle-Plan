@@ -14,11 +14,9 @@ use crate::{
     catalogue::{self, CachedResult, Catalogue, View},
     products::{ContentOptions, LoadContext, Product, check_reply_budget},
 };
-use installed_content::equipment_graphics::{self, aircraft};
-use replay::{
-    frame::FrameDecoder,
-    rows::{TableId, tables},
-};
+use installed_content_equipment_graphics::{equipment_graphics, equipment_graphics::aircraft};
+use replay_data::{rows::TableId, rows::tables};
+use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
@@ -229,8 +227,8 @@ fn built(
 
 /// The content inputs of an aircraft catalogue, and what reading them refused.
 pub struct Content {
-    pub roster: Arc<installed_content::mesh::Roster>,
-    pub equipment: Arc<installed_content::equipment::Database>,
+    pub roster: Arc<installed_content_core::mesh::Roster>,
+    pub equipment: Arc<installed_content_core::equipment::Database>,
     pub pools: equipment_graphics::Content,
     pub warnings: Vec<String>,
 }
@@ -246,10 +244,10 @@ impl Content {
             warnings.push(format!(
                 "Which names are aircraft cannot be told from equipment: the equipment database is refused ({why}); every entity and mesh is still listed"
             ));
-            Arc::new(installed_content::equipment::Database::default())
+            Arc::new(installed_content_core::equipment::Database::default())
         });
         let pools = (|| {
-            let default_map = installed_content::terrain::read_default_map(layers)?;
+            let default_map = installed_content_core::terrain::read_default_map(layers)?;
             let names = equipment_graphics::Names::read(layers, &default_map, &mut warnings)?;
             equipment_graphics::Content::load(layers, &names)
         })()
@@ -320,8 +318,12 @@ fn recorded_designs(source: &Source, cancelled: &AtomicBool) -> io::Result<Vec<(
                     };
                     // A variant id or token means only what its own session's tables say, so
                     // each read is spelled by its own hour and only the spelled pairs repeat.
-                    for variant in variants.iter().filter(|row| !row.explicit_entity.is_empty()) {
-                        let Ok(model) = installed_content::parser::text(&variant.explicit_entity) else {
+                    for variant in variants
+                        .iter()
+                        .filter(|row| !row.explicit_entity.is_empty())
+                    {
+                        let Ok(model) = installed_content_core::parser::text(&variant.explicit_entity)
+                        else {
                             continue;
                         };
                         let kind = crate::products::equipment::variant_token(variant, lexical);
@@ -385,15 +387,16 @@ impl Built {
                 };
                 for reference in &entry.references {
                     match reference {
-                        aircraft::Reference::Pool { equipment, .. } => add(title(&spelled(equipment))),
-                        aircraft::Reference::Ladder { key, prefix } => add(
-                            prefix
-                                .as_ref()
-                                .and_then(|prefix| title(&format!("{prefix}_{key}")))
-                                .or_else(|| title(key)),
-                        ),
+                        aircraft::Reference::Pool { equipment, .. } => {
+                            add(title(&spelled(equipment)))
+                        }
+                        aircraft::Reference::Ladder { key, prefix } => add(prefix
+                            .as_ref()
+                            .and_then(|prefix| title(&format!("{prefix}_{key}")))
+                            .or_else(|| title(key))),
                         aircraft::Reference::Design { equipment } => add(title(equipment)),
-                        aircraft::Reference::CloneOf { .. } | aircraft::Reference::ClonedBy { .. } => {}
+                        aircraft::Reference::CloneOf { .. }
+                        | aircraft::Reference::ClonedBy { .. } => {}
                     }
                 }
                 let entry = AircraftEntry {
@@ -458,7 +461,10 @@ impl Built {
             .map(|&at| self.entries[at].entry.clone())
             .collect();
         let mut refusals = std::collections::BTreeMap::new();
-        for refusal in scope.iter().filter_map(|&at| self.entries[at].entry.refusal.as_ref()) {
+        for refusal in scope
+            .iter()
+            .filter_map(|&at| self.entries[at].entry.refusal.as_ref())
+        {
             *refusals.entry(refusal.kind).or_insert(0_u32) += 1;
         }
         AircraftCatalogueReply {

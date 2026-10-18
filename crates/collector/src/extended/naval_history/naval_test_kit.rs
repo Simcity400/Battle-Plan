@@ -1,5 +1,5 @@
 use super::{Capacities, Captured, NavalCopyContext, NavalCopyReport, NavalJob};
-use engine::{Memory, memory::SliceMemory, walk::Outcome};
+use engine_native::{Memory, memory::SliceMemory, walk::Outcome};
 
 pub(crate) fn stage_wings(memory: &impl Memory, job: &mut NavalJob) {
     let mut wings = wing_census(memory, job);
@@ -59,7 +59,7 @@ fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
 }
 
 pub(crate) fn fixture() -> Vec<u8> {
-    use engine::{
+    use engine_native::{
         carmy, ccountry, corder_instance, corders_group, corders_group_member,
         creference_registry as registry, ctheater_group, ctheatre, cunit,
         reference_bucket as bucket,
@@ -67,7 +67,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0x3500000];
     header(
         &mut bytes,
-        GAME_STATE + engine::cgame_state::COUNTRIES,
+        GAME_STATE + engine_native::cgame_state::COUNTRIES,
         CTAB,
         3,
     );
@@ -76,7 +76,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     p64(&mut bytes, CTAB + 16, C0 as u64);
     header(
         &mut bytes,
-        GAME_STATE + engine::cgame_state::COUNTRY_LINKS,
+        GAME_STATE + engine_native::cgame_state::COUNTRY_LINKS,
         LTAB,
         3,
     );
@@ -88,17 +88,17 @@ pub(crate) fn fixture() -> Vec<u8> {
     // A valid empty wing census is different from a missing manager.
     p64(
         &mut bytes,
-        GAME_STATE + engine::cgame_state::STRATEGIC_AIR_MANAGER,
+        GAME_STATE + engine_native::cgame_state::STRATEGIC_AIR_MANAGER,
         0x40000,
     );
     p64(
         &mut bytes,
         0x40000,
-        engine::cstrategic_air_manager::VTABLE_RVA as u64,
+        engine_native::cstrategic_air_manager::VTABLE_RVA as u64,
     );
     header(
         &mut bytes,
-        0x40000 + engine::cstrategic_air_manager::COUNTRY_AIR,
+        0x40000 + engine_native::cstrategic_air_manager::COUNTRY_AIR,
         0x41000,
         3,
     );
@@ -214,7 +214,7 @@ pub(crate) fn fixture() -> Vec<u8> {
     );
     header(
         &mut bytes,
-        OOB_GROUP + engine::carmy_group::MEMBER_DATA,
+        OOB_GROUP + engine_native::carmy_group::MEMBER_DATA,
         0x66000,
         0,
     );
@@ -229,29 +229,29 @@ pub(crate) fn memory(bytes: &[u8]) -> SliceMemory<'_> {
 #[derive(Debug, PartialEq)]
 pub(crate) struct Split {
     pub land_outcome: Outcome,
-    pub land: Vec<engine::ctheatre::Row>,
+    pub land: Vec<engine_native::ctheatre::Row>,
     pub groups_outcome: Outcome,
-    pub groups: Vec<engine::ctheater_group::Row>,
+    pub groups: Vec<engine_native::ctheater_group::Row>,
     pub members_outcome: Outcome,
-    pub members: Vec<engine::ctheater_group::MemberRow>,
+    pub members: Vec<engine_native::ctheater_group::MemberRow>,
     pub oob_groups_outcome: Outcome,
-    pub oob_groups: Vec<engine::corders_group::GroupRow>,
+    pub oob_groups: Vec<engine_native::corders_group::GroupRow>,
     pub oob_members_outcome: Outcome,
-    pub oob_members: Vec<engine::corders_group::MemberRow>,
+    pub oob_members: Vec<engine_native::corders_group::MemberRow>,
     pub oob_children_outcome: Outcome,
-    pub oob_children: Vec<engine::corders_group::ChildRow>,
+    pub oob_children: Vec<engine_native::corders_group::ChildRow>,
 }
 
 fn collect(memory: &impl Memory, capacity: &Capacities) -> Split {
     let mut captured = Captured::with_capacities(capacity);
     // Typed reference: theatre walk + OOB via roots, single pass (no
     // double-read). Mirrors the game thread's capture order.
-    let first = engine::ctheatre::walk(
+    let first = engine_native::ctheatre::walk(
         memory,
         BASE,
         GAME_STATE,
         true,
-        engine::ctheatre::Buffers {
+        engine_native::ctheatre::Buffers {
             land: &mut captured.land.rows,
             land_groups: &mut captured.land_groups.rows,
             land_members: &mut captured.land_members.rows,
@@ -265,15 +265,15 @@ fn collect(memory: &impl Memory, capacity: &Capacities) -> Split {
     captured.land_groups.outcome = first.land_groups;
     captured.land_members.outcome = first.land_members;
     // OOB via registry roots.
-    let mut roots = vec![engine::corders_group::Root::default(); 8];
-    let roots_outcome = engine::corders_group::walk_roots(memory, BASE, &mut roots);
+    let mut roots = vec![engine_native::corders_group::Root::default(); 8];
+    let roots_outcome = engine_native::corders_group::walk_roots(memory, BASE, &mut roots);
     let roots_len = roots_outcome.len();
     if let Outcome::Rows { .. } = roots_outcome {
-        let walk = engine::corders_group::walk_order_of_battle(
+        let walk = engine_native::corders_group::walk_order_of_battle(
             memory,
             BASE,
             &roots[..roots_len],
-            &mut engine::corders_group::OrderOfBattle {
+            &mut engine_native::corders_group::OrderOfBattle {
                 groups: &mut captured.groups.rows,
                 members: &mut captured.group_members.rows,
                 children: &mut captured.group_children.rows,
@@ -336,8 +336,8 @@ fn assert_census_roots_decode_the_same(
         base: BASE,
         game_state: GAME_STATE,
     };
-    let mut roots = vec![engine::corders_group::Root::default(); 64];
-    let outcome = engine::corders_group::walk_roots(memory, BASE, &mut roots);
+    let mut roots = vec![engine_native::corders_group::Root::default(); 64];
+    let outcome = engine_native::corders_group::walk_roots(memory, BASE, &mut roots);
     let mut job = NavalJob::fixture();
     stage_wings(memory, &mut job);
     job.capture_roots(&roots[..outcome.len().min(roots.len())], outcome);
@@ -587,7 +587,7 @@ pub(crate) fn assert_captured_matches_direct(captured: &super::Captured, direct:
 
 #[test]
 fn naval_oob_copy_reads_only_typed_child_and_provider_dependencies() {
-    use engine::{carmy_group, corders_group, corders_group_member};
+    use engine_native::{carmy_group, corders_group, corders_group_member};
     use std::cell::RefCell;
 
     struct Fault<'a> {
@@ -823,7 +823,7 @@ thread_local! {
 /// walk's tables.
 #[test]
 fn oob_root_fields_in_one_copy_log_the_per_field_spans() {
-    use engine::{corders_group, corders_group_member};
+    use engine_native::{corders_group, corders_group_member};
     use std::cell::RefCell;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
@@ -851,12 +851,12 @@ fn oob_root_fields_in_one_copy_log_the_per_field_spans() {
     p64(
         &mut bytes,
         OOB_GROUP,
-        (BASE + engine::carmy_group::VTABLE_RVA) as u64,
+        (BASE + engine_native::carmy_group::VTABLE_RVA) as u64,
     );
     bytes[OOB_GROUP + corders_group::IS_ARMY_GROUP] = 1;
     header(
         &mut bytes,
-        OOB_GROUP + engine::carmy_group::MEMBER_DATA,
+        OOB_GROUP + engine_native::carmy_group::MEMBER_DATA,
         0x66000,
         0,
     );
@@ -885,7 +885,7 @@ fn oob_root_fields_in_one_copy_log_the_per_field_spans() {
     p64(
         &mut bytes,
         LEADER,
-        (BASE + engine::carmy_leader::VTABLE_RVA) as u64,
+        (BASE + engine_native::carmy_leader::VTABLE_RVA) as u64,
     );
     p64(&mut bytes, LEADER + 8, (9u64 << 32) | 4713);
     let spans = |job: &NavalJob| {

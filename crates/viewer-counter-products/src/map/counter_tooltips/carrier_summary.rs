@@ -2,7 +2,10 @@
 //! Membership uses registered base pools rather than wings merely located there.
 
 use super::{Arg, Context, Localisation, Tooltip, append, localise, refuse};
-use replay::rows::{AirBaseRegistrationRow, AirBaseRow, AirWingRow, CarrierAirPool, tables};
+use replay_data::{
+    rows::AirBaseRegistrationRow, rows::AirBaseRow, rows::AirWingRow, rows::CarrierAirPool,
+    rows::tables,
+};
 use std::collections::BTreeMap;
 #[cfg(test)]
 use viewer_foundation::map::perspective::Choice;
@@ -214,7 +217,7 @@ pub(super) fn full_country_header(tag: &str, name: &str) -> String {
 /// The fuel quantity formatter. This is not the localisation
 /// metric suffix modifier: its positive cutoffs and rounding differ.
 fn fuel_amount(raw: i64) -> String {
-    use installed_content::fixed5::format_fixed5;
+    use installed_content_core::fixed5::format_fixed5;
     let (add, divisor, precision, suffix) = match raw {
         value if value < 0x5f51db0 => return format_fixed5(value, false, 0),
         value if value < 0x1748291620 => (100_000, 100_000_000, 1, 'K'),
@@ -353,7 +356,7 @@ fn slot(context: &Context<'_>, raw: u32) -> Result<u32, String> {
 
 fn tag<'a>(context: &Context<'a>, raw: u32) -> Result<&'a str, String> {
     if raw == 0 {
-        return installed_content::country_names::reserved_zero_tag(context.frame);
+        return installed_content_country_names::country_names::reserved_zero_tag(context.frame);
     }
     let rows = context
         .frame
@@ -876,7 +879,8 @@ fn fuel_description(context: &Context<'_>, out: &mut Tooltip) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{frame::DecodedFrame, rows::*};
+    use replay_data::rows::*;
+    use replay_frame::frame::DecodedFrame;
     use viewer_foundation::map::test_support::{test_frame, test_put as put};
 
     const BASE: u64 = 40;
@@ -1137,9 +1141,9 @@ mod tests {
                 .map(|(key, text)| (key.to_owned(), text.to_owned())),
             )
             .collect();
-        let defines = installed_content::defines::Defines::new().unwrap();
+        let defines = installed_content_core::defines::Defines::new().unwrap();
         defines.load("synthetic.lua", b"NDefines={NIntel={COUNTRY_LEVEL_INTEL_MAXIMUMS={1,1,1,1},ARMY_TEMPLATE_UNIT_COUNT_INTEL_MIN=0.2,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MAX=0.8,ARMY_TEMPLATE_UNIT_COUNT_INTEL_RANGE_AT_LOWEST_INTEL=1}}").unwrap();
-        let mut subunits = installed_content::unit_leader::SubUnits::default();
+        let mut subunits = installed_content_core::unit_leader::SubUnits::default();
         subunits.read(
             b"sub_units={DeckPlane={type=cas} EmptyDeck={type=naval_bomber}}",
             "synthetic.txt",
@@ -1172,7 +1176,7 @@ mod tests {
             Ok(&fog_content),
         )
         .unwrap();
-        let names = installed_content::division_names::Database::default();
+        let names = installed_content_division_names::division_names::Database::default();
         run(&Context {
             nato,
             content: None,
@@ -1209,7 +1213,7 @@ mod tests {
 
     #[test]
     fn composed_carrier_keeps_dense_repeats_pool_owner_names_and_empty_fuel_pools() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let out = render(&fixture(), false, false, None);
         assert!(out.refused.is_empty(), "{:?}", out.refused);
@@ -1228,7 +1232,7 @@ mod tests {
 
     #[test]
     fn sea_and_port_controls_share_composed_carrier_and_viewer_nato() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = fixture();
         with_context(&frame, false, true, None, |context| {
@@ -1281,7 +1285,7 @@ mod tests {
 
     #[test]
     fn current_fuel_failure_keeps_maximum_and_other_signed_groups() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = fixture();
         let mut rows = registrations(&frame);
@@ -1300,7 +1304,7 @@ mod tests {
 
     #[test]
     fn repeated_wings_and_equal_signed_fuel_groups_wrap_before_daily_scaling() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = fixture();
         let mut wings = frame.complete::<tables::AirWings>().unwrap().to_vec();
@@ -1339,7 +1343,7 @@ mod tests {
     #[test]
     fn large_equal_key_group_uses_first_empty_definition_and_keeps_mixed_indices_and_signed_counts()
     {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = fixture();
         let mut wings = frame.complete::<tables::AirWings>().unwrap().to_vec();
@@ -1411,7 +1415,7 @@ mod tests {
 
     #[test]
     fn maximum_failure_preserves_current_groups_and_other_maximum_groups() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = fixture();
         let mut rows = registrations(&frame);
@@ -1430,7 +1434,7 @@ mod tests {
 
     #[test]
     fn empty_inventory_keeps_container_fuel_without_requiring_wings_or_subtype_content() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = fixture();
         let mut rows = registrations(&frame);
@@ -1442,7 +1446,7 @@ mod tests {
             inputs.pools = Some(vec![]);
         }
         put(&mut frame, TableRows::AirBaseRegistrations(rows));
-        frame.tables[TableId::AirWings.index()] = replay::frame::TableView::Unavailable {
+        frame.tables[TableId::AirWings.index()] = replay_frame::frame::TableView::Unavailable {
             reason: "unreached empty inventory".into(),
         }
         .into();
@@ -1455,7 +1459,7 @@ mod tests {
 
     #[test]
     fn low_tier_uses_complete_clock_host_numeric_id_and_native_country_slots() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = fixture();
         with_context(&frame, true, false, None, |context| {
@@ -1481,7 +1485,7 @@ mod tests {
             assert!(!out.title.contains("Fuel"));
         });
         let mut missing = frame;
-        missing.tables[TableId::Clock.index()] = replay::frame::TableView::Unavailable {
+        missing.tables[TableId::Clock.index()] = replay_frame::frame::TableView::Unavailable {
             reason: "missing Clock witness".into(),
         }
         .into();
@@ -1492,7 +1496,7 @@ mod tests {
 
     #[test]
     fn absent_viewer_fuel_container_is_known_absence_in_a_complete_census() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = fixture();
         let mut bases = frame.complete::<tables::AirBases>().unwrap().to_vec();
@@ -1514,7 +1518,7 @@ mod tests {
         assert!(!out.title.contains("Fuel"));
         assert!(out.body.is_empty());
         frame.tables[TableId::AirBaseRegistrations.index()] =
-            replay::frame::TableView::Unavailable {
+            replay_frame::frame::TableView::Unavailable {
                 reason: "unreadable fuel census".into(),
             }
             .into();
@@ -1528,7 +1532,7 @@ mod tests {
 
     #[test]
     fn no_intel_does_not_require_unreached_estimates_and_unknown_sharing_cannot_choose_a_tier() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = fixture();
         put(
@@ -1540,14 +1544,14 @@ mod tests {
                 ..Default::default()
             }]),
         );
-        frame.tables[TableId::Clock.index()] = replay::frame::TableView::Unavailable {
+        frame.tables[TableId::Clock.index()] = replay_frame::frame::TableView::Unavailable {
             reason: "unreached estimate".into(),
         }
         .into();
         let out = render(&frame, true, false, None);
         assert_eq!(out.title, "Host deck\n\n\nNo intel");
         assert!(out.refused.is_empty(), "{:?}", out.refused);
-        frame.tables[TableId::WarRelations.index()] = replay::frame::TableView::Unavailable {
+        frame.tables[TableId::WarRelations.index()] = replay_frame::frame::TableView::Unavailable {
             reason: "missing sharing witness".into(),
         }
         .into();
@@ -1562,7 +1566,7 @@ mod tests {
 
     #[test]
     fn historical_pool_absence_and_bad_ranges_do_not_erase_known_plane_totals_or_fuel_scalars() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         for bad_range in [false, true] {
             let mut frame = fixture();
@@ -1597,7 +1601,7 @@ mod tests {
 
     #[test]
     fn host_language_failure_preserves_independent_occupancy_countries_and_fuel() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let out = render(&fixture(), false, false, Some("other_language"));
         assert!(!out.title.contains("Host deck"));
@@ -1613,7 +1617,7 @@ mod tests {
 
     #[test]
     fn refused_country_fragment_keeps_ordered_known_siblings_at_both_intel_tiers() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = fixture();
         let mut appearances = frame
@@ -1636,7 +1640,7 @@ mod tests {
 
     #[test]
     fn null_stale_and_live_broken_hosts_keep_native_invalid_refusals() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         for (host, task_force) in [(0, 7), (SHIP + 1, 7), (SHIP, 0)] {
             let mut frame = fixture();
@@ -1658,7 +1662,7 @@ mod tests {
 
     #[test]
     fn subtype_database_index_distinguishes_null_unknown_and_registered_content() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         with_context(&fixture(), false, false, None, |context| {
             let units = context.units.as_ref().unwrap();
@@ -1670,7 +1674,7 @@ mod tests {
 
     #[test]
     fn pool_owner_zero_uses_the_recorded_reserved_tag() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = fixture();
         put(

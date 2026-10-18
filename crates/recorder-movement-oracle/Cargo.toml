@@ -10,10 +10,12 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-engine.workspace = true
-installed-content.workspace = true
+engine-dlc.workspace = true
+engine-executable.workspace = true
+engine-native.workspace = true
+installed-content-core.workspace = true
 serde_json.workspace = true
 recorder-platform.workspace = true
 
 [dev-dependencies]
-installed-content = { workspace = true, features = ["test-support"] }
+installed-content-core = { workspace = true, features = ["test-support"] }

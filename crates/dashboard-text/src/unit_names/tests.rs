@@ -153,9 +153,9 @@ fn only_equal_nonprogrammatic_bytes_certify_cross_language_literal_names() {
 
 #[test]
 fn only_historical_absence_uses_authored_name_selection() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let names = installed_content::division_names::parse(
+    let names = installed_content_division_names::division_names::parse(
         br#"G={ordered={2={"Generated %d"}}}"#,
         &Default::default(),
     )
@@ -194,7 +194,7 @@ fn only_historical_absence_uses_authored_name_selection() {
 
 #[test]
 fn template_literal_and_known_empty_name_do_not_acquire_country_or_content() {
-    use replay::rows::TemplateDisplayNameParts as Parts;
+    use replay_data::rows::TemplateDisplayNameParts as Parts;
     assert_eq!(
         template_name(
             Parts {
@@ -233,7 +233,7 @@ fn template_literal_and_known_empty_name_do_not_acquire_country_or_content() {
 
 #[test]
 fn template_fallback_lazily_preserves_genuine_signed_country_and_key() {
-    use replay::rows::TemplateDisplayNameParts as Parts;
+    use replay_data::rows::TemplateDisplayNameParts as Parts;
     for country in [i32::MIN, -1, 0, 1, i32::MAX] {
         assert_eq!(
             template_name(
@@ -266,7 +266,7 @@ fn template_fallback_lazily_preserves_genuine_signed_country_and_key() {
 
 #[test]
 fn template_noncanonical_demand_is_refused_without_country_read() {
-    use replay::rows::TemplateDisplayNameParts as Parts;
+    use replay_data::rows::TemplateDisplayNameParts as Parts;
     for parts in [
         Parts {
             literal: b"literal",

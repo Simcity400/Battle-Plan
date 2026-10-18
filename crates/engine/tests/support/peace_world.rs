@@ -1,7 +1,6 @@
-use engine::{
-    memory::SliceMemory,
-    peace_action, peace_conference as c,
-    peace_settlement::{self as p, Action},
+use engine_native::memory::SliceMemory;
+use engine_peace::{
+    peace_action, peace_conference as c, peace_settlement as p, peace_settlement::Action,
 };
 
 pub(crate) struct Fixture {
@@ -13,34 +12,41 @@ pub(crate) struct Fixture {
 }
 impl Fixture {
     pub(crate) fn rebase_image(&mut self, hour: i32) -> (usize, usize) {
-        self.bytes.resize(engine::cgame_state::SINGLETON_RVA + 8, 0);
+        self.bytes
+            .resize(engine_native::cgame_state::SINGLETON_RVA + 8, 0);
         let pointer = self.rebase();
         let base = self.bytes.as_ptr() as usize;
         self.u64(0x100, (base + c::VTABLE_RVA) as u64);
         self.u64(
             0x900,
-            (base + engine::peace_bidding_turn::VTABLE_RVA) as u64,
+            (base + engine_peace::peace_bidding_turn::VTABLE_RVA) as u64,
         );
         for i in 0..self.actions {
             self.u64(
                 0x20000 + i * 0x70,
-                (base + engine::ctake_state_action::VTABLE_RVA) as u64,
+                (base + engine_peace::ctake_state_action::VTABLE_RVA) as u64,
             );
         }
         if self.transfers != 0 {
             self.u64(
                 0xb00,
-                (base + engine::conference_winner_participant::VTABLE_RVA) as u64,
+                (base + engine_peace::conference_winner_participant::VTABLE_RVA) as u64,
             );
             for i in 0..self.transfers {
                 self.u64(
                     self.transfer_data + self.transfers * 8 + i * 0x60,
-                    (base + engine::cstate::VTABLE_RVA) as u64,
+                    (base + engine_native::cstate::VTABLE_RVA) as u64,
                 );
             }
         }
-        self.u64(engine::cgame_state::SINGLETON_RVA, (base + 0x10000) as u64);
-        self.u32(0x10000 + engine::cgame_state::CURRENT_HOUR, hour as u32);
+        self.u64(
+            engine_native::cgame_state::SINGLETON_RVA,
+            (base + 0x10000) as u64,
+        );
+        self.u32(
+            0x10000 + engine_native::cgame_state::CURRENT_HOUR,
+            hour as u32,
+        );
         (base, pointer)
     }
     /// Rebase synthetic links onto this stable allocation for the guarded
@@ -65,7 +71,7 @@ impl Fixture {
             offsets.extend([
                 0x100 + c::WINNER_PARTICIPANTS,
                 0xa00,
-                0xb00 + engine::conference_beneficiary_participant::STATES,
+                0xb00 + engine_peace::conference_beneficiary_participant::STATES,
             ]);
             offsets.extend((0..self.transfers).map(|i| self.transfer_data + i * 8));
         }
@@ -104,41 +110,46 @@ impl Fixture {
         f.u32(0x620, 0xa0000000);
         f.array(0x628, 0x800, 1, 8);
         f.u64(0x800, 0x900);
-        f.u64(0x900, engine::peace_bidding_turn::VTABLE_RVA as u64);
+        f.u64(0x900, engine_peace::peace_bidding_turn::VTABLE_RVA as u64);
         f.u32(0x908, 0xa0000000);
         f.array(0x910, action_data, actions, 8);
         for i in 0..actions {
             let at = 0x20000 + i * 0x70;
             f.u64(action_data + i * 8, at as u64);
-            f.u64(at, engine::ctake_state_action::VTABLE_RVA as u64);
+            f.u64(at, engine_peace::ctake_state_action::VTABLE_RVA as u64);
             f.u32(at + peace_action::TOKEN, 0x90000000 + i as u32);
             f.u64(
-                at + peace_action::CACHED_NAME + engine::msvc_string::CAPACITY,
-                engine::msvc_string::INLINE_CAPACITY,
+                at + peace_action::CACHED_NAME + engine_native::msvc_string::CAPACITY,
+                engine_native::msvc_string::INLINE_CAPACITY,
             );
             f.u32(at + peace_action::TAKER, 0xa0000000);
             f.u32(at + peace_action::GIVER, 0xb0000000);
             f.u32(at + peace_action::NEGOTIATOR, 0xc0000000);
-            f.u32(at + engine::cstate_peace_action::STATE, i as u32);
-            f.bytes[at + engine::cstate_peace_action::FLAGS
-                ..at + engine::cstate_peace_action::FLAGS + 4]
+            f.u32(at + engine_peace::cstate_peace_action::STATE, i as u32);
+            f.bytes[at + engine_peace::cstate_peace_action::FLAGS
+                ..at + engine_peace::cstate_peace_action::FLAGS + 4]
                 .copy_from_slice(&[1, 2, 3, 4]);
         }
         let registry = f.bytes.len();
         let slots = countries.max(1);
         f.bytes.resize(registry + slots * 8, 0);
-        f.array(0x10000 + engine::cgame_state::COUNTRIES, registry, slots, 8);
+        f.array(
+            0x10000 + engine_native::cgame_state::COUNTRIES,
+            registry,
+            slots,
+            8,
+        );
         f
     }
-    pub(crate) fn memory(&self) -> impl engine::Memory + '_ {
+    pub(crate) fn memory(&self) -> impl engine_native::Memory + '_ {
         struct Memory<'a>(&'a [u8]);
-        impl engine::Memory for Memory<'_> {
+        impl engine_native::Memory for Memory<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if address == engine::cgame_state::SINGLETON_RVA && output.len() == 8 {
+                if address == engine_native::cgame_state::SINGLETON_RVA && output.len() == 8 {
                     output.copy_from_slice(&0x10000_u64.to_le_bytes());
                     true
                 } else {
-                    engine::Memory::copy(
+                    engine_native::Memory::copy(
                         &SliceMemory {
                             base: 0,
                             bytes: self.0,
@@ -160,11 +171,11 @@ impl Fixture {
         self.u64(0xa00, 0xb00);
         self.u64(
             0xb00,
-            engine::conference_winner_participant::VTABLE_RVA as u64,
+            engine_peace::conference_winner_participant::VTABLE_RVA as u64,
         );
         self.u32(0xb08, 0xa0000000);
         self.array(
-            0xb00 + engine::conference_beneficiary_participant::STATES,
+            0xb00 + engine_peace::conference_beneficiary_participant::STATES,
             self.transfer_data,
             count,
             8,
@@ -172,8 +183,8 @@ impl Fixture {
         for i in 0..count {
             let state = self.transfer_data + count * 8 + i * 0x60;
             self.u64(self.transfer_data + i * 8, state as u64);
-            self.u64(state, engine::cstate::VTABLE_RVA as u64);
-            self.u32(state + engine::cstate::ID, i as u32);
+            self.u64(state, engine_native::cstate::VTABLE_RVA as u64);
+            self.u32(state + engine_native::cstate::ID, i as u32);
         }
     }
     pub(crate) fn u64(&mut self, at: usize, value: u64) {

@@ -6,17 +6,17 @@ use crate::{
     table_capture::{Arena, CaptureRows, grow_capacity},
     table_conversion::table,
 };
-use engine::allocation::{collect_vec, copy_vec, owned_vec, reserve_map, resize_default};
-use engine::{
-    Memory, cnaval_combat_air_entry as plane, cnaval_combat_result_side as side,
-    cnaval_combat_results as result, cnaval_combat_ship_entry as ship, naval_combat_air_hit,
-    naval_combat_hit, naval_commander_inputs as commander, naval_ship_modifier_inputs as influence,
-    walk::Outcome,
+use engine_allocation::{collect_vec, copy_vec, owned_vec, reserve_map, resize_default};
+use engine_native::{
+    Memory, naval_combat_air_hit, naval_combat_hit, naval_commander_inputs as commander,
+    naval_ship_modifier_inputs as influence, walk::Outcome,
 };
-use replay::{
-    frame::TableView,
-    rows::{self, TableId, tables},
+use engine_naval_history::{
+    cnaval_combat_air_entry as plane, cnaval_combat_result_side as side,
+    cnaval_combat_results as result, cnaval_combat_ship_entry as ship,
 };
+use replay_data::{rows, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 use std::collections::HashMap;
 use std::sync::{
     OnceLock,
@@ -89,7 +89,7 @@ impl Capacities {
                             let at = entry
                                 .checked_add(offset)
                                 .ok_or("naval result hit demand overflow")?;
-                            let array = engine::cpdx_array::Array::read(memory, at, 8)
+                            let array = engine_native::cpdx_array::Array::read(memory, at, 8)
                                 .ok_or("naval result hit demand invalid")?;
                             add(if index == 0 { 4 } else { 3 }, array.count as usize)?;
                         }
@@ -97,7 +97,7 @@ impl Capacities {
                     })?;
                 }
                 let field = |offset: usize| -> Result<u64, &'static str> {
-                    engine::read(
+                    engine_native::read(
                         memory,
                         side_pointer
                             .checked_add(offset)
@@ -114,15 +114,15 @@ impl Capacities {
                     }
                     add(7, 1)?;
                     if let Some(commander) =
-                        engine::creference_registry::resolve(memory, base, handle)?
+                        engine_native::creference_registry::resolve(memory, base, handle)?
                     {
                         hq_present |= handle == hq_leader;
-                        let timed = engine::cpdx_array::Array::read(
+                        let timed = engine_native::cpdx_array::Array::read(
                             memory,
                             commander
-                                .checked_add(engine::cunit_leader::TIMED_TRAIT_DATA)
+                                .checked_add(engine_native::cunit_leader::TIMED_TRAIT_DATA)
                                 .ok_or("naval result commander demand overflow")?,
-                            engine::cunit_leader::TIMED_TRAIT_STRIDE,
+                            engine_native::cunit_leader::TIMED_TRAIT_STRIDE,
                         )
                         .ok_or("naval result commander timed trait demand invalid")?;
                         add(8, timed.count as usize)?;
@@ -140,7 +140,7 @@ impl Capacities {
                         return Err("naval result HQ demand invalid");
                     }
                     for index in 0..bytes / 8 {
-                        let wrapper = engine::read::<u64>(memory, begin + index * 8)
+                        let wrapper = engine_native::read::<u64>(memory, begin + index * 8)
                             .ok_or("naval result HQ demand wrapper unreadable")?
                             as usize;
                         let [sources, terms] = influence::influence_demand(memory, base, wrapper)?;
@@ -193,7 +193,7 @@ pub struct Captured {
     sources: Arena<influence::SourceRow>,
     terms: Arena<influence::ModifierTerm>,
     commanders: Arena<commander::Row>,
-    commander_timed_traits: Arena<engine::cunit_leader::TimedTrait>,
+    commander_timed_traits: Arena<engine_native::cunit_leader::TimedTrait>,
     commander_keys: HashMap<u64, usize>,
     refused_rows: usize,
     first_refusal: Option<&'static str>,
@@ -524,7 +524,7 @@ struct Pass<'a> {
     sources: &'a mut Vec<influence::SourceRow>,
     terms: &'a mut Vec<influence::ModifierTerm>,
     commanders: &'a mut Vec<commander::Row>,
-    commander_timed_traits: &'a mut Vec<engine::cunit_leader::TimedTrait>,
+    commander_timed_traits: &'a mut Vec<engine_native::cunit_leader::TimedTrait>,
     commander_timed_traits_len: usize,
     commander_keys: &'a mut HashMap<u64, usize>,
     commanders_len: usize,
@@ -565,7 +565,7 @@ impl Pass<'_> {
         // A missing retained commander portrait is hidden. Preserve
         // the side's full handle while the optional context is absent.
         self.commanders[index] =
-            if engine::creference_registry::resolve(memory, base, handle)?.is_some() {
+            if engine_native::creference_registry::resolve(memory, base, handle)?.is_some() {
                 commander::capture(
                     memory,
                     base,
@@ -648,7 +648,7 @@ impl Pass<'_> {
                     .checked_add(1)
                     .ok_or("naval result ship count overflow")?;
                 ensure(self.ships, self.required_arenas[0])?;
-                let handle = engine::read(
+                let handle = engine_native::read(
                     memory,
                     entry
                         .checked_add(ship::HANDLE)
@@ -725,7 +725,7 @@ mod tests {
                 destination.fill(0xed);
                 return false;
             }
-            engine::memory::SliceMemory {
+            engine_native::memory::SliceMemory {
                 base: 0,
                 bytes: self.bytes,
             }
@@ -760,7 +760,7 @@ mod tests {
             commander_timed_traits: 0,
         };
         let mut captured = Captured::with_capacities(&c);
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -773,7 +773,9 @@ mod tests {
 
     #[test]
     fn hq_fault_refuses_only_its_result_beside_good_rows() {
-        use engine::{cgame_state, creference_registry as registry, reference_bucket as bucket};
+        use engine_native::{
+            cgame_state, creference_registry as registry, reference_bucket as bucket,
+        };
         const BASE: usize = 0x1000_0000;
         const STATE: usize = 0x1000;
         const HQ: u64 = 0x1_0000_0001;
@@ -784,7 +786,7 @@ mod tests {
                     out.copy_from_slice(&0x7000u64.to_le_bytes());
                     return true;
                 }
-                engine::memory::SliceMemory {
+                engine_native::memory::SliceMemory {
                     base: 0,
                     bytes: &self.0,
                 }
@@ -865,7 +867,7 @@ mod tests {
                 assert!(!rows.iter().any(|row| row.result == (2 << 32) | 4713));
                 let mut encoded = Vec::new();
                 for row in &rows {
-                    replay::rows::RowCodec::encode_fields(row, &mut encoded).unwrap();
+                    replay_data::rows::RowCodec::encode_fields(row, &mut encoded).unwrap();
                 }
             }
         }
@@ -943,8 +945,8 @@ mod tests {
         assert_eq!(
             *memory.0.borrow(),
             [
-                engine::creference_registry::HIGH_ROOT_RVA,
-                engine::creference_registry::LOW_ROOTS_RVA + 17 * 8
+                engine_native::creference_registry::HIGH_ROOT_RVA,
+                engine_native::creference_registry::LOW_ROOTS_RVA + 17 * 8
             ]
         );
         pass.commanders_required = usize::MAX;
@@ -1033,12 +1035,12 @@ mod tests {
             ..Default::default()
         };
         captured.commander_timed_traits.first = vec![
-            engine::cunit_leader::TimedTrait {
+            engine_native::cunit_leader::TimedTrait {
                 token_id: 23,
                 definition_ordinal: 5,
                 remaining_days: 0,
             },
-            engine::cunit_leader::TimedTrait {
+            engine_native::cunit_leader::TimedTrait {
                 token_id: 23,
                 definition_ordinal: 5,
                 remaining_days: -1,
@@ -1086,7 +1088,7 @@ mod tests {
         };
         array(
             &mut bytes,
-            STATE + engine::cgame_state::NAVAL_COMBAT_RESULTS,
+            STATE + engine_native::cgame_state::NAVAL_COMBAT_RESULTS,
             0x800,
             2,
         );
@@ -1109,7 +1111,7 @@ mod tests {
             (0x2208, 0x2400),
             (
                 0x2400,
-                (BASE + engine::cequipment_variant::VTABLE_RVA) as u64,
+                (BASE + engine_native::cequipment_variant::VTABLE_RVA) as u64,
             ),
             (0x2408, 0x1234_5678_0000_0030),
             (0x26a0, i64::MIN as u64),
@@ -1127,8 +1129,8 @@ mod tests {
         for string in [0x2040, 0x2060, 0x2080, 0x20a0, 0x2220, 0x2810] {
             word(
                 &mut bytes,
-                string + engine::msvc_string::CAPACITY,
-                engine::msvc_string::INLINE_CAPACITY,
+                string + engine_native::msvc_string::CAPACITY,
+                engine_native::msvc_string::INLINE_CAPACITY,
             );
         }
         array(&mut bytes, 0x1018 + side::MEMBERS, 0x1800, 2);
@@ -1317,12 +1319,12 @@ mod tests {
             };
             put(
                 &mut bytes,
-                STATE + engine::cgame_state::NAVAL_COMBAT_RESULTS,
+                STATE + engine_native::cgame_state::NAVAL_COMBAT_RESULTS,
                 POINTERS as u64,
             );
             put(
                 &mut bytes,
-                STATE + engine::cgame_state::NAVAL_COMBAT_RESULTS + 8,
+                STATE + engine_native::cgame_state::NAVAL_COMBAT_RESULTS + 8,
                 ((count as u64) << 32) | count as u64,
             );
             for index in 0..count {
@@ -1334,7 +1336,7 @@ mod tests {
                     put(&mut bytes, body + offset, (BASE + side::VTABLE_RVA) as u64);
                 }
             }
-            let memory = engine::memory::SliceMemory {
+            let memory = engine_native::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             };
@@ -1353,7 +1355,7 @@ mod tests {
         let floor = c;
         assert!(
             c.presize(
-                &engine::memory::SliceMemory {
+                &engine_native::memory::SliceMemory {
                     base: 0,
                     bytes: &[]
                 },

@@ -10,11 +10,12 @@ use super::*;
 use crate::prepared::prepass;
 use crate::products::subjects::prepared::counted;
 use independent::{Own, quiet_politics};
-use replay::rows::{
-    ActiveIdeaRow, AutonomyRow, CharacterRow, CountryAppearanceRow, CountryCounterInputRow,
-    CountryWarRow, HiredAdvisorRow, LexicalTokenRow, ModifierDefinitionRow, PeaceConferenceRow,
-    PeaceSettlementRow, PoliticalPartyRow, PoliticsRow, ProvinceRow, SettledPeaceTransfer,
-    SubjectRow, WarRelationRow,
+use replay_data::{
+    rows::ActiveIdeaRow, rows::AutonomyRow, rows::CharacterRow, rows::CountryAppearanceRow,
+    rows::CountryCounterInputRow, rows::CountryWarRow, rows::HiredAdvisorRow,
+    rows::LexicalTokenRow, rows::ModifierDefinitionRow, rows::PeaceConferenceRow,
+    rows::PeaceSettlementRow, rows::PoliticalPartyRow, rows::PoliticsRow, rows::ProvinceRow,
+    rows::SettledPeaceTransfer, rows::SubjectRow, rows::WarRelationRow,
 };
 
 type Payloads = BTreeMap<(String, u64), Vec<u8>>;

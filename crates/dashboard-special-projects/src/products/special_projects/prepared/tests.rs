@@ -2,11 +2,9 @@ use super::*;
 use crate::products::special_projects::history_tests::frame;
 use dashboard_base::prepared::series::tests::Fixture;
 use dashboard_base::test_fixtures::{CAMPAIGN, records};
-use replay::{
-    container::{Replay, ReplayStream},
-    frame::TableView,
-    rows::TableRows,
-};
+use replay::{container::Replay, container::ReplayStream};
+use replay_data::rows::TableRows;
+use replay_frame::frame::TableView;
 
 fn source(frames: &[DecodedFrame]) -> Source {
     super::super::history_tests::source(
@@ -285,7 +283,7 @@ fn prepared_projects_keep_five_thousand_countries_and_continuation_does_not_grow
 
 #[test]
 fn prepared_project_completion_keeps_selected_scientist_dates_and_first_use_catalogue_order() {
-    use replay::rows::{CharacterRow, ProjectHistoryRow, ProjectProgramRow};
+    use replay_data::{rows::CharacterRow, rows::ProjectHistoryRow, rows::ProjectProgramRow};
     let flag = AtomicBool::new(false);
     let context = LoadContext { content: None };
     let mut first = frame(100, true, 1);
@@ -356,10 +354,11 @@ fn prepared_project_completion_keeps_selected_scientist_dates_and_first_use_cata
 #[test]
 fn prepared_scoped_project_names_use_the_same_frame_pass_and_preserve_country_refusals_after_resume()
  {
-    use replay::rows::{
-        CountryRow, ProvinceRow, ScriptVariableEntry, ScriptVariablesRow, StateRow,
+    use replay_data::{
+        rows::CountryRow, rows::ProvinceRow, rows::ScriptVariableEntry, rows::ScriptVariablesRow,
+        rows::StateRow,
     };
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = super::super::tests::TempRoot::new("prepared-project-scope");
     super::super::history_tests::content(&root.0, "[ROOT.ProjectStage]");
@@ -415,13 +414,13 @@ fn prepared_scoped_project_names_use_the_same_frame_pass_and_preserve_country_re
                     std::iter::once(ScriptVariablesRow {
                         scope_kind: 0,
                         scope_id: 0,
-                        seed: replay::rows::Recorded::Value(None),
+                        seed: replay_data::rows::Recorded::Value(None),
                         entries: Vec::new(),
                     })
                     .chain((1..=2).map(|id| ScriptVariablesRow {
                         scope_kind: 1,
                         scope_id: id,
-                        seed: replay::rows::Recorded::Value(None),
+                        seed: replay_data::rows::Recorded::Value(None),
                         entries: vec![ScriptVariableEntry {
                             name: b"project_flag".to_vec(),
                             value_raw: if hour < 102 { 0 } else { 100_000 },
@@ -491,8 +490,9 @@ fn prepared_scoped_project_names_use_the_same_frame_pass_and_preserve_country_re
 /// reads its `project_flag` variable, which turns on for country 1 alone at
 /// `on`; every other row equal at every hour.
 fn scoped_countries_frame(hour: i32, countries: u32, on: i32) -> DecodedFrame {
-    use replay::rows::{
-        CountryRow, ProvinceRow, ScriptVariableEntry, ScriptVariablesRow, StateRow,
+    use replay_data::{
+        rows::CountryRow, rows::ProvinceRow, rows::ScriptVariableEntry, rows::ScriptVariablesRow,
+        rows::StateRow,
     };
     let mut frame = frame(hour, true, countries);
     frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
@@ -537,13 +537,13 @@ fn scoped_countries_frame(hour: i32, countries: u32, on: i32) -> DecodedFrame {
             std::iter::once(ScriptVariablesRow {
                 scope_kind: 0,
                 scope_id: 0,
-                seed: replay::rows::Recorded::Value(None),
+                seed: replay_data::rows::Recorded::Value(None),
                 entries: Vec::new(),
             })
             .chain((1..=countries).map(|id| ScriptVariablesRow {
                 scope_kind: 1,
                 scope_id: id,
-                seed: replay::rows::Recorded::Value(None),
+                seed: replay_data::rows::Recorded::Value(None),
                 entries: vec![ScriptVariableEntry {
                     name: b"project_flag".to_vec(),
                     value_raw: if id == 1 && hour >= on { 100_000 } else { 0 },
@@ -560,7 +560,7 @@ fn scoped_countries_frame(hour: i32, countries: u32, on: i32) -> DecodedFrame {
 /// publishes what revisiting every country does (the oracle).
 #[test]
 fn prepared_scoped_project_names_revisit_only_countries_whose_names_changed() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = super::super::tests::TempRoot::new("prepared-project-refresh");
     super::super::history_tests::content(&root.0, "[ROOT.ProjectStage]");
@@ -609,10 +609,11 @@ fn prepared_scoped_project_names_revisit_only_countries_whose_names_changed() {
 
 #[test]
 fn prepared_scoped_project_names_reuse_an_evaluation_whose_inputs_read_the_same() {
-    use replay::rows::{
-        CountryRow, ProvinceRow, ScriptVariableEntry, ScriptVariablesRow, StateRow,
+    use replay_data::{
+        rows::CountryRow, rows::ProvinceRow, rows::ScriptVariableEntry, rows::ScriptVariablesRow,
+        rows::StateRow,
     };
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = super::super::tests::TempRoot::new("prepared-project-reuse");
     // opaque-1's name reads its `project_flag` variable; opaque-2's reads a
@@ -671,13 +672,13 @@ fn prepared_scoped_project_names_reuse_an_evaluation_whose_inputs_read_the_same(
                     std::iter::once(ScriptVariablesRow {
                         scope_kind: 0,
                         scope_id: 0,
-                        seed: replay::rows::Recorded::Value(None),
+                        seed: replay_data::rows::Recorded::Value(None),
                         entries: Vec::new(),
                     })
                     .chain((1..=2).map(|id| ScriptVariablesRow {
                         scope_kind: 1,
                         scope_id: id,
-                        seed: replay::rows::Recorded::Value(None),
+                        seed: replay_data::rows::Recorded::Value(None),
                         entries: vec![ScriptVariableEntry {
                             name: b"project_flag".to_vec(),
                             value_raw: if hour < 103 { 0 } else { 100_000 },
@@ -751,7 +752,7 @@ fn prepared_scoped_project_names_reuse_an_evaluation_whose_inputs_read_the_same(
 
 #[test]
 fn prepared_constant_completed_intervals_keep_attribution_boundary_and_count_unknown_hours() {
-    use replay::rows::{CharacterRow, ProjectProgramRow};
+    use replay_data::{rows::CharacterRow, rows::ProjectProgramRow};
     let mut initial = frame(100, true, 1);
     initial.tables[TableId::Characters.index()] =
         TableView::Complete(TableRows::Characters(vec![CharacterRow {
@@ -1131,10 +1132,11 @@ fn completion_stream_matches_intervals_after_two_commits_resume_append_and_late_
 
 #[test]
 fn completion_stream_native_presentation_survives_late_tag_name_and_program_changes() {
-    use replay::rows::{
-        CharacterRow, LexicalTokenRow, ProjectProgramRow, ScriptVariableEntry, ScriptVariablesRow,
+    use replay_data::{
+        rows::CharacterRow, rows::LexicalTokenRow, rows::ProjectProgramRow,
+        rows::ScriptVariableEntry, rows::ScriptVariablesRow,
     };
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let folder = super::super::tests::TempRoot::new("prepared-completion-native");
     super::super::history_tests::content(&folder.0, "[ROOT.ProjectStage]");
@@ -1169,7 +1171,7 @@ fn completion_stream_native_presentation_survives_late_tag_name_and_program_chan
                 rows[0].canonical_slot = 1;
             }
             frame.tables[TableId::States.index()] =
-                TableView::Complete(TableRows::States(vec![replay::rows::StateRow {
+                TableView::Complete(TableRows::States(vec![replay_data::rows::StateRow {
                     id: 1,
                     owner: 1,
                     controller: 1,
@@ -1177,7 +1179,7 @@ fn completion_stream_native_presentation_survives_late_tag_name_and_program_chan
                 }]))
                 .into();
             frame.tables[TableId::Provinces.index()] =
-                TableView::Complete(TableRows::Provinces(vec![replay::rows::ProvinceRow {
+                TableView::Complete(TableRows::Provinces(vec![replay_data::rows::ProvinceRow {
                     id: 1,
                     state: 1,
                     owner: 1,
@@ -1190,13 +1192,13 @@ fn completion_stream_native_presentation_survives_late_tag_name_and_program_chan
                     ScriptVariablesRow {
                         scope_kind: 0,
                         scope_id: 0,
-                        seed: replay::rows::Recorded::Value(None),
+                        seed: replay_data::rows::Recorded::Value(None),
                         entries: vec![],
                     },
                     ScriptVariablesRow {
                         scope_kind: 1,
                         scope_id: 1,
-                        seed: replay::rows::Recorded::Value(None),
+                        seed: replay_data::rows::Recorded::Value(None),
                         entries: vec![ScriptVariableEntry {
                             name: b"project_flag".to_vec(),
                             value_raw: if hour == 101 { 100_000 } else { 0 },
@@ -2284,7 +2286,7 @@ fn project_lexical_and_program_dependencies_revisit_only_affected_countries_at_5
             if let TableView::Complete(TableRows::LexicalTokens(rows)) =
                 &mut *unrelated.tables[TableId::LexicalTokens.index()]
             {
-                rows.push(replay::rows::LexicalTokenRow {
+                rows.push(replay_data::rows::LexicalTokenRow {
                     token: 999,
                     literal: b"unrelated unit".to_vec(),
                 });
@@ -2322,7 +2324,7 @@ fn project_lexical_and_program_dependencies_revisit_only_affected_countries_at_5
 fn project_lexical_warning_revisions_match_oracle_after_two_commits_resume_and_append() {
     use dashboard_base::prepared::observer_tests::assert_reply_parity;
     use dashboard_base::test_fixtures::continuation_records;
-    engine::executable_tables::initialize_for_tests().unwrap();
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
     let folder = super::super::tests::TempRoot::new("project-lexical-revisions");
     super::super::history_tests::content(&folder.0, "First project");
     std::fs::write(
@@ -2340,7 +2342,7 @@ fn project_lexical_warning_revisions_match_oracle_after_two_commits_resume_and_a
             let mut current = frame(hour, true, 1);
             *current.tables[TableId::LexicalTokens.index()] =
                 TableView::Complete(TableRows::LexicalTokens(vec![
-                    replay::rows::LexicalTokenRow {
+                    replay_data::rows::LexicalTokenRow {
                         token: 8,
                         literal: if hour < 103 {
                             b"mod_project".to_vec()
@@ -2348,7 +2350,7 @@ fn project_lexical_warning_revisions_match_oracle_after_two_commits_resume_and_a
                             b"mod_later".to_vec()
                         },
                     },
-                    replay::rows::LexicalTokenRow {
+                    replay_data::rows::LexicalTokenRow {
                         token: 999,
                         literal: format!("unused {hour}").into_bytes(),
                     },
@@ -2442,7 +2444,7 @@ fn project_unrelated_lexical_changes_publish_one_country_payload_over_720_hours_
         if let TableView::Complete(TableRows::LexicalTokens(rows)) =
             &mut *current.tables[TableId::LexicalTokens.index()]
         {
-            rows.push(replay::rows::LexicalTokenRow {
+            rows.push(replay_data::rows::LexicalTokenRow {
                 token: 999,
                 literal: format!("unused {hour}").into_bytes(),
             });
@@ -2495,7 +2497,7 @@ fn project_content_success_and_failure_are_bound_before_observation_and_shared_p
     use dashboard_base::prepared::{
         frame_changes::FrameChangeTracker, observer_tests::unchanged_frames,
     };
-    engine::executable_tables::initialize_for_tests().unwrap();
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
     let folder = super::super::tests::TempRoot::new("project-configure-once");
     super::super::history_tests::content(&folder.0, "Plain project");
     let initial = frame(100, true, 1);
@@ -2820,7 +2822,7 @@ fn owner_change_frames(count: u32) -> Vec<DecodedFrame> {
                         definition_id: 8,
                         started: 1,
                         program_reference: (7_u64 << 32) | 83,
-                        state: replay::rows::ProjectState {
+                        state: replay_data::rows::ProjectState {
                             current_offset: 0x18,
                             not_completed: 1,
                             ..Default::default()
@@ -3095,7 +3097,7 @@ fn current_cards_select_the_exact_holder_before_identity_preparation() {
 #[test]
 fn equal_project_read_markers_carry_without_numeric_publication() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let format = replay::format::FormatVersion::CURRENT;
+    let format = replay_data::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let mut input = frame(100, true, 64);
     let source = source(&[input.clone()]);

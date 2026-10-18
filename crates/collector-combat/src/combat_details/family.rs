@@ -1,5 +1,5 @@
 use super::*;
-use engine::{
+use engine_native::{
     carmy, carmy_combat_inputs as inputs, cbuilding_database, ccombat_tactic, ccountry,
     cgame_state, cland_combatant, cnaval_combat, cprovince,
     creferenced_division_template as template, cstate, cstrategic_region, csub_unit_definition,
@@ -146,8 +146,8 @@ impl Memory for World {
     /// One guarded call, as the recorder's live gather makes one.
     fn copy_records(
         &self,
-        sources: engine::memory::RecordSources<'_>,
-        layout: &engine::memory::RecordLayout<'_>,
+        sources: engine_native::memory::RecordSources<'_>,
+        layout: &engine_native::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         self.call(sources.pointer(0).unwrap_or(0));
@@ -177,9 +177,9 @@ impl Memory for World {
 /// The Ordinary job's country roster over `world`: an authenticated
 /// census, as the callback prepares it.
 #[cfg(test)]
-fn roster(world: &World) -> engine::country_memory::Cache {
-    let mut cache = engine::country_memory::Cache::try_with_capacity(
-        engine::country_memory::Cache::cells_for_countries(8192, 1024),
+fn roster(world: &World) -> engine_native::country_memory::Cache {
+    let mut cache = engine_native::country_memory::Cache::try_with_capacity(
+        engine_native::country_memory::Cache::cells_for_countries(8192, 1024),
     )
     .unwrap();
     cache.prepare(world, 0, GAME);
@@ -205,8 +205,8 @@ impl Memory for Shared<'_> {
     }
     fn copy_records(
         &self,
-        sources: engine::memory::RecordSources<'_>,
-        layout: &engine::memory::RecordLayout<'_>,
+        sources: engine_native::memory::RecordSources<'_>,
+        layout: &engine_native::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         self.0.copy_records(sources, layout, destination)
@@ -214,18 +214,21 @@ impl Memory for Shared<'_> {
 }
 
 #[cfg(test)]
-type Rostered<'a> =
-    engine::country_memory::CountryMemory<'a, engine::memory::CountedMemory<Shared<'a>>, false>;
+type Rostered<'a> = engine_native::country_memory::CountryMemory<
+    'a,
+    engine_native::memory::CountedMemory<Shared<'a>>,
+    false,
+>;
 
 /// Guarded calls per table, attributed as the recorder attributes them,
 /// over the authenticated roster.
 #[cfg(test)]
 fn per_table(
     world: &World,
-    cache: &engine::country_memory::Cache,
+    cache: &engine_native::country_memory::Cache,
     work: impl FnOnce(&Rostered<'_>),
 ) -> [u64; N] {
-    let counted = engine::memory::CountedMemory::new(Shared(world));
+    let counted = engine_native::memory::CountedMemory::new(Shared(world));
     let capture = crate::read_accounting::Capture::new();
     work(&cache.roster_view(&counted));
     let counts = capture.finish();
@@ -334,7 +337,7 @@ fn world(shape: &Shape) -> Built {
     }
     let doctrine = w.alloc(0x40);
     w.u64(
-        GAME + engine::country_tactic_unlocks::DOCTRINE_SYSTEM,
+        GAME + engine_land_inputs::country_tactic_unlocks::DOCTRINE_SYSTEM,
         doctrine as u64,
     );
     // Countries.
@@ -371,10 +374,10 @@ fn world(shape: &Shape) -> Built {
                 (0x1e9, 13),
             ],
         );
-        let diplomacy = w.object(0x300, engine::cdiplomacy_status::VTABLE_RVA);
+        let diplomacy = w.object(0x300, engine_native::cdiplomacy_status::VTABLE_RVA);
         w.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
         w.u64(
-            diplomacy + engine::cdiplomacy_status::COUNTRY,
+            diplomacy + engine_native::cdiplomacy_status::COUNTRY,
             country as u64,
         );
         diplomacies.push(diplomacy);
@@ -392,7 +395,7 @@ fn world(shape: &Shape) -> Built {
             w.u32(list, (1 + enemy * (slots - 1) / shape.owners) as u32);
         }
         w.array(
-            diplomacy + engine::cdiplomacy_status::ENEMY_COUNTRIES,
+            diplomacy + engine_native::cdiplomacy_status::ENEMY_COUNTRIES,
             list,
             u32::from(at_war),
         );
@@ -415,7 +418,7 @@ fn world(shape: &Shape) -> Built {
     for (from, &diplomacy) in diplomacies.iter().enumerate() {
         let row = w.alloc(slots * 8);
         w.array(
-            diplomacy + engine::cdiplomacy_status::RELATIONS,
+            diplomacy + engine_native::cdiplomacy_status::RELATIONS,
             row,
             slots as u32,
         );
@@ -423,12 +426,15 @@ fn world(shape: &Shape) -> Built {
             if to == from {
                 continue;
             }
-            let tuple = w.object(0x300, engine::crelation_status::VTABLE_RVA);
+            let tuple = w.object(0x300, engine_native::crelation_status::VTABLE_RVA);
             w.u64(
-                tuple + engine::crelation_status::DIPLOMACY_STATUS,
+                tuple + engine_native::crelation_status::DIPLOMACY_STATUS,
                 diplomacy as u64,
             );
-            w.u32(tuple + engine::crelation_status::TARGET_COUNTRY, target);
+            w.u32(
+                tuple + engine_native::crelation_status::TARGET_COUNTRY,
+                target,
+            );
             w.u64(tuple + 0x2a0, u64::from((from + to) % 2 == 0));
             w.u64(row + target as usize * 8, tuple as u64);
         }
@@ -486,9 +492,9 @@ fn world(shape: &Shape) -> Built {
     // generated names store one group key between them.
     let name_groups: Vec<usize> = (0..3)
         .map(|index| {
-            let group = w.object(0x40, engine::cname_group_member::GROUP_VTABLE_RVA);
+            let group = w.object(0x40, engine_native::cname_group_member::GROUP_VTABLE_RVA);
             w.text(
-                group + engine::cname_group_member::GROUP_KEY,
+                group + engine_native::cname_group_member::GROUP_KEY,
                 format!("GROUP_{index}").as_bytes(),
             );
             group
@@ -496,7 +502,7 @@ fn world(shape: &Shape) -> Built {
         .collect();
     for (index, &t) in templates.iter().enumerate() {
         w.u64(
-            t + engine::cname_group_member::TEMPLATE_NAME_GROUP,
+            t + engine_native::cname_group_member::TEMPLATE_NAME_GROUP,
             name_groups[index % name_groups.len()] as u64,
         );
     }
@@ -591,24 +597,27 @@ fn world(shape: &Shape) -> Built {
         // type (which reads nothing further).
         let name = w.alloc(0x100);
         w.u64(army + inputs::NAME_GROUP_MEMBER, name as u64);
-        w.u64(name, engine::cname_group_member::VTABLE_RVA as u64);
-        w.u32(name + engine::cname_group_member::ORDER, index as u32);
+        w.u64(name, engine_native::cname_group_member::VTABLE_RVA as u64);
+        w.u32(
+            name + engine_native::cname_group_member::ORDER,
+            index as u32,
+        );
         let template = templates[(index * 5) % templates.len()];
         match index % 3 {
             0 => {
-                w.text(name + engine::cname_group_member::OVERRIDE_NAME, b"");
+                w.text(name + engine_native::cname_group_member::OVERRIDE_NAME, b"");
                 w.u64(
-                    name + engine::cname_group_member::TEMPLATE_REFERENCE,
+                    name + engine_native::cname_group_member::TEMPLATE_REFERENCE,
                     w.get_u64(template + 8),
                 );
             }
             1 => w.text(
-                name + engine::cname_group_member::OVERRIDE_NAME,
+                name + engine_native::cname_group_member::OVERRIDE_NAME,
                 format!("Guard {}", index % 1000).as_bytes(),
             ),
             _ => {
-                w.u32(name + engine::cname_group_member::TYPE, 1);
-                w.put(name + engine::cname_group_member::FLAG_B, &[1]);
+                w.u32(name + engine_native::cname_group_member::TYPE, 1);
+                w.put(name + engine_native::cname_group_member::FLAG_B, &[1]);
             }
         }
         w.put(army + 0x2e, &[1]);
@@ -716,7 +725,7 @@ fn world(shape: &Shape) -> Built {
 /// Registers the templates by their handle in the reference registry's
 /// root for their type, one bucket each at its home slot.
 fn register_templates(w: &mut World, templates: &[usize]) {
-    use engine::{creference_registry as registry, reference_bucket as bucket};
+    use engine_native::{creference_registry as registry, reference_bucket as bucket};
     // At least twice the templates in buckets, a power of two: the
     // header's overflow distance is the exponent plus two.
     let buckets = (templates.len() * 2).next_power_of_two().max(8);
@@ -796,16 +805,16 @@ fn shared_naming_keys_and_custom_names_match_the_reference_under_pressure() {
     let mut built = world(&shape);
     let group = built
         .world
-        .get_u64(built.templates[0] + engine::cname_group_member::TEMPLATE_NAME_GROUP)
+        .get_u64(built.templates[0] + engine_native::cname_group_member::TEMPLATE_NAME_GROUP)
         as usize;
     built
         .world
-        .poison(group + engine::cname_group_member::GROUP_KEY + 16, 8);
+        .poison(group + engine_native::cname_group_member::GROUP_KEY + 16, 8);
     assert_equivalent(&built.world);
 }
 
 fn leaders(w: &mut World, count: usize, country: u32) -> Vec<usize> {
-    use engine::{
+    use engine_native::{
         carmy_leader, cnull_combat_tactic, corders_group, creference_registry as registry,
         cunit_leader, cunit_leader_skill, reference_bucket as bucket,
     };
@@ -817,7 +826,7 @@ fn leaders(w: &mut World, count: usize, country: u32) -> Vec<usize> {
     w.u32(skill + cunit_leader_skill::CATEGORY, 2);
     let skills = w.alloc(0x200);
     w.u64(
-        engine::naval_commander_inputs::SKILL_DATABASE_RVA,
+        engine_native::naval_commander_inputs::SKILL_DATABASE_RVA,
         skills as u64,
     );
     let levels = w.alloc(8 * 5);
@@ -919,7 +928,7 @@ fn live_detail_demand_presizes_attach_and_later_combat_arena_growth() {
             divisions,
             ..Shape::small()
         });
-        let demand = engine::cland_combat::detail_demand(&built.world, 0, GAME).unwrap();
+        let demand = engine_native::cland_combat::detail_demand(&built.world, 0, GAME).unwrap();
         assert_eq!(demand.rows, combats);
         assert_eq!(demand.census_participants, combats * divisions);
         let old = capacities;
@@ -1181,7 +1190,7 @@ fn family_walk_publishes_the_reference_tables() {
     assert_eq!(rows(&one.tables[2]), shape.combats * 2);
     // LandCombatDivisionModifiers holds a row a member.
     assert_eq!(rows(&one.tables[4]), shape.combats * shape.divisions);
-    let TableView::Complete(replay::rows::TableRows::LandCombatDivisions(divisions)) =
+    let TableView::Complete(replay_data::rows::TableRows::LandCombatDivisions(divisions)) =
         &one.tables[1]
     else {
         unreachable!()
@@ -1206,7 +1215,8 @@ fn family_walk_publishes_the_reference_tables() {
     // Each reserve's country prints its reinforcement-rate tree (here a
     // childless root of 7), read once however many reserves it has; a
     // commander row exists only for a nonzero root and keeps its name.
-    let TableView::Complete(replay::rows::TableRows::ReserveModifierTrees(trees)) = &one.tables[5]
+    let TableView::Complete(replay_data::rows::TableRows::ReserveModifierTrees(trees)) =
+        &one.tables[5]
     else {
         unreachable!()
     };
@@ -1218,7 +1228,7 @@ fn family_walk_publishes_the_reference_tables() {
         assert_eq!(
             row.nodes.as_deref(),
             Some(
-                &[replay::rows::ModifierBreakdownNode {
+                &[replay_data::rows::ModifierBreakdownNode {
                     children: 0,
                     value: 7,
                     name: Vec::new(),
@@ -1241,7 +1251,8 @@ fn family_walk_publishes_the_reference_tables() {
     assert!(divisions.iter().any(|row| !row.name_group.is_empty()));
     assert!(divisions.iter().any(|row| !row.name_custom.is_empty()));
     assert!(divisions.iter().any(|row| row.name_programmatic != 0));
-    let TableView::Complete(replay::rows::TableRows::LandCombatDetails(details)) = &one.tables[0]
+    let TableView::Complete(replay_data::rows::TableRows::LandCombatDetails(details)) =
+        &one.tables[0]
     else {
         unreachable!()
     };
@@ -1250,12 +1261,13 @@ fn family_walk_publishes_the_reference_tables() {
             .iter()
             .any(|row| row.sides.iter().any(|side| side.commander != 0))
     );
-    let TableView::Complete(replay::rows::TableRows::LandCombatModifiers(sides)) = &one.tables[2]
+    let TableView::Complete(replay_data::rows::TableRows::LandCombatModifiers(sides)) =
+        &one.tables[2]
     else {
         unreachable!()
     };
     assert!(sides.iter().all(|side| side.divisions == Retired));
-    let TableView::Complete(replay::rows::TableRows::LandCombatDivisionModifiers(members)) =
+    let TableView::Complete(replay_data::rows::TableRows::LandCombatDivisionModifiers(members)) =
         &one.tables[4]
     else {
         unreachable!()
@@ -1444,7 +1456,9 @@ fn army_leaders(built: &Built) -> Vec<usize> {
         if group == 0 {
             continue;
         }
-        let leader = built.world.get_u64(group + engine::corders_group::LEADER) as usize;
+        let leader = built
+            .world
+            .get_u64(group + engine_native::corders_group::LEADER) as usize;
         if !leaders.contains(&leader) {
             leaders.push(leader);
         }
@@ -1455,14 +1469,14 @@ fn army_leaders(built: &Built) -> Vec<usize> {
 #[cfg(test)]
 fn detail_rows(view: &TableView) -> &[LandCombatDetailsRow] {
     match view {
-        TableView::Complete(replay::rows::TableRows::LandCombatDetails(rows)) => rows,
+        TableView::Complete(replay_data::rows::TableRows::LandCombatDetails(rows)) => rows,
         other => panic!("expected complete details, got {other:?}"),
     }
 }
 
 #[cfg(test)]
 fn border_war_hooks_after_neighbouring_text(reference: bool) {
-    use engine::{
+    use engine_native::{
         cland_border_war_combat as combat, cland_border_war_combatant as side,
         cunit_leader as leader, cunit_leader_trait as trait_, msvc_string,
     };
@@ -1579,7 +1593,7 @@ fn border_war_hooks_reference_relocates_after_neighbouring_heap_text() {
 #[test]
 #[cfg(test)]
 fn selected_commander_texts_keep_native_length_and_grow() {
-    use engine::cunit_leader::{DESCRIPTION_TOKEN, TOKEN};
+    use engine_native::{cunit_leader::DESCRIPTION_TOKEN, cunit_leader::TOKEN};
     let shape = Shape::small();
     let mut built = world(&shape);
     let leaders = army_leaders(&built);
@@ -1769,7 +1783,7 @@ fn family_cost_at_scale() {
 /// divisions and modifiers tables (`tables`) count beyond those stages.
 #[cfg(test)]
 fn stages(w: &World, memory: &impl Memory, tables: [u64; N]) -> Vec<(&'static str, u64)> {
-    use engine::land_tactic_inputs as tactic;
+    use engine_native::land_tactic_inputs as tactic;
     let through = |stage: u8| {
         let mut air = vec![0; 1 << 12];
         let mut text = vec![0; 1 << 16];
@@ -1780,7 +1794,7 @@ fn stages(w: &World, memory: &impl Memory, tables: [u64; N]) -> Vec<(&'static st
         let mut participants = vec![0; 1 << 17];
         let mut pointers = vec![0; 1 << 17];
         let mut roles = vec![0; 1 << 12];
-        let mut images = engine::combat_sources::Images::default();
+        let mut images = engine_native::combat_sources::Images::default();
         let mut rosters = vec![0; 1 << 12];
         w.calls.store(0, Ordering::Relaxed);
         let walk = cland_combat::walk_members(

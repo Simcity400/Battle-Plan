@@ -1,6 +1,8 @@
 //! Immutable content operands for combat windows and marker hover text.
 use super::{Assets, modifier_text::NameIndexCache};
-use installed_content::{localisation::Localisation, map::MapData, regions::StrategicRegion};
+use installed_content_core::map::MapData;
+use installed_content_localisation::localisation::Localisation;
+use installed_content_regions::regions::StrategicRegion;
 use std::{collections::BTreeMap, sync::Arc};
 use viewer_foundation::{
     land_combat_math::ScoreDefines,

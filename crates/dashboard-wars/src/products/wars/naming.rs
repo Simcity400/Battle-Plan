@@ -2,7 +2,8 @@
 //! the capture supplies the native default prefix and ordered first goal.
 use super::*;
 use dashboard_text::scripted_text::ScriptedText;
-use installed_content::{country_names::CountryNames, localisation::Argument};
+use installed_content_country_names::country_names::CountryNames;
+use installed_content_localisation::localisation::Argument;
 use std::cell::OnceCell;
 
 pub(super) fn unknown(reason: impl Into<String>) -> WarName {

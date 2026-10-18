@@ -2,11 +2,9 @@
 //! complement. Counterplay uses slot 3, skips slot 6, and uses the smaller
 //! output endpoint.
 
-use installed_content::localisation::Argument as Arg;
-use installed_content::{
-    localisation::Localisation,
-    raids::tooltips::{Formula, Modifier},
-};
+use installed_content_localisation::localisation::Argument as Arg;
+use installed_content_localisation::localisation::Localisation;
+use installed_content_raids::{raids::tooltips::Formula, raids::tooltips::Modifier};
 use viewer_foundation::tooltip_text::{ensure_newlines, localise};
 
 /// Use two distinct truncating divisions, then clamp endpoints. Combining

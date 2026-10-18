@@ -10,7 +10,7 @@ use super::*;
 /// One record as loaded.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnimationRecord {
-    pub data: installed_content::gui::native::sprites::AnimationData,
+    pub data: installed_content_core::gui::native::sprites::AnimationData,
     /// `animationmaskfile`'s texture, or the null texture when it does not load.
     pub mask: usize,
     /// `animationtexturefile`'s texture and its size.

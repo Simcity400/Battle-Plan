@@ -25,15 +25,14 @@ use std::{
 use viewer_foundation::map::subunit_files::subunit_keys;
 use viewer_foundation::map::subunit_files::subunit_paths;
 
-use installed_content::{
-    ResolvedLayers,
-    equipment::{Database, Equipment},
-    parser::{self, Item, Value},
+use installed_content_core::{
+    ResolvedLayers, equipment::Database, equipment::Equipment, parser, parser::Item, parser::Value,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{DivisionEquipmentRow, DivisionTemplateIconRow, VariantDefinitionRow, tables},
+use replay_data::{
+    rows::DivisionEquipmentRow, rows::DivisionTemplateIconRow, rows::VariantDefinitionRow,
+    rows::tables,
 };
+use replay_frame::frame::DecodedFrame;
 
 use viewer_foundation::map::tables::rows;
 use viewer_foundation::table_access::{TokenKeys, TokenNames};
@@ -67,7 +66,7 @@ pub struct EquipmentModel<'a> {
 }
 
 /// Authored sub-units, and the content's equipment database as
-/// `installed_content::equipment` loads it, `duplicate_archetypes` copies included.
+/// `installed_content_core::equipment` loads it, `duplicate_archetypes` copies included.
 #[derive(Clone, Debug, Default)]
 pub struct Content {
     subunits: BTreeMap<String, SubUnit>,
@@ -223,7 +222,7 @@ impl Content {
     pub fn equipment_model(&self, key: &str) -> io::Result<EquipmentModel<'_>> {
         let equipment = self.equipment(key)?;
         let archetype = self.archetype_of(key, equipment)?;
-        let model = installed_content::parser::text(&equipment.model).map_err(|refused| {
+        let model = installed_content_core::parser::text(&equipment.model).map_err(|refused| {
             invalid(format!("equipment {key} model cannot be read: {refused}"))
         })?;
         Ok(EquipmentModel {
@@ -705,7 +704,7 @@ fn category(value: &Value) -> io::Result<u64> {
             .try_fold(0, |mask, item| Ok(mask | category(&item.value)?));
     }
     let name = scalar(value)?;
-    installed_content::equipment::category_mask(name)
+    installed_content_core::equipment::category_mask(name)
         .ok_or_else(|| invalid(format!("unknown equipment category {name}")))
 }
 

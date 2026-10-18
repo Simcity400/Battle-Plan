@@ -74,7 +74,7 @@ fn edges(pairs: &[(u32, u32, i32)]) -> Vec<RailEdgeRow> {
 }
 #[test]
 fn anchor_slots_fold_ascii_case_and_skip_ambiguous_slots() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let map = MapData {
         width: 32,
@@ -83,24 +83,25 @@ fn anchor_slots_fold_ascii_case_and_skip_ambiguous_slots() {
         definitions: BTreeMap::new(),
         country_colors: Default::default(),
     };
-    let rivers = installed_content::image::IndexedImage {
+    let rivers = installed_content_image::IndexedImage {
         width: 32,
         height: 32,
         indices: vec![255; 1024],
         palette: [[0; 4]; 256],
     };
-    let types = installed_content::buildings::parse(
-        b"buildings={Hub={supply_node=yes} Port={is_port=yes spawn_point=Harbour}} spawn_points={Harbour={}}", &installed_content::key_names::KeyNames::default(),
+    let types = installed_content_core::buildings::parse(
+        b"buildings={Hub={supply_node=yes} Port={is_port=yes spawn_point=Harbour}} spawn_points={Harbour={}}", &installed_content_core::key_names::KeyNames::default(),
     )
     .unwrap();
     let positions =
-        installed_content::positions::parse_buildings(b"1;hUB;4;5;6;0;0\n1;hARBOUR;7;8;9;0;0\n").unwrap();
+        installed_content_core::positions::parse_buildings(b"1;hUB;4;5;6;0;0\n1;hARBOUR;7;8;9;0;0\n")
+            .unwrap();
     let geometry =
         RailGeometry::new(&map, &positions, &types, &rivers, &heights(), defines()).unwrap();
     assert_eq!(geometry.anchors[&1], [4.0, 5.0, 6.0]);
     assert_eq!(geometry.ports[&1], [7.0, 8.0, 9.0]);
-    let ambiguous = installed_content::buildings::parse(
-        b"buildings={Hub={supply_node=yes} hub={} Port={is_port=yes spawn_point=Harbour}} spawn_points={Harbour={} harbour={}}", &installed_content::key_names::KeyNames::default(),
+    let ambiguous = installed_content_core::buildings::parse(
+        b"buildings={Hub={supply_node=yes} hub={} Port={is_port=yes spawn_point=Harbour}} spawn_points={Harbour={} harbour={}}", &installed_content_core::key_names::KeyNames::default(),
     )
     .unwrap();
     let geometry =
@@ -111,7 +112,7 @@ fn anchor_slots_fold_ascii_case_and_skip_ambiguous_slots() {
 
 #[test]
 fn native_strips_preserve_triangles_and_do_not_join_provinces() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mesh = geography().build_rows(&edges(&[(1, 2, 2), (2, 3, 4)]), &[], &[], &heights());
     let pack = |v: RailVertex| {
@@ -175,7 +176,7 @@ fn building_and_losing_edges_changes_the_current_network() {
 }
 #[test]
 fn a_train_route_runs_over_the_boundary_crossings_and_out_of_its_first_province() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let geo = geography();
     let h = heights();

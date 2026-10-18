@@ -9,10 +9,8 @@ use crate::map::{
     perspective::{SharingUnknown, Vision},
     tables::rows,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{LandCombatSideRow, TableId, tables},
-};
+use replay_data::{rows::LandCombatSideRow, rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 
 /// Fixed point over 100 000.
@@ -191,10 +189,8 @@ pub fn sides(frame: &DecodedFrame) -> io::Result<BTreeMap<u64, &LandCombatSideRo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{DivisionRow, LandCombatRow, TableId, TableRows},
-    };
+    use replay_data::{rows::DivisionRow, rows::LandCombatRow, rows::TableId, rows::TableRows};
+    use replay_frame::{frame::Metrics, frame::TableView};
 
     fn frame(divisions: Vec<(u64, i64)>) -> DecodedFrame {
         let mut frame = DecodedFrame {

@@ -6,11 +6,9 @@ use crate::{
     table_capture::{CaptureRows, grow_vec},
     table_conversion::table,
 };
-use engine::{Memory, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{CountryExperienceGainRow, TableId, tables},
-};
+use engine_native::{Memory, walk::Outcome};
+use replay_data::{rows::CountryExperienceGainRow, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::CountryExperienceGains];
@@ -66,7 +64,9 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::frame::{DecodedFrame, FrameDecoder, FrameEncoder, Metrics};
+    use replay_frame::{
+        frame::DecodedFrame, frame::FrameDecoder, frame::FrameEncoder, frame::Metrics,
+    };
 
     #[test]
     fn gain_export_sorts_reordered_raw_aliases_and_refuses_duplicate_keys_before_encoding() {

@@ -45,11 +45,11 @@ use super::camera::{Camera, MapDefines, MapSize};
 /// rendering
 /// notes](#)
 /// section 3.1. The virtual lighting sun uses only the hour, not this direction. The exact
-/// simulation target is [`replay::day_night::seasonal_direction`], the signed fixed5 words the
+/// simulation target is [`replay_data::day_night::seasonal_direction`], the signed fixed5 words the
 /// weather manager holds.
 fn seasonal_direction(hour: i32) -> [f32; 3] {
-    let scale = replay::day_night::SCALE as f32;
-    let [x, y, z] = replay::day_night::seasonal_direction(hour).map(|v| v as f32 / scale);
+    let scale = replay_data::day_night::SCALE as f32;
+    let [x, y, z] = replay_data::day_night::seasonal_direction(hour).map(|v| v as f32 / scale);
     let length = (x * x + y * y + z * z).sqrt();
     [x / length, y / length, z / length]
 }

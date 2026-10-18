@@ -10,7 +10,7 @@ use std::{
 };
 use viewer_foundation::map::msvc_stable_sort::sort;
 
-use replay::rows::{NavalCombatShipRow, TaskForceCounterInputRow, TaskForceRow};
+use replay_data::{rows::NavalCombatShipRow, rows::TaskForceCounterInputRow, rows::TaskForceRow};
 
 use {
     viewer_foundation::map::allegiance::Allegiance, viewer_foundation::map::counter_inputs,
@@ -80,7 +80,7 @@ pub struct ShipCensus<'a> {
 #[cfg(test)]
 impl ShipCensus<'_> {
     /// The census indexed from its rows, as `NavalContext::read` indexes it.
-    pub fn from_rows(ships: &[replay::rows::ShipRow]) -> Self {
+    pub fn from_rows(ships: &[replay_data::rows::ShipRow]) -> Self {
         let mut counts = BTreeMap::<u64, (usize, i64)>::new();
         for ship in ships {
             let entry = counts.entry(ship.task_force).or_default();

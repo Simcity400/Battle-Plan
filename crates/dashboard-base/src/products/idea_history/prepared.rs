@@ -30,11 +30,13 @@ use crate::{
     products::politics_content::PoliticsContent,
 };
 use replay::{
-    container::{BlockIndex, QuietHours, Replay, TableFields},
-    format::FormatVersion,
-    frame::DecodedFrame,
-    rows::{CharacterRow, CountryCounterInputRow, CountryRow, TableId, TableRows, tables},
+    container::BlockIndex, container::QuietHours, container::Replay, container::TableFields,
 };
+use replay_data::{
+    format::FormatVersion, rows::CharacterRow, rows::CountryCounterInputRow, rows::CountryRow,
+    rows::TableId, rows::TableRows, rows::tables,
+};
+use replay_frame::frame::DecodedFrame;
 use std::{any::Any, io, ops::Range};
 
 /// The tables the idea scan reads ([`super::TABLES`]), and the modifier
@@ -266,9 +268,9 @@ pub fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     let facts = {
-        let _cpu = ::replay::cpu::scope("fold facts", None);
+        let _cpu = ::replay_frame::cpu::scope("fold facts", None);
         facts
             .downcast::<BlockFacts>()
             .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -277,7 +279,7 @@ pub fn fold(
     crate::prepared::kept::note_frames(FAMILY.name, facts.frames);
     let mut reached = None;
     for hour in facts.hours {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         check()?;
         match hour {
             Hour::Observed {
@@ -288,7 +290,7 @@ pub fn fold(
                 #[cfg(any(test, feature = "test-support"))]
                 crate::prepared::kept::note_observed(FAMILY.name);
                 let result = {
-                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     scan.prepare_changes_in(&frame, &facts, changes, content)
                 };
                 if !observed(frame.hour, result)? {
@@ -297,7 +299,7 @@ pub fn fold(
             }
             Hour::Quiet { first, last } => {
                 let advanced = {
-                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     scan.advance_quiet(first, last, changes)
                 };
                 if !advanced {
@@ -337,7 +339,7 @@ pub fn observe_block(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
-    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let _cpu = ::replay_frame::cpu::scope("fold driver", None);
     observe_hours(
         replay,
         index,
@@ -356,7 +358,7 @@ pub fn observe_block(
 #[cfg(test)]
 mod reduction_tests {
     use super::*;
-    use replay::frame::{SharedView, TableView};
+    use replay_frame::{frame::SharedView, frame::TableView};
 
     #[test]
     fn reported_unchanged_fields_reuse_reductions_even_when_sources_are_rebuilt() {

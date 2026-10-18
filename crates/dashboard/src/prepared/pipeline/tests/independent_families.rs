@@ -13,10 +13,8 @@ use crate::prepared::{
     prepass::{self, Extract, Family, Folded},
 };
 use independent::{Block, Branch, Load, Observed, Own};
-use replay::{
-    container::{QuietHours, TableFields},
-    format::FormatVersion,
-};
+use replay::{container::QuietHours, container::TableFields};
+use replay_data::format::FormatVersion;
 use serde::{Deserialize, Serialize};
 use std::{any::Any, ops::Range, sync::Mutex, thread::ThreadId};
 

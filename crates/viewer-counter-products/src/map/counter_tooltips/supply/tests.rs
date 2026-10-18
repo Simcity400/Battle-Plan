@@ -1,11 +1,9 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{
-        CountryLinkRow, DivisionRow, DivisionStatusRow, DivisionSupplyFooter, TableId, TableRows,
-        UnitSupplyOrigin,
-    },
+use replay_data::{
+    rows::CountryLinkRow, rows::DivisionRow, rows::DivisionStatusRow, rows::DivisionSupplyFooter,
+    rows::TableId, rows::TableRows, rows::UnitSupplyOrigin,
 };
+use replay_frame::frame::TableView;
 use {
     viewer_foundation::map::counter_hovers::land::CounterControl,
     viewer_foundation::map::test_support::{test_frame, test_put as put},
@@ -53,9 +51,9 @@ fn with_frame_context<R>(
 
 #[test]
 fn supply_origin_names_use_exact_static_and_reserved_original_tags_and_keep_refusals() {
-    use replay::rows::{
-        CountryAppearanceRow, CountryLinkRow, CountryRow, ProvinceRow, Recorded,
-        ReservedCountryNamingRow, StateRow,
+    use replay_data::{
+        rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow, rows::ProvinceRow,
+        rows::Recorded, rows::ReservedCountryNamingRow, rows::StateRow,
     };
     let mut frame = DecodedFrame {
         branch: 0,
@@ -220,7 +218,7 @@ fn append_footer(frame: &DecodedFrame, railway_gun: bool, members: &[u64], body:
 
 #[test]
 fn ordinary_supply_footer_uses_title_and_skips_dangling_refs_before_last_disruption() {
-    use replay::rows::RailwayGunCounterInputRow;
+    use replay_data::rows::RailwayGunCounterInputRow;
     // Divisions and railway guns record the same footers, at the printed
     // hundredth.
     let first = UnitSupplyInputs {

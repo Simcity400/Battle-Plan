@@ -4,7 +4,7 @@
 //! the required operands ([`crate::naval_mission_derive`] evaluates them).
 //! Modifier values are raw accumulator entries, `None` when absent;
 //! ModifierDefinitions provides feature and clamp metadata for present
-//! entries. Keys: `engine::naval_mission_inputs::COUNTRY_KEYS`.
+//! entries. Keys: `engine_native::naval_mission_inputs::COUNTRY_KEYS`.
 use super::*;
 
 /// NavalMissionTaskForces (hourly): one row per task force whose mission
@@ -52,7 +52,7 @@ pub struct NavalMissionTaskForceRow {
 impl NavalMissionTaskForceRow {
     /// Raw accumulator entries for a native mission modifier key.
     pub fn value(&self, key: u32) -> (Option<i64>, Option<i64>) {
-        use engine::modifier_keys as keys;
+        use engine_executable::modifier_keys as keys;
         match key {
             keys::NAVAL_COORDINATION => (self.local_coordination, self.weather_coordination),
             keys::CONVOY_RAIDING_EFFICIENCY_FACTOR => (self.local_raiding, self.weather_raiding),
@@ -115,7 +115,7 @@ pub struct NavalMissionCountryRow {
 impl NavalMissionCountryRow {
     /// Raw accumulator entries for a native mission modifier key.
     pub fn value(&self, key: u32) -> Option<i64> {
-        use engine::modifier_keys as keys;
+        use engine_executable::modifier_keys as keys;
         match key {
             keys::NAVAL_COORDINATION => self.coordination,
             keys::CONVOY_RAIDING_EFFICIENCY_FACTOR => self.raiding,
@@ -161,7 +161,7 @@ impl NavalMissionCommanderRow {
 impl NavalMissionCommanderRow {
     /// Raw accumulator entries for a native mission modifier key.
     pub fn value(&self, key: u32) -> Option<i64> {
-        use engine::modifier_keys as keys;
+        use engine_executable::modifier_keys as keys;
         match key {
             keys::NAVAL_COORDINATION => self.coordination,
             keys::CONVOY_RAIDING_EFFICIENCY_FACTOR => self.raiding,

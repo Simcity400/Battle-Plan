@@ -1,6 +1,6 @@
 //! Each country's stability, war support and maximum command power inputs
 //! and its modifier tree lines with their proven sources
-//! (`engine::country_stability`). The `stability` sliced family: each hour
+//! (`engine_stability::country_stability`). The `stability` sliced family: each hour
 //! reads the hour's country slice, every country on a full hour, a country
 //! new to the census or whose last read was not published, and every country
 //! a hooked writer marked since the previous hour
@@ -15,13 +15,14 @@ use crate::{
     table_capture::{Arena, CaptureRows},
     table_conversion::{table, unavailable},
 };
-use engine::allocation::{copy_vec, owned_vec};
-use engine::{Memory, ccountry, country_stability as native, walk::Outcome};
-use replay::{
-    cadence::{SKIPPED_REASON, should_walk},
-    frame::TableView,
-    rows::{CountryStabilityInputRow, CountryStabilityLineRow, TableId, tables},
+use engine_allocation::{copy_vec, owned_vec};
+use engine_native::{Memory, ccountry, walk::Outcome};
+use engine_stability::country_stability as native;
+use replay_data::{
+    cadence::SKIPPED_REASON, cadence::should_walk, rows::CountryStabilityInputRow,
+    rows::CountryStabilityLineRow, rows::TableId, rows::tables,
 };
+use replay_frame::frame::TableView;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static BATCH_FALLBACKS: AtomicU64 = AtomicU64::new(0);
@@ -354,7 +355,7 @@ impl Captured {
                 }
             }
             if self.inputs.rows.len() <= inputs {
-                engine::allocation::resize_default(
+                engine_allocation::resize_default(
                     &mut self.inputs.rows,
                     inputs
                         .checked_add(1)
@@ -571,14 +572,15 @@ fn combine(total: Outcome, next: Outcome) -> Result<Outcome, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::TableRows;
+    use replay_data::rows::TableRows;
 
     #[test]
     fn stability_capture_counts_refused_fallbacks_and_resets_before_inputs() {
-        use engine::{
-            cdiplomacy_status, cgame_state, cidea, cideology_group, cmodifier, cpdx_array::Array,
-            cpolitical_party, cpolitical_status, cworld_threat,
+        use engine_native::{
+            cdiplomacy_status, cgame_state, cidea, cideology_group, cpdx_array::Array,
+            cpolitical_party, cpolitical_status,
         };
+        use engine_stability::{cmodifier, cworld_threat};
         use std::{cell::Cell, collections::BTreeMap};
 
         // Independently authored, zero-initialized sparse synthetic memory.
@@ -651,7 +653,7 @@ mod tests {
             GROUP
                 + native::IDEOLOGY_GROUP_MODIFIER
                 + cmodifier::DISPLAY_NAME
-                + engine::msvc_string::CAPACITY,
+                + engine_native::msvc_string::CAPACITY,
             15,
         );
         memory.array(STATUS + cpolitical_status::IDEAS, 0x5000, 1);
@@ -726,7 +728,7 @@ mod tests {
 
     #[test]
     fn a_walk_without_readable_memory_is_unavailable_not_empty() {
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

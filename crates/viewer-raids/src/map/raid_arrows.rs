@@ -47,7 +47,7 @@
 //! visibility. `NGraphics.DRAW_MAP_OBJECTS_CUTOFF` applies to province objects.
 //! The raid entity draws at every height with its mesh's own LOD distances.
 
-use installed_content::equipment_graphics::countries as model_countries;
+use installed_content_equipment_graphics::equipment_graphics::countries as model_countries;
 use std::collections::BTreeMap;
 use viewer_foundation::map::aircraft_model;
 #[cfg(test)]
@@ -62,15 +62,12 @@ use viewer_foundation::map::unit_pose::{
     elapsed_hours, movement_progress, next_hour_progress, phase_progress, remaining_hours,
 };
 
-use installed_content::{
-    movement::MovementMap,
-    province_graph::{RaidPath, raid_route},
-    raids::{PathArrowDefines, RaidArrowKind, RaidGraphicsDefines, RaidType},
+use installed_content_core::{movement::MovementMap, province_graph::RaidPath, province_graph::raid_route};
+use installed_content_raids::{
+    raids::PathArrowDefines, raids::RaidArrowKind, raids::RaidGraphicsDefines, raids::RaidType,
 };
-use replay::{
-    frame::DecodedFrame,
-    rows::{RaidRow, RaidTargetRow, TaskForceRow, tables},
-};
+use replay_data::{rows::RaidRow, rows::RaidTargetRow, rows::TaskForceRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 
 use {
     crate::map::raids::RaidAssets, crate::map::raids::TypeToken,
@@ -624,7 +621,7 @@ fn raid_entity(
         .iter()
         .map(|link| (link.id, link.canonical_slot))
         .collect();
-    let definitions: BTreeMap<u64, &replay::rows::VariantDefinitionRow> = frame
+    let definitions: BTreeMap<u64, &replay_data::rows::VariantDefinitionRow> = frame
         .complete::<tables::VariantDefinitions>()
         .map_err(complete)?
         .iter()
@@ -757,7 +754,7 @@ pub enum UnitEntity {
 /// `primary` is the roster's (variant, definition flags) in stored order;
 /// `declared` reports whether content declares an entity.
 pub fn unit_entity(
-    model: &installed_content::raids::RaidUnitModel,
+    model: &installed_content_raids::raids::RaidUnitModel,
     tag: &str,
     culture: &str,
     primary: &[(u64, u64)],

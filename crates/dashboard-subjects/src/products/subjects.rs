@@ -6,7 +6,7 @@
 //! A relation counts while the viewer's political map counts it
 //! (`active_subject` there): not cancelled, and before its recorded end when it
 //! has one (an end not after its start is no end). Its start hour is the
-//! engine's (`engine::csubject_relation::START_HOUR`), which the fresh-save
+//! engine's (`engine_native::csubject_relation::START_HOUR`), which the fresh-save
 //! oracle compares with the save's start date for every relation that is not
 //! cancelled (`compare_subjects` in the recorder), so a relation already running
 //! when recording began is dated as the game dates it. Two runs of one pair with
@@ -15,10 +15,10 @@
 //! The level is the subject's current autonomy state (`Autonomy.state`),
 //! not `Subjects.state`: that is the relation's
 //! initial definition, which normal autonomy changes leave as it was (the
-//! viewer's political map and `installed_content::country_names` read it the same way).
+//! viewer's political map and `installed_content_country_names::country_names` read it the same way).
 //! An hour whose Autonomy table is not complete, or that names no state for the
 //! subject, has no known level. Level names are the content's localisation of
-//! each state id, and their order the content's (`installed_content::autonomy`: least
+//! each state id, and their order the content's (`installed_content_core::autonomy`: least
 //! free first), so a mod's levels work; a level the content does not define keeps
 //! its id and sorts last.
 //!
@@ -39,12 +39,10 @@ use dashboard_base::{
     products::country_groups::{HourRun, HourSpan, extend, mark_unobserved},
 };
 use dashboard_text::metadata::{LinkTags, branch_bounds, validate_campaign};
-use installed_content::autonomy::AutonomyStates;
-use replay::{
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder},
-    rows::{SubjectRow, TableId, tables},
-};
+use installed_content_core::autonomy::AutonomyStates;
+use replay::container::Replay;
+use replay_data::{rows::SubjectRow, rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -214,7 +212,7 @@ fn subject_content(source: &Source, options: &ContentOptions) -> io::Result<Arc<
     {
         return Ok(Arc::clone(cached));
     }
-    let (states, warnings) = installed_content::autonomy::read(&catalogue.content.layers)?;
+    let (states, warnings) = installed_content_core::autonomy::read(&catalogue.content.layers)?;
     let loaded = Arc::new(SubjectContent {
         catalogue,
         states,

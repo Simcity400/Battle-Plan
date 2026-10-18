@@ -1,4 +1,4 @@
-//! The Provinces rows carried between hours ([`engine::cprovince::carry`]):
+//! The Provinces rows carried between hours ([`engine_native::cprovince::carry`]):
 //! the Provinces job reads only the provinces a native writer may have
 //! changed, the provinces in a border conflict, the `fort_bunker` operand of
 //! every fortified province and its sampled slice.
@@ -21,10 +21,7 @@
 //! the family's burn-in, reads every province every hour and compares each
 //! carryable one.
 use crate::{sampled_verify::Sampled, territory_changes::Changes};
-use engine::{
-    cprovince::{Capture, carry::Counts},
-    walk::Outcome,
-};
+use engine_native::{cprovince::Capture, cprovince::carry::Counts, walk::Outcome};
 use std::{
     cell::Cell,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
@@ -45,7 +42,7 @@ static SAMPLED: Sampled = Sampled::burned_in(&["carried Provinces rows differ fr
 /// carrying unmarked provinces, and the area step over the same marks.
 pub fn walk(
     capture: &mut Capture,
-    memory: &impl engine::Memory,
+    memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
 ) -> Outcome {
@@ -128,7 +125,7 @@ fn push(marks: &mut Option<&mut Vec<u32>>, id: u32, overflow: &Cell<bool>) {
     if overflow.get() {
         return;
     }
-    if engine::allocation::advisory(|| engine::allocation::reserve(marks, 1)).is_err() {
+    if engine_allocation::advisory(|| engine_allocation::reserve(marks, 1)).is_err() {
         overflow.set(true);
         return;
     }
@@ -180,7 +177,7 @@ pub fn status() -> impl serde::Serialize {
 mod tests {
     use super::*;
     use crate::territory_changes::Domain;
-    use engine::{controller_areas, cprovince::carry::RowStore};
+    use engine_native::{controller_areas, cprovince::carry::RowStore};
 
     fn stores(provinces: bool, areas: bool) -> Capture {
         let mut capture = Capture::try_with_capacity(2, 0, 0).unwrap();

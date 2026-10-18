@@ -9,11 +9,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{clock::qpc, table_capture::CaptureRows, table_conversion::table};
-use engine::{Memory, cequipment_variant_pool as pool, cship, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{DivisionEquipmentRow, TableId, tables},
-};
+use engine_native::{Memory, cequipment_variant_pool as pool, cship, walk::Outcome};
+use replay_data::{rows::DivisionEquipmentRow, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::NewDivisionEquipment];
@@ -187,21 +185,21 @@ mod tests {
 
     #[test]
     fn first_and_later_new_division_snapshots_grow_at_5000_countries() {
-        let mut bytes = vec![0; 0x9000 + 17 * engine::equipment_entry::STRIDE];
+        let mut bytes = vec![0; 0x9000 + 17 * engine_native::equipment_entry::STRIDE];
         let put = |bytes: &mut [u8], address: usize, value: u64| {
             bytes[address..address + 8].copy_from_slice(&value.to_le_bytes());
         };
-        let pool_at = 0x1000 + engine::carmy::EQUIPMENT_POOL;
+        let pool_at = 0x1000 + engine_native::carmy::EQUIPMENT_POOL;
         put(&mut bytes, pool_at, pool::VTABLE_RVA as u64);
         put(&mut bytes, pool_at + pool::ITEMS, 0x9000);
         put(
             &mut bytes,
             0x8000,
-            engine::cequipment_variant::VTABLE_RVA as u64,
+            engine_native::cequipment_variant::VTABLE_RVA as u64,
         );
         put(&mut bytes, 0x8008, 0x7000_0001_0000_0046);
         for ordinal in 0..17 {
-            let at = 0x9000 + ordinal * engine::equipment_entry::STRIDE;
+            let at = 0x9000 + ordinal * engine_native::equipment_entry::STRIDE;
             put(&mut bytes, at, 0x8000);
             put(&mut bytes, at + 8, 1);
         }
@@ -223,7 +221,7 @@ mod tests {
                 .copy_from_slice(&entries.to_le_bytes());
             bytes[pool_at + pool::COUNT..pool_at + pool::COUNT + 4]
                 .copy_from_slice(&entries.to_le_bytes());
-            let memory = engine::memory::SliceMemory {
+            let memory = engine_native::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             };
@@ -260,7 +258,7 @@ mod tests {
 
     #[test]
     fn only_a_known_mark_admits_rows_and_the_daily_hour_is_empty() {
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

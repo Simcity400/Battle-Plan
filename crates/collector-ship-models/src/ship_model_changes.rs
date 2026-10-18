@@ -1,5 +1,5 @@
 //! Allocation-free notifications from the native writers of every ship byte
-//! ShipModels serves from a held read ([`engine::ship_model_mutations`]): a
+//! ShipModels serves from a held read ([`engine_mutations::ship_model_mutations`]): a
 //! ship's fixed fields, pool entries, heap fallback sprite and experience
 //! modifiers, its medal store's modifiers and its carrier air base pointer,
 //! and of its task force's doctrine tree and its weather region's
@@ -17,10 +17,8 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{
-    Memory,
-    ship_model_mutations::{MUTATIONS, RECEIVER_ARGUMENT},
-};
+use engine_mutations::{ship_model_mutations::MUTATIONS, ship_model_mutations::RECEIVER_ARGUMENT};
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -426,7 +424,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if CARRY
             && MUTATIONS.iter().all(|site| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [

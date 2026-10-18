@@ -1,5 +1,5 @@
 //! The content's `NDefines` the land combat window reads, in native form.
-use installed_content::defines::Defines;
+use installed_content_core::defines::Defines;
 use std::io;
 
 fn invalid(message: String) -> io::Error {

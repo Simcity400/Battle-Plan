@@ -1,19 +1,16 @@
 use super::test_support::*;
 use super::*;
-use installed_content::{
-    buildings::BuildingType,
-    raids::{RaidType as Kind, TargetType},
+use installed_content_core::buildings::BuildingType;
+use installed_content_raids::{raids::RaidType as Kind, raids::TargetType};
+use replay_data::{
+    rows::BuildingRow, rows::CountryBuildingResourceRow, rows::CountryLinkRow, rows::CountryRow,
+    rows::FactionMemberRow, rows::LexicalTokenRow, rows::ProvinceRow, rows::RaidCooldownRow,
+    rows::RaidCountryRow, rows::RaidPlayerAllowedTypeRow, rows::RaidTargetRow,
+    rows::RaidTargetStatusRow, rows::ResourceDefinitionRow, rows::StateBaseResourceRow,
+    rows::StateDynamicModifierRow, rows::StateResourceInputRow, rows::StateResourceRow,
+    rows::StateRow, rows::TableId, rows::TableRows, rows::TableSchema,
 };
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{
-        BuildingRow, CountryBuildingResourceRow, CountryLinkRow, CountryRow, FactionMemberRow,
-        LexicalTokenRow, ProvinceRow, RaidCooldownRow, RaidCountryRow, RaidPlayerAllowedTypeRow,
-        RaidTargetRow, RaidTargetStatusRow, ResourceDefinitionRow, StateBaseResourceRow,
-        StateDynamicModifierRow, StateResourceInputRow, StateResourceRow, StateRow, TableId,
-        TableRows, TableSchema,
-    },
-};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::sync::Arc;
 use std::sync::Mutex;
 use viewer_foundation::map::camera::MapDefines;
@@ -32,9 +29,9 @@ use viewer_foundation::table_access::Refusals;
 /// the directory.
 fn scripted(assets: &mut RaidAssets, text: &str) {
     let mut triggers = (*assets.trigger_content.triggers).clone();
-    triggers.scripted = installed_content::scripted_triggers::ScriptedTriggers::parse(
+    triggers.scripted = installed_content_core::scripted_triggers::ScriptedTriggers::parse(
         &[("common/scripted_triggers/test.txt", text.as_bytes())],
-        &installed_content::key_names::KeyNames::default(),
+        &installed_content_core::key_names::KeyNames::default(),
     );
     assets.trigger_content.triggers = Arc::new(triggers);
 }
@@ -55,7 +52,7 @@ fn the_raid_priority_is_the_define_as_a_signed_byte() {
 #[test]
 fn the_target_batch_is_at_least_one() {
     let batch = |source: &str| {
-        let defines = installed_content::defines::Defines::new().unwrap();
+        let defines = installed_content_core::defines::Defines::new().unwrap();
         defines
             .load("common/defines/00_defines.lua", source.as_bytes())
             .unwrap();
@@ -276,10 +273,12 @@ fn used_up_types_locked_categories_and_undetected_buildings_offer_nothing() {
     };
     assets.catalog.types[0]
         .target_types
-        .push(TargetType::Building(installed_content::raids::BuildingSelector {
-            types: vec!["dam".into()],
-            ..Default::default()
-        }));
+        .push(TargetType::Building(
+            installed_content_raids::raids::BuildingSelector {
+                types: vec!["dam".into()],
+                ..Default::default()
+            },
+        ));
     put::<tables::RaidTargetStatuses>(&mut frame, vec![dam.clone()]);
     assert!(icons_for(&assets, &frame, 0).is_empty());
     put::<tables::RaidTargetStatuses>(
@@ -382,7 +381,7 @@ fn offered(assets: &RaidAssets, frame: &DecodedFrame) -> (Vec<String>, RaidRepor
 /// type's `allowed` at the shown hour.
 #[test]
 fn the_cache_country_uses_the_recorded_list_and_others_evaluate_allowed() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut assets = assets();
     // Oilfield is not allowed now; the cache still lists it from the load.
@@ -529,11 +528,12 @@ fn a_kept_state_building_icon_follows_its_states_order() {
     );
     set_counts(&mut assets);
     assets.sites.insert((20, Site::AirBase), vec![4, 3]);
-    assets.catalog.types[0].target_types =
-        vec![TargetType::Building(installed_content::raids::BuildingSelector {
+    assets.catalog.types[0].target_types = vec![TargetType::Building(
+        installed_content_raids::raids::BuildingSelector {
             types: vec!["airfield".into()],
             ..Default::default()
-        })];
+        },
+    )];
     let mut frame = frame();
     let mut tokens = frame.complete::<tables::LexicalTokens>().unwrap().to_vec();
     tokens.push(LexicalTokenRow {
@@ -602,7 +602,7 @@ fn a_state_target_resolves_to_the_province_nearest_its_centre() {
 
 #[test]
 fn icons_draw_at_the_top_priority_inside_the_height_band_nearest_last() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let icons = RaidIcons {
         icons: vec![
@@ -724,9 +724,9 @@ fn a_type_the_port_cannot_use_leaves_its_targets_undecided_by_name() {
     assets.catalog.types[0].target_types = vec![TargetType::Provinces(vec![3])];
     assets.catalog.types.truncate(1);
     let declaration = kind("mine", TargetType::Provinces(vec![4]));
-    assets.catalog.uncertain = vec![installed_content::raids::UncertainType {
+    assets.catalog.uncertain = vec![installed_content_raids::raids::UncertainType {
         name: "mine".into(),
-        kind: installed_content::DiagnosticKind::Refused,
+        kind: installed_content_core::DiagnosticKind::Refused,
         reason: "it is declared more than once".into(),
         declarations: vec![declaration.clone(), declaration],
     }];
@@ -822,7 +822,7 @@ fn an_incoming_raid_of_an_unknown_type_counts_its_stand_in_glyph() {
 /// blocks, load as no; `$PARAM$` is not substituted.
 #[test]
 fn a_scripted_trigger_with_parameters_reads_as_no_like_the_game() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut assets = assets();
     scripted(
@@ -855,9 +855,9 @@ fn a_scripted_trigger_with_parameters_reads_as_no_like_the_game() {
 /// one asked for: only a named match is True, and False needs every row named.
 #[test]
 fn has_tech_is_unknown_when_a_completed_row_has_no_definition() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{ResearchTechnologyRow, TechnologyDefinitionRow};
+    use replay_data::{rows::ResearchTechnologyRow, rows::TechnologyDefinitionRow};
     let assets = assets();
     let mut frame = frame();
     put::<tables::TechnologyDefinitions>(
@@ -874,7 +874,7 @@ fn has_tech_is_unknown_when_a_completed_row_has_no_definition() {
         country: 10,
         technology_handle: handle,
         researched: 1,
-        classifier: engine::ctechnology::CLASSIFIER_COMPLETED,
+        classifier: engine_research::ctechnology::CLASSIFIER_COMPLETED,
         ..Default::default()
     };
     let eval = |frame: &DecodedFrame, source: &str| {
@@ -895,9 +895,9 @@ fn has_tech_is_unknown_when_a_completed_row_has_no_definition() {
 
 #[test]
 fn has_tech_uses_first_indexed_case_insensitive_name_and_exact_classifier() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{ResearchTechnologyRow, TechnologyDefinitionRow};
+    use replay_data::{rows::ResearchTechnologyRow, rows::TechnologyDefinitionRow};
     let assets = assets();
     let mut frame = frame();
     put::<tables::TechnologyDefinitions>(
@@ -937,7 +937,7 @@ fn has_tech_uses_first_indexed_case_insensitive_name_and_exact_classifier() {
 
 #[test]
 fn missing_trigger_inputs_are_unknown_rather_than_false() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = assets();
     let mut frame = frame();
@@ -955,7 +955,7 @@ fn missing_trigger_inputs_are_unknown_rather_than_false() {
     // A faction row whose country links to no slot may be ours.
     put::<tables::FactionMembers>(
         &mut frame,
-        vec![replay::rows::FactionMemberRow {
+        vec![replay_data::rows::FactionMemberRow {
             country: 99,
             faction: 1,
             ordinal: 0,
@@ -966,7 +966,7 @@ fn missing_trigger_inputs_are_unknown_rather_than_false() {
     put::<tables::FactionMembers>(&mut frame, Vec::new());
     put::<tables::WarRelations>(
         &mut frame,
-        vec![replay::rows::WarRelationRow {
+        vec![replay_data::rows::WarRelationRow {
             first_country: 98,
             second_country: 11,
             start_hour: 1,
@@ -982,8 +982,8 @@ fn missing_trigger_inputs_are_unknown_rather_than_false() {
 /// search; a row of an unlinked country leaves an absent answer unknown.
 #[test]
 fn military_access_reads_only_the_owner_asked() {
-    use installed_content::unit_path::MoveWorld;
-    use replay::rows::RelationLinkRow;
+    use installed_content_unit_path::unit_path::MoveWorld;
+    use replay_data::rows::RelationLinkRow;
     let assets = assets();
     let mut frame = frame();
     put::<tables::RelationLinks>(
@@ -1023,7 +1023,7 @@ fn military_access_reads_only_the_owner_asked() {
 /// left to evaluate at that hour.
 #[test]
 fn incomplete_raid_tables_withhold_the_hours_offers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = assets();
     let mut frame = frame();
@@ -1046,9 +1046,9 @@ fn incomplete_raid_tables_withhold_the_hours_offers() {
 /// unknown where they could hold the answer.
 #[test]
 fn unlinked_focus_project_and_party_rows_leave_their_triggers_unknown() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{CompletedFocusRow, PoliticalPartyRow};
+    use replay_data::{rows::CompletedFocusRow, rows::PoliticalPartyRow};
     let mut assets = assets();
     assets.trigger_content.ideologies = Some(raid_ideologies());
     set_counts(&mut assets);
@@ -1116,7 +1116,7 @@ fn unlinked_focus_project_and_party_rows_leave_their_triggers_unknown() {
     );
 }
 
-fn raid_ideologies() -> installed_content::ideologies::Ideologies {
+fn raid_ideologies() -> installed_content_core::ideologies::Ideologies {
     let root = std::env::temp_dir().join(format!(
         "raid-ideologies-{}-{:?}",
         std::process::id(),
@@ -1125,17 +1125,17 @@ fn raid_ideologies() -> installed_content::ideologies::Ideologies {
     let file = root.join("common/ideologies/synthetic.txt");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, "ideologies = { mod_party = { types = { mod_type = {} } } mod_other = { types = { other_type = {} } } }").unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let ideologies = installed_content::ideologies::read(&layers).unwrap().0;
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let ideologies = installed_content_core::ideologies::read(&layers).unwrap().0;
     std::fs::remove_dir_all(root).unwrap();
     ideologies
 }
 
 #[test]
 fn raid_facts_keep_loaded_ideologies_for_government_and_leader_subtypes() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{CountryAppearanceRow, PoliticalPartyRow};
+    use replay_data::{rows::CountryAppearanceRow, rows::PoliticalPartyRow};
     use script::Eval::{False, True};
     let mut assets = unnamed_assets();
     let mut frame = positive_frame();
@@ -1193,7 +1193,7 @@ fn raid_facts_keep_loaded_ideologies_for_government_and_leader_subtypes() {
 /// type: the types it could be are undecided rather than dropped.
 #[test]
 fn raid_type_tokens_without_a_literal_leave_the_types_undecided() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = assets();
     let mut frame = frame();
@@ -1293,7 +1293,7 @@ fn drawn_in(
 /// `..._MAX` (10 and 500 in these test defines); both edges draw.
 #[test]
 fn the_camera_band_includes_both_edges() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let viewport = [2048, 1152];
     // Near the ground one anchor leaves the view; inside the band some draw.
@@ -1307,7 +1307,7 @@ fn the_camera_band_includes_both_edges() {
 /// in these test defines); the modes without raid icons draw none at any height.
 #[test]
 fn the_map_mode_decides_whether_and_how_far_raid_icons_show() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let viewport = [2048, 1152];
     let raids = Some(RaidReach::RaidMode);
@@ -1336,7 +1336,7 @@ fn the_map_mode_decides_whether_and_how_far_raid_icons_show() {
 /// viewport of twice the device pixels places and sizes them the same.
 #[test]
 fn icons_lay_out_in_interface_pixels_at_any_ui_scale() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (count, single) = drawn(300.0, [2048, 1152], 1.0);
     let (_, double) = drawn(300.0, [4096, 2304], 2.0);
@@ -1479,7 +1479,7 @@ fn on_state(assets: &RaidAssets, frame: &DecodedFrame, source: &str) -> script::
 
 #[test]
 fn oil_and_the_damaged_modifier_decide_the_state_selector() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = resource_assets();
     let mut frame = resource_frame();
@@ -1555,7 +1555,7 @@ fn controller_overrides_replace_building_grants_by_their_first_entry() {
 
 #[test]
 fn missing_inputs_and_unsupported_forms_stay_unknown() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = resource_assets();
     let mut frame = resource_frame();
@@ -1586,7 +1586,7 @@ fn missing_inputs_and_unsupported_forms_stay_unknown() {
 /// reading it as zero.
 #[test]
 fn every_content_building_type_is_a_count_trigger() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut assets = resource_assets();
     assets.trigger_content.buildings.types.insert(
@@ -1662,9 +1662,9 @@ fn every_content_building_type_is_a_count_trigger() {
 /// Existence uses owned state count; a Countries row alone does not exist.
 #[test]
 fn exists_reads_the_owned_state_count() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::CountryCounterInputRow;
+    use replay_data::rows::CountryCounterInputRow;
     let assets = assets();
     let mut frame = positive_frame();
     let exists = |frame: &DecodedFrame, slot| {
@@ -1677,13 +1677,13 @@ fn exists_reads_the_owned_state_count() {
         &mut frame,
         vec![
             CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
+                forward_visibility: replay_data::rows::Recorded::NotRecorded,
                 country: 10,
                 owned_state_count: 2,
                 ..Default::default()
             },
             CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
+                forward_visibility: replay_data::rows::Recorded::NotRecorded,
                 country: 11,
                 owned_state_count: 0,
                 ..Default::default()
@@ -1698,13 +1698,13 @@ fn exists_reads_the_owned_state_count() {
 /// were read at.
 #[test]
 fn a_daily_fact_decides_from_its_latest_recorded_rows() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = assets();
     let mut frame = frame();
     put::<tables::CompletedFocuses>(
         &mut frame,
-        vec![replay::rows::CompletedFocusRow {
+        vec![replay_data::rows::CompletedFocusRow {
             country: 10,
             ordinal: 0,
             token: b"raid_focus".to_vec(),
@@ -1724,8 +1724,8 @@ fn a_daily_fact_decides_from_its_latest_recorded_rows() {
 /// finds, and a target the rows lack is none.
 #[test]
 fn a_memo_row_found_from_a_hint_is_the_binary_searchs() {
-    let rows: Vec<replay::rows::RaidPathDistanceRow> = (1..=20)
-        .map(|at| replay::rows::RaidPathDistanceRow {
+    let rows: Vec<replay_data::rows::RaidPathDistanceRow> = (1..=20)
+        .map(|at| replay_data::rows::RaidPathDistanceRow {
             source: 7,
             target: at * 2,
             distance: 1,
@@ -1749,7 +1749,7 @@ fn a_memo_row_found_from_a_hint_is_the_binary_searchs() {
 /// branch it could take agrees.
 #[test]
 fn if_else_chains_take_the_first_branch_whose_limit_holds() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = assets();
     let frame = positive_frame();
@@ -1785,7 +1785,7 @@ fn if_else_chains_take_the_first_branch_whose_limit_holds() {
 /// an absent scope is false, as in the game.
 #[test]
 fn from_and_prev_follow_the_scope_chain() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = assets();
     let frame = positive_frame();
@@ -1817,7 +1817,7 @@ fn from_and_prev_follow_the_scope_chain() {
 
 #[test]
 fn a_state_scope_from_resolves_to_the_state_owner() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = assets();
     let frame = frame();
@@ -1941,11 +1941,12 @@ fn a_refused_used_type_leaves_fire_only_once_types_undecided() {
 #[test]
 fn building_template_tokens_match_under_the_fold_or_are_refused() {
     let mut assets = assets();
-    assets.catalog.types[0].target_types =
-        vec![TargetType::Building(installed_content::raids::BuildingSelector {
+    assets.catalog.types[0].target_types = vec![TargetType::Building(
+        installed_content_raids::raids::BuildingSelector {
             types: vec!["dam".into()],
             ..Default::default()
-        })];
+        },
+    )];
     let target = |literal: &str| {
         let mut frame = spelled(DAM, literal);
         put::<tables::RaidTargetStatuses>(
@@ -1981,11 +1982,15 @@ fn building_template_tokens_match_under_the_fold_or_are_refused() {
 
 mod launch_gate {
     use super::*;
-    use installed_content::raids::{EquipmentRequirement, SourceKind, StartingPoint, UnitRequirement};
-    use replay::rows::{
-        AirBaseRow, AirWingRow, DivisionRow, DivisionTemplateIconRow, HumanControllerRow, NukeRow,
-        RaidAirSiteRow, RaidCountryInputRow, RaidSource, SimulationFeatureRow, TemplateSubunit,
-        VariantDefinitionRow, WingEquipmentRow,
+    use installed_content_raids::{
+        raids::EquipmentRequirement, raids::SourceKind, raids::StartingPoint,
+        raids::UnitRequirement,
+    };
+    use replay_data::{
+        rows::AirBaseRow, rows::AirWingRow, rows::DivisionRow, rows::DivisionTemplateIconRow,
+        rows::HumanControllerRow, rows::NukeRow, rows::RaidAirSiteRow, rows::RaidCountryInputRow,
+        rows::RaidSource, rows::SimulationFeatureRow, rows::TemplateSubunit,
+        rows::VariantDefinitionRow, rows::WingEquipmentRow,
     };
 
     const LARGE: u32 = 300;
@@ -1998,7 +2003,7 @@ mod launch_gate {
 
     fn launch_assets() -> RaidAssets {
         let mut assets = assets();
-        assets.equipment = installed_content::equipment::fixture::load(&[(
+        assets.equipment = installed_content_core::equipment::fixture::load(&[(
             "common/units/equipment/a.txt",
             "equipments = { large_plane_airframe = { is_archetype = yes type = strategic_bomber } convoy = { is_archetype = yes type = convoy } }",
         )])
@@ -2174,7 +2179,7 @@ mod launch_gate {
             Err("no path search".into())
         }
         fn note(&self, _: &launch::PathSource, _: &RaidScope, _: launch::Asked) {}
-        fn recorded_rows(&self) -> Option<&[replay::rows::RaidPathDistanceRow]> {
+        fn recorded_rows(&self) -> Option<&[replay_data::rows::RaidPathDistanceRow]> {
             None
         }
         fn path_target(&self, _: u8, _: &RaidScope) -> Result<Option<u32>, String> {
@@ -2189,14 +2194,15 @@ mod launch_gate {
     /// ranged by the best stockpiled transport plane: its variant stats'
     /// `values`.
     fn airborne(values: [i64; 10]) -> Eval {
-        use replay::rows::{
-            StockpileArchetypeRow, StockpileRow, VariantDefinitionRow, VariantStatsRow,
+        use replay_data::{
+            rows::StockpileArchetypeRow, rows::StockpileRow, rows::VariantDefinitionRow,
+            rows::VariantStatsRow,
         };
         const PARATROOPER: u32 = 310;
         const TRANSPORT: u32 = 311;
         const TRANSPORT_VARIANT: u64 = 0x0000_0008_0000_0046;
         let mut assets = launch_assets();
-        assets.equipment = installed_content::equipment::fixture::load(&[(
+        assets.equipment = installed_content_core::equipment::fixture::load(&[(
             "common/units/equipment/a.txt",
             "equipments = { transport_plane = { is_archetype = yes type = air_transport } }",
         )])
@@ -2205,7 +2211,7 @@ mod launch_gate {
             command_power_raw: 20 * 100_000,
             essential_equipment: vec![("transport_plane".into(), 1)],
             unit_requirements: vec![UnitRequirement {
-                battalions: vec![installed_content::raids::BattalionRequirement {
+                battalions: vec![installed_content_raids::raids::BattalionRequirement {
                     name: "paratrooper".into(),
                     min: Some(1),
                     max: None,
@@ -2303,7 +2309,7 @@ mod launch_gate {
     /// stat's range of 0.00001 km cannot stand in for it, or vice versa.
     #[test]
     fn transport_range_reads_the_first_variant_stat() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut long_first = [1; 10];
         long_first[0] = 100 * 100_000;
@@ -2317,7 +2323,7 @@ mod launch_gate {
     /// unknown with the loss; the assets and the rest still load.
     #[test]
     fn a_lost_equipment_database_leaves_only_equipment_queries_unknown() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut assets = launch_assets();
         assert_eq!(assets.equipment_category("convoy"), Ok(1));
@@ -2339,7 +2345,7 @@ mod launch_gate {
     /// it covers is undecided by name, one it does not is unaffected.
     #[test]
     fn a_refused_cooldown_type_leaves_its_target_undecided() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = launch_assets();
         let mut frame = launch_frame();
@@ -2369,7 +2375,7 @@ mod launch_gate {
 
     #[test]
     fn a_bomber_wing_at_an_air_base_in_range_makes_the_offer_launchable() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         assert_eq!(
             gate(&launch_assets(), &launch_frame(), &bomber(), 3),
@@ -2382,10 +2388,10 @@ mod launch_gate {
     /// A group whose members admit nothing in the pool does not match.
     #[test]
     fn a_requirement_naming_an_equipment_group_admits_through_its_members() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut assets = launch_assets();
-        let (_, groups) = installed_content::equipment::fixture::load(&[(
+        let (_, groups) = installed_content_core::equipment::fixture::load(&[(
             "common/equipment_groups/raids.txt",
             "heavy = { equipment_type = { Large_Plane_Airframe } }
              by_category = { equipment_type = { STRATEGIC_BOMBER } }
@@ -2412,7 +2418,7 @@ mod launch_gate {
 
     #[test]
     fn command_power_below_the_cost_or_the_free_capacity_disables_the_offer() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = launch_assets();
         let mut kind = bomber();
@@ -2425,7 +2431,7 @@ mod launch_gate {
         let mut frame = launch_frame();
         put::<tables::CountryCommandPower>(
             &mut frame,
-            vec![replay::rows::CountryCommandPowerRow {
+            vec![replay_data::rows::CountryCommandPowerRow {
                 allocated_command_power_raw: 90 * 100_000,
                 ..registered_command_power([0])[0]
             }],
@@ -2437,13 +2443,13 @@ mod launch_gate {
     /// unknown, with the name, never zero.
     #[test]
     fn an_unregistered_capacity_modifier_leaves_the_command_power_gate_unknown() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = launch_assets();
         let mut frame = launch_frame();
         put::<tables::CountryCommandPower>(
             &mut frame,
-            vec![replay::rows::CountryCommandPowerRow {
+            vec![replay_data::rows::CountryCommandPowerRow {
                 max_command_power: None,
                 ..registered_command_power([0])[0]
             }],
@@ -2459,7 +2465,7 @@ mod launch_gate {
 
     #[test]
     fn convoys_count_after_reservations_up_to_the_invasion_priority() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = launch_assets();
         let mut kind = bomber();
@@ -2472,7 +2478,7 @@ mod launch_gate {
 
     #[test]
     fn an_assigned_small_or_unmatched_wing_is_not_a_raid_unit() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = launch_assets();
         let mut frame = launch_frame();
@@ -2506,7 +2512,7 @@ mod launch_gate {
 
     #[test]
     fn range_and_max_distance_bound_the_source_unless_the_ai_is_unlimited() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = launch_assets();
         let mut frame = launch_frame();
@@ -2539,7 +2545,7 @@ mod launch_gate {
 
     #[test]
     fn own_sources_demand_faction_members_only_on_native_faction_branches() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = launch_assets();
         let mut frame = launch_frame();
@@ -2621,7 +2627,7 @@ mod launch_gate {
                 allow_faction_buildings: true,
             },
             unit_requirements: vec![UnitRequirement {
-                battalions: vec![installed_content::raids::BattalionRequirement {
+                battalions: vec![installed_content_raids::raids::BattalionRequirement {
                     name: "marine".into(),
                     min: Some(2),
                     max: None,
@@ -2635,10 +2641,12 @@ mod launch_gate {
     fn launch_zero(
         frame: &mut DecodedFrame,
         count: i32,
-        bases: Option<Vec<replay::rows::LaunchNavalBase>>,
+        bases: Option<Vec<replay_data::rows::LaunchNavalBase>>,
         states: Option<Vec<u32>>,
     ) {
-        use replay::rows::{Recorded, ReservedCountryNamingRow, ReservedLaunchSources};
+        use replay_data::{
+            rows::Recorded, rows::ReservedCountryNamingRow, rows::ReservedLaunchSources,
+        };
         let hour = frame.hour;
         put::<tables::ReservedCountryNaming>(
             frame,
@@ -2646,10 +2654,10 @@ mod launch_gate {
                 faction: Recorded::Value(Some(7)),
                 owned_state_count: Recorded::Value(Some(count)),
                 launch_sources: Recorded::Value(Some(ReservedLaunchSources {
-                    sample_hour: replay::rows::PacketHour::Stamped(hour),
+                    sample_hour: replay_data::rows::PacketHour::Stamped(hour),
                     naval_bases: bases.map_or(
-                        replay::rows::LaunchNavalBases::Unavailable,
-                        replay::rows::LaunchNavalBases::Bases,
+                        replay_data::rows::LaunchNavalBases::Unavailable,
+                        replay_data::rows::LaunchNavalBases::Bases,
                     ),
                     owned_states: states,
                 })),
@@ -2698,7 +2706,7 @@ mod launch_gate {
         fn note(&self, source: &launch::PathSource, _: &RaidScope, _: launch::Asked) {
             self.notes.lock().unwrap().push(source.province);
         }
-        fn recorded_rows(&self) -> Option<&[replay::rows::RaidPathDistanceRow]> {
+        fn recorded_rows(&self) -> Option<&[replay_data::rows::RaidPathDistanceRow]> {
             None
         }
         fn path_target(&self, _: u8, _: &RaidScope) -> Result<Option<u32>, String> {
@@ -2733,7 +2741,7 @@ mod launch_gate {
 
     #[test]
     fn mixed_air_success_defers_later_faction_and_prefetch_preserves_it() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = launch_assets();
         let mut frame = launch_frame();
@@ -2773,7 +2781,7 @@ mod launch_gate {
 
     #[test]
     fn mixed_air_failure_reaches_the_later_faction_refusal() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = launch_assets();
         let mut frame = launch_frame();
@@ -2791,9 +2799,9 @@ mod launch_gate {
 
     #[test]
     fn mixed_earlier_unknown_later_success_uses_maybe_asked() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use replay::rows::NavalBaseRow;
+        use replay_data::rows::NavalBaseRow;
         let assets = launch_assets();
         let mut frame = launch_frame();
         let mut kind = marine_sources(&mut frame, true);
@@ -2839,9 +2847,9 @@ mod launch_gate {
 
     #[test]
     fn mixed_naval_success_defers_later_building_inputs() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use replay::rows::NavalBaseRow;
+        use replay_data::rows::NavalBaseRow;
         let assets = launch_assets();
         let mut frame = launch_frame();
         let mut kind = marine_sources(&mut frame, true);
@@ -2881,7 +2889,7 @@ mod launch_gate {
 
     #[test]
     fn mixed_naval_refusal_can_reach_independent_own_buildings() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = launch_assets();
         let mut frame = launch_frame();
@@ -2922,9 +2930,9 @@ mod launch_gate {
 
     #[test]
     fn mixed_walk_prefix_order_and_reach_memo_remain_stable() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use replay::rows::LaunchNavalBase;
+        use replay_data::rows::LaunchNavalBase;
         let assets = launch_assets();
         let mut frame = launch_frame();
         let mut kind = marine_sources(&mut frame, true);
@@ -2998,9 +3006,9 @@ mod launch_gate {
 
     #[test]
     fn actual_zero_naval_occurrences_keep_member_order_and_repeats() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use replay::rows::{LaunchNavalBase, NavalBaseRow};
+        use replay_data::{rows::LaunchNavalBase, rows::NavalBaseRow};
         let assets = launch_assets();
         for zero_at in 0..3 {
             let mut frame = launch_frame();
@@ -3072,9 +3080,9 @@ mod launch_gate {
 
     #[test]
     fn actual_zero_null_sources_skip_provider_path_and_army_demands() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use replay::rows::LaunchNavalBase;
+        use replay_data::rows::LaunchNavalBase;
         let assets = launch_assets();
         for stored in [0, u32::MAX, 0x8000_0000] {
             let mut frame = launch_frame();
@@ -3134,9 +3142,9 @@ mod launch_gate {
 
     #[test]
     fn actual_zero_native_null_stays_unknown_and_never_uses_global_owner_zero_bases() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use replay::rows::{LaunchNavalBases, NavalBaseRow};
+        use replay_data::{rows::LaunchNavalBases, rows::NavalBaseRow};
 
         let assets = launch_assets();
         let mut frame = launch_frame();
@@ -3200,9 +3208,9 @@ mod launch_gate {
 
     #[test]
     fn actual_zero_positive_provider_and_packet_gaps_stay_named_at_their_position() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use replay::rows::{LaunchNavalBase, NavalBaseRow, Recorded};
+        use replay_data::{rows::LaunchNavalBase, rows::NavalBaseRow, rows::Recorded};
         let assets = launch_assets();
         let mut base = launch_frame();
         let kind = marine_sources(&mut base, true);
@@ -3257,7 +3265,7 @@ mod launch_gate {
                                 .unwrap()
                                 .as_mut()
                                 .unwrap()
-                                .naval_bases = replay::rows::LaunchNavalBases::Unavailable
+                                .naval_bases = replay_data::rows::LaunchNavalBases::Unavailable
                         }
                         5 => {
                             rows[0]
@@ -3266,7 +3274,8 @@ mod launch_gate {
                                 .unwrap()
                                 .as_mut()
                                 .unwrap()
-                                .sample_hour = replay::rows::PacketHour::Stamped(frame.hour - 1)
+                                .sample_hour =
+                                replay_data::rows::PacketHour::Stamped(frame.hour - 1)
                         }
                         _ => unreachable!(),
                     }
@@ -3308,7 +3317,7 @@ mod launch_gate {
 
     #[test]
     fn actual_zero_state_sources_use_ordered_roster_and_independent_domains() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = launch_assets();
         let mut frame = launch_frame();
@@ -3324,7 +3333,7 @@ mod launch_gate {
             .unwrap()
             .as_mut()
             .unwrap()
-            .naval_bases = replay::rows::LaunchNavalBases::NativeNull;
+            .naval_bases = replay_data::rows::LaunchNavalBases::NativeNull;
         put::<tables::ReservedCountryNaming>(&mut frame, reserved);
         let states = frame
             .complete::<tables::States>()
@@ -3378,15 +3387,15 @@ mod launch_gate {
                         .unwrap()
                         .owned_states = None
                 }
-                1 => rows[0].owned_state_count = replay::rows::Recorded::Value(None),
-                2 => rows[0].owned_state_count = replay::rows::Recorded::Value(Some(2)),
+                1 => rows[0].owned_state_count = replay_data::rows::Recorded::Value(None),
+                2 => rows[0].owned_state_count = replay_data::rows::Recorded::Value(Some(2)),
                 3 => {
                     let mut states = refused.complete::<tables::States>().unwrap().to_vec();
                     states.retain(|row| row.id != 20);
                     put::<tables::States>(&mut refused, states);
                 }
-                4 => rows[0].owned_state_count = replay::rows::Recorded::Value(Some(-1)),
-                5 => rows[0].owned_state_count = replay::rows::Recorded::NotRecorded,
+                4 => rows[0].owned_state_count = replay_data::rows::Recorded::Value(Some(-1)),
+                5 => rows[0].owned_state_count = replay_data::rows::Recorded::NotRecorded,
                 _ => unreachable!(),
             }
             put::<tables::ReservedCountryNaming>(&mut refused, rows);
@@ -3400,8 +3409,8 @@ mod launch_gate {
             .complete::<tables::ReservedCountryNaming>()
             .unwrap()
             .to_vec();
-        rows[0].owned_state_count = replay::rows::Recorded::Value(Some(0));
-        rows[0].launch_sources = replay::rows::Recorded::NotRecorded;
+        rows[0].owned_state_count = replay_data::rows::Recorded::Value(Some(0));
+        rows[0].launch_sources = replay_data::rows::Recorded::NotRecorded;
         put::<tables::ReservedCountryNaming>(&mut frame, rows);
         let mut empty = kind.clone();
         empty.unit_requirements = vec![UnitRequirement::default()];
@@ -3419,7 +3428,7 @@ mod launch_gate {
 
     #[test]
     fn actual_zero_buildings_require_the_full_province_census_after_nonzero_count() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = launch_assets();
         let mut frame = launch_frame();
@@ -3469,8 +3478,8 @@ mod launch_gate {
             .complete::<tables::ReservedCountryNaming>()
             .unwrap()
             .to_vec();
-        rows[0].owned_state_count = replay::rows::Recorded::Value(Some(0));
-        rows[0].launch_sources = replay::rows::Recorded::NotRecorded;
+        rows[0].owned_state_count = replay_data::rows::Recorded::Value(Some(0));
+        rows[0].launch_sources = replay_data::rows::Recorded::NotRecorded;
         put::<tables::ReservedCountryNaming>(&mut frame, rows);
         *frame.tables[TableId::Provinces.index()] = TableView::Unavailable {
             reason: "unreached provider census".into(),
@@ -3486,9 +3495,9 @@ mod launch_gate {
 
     #[test]
     fn launch_zero_packet_and_provider_changes_do_not_reuse_other_frame_sources() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use replay::rows::LaunchNavalBase;
+        use replay_data::rows::LaunchNavalBase;
         let assets = launch_assets();
         let mut first = launch_frame();
         let kind = marine_sources(&mut first, true);
@@ -3550,7 +3559,7 @@ mod launch_gate {
 
     #[test]
     fn air_sources_in_range_decide_and_types_share_only_an_equal_range() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = launch_assets();
         let frame = launch_frame();
@@ -3598,13 +3607,13 @@ mod launch_gate {
 
     #[test]
     fn a_marine_division_waits_on_the_path_search_but_wings_cannot_use_a_naval_base() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = launch_assets();
         let mut frame = launch_frame();
         put::<tables::NavalBases>(
             &mut frame,
-            vec![replay::rows::NavalBaseRow {
+            vec![replay_data::rows::NavalBaseRow {
                 province: 2,
                 country: 10,
                 ..Default::default()
@@ -3615,7 +3624,7 @@ mod launch_gate {
         // Only the wing matches, and a wing has no air base at a naval base.
         assert_eq!(gate(&assets, &frame, &naval, 3), Eval::False);
         naval.unit_requirements = vec![UnitRequirement {
-            battalions: vec![installed_content::raids::BattalionRequirement {
+            battalions: vec![installed_content_raids::raids::BattalionRequirement {
                 name: "marine".into(),
                 min: Some(2),
                 max: None,
@@ -3665,7 +3674,7 @@ mod launch_gate {
     /// hour their owner was last read at.
     #[test]
     fn launch_inputs_read_before_the_hour_still_decide_the_gate() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = launch_assets();
         let mut frame = launch_frame();
@@ -3675,7 +3684,7 @@ mod launch_gate {
         let mut wings = frame.complete::<tables::AirWings>().unwrap().to_vec();
         wings[0].ace = ace;
         put::<tables::AirWings>(&mut frame, wings);
-        let row = replay::rows::AceRangeInputRow {
+        let row = replay_data::rows::AceRangeInputRow {
             canonical_slot: 1,
             ace,
             wing: WING,
@@ -3687,7 +3696,7 @@ mod launch_gate {
         assert_eq!(gate(&assets, &frame, &bomber(), 3), Eval::True);
         put::<tables::AceRangeInputs>(
             &mut frame,
-            vec![replay::rows::AceRangeInputRow { alive: 0, ..row }],
+            vec![replay_data::rows::AceRangeInputRow { alive: 0, ..row }],
         );
         assert_eq!(gate(&assets, &frame, &bomber(), 3), Eval::True);
         // A wing whose ace has no row is not guessed.
@@ -3700,7 +3709,7 @@ mod launch_gate {
 
     #[test]
     fn a_carrier_launching_a_live_raid_is_no_source() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = launch_assets();
         let mut frame = launch_frame();
@@ -3734,8 +3743,8 @@ mod launch_gate {
 
 #[test]
 fn path_cost_reads_the_owners_native_cache_and_independent_zero_war() {
-    use installed_content::unit_path::MoveWorld;
-    use replay::rows::{CountryCounterInputRow, Recorded};
+    use installed_content_unit_path::unit_path::MoveWorld;
+    use replay_data::{rows::CountryCounterInputRow, rows::Recorded};
     let assets = assets();
     for (present, retired, flag, mut targets, expected) in [
         (0, 0, 0, vec![], [false, false]),
@@ -3750,7 +3759,7 @@ fn path_cost_reads_the_owners_native_cache_and_independent_zero_war() {
         put::<tables::CountryCounterInputs>(
             &mut frame,
             vec![CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
+                forward_visibility: replay_data::rows::Recorded::NotRecorded,
                 country: 11,
                 zero_war: Some([present, retired]).into(),
                 co_belligerents: Some(targets).into(),
@@ -3786,7 +3795,7 @@ fn path_cost_reads_the_owners_native_cache_and_independent_zero_war() {
     put::<tables::CountryCounterInputs>(
         &mut frame,
         vec![CountryCounterInputRow {
-            forward_visibility: replay::rows::Recorded::NotRecorded,
+            forward_visibility: replay_data::rows::Recorded::NotRecorded,
             country: 11,
             co_belligerents: Some(vec![0, 2]).into(),
             zero_war: Recorded::Value(None),
@@ -3807,7 +3816,7 @@ fn path_cost_reads_the_owners_native_cache_and_independent_zero_war() {
     put::<tables::CountryCounterInputs>(
         &mut frame,
         vec![CountryCounterInputRow {
-            forward_visibility: replay::rows::Recorded::NotRecorded,
+            forward_visibility: replay_data::rows::Recorded::NotRecorded,
             country: 11,
             co_belligerents: Recorded::NotRecorded,
             zero_war: Some([1, 0]).into(),
@@ -3816,7 +3825,7 @@ fn path_cost_reads_the_owners_native_cache_and_independent_zero_war() {
     );
     put::<tables::WarRelations>(
         &mut frame,
-        vec![replay::rows::WarRelationRow {
+        vec![replay_data::rows::WarRelationRow {
             first_country: 11,
             second_country: 12,
             ..Default::default()
@@ -3848,7 +3857,7 @@ fn path_cost_reads_the_owners_native_cache_and_independent_zero_war() {
     put::<tables::CountryCounterInputs>(
         &mut frame,
         vec![CountryCounterInputRow {
-            forward_visibility: replay::rows::Recorded::NotRecorded,
+            forward_visibility: replay_data::rows::Recorded::NotRecorded,
             country: u32::MAX,
             co_belligerents: Some(vec![]).into(),
             zero_war: Some([1, 0]).into(),
@@ -3857,7 +3866,7 @@ fn path_cost_reads_the_owners_native_cache_and_independent_zero_war() {
     );
     put::<tables::WarRelations>(
         &mut frame,
-        vec![replay::rows::WarRelationRow {
+        vec![replay_data::rows::WarRelationRow {
             first_country: u32::MAX,
             second_country: 12,
             ..Default::default()
@@ -3879,7 +3888,7 @@ fn raid_path_distances_prefer_the_recorded_memo_and_resolve_naval_targets() {
     // Province 3 has no base; its state 20's first based province is 4.
     put::<tables::NavalBases>(
         &mut frame,
-        vec![replay::rows::NavalBaseRow {
+        vec![replay_data::rows::NavalBaseRow {
             province: 4,
             level: 1,
             ..Default::default()
@@ -3914,7 +3923,7 @@ fn raid_path_distances_prefer_the_recorded_memo_and_resolve_naval_targets() {
     // The session memo answers a pair whatever kind asks.
     put::<tables::RaidPathDistances>(
         &mut frame,
-        vec![replay::rows::RaidPathDistanceRow {
+        vec![replay_data::rows::RaidPathDistanceRow {
             source: 1,
             target: 4,
             distance: 7,
@@ -3937,7 +3946,9 @@ fn raid_path_distances_prefer_the_recorded_memo_and_resolve_naval_targets() {
 #[test]
 fn army_reach_reads_the_recorded_hour_and_answers_once_per_source() {
     use launch::RaidPaths;
-    use replay::rows::{DivisionMovementRow, DivisionRow, DivisionStatusRow, StateFlagRow};
+    use replay_data::{
+        rows::DivisionMovementRow, rows::DivisionRow, rows::DivisionStatusRow, rows::StateFlagRow,
+    };
     let assets = path_assets();
     let mut frame = frame();
     // A division of country 11 (slot 1) in its own province 3.
@@ -4010,7 +4021,7 @@ fn war_frame() -> DecodedFrame {
             })
             .collect(),
     );
-    let war = |first, second, end_hour| replay::rows::WarRelationRow {
+    let war = |first, second, end_hour| replay_data::rows::WarRelationRow {
         first_country: first,
         second_country: second,
         start_hour: 1,
@@ -4025,8 +4036,11 @@ fn war_frame() -> DecodedFrame {
     frame
 }
 
-fn enemies_of(frame: &DecodedFrame, slot: u32) -> installed_content::unit_path::Fact<BTreeSet<u32>> {
-    use installed_content::unit_path::MoveWorld;
+fn enemies_of(
+    frame: &DecodedFrame,
+    slot: u32,
+) -> installed_content_unit_path::unit_path::Fact<BTreeSet<u32>> {
+    use installed_content_unit_path::unit_path::MoveWorld;
     let assets = assets();
     let world = World::new(frame, assets.trigger_content.facts()).unwrap();
     let cells = reach::Cells::default();
@@ -4044,7 +4058,7 @@ fn enemy_sets_derive_from_war_relations_unless_the_vector_was_read() {
     assert_eq!(enemies_of(&frame, 3), Ok(BTreeSet::from([0])));
     assert_eq!(enemies_of(&frame, 2), Ok(BTreeSet::new()));
     // The native vector in its own order, read as the collector reads it.
-    let read = |country, enemies: Vec<u32>| replay::rows::CountryWarRow {
+    let read = |country, enemies: Vec<u32>| replay_data::rows::CountryWarRow {
         country,
         can_occupy_non_war: 1,
         enemies_read: 1,
@@ -4057,7 +4071,7 @@ fn enemy_sets_derive_from_war_relations_unless_the_vector_was_read() {
     put::<tables::CountryWars>(&mut frame, vec![read(12, vec![])]);
     put::<tables::WarRelations>(
         &mut frame,
-        vec![replay::rows::WarRelationRow {
+        vec![replay_data::rows::WarRelationRow {
             first_country: 12,
             second_country: 11,
             start_hour: 1,
@@ -4072,7 +4086,7 @@ mod reach_bench;
 /// 1 land, 2 sea, 3 land: the naval search reaches 3 through 2, the land
 /// search cannot.
 fn strait_assets() -> RaidAssets {
-    let mut graph = installed_content::province_graph::ProvinceGraph::default();
+    let mut graph = installed_content_core::province_graph::ProvinceGraph::default();
     for (id, next) in [(1, vec![2]), (2, vec![1, 3]), (3, vec![2])] {
         graph
             .edges
@@ -4094,7 +4108,7 @@ fn a_pair_an_undecided_offer_may_have_asked_needs_both_kinds_to_agree() {
     let mut frame = frame();
     put::<tables::NavalBases>(
         &mut frame,
-        vec![replay::rows::NavalBaseRow {
+        vec![replay_data::rows::NavalBaseRow {
             province: 3,
             level: 1,
             ..Default::default()
@@ -4145,10 +4159,14 @@ fn a_pair_an_undecided_offer_may_have_asked_needs_both_kinds_to_agree() {
 
 mod recorded_paths {
     use super::*;
-    use installed_content::raids::{BattalionRequirement, SourceKind, StartingPoint, UnitRequirement};
+    use installed_content_raids::{
+        raids::BattalionRequirement, raids::SourceKind, raids::StartingPoint,
+        raids::UnitRequirement,
+    };
     use launch::{Asked, PathSource, RaidPaths};
-    use replay::rows::{
-        DivisionRow, DivisionTemplateIconRow, NukeRow, RaidPathDistanceRow, TemplateSubunit,
+    use replay_data::{
+        rows::DivisionRow, rows::DivisionTemplateIconRow, rows::NukeRow, rows::RaidPathDistanceRow,
+        rows::TemplateSubunit,
     };
 
     /// The hour's distances, with every division reaching every source.
@@ -4207,7 +4225,7 @@ mod recorded_paths {
         );
         put::<tables::RaidCountryInputs>(
             &mut frame,
-            vec![replay::rows::RaidCountryInputRow {
+            vec![replay_data::rows::RaidCountryInputRow {
                 canonical_slot: 0,
                 ..registered_launch_inputs()
             }],
@@ -4226,7 +4244,7 @@ mod recorded_paths {
         put::<tables::NavalBases>(
             &mut frame,
             [1, 3]
-                .map(|province| replay::rows::NavalBaseRow {
+                .map(|province| replay_data::rows::NavalBaseRow {
                     province,
                     country: if province == 1 { 10 } else { 11 },
                     level: 1,
@@ -4346,7 +4364,7 @@ mod view_bench;
 /// no slot may be any country's, so no answer it could change is definite.
 mod unlinked {
     use super::*;
-    use replay::rows::DynamicModifierRow;
+    use replay_data::rows::DynamicModifierRow;
 
     /// A frame whose province 3 is controlled by country 99, which has no
     /// `CountryLinks` row.
@@ -4401,7 +4419,7 @@ mod unlinked {
     /// may be this country's first entry.
     #[test]
     fn an_unlinked_modifier_owner_leaves_the_trigger_undecided() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = assets();
         let mut frame = frame();
@@ -4428,8 +4446,9 @@ mod unlinked {
 /// (type 1, province 1) leads to an unactivated naval invasion (type 3)
 /// through provinces 3 and 4, both in ENG's state 20.
 fn invasion_frame(army_group: u8) -> DecodedFrame {
-    use replay::rows::{
-        ArmyOrderPlanRow, ArmyOrderRow, LandTheatreRow, OrdersGroupPlanRow, OrdersGroupRow,
+    use replay_data::{
+        rows::ArmyOrderPlanRow, rows::ArmyOrderRow, rows::LandTheatreRow, rows::OrdersGroupPlanRow,
+        rows::OrdersGroupRow,
     };
     let mut frame = positive_frame();
     put::<tables::LandTheatres>(
@@ -4487,7 +4506,7 @@ fn invasion_frame(army_group: u8) -> DecodedFrame {
 /// only when some order touches the state.
 #[test]
 fn naval_invasions_are_found_through_the_successor_graph() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = assets();
     let eval = |frame: &DecodedFrame, source: &str, state: u32| {
@@ -4529,10 +4548,11 @@ fn naval_invasions_are_found_through_the_successor_graph() {
 /// country, or a faction or direct subject relation without an active war.
 #[test]
 fn is_ally_with_follows_the_friend_relation() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{
-        CountryCounterInputRow, Recorded, ReservedCountryNamingRow, SubjectRow, WarRelationRow,
+    use replay_data::{
+        rows::CountryCounterInputRow, rows::Recorded, rows::ReservedCountryNamingRow,
+        rows::SubjectRow, rows::WarRelationRow,
     };
     let assets = assets();
     let eval = |frame: &DecodedFrame, source: &str| {
@@ -4543,13 +4563,13 @@ fn is_ally_with_follows_the_friend_relation() {
     let owned = |eng| {
         vec![
             CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
+                forward_visibility: replay_data::rows::Recorded::NotRecorded,
                 country: 10,
                 owned_state_count: 1,
                 ..Default::default()
             },
             CountryCounterInputRow {
-                forward_visibility: replay::rows::Recorded::NotRecorded,
+                forward_visibility: replay_data::rows::Recorded::NotRecorded,
                 country: 11,
                 owned_state_count: eng,
                 ..Default::default()
@@ -4611,9 +4631,9 @@ fn is_ally_with_follows_the_friend_relation() {
 /// scoped state encoding or as whole fixed5 ids, and needs `count` passes.
 #[test]
 fn any_state_in_reads_a_global_array() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{ScriptVariableEntry, ScriptVariablesRow};
+    use replay_data::{rows::ScriptVariableEntry, rows::ScriptVariablesRow};
     let mut assets = assets();
     scripted(&mut assets, "helper = { always = yes }");
     let eval = |frame: &DecodedFrame, source: &str| {
@@ -4627,7 +4647,7 @@ fn any_state_in_reads_a_global_array() {
             vec![ScriptVariablesRow {
                 scope_kind: 0,
                 scope_id: 0,
-                seed: replay::rows::Recorded::Value(None),
+                seed: replay_data::rows::Recorded::Value(None),
                 entries: entries
                     .iter()
                     .map(|(name, value_raw)| ScriptVariableEntry {
@@ -4711,7 +4731,7 @@ fn any_state_in_reads_a_global_array() {
 /// is unknown.
 #[test]
 fn neighbour_state_triggers_walk_the_content_neighbours() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = positive_frame();
     let eval = |assets: &RaidAssets, scope: Scope, source: &str| {
@@ -4768,9 +4788,9 @@ fn neighbour_state_triggers_walk_the_content_neighbours() {
 /// `is_subject_of` reads the recorded subject relation's overlord.
 #[test]
 fn custom_tooltips_and_is_subject_of() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::SubjectRow;
+    use replay_data::rows::SubjectRow;
     let assets = assets();
     let eval = |frame: &DecodedFrame, source: &str| {
         let world = World::new(frame, assets.trigger_content.facts()).unwrap();
@@ -4830,8 +4850,8 @@ fn custom_tooltips_and_is_subject_of() {
 }
 
 /// A unit leader row of GER (raw 10) with reference id `id`.
-fn leader_row(id: u32, owner: u32, captured: u8) -> replay::rows::UnitLeaderRow {
-    replay::rows::UnitLeaderRow {
+fn leader_row(id: u32, owner: u32, captured: u8) -> replay_data::rows::UnitLeaderRow {
+    replay_data::rows::UnitLeaderRow {
         id,
         reference_type: 7,
         character_id: id,
@@ -4847,7 +4867,7 @@ fn leader_row(id: u32, owner: u32, captured: u8) -> replay::rows::UnitLeaderRow 
 /// not recorded stays undecided.
 #[test]
 fn captured_general_triggers_read_the_recorded_leaders() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = assets();
     let mut frame = frame();
@@ -4912,9 +4932,9 @@ fn captured_general_triggers_read_the_recorded_leaders() {
 /// `is_core_of` reads the state's recorded cores through CountryLinks.
 #[test]
 fn is_core_of_reads_the_recorded_state_cores() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::StateCoreRow;
+    use replay_data::rows::StateCoreRow;
     let assets = assets();
     let mut frame = positive_frame();
     let on_state = |frame: &DecodedFrame, source: &str| {
@@ -5030,14 +5050,14 @@ fn a_prepared_raids_launch_triggers_follow_the_native_chain() {
 /// in its owner's scope; without the template columns they are undecided.
 #[test]
 fn leader_visibility_evaluates_the_recorded_template_role() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::CharacterRow;
+    use replay_data::rows::CharacterRow;
     use script::RecordedTemplate;
     let path = "common/characters/X.txt";
     let mut assets = assets();
     assets.trigger_content.leader_roles = Ok(Arc::new(LeaderRoles::new(
-        installed_content::characters::parse_leader_templates(
+        installed_content_core::characters::parse_leader_templates(
             path,
             br#"characters = {
     GER_rommel = { field_marshal = { visible = { tag = GER } } }
@@ -5099,7 +5119,8 @@ fn leader_visibility_evaluates_the_recorded_template_role() {
     };
     use script::Eval::{False, True};
     {
-        let visible = |row: &replay::rows::UnitLeaderRow, template: Option<RecordedTemplate>| {
+        let visible = |row: &replay_data::rows::UnitLeaderRow,
+                       template: Option<RecordedTemplate>| {
             let mut observed = frame.clone();
             put::<tables::UnitLeaders>(&mut observed, vec![row.clone()]);
             let mut character = CharacterRow {
@@ -5229,9 +5250,9 @@ fn leader_visibility_evaluates_the_recorded_template_role() {
 /// `has_cosmetic_tag` compares the recorded cosmetic tag.
 #[test]
 fn character_scope_global_flag_overlord_and_cosmetic_triggers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{CountryAppearanceRow, ScriptFlagRow};
+    use replay_data::{rows::CountryAppearanceRow, rows::ScriptFlagRow};
     let assets = assets();
     let mut frame = positive_frame();
     let mut tokens = frame.complete::<tables::LexicalTokens>().unwrap().to_vec();
@@ -5343,7 +5364,7 @@ fn character_scope_global_flag_overlord_and_cosmetic_triggers() {
     );
 }
 
-fn country_leader_traits() -> installed_content::leader_traits::LeaderTraits {
+fn country_leader_traits() -> installed_content_core::leader_traits::LeaderTraits {
     let root = std::env::temp_dir().join(format!(
         "raid-ruling-trait-{}-{:?}",
         std::process::id(),
@@ -5352,8 +5373,8 @@ fn country_leader_traits() -> installed_content::leader_traits::LeaderTraits {
     let file = root.join("common/country_leader/traits.txt");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, "leader_traits = { dictator = {} }").unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let traits = installed_content::leader_traits::read(&layers).unwrap().0;
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let traits = installed_content_core::leader_traits::read(&layers).unwrap().0;
     std::fs::remove_dir_all(root).unwrap();
     traits
 }
@@ -5364,10 +5385,11 @@ fn country_leader_traits() -> installed_content::leader_traits::LeaderTraits {
 /// reads the same values from the recorded tables).
 #[test]
 fn country_leader_civil_war_and_idea_triggers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{
-        ActiveIdeaRow, CharacterRow, CountryAppearanceRow, HiredAdvisorRow, WarRelationRow,
+    use replay_data::{
+        rows::ActiveIdeaRow, rows::CharacterRow, rows::CountryAppearanceRow, rows::HiredAdvisorRow,
+        rows::WarRelationRow,
     };
     let mut assets = assets();
     assets.trigger_content.character_traits =
@@ -5442,7 +5464,7 @@ fn country_leader_civil_war_and_idea_triggers() {
             script::Eval::True
         );
     }
-    use replay::rows::{CountryCharacterRow, PartyLeaderRow, PoliticalPartyRow};
+    use replay_data::{rows::CountryCharacterRow, rows::PartyLeaderRow, rows::PoliticalPartyRow};
     let party = |country, id, is_ruling| PoliticalPartyRow {
         country,
         id,
@@ -5486,7 +5508,7 @@ fn country_leader_civil_war_and_idea_triggers() {
     );
     put::<tables::CountryLeaderRoles>(
         &mut frame,
-        vec![replay::rows::CountryLeaderRoleRow {
+        vec![replay_data::rows::CountryLeaderRoleRow {
             character: 1,
             country: 10,
             ideology: 2,
@@ -5495,9 +5517,9 @@ fn country_leader_civil_war_and_idea_triggers() {
     );
     put::<tables::CharacterRoleTraits>(
         &mut frame,
-        vec![replay::rows::CharacterRoleTraitRow {
+        vec![replay_data::rows::CharacterRoleTraitRow {
             character: 1,
-            kind: replay::rows::CharacterRoleTraitRow::COUNTRY_LEADER,
+            kind: replay_data::rows::CharacterRoleTraitRow::COUNTRY_LEADER,
             role: 2,
             tokens: vec![702],
             definitions: vec![1],
@@ -5517,7 +5539,7 @@ fn country_leader_civil_war_and_idea_triggers() {
     );
     put::<tables::CountryCivilWars>(
         &mut frame,
-        vec![replay::rows::CountryCivilWarRow {
+        vec![replay_data::rows::CountryCivilWarRow {
             country: 11,
             ordinal: 0,
             target: 10,
@@ -5525,15 +5547,15 @@ fn country_leader_civil_war_and_idea_triggers() {
     );
     put::<tables::AdvisorTokens>(
         &mut frame,
-        vec![replay::rows::AdvisorTokenRow {
+        vec![replay_data::rows::AdvisorTokenRow {
             token: b"advisor_a".to_vec(),
             ..Default::default()
         }],
     );
     put::<tables::CountryCounterInputs>(
         &mut frame,
-        vec![replay::rows::CountryCounterInputRow {
-            forward_visibility: replay::rows::Recorded::NotRecorded,
+        vec![replay_data::rows::CountryCounterInputRow {
+            forward_visibility: replay_data::rows::Recorded::NotRecorded,
             country: 10,
             controlled_state_count: 3,
             ..Default::default()
@@ -5632,8 +5654,8 @@ fn country_leader_civil_war_and_idea_triggers() {
         .unwrap()
         .to_vec();
     for country in [10, 11] {
-        counters.push(replay::rows::CountryCounterInputRow {
-            forward_visibility: replay::rows::Recorded::NotRecorded,
+        counters.push(replay_data::rows::CountryCounterInputRow {
+            forward_visibility: replay_data::rows::Recorded::NotRecorded,
             country,
             owned_state_count: 1,
             ..Default::default()
@@ -5670,10 +5692,11 @@ fn country_leader_civil_war_and_idea_triggers() {
 /// `country_leader_civil_war_and_idea_triggers`.
 #[test]
 fn recorded_political_tables_decide_country_leader_triggers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{
-        CharacterRow, CountryAppearanceRow, CountryCharacterRow, PartyLeaderRow, PoliticalPartyRow,
+    use replay_data::{
+        rows::CharacterRow, rows::CountryAppearanceRow, rows::CountryCharacterRow,
+        rows::PartyLeaderRow, rows::PoliticalPartyRow,
     };
     let mut assets = assets();
     assets.trigger_content.character_traits =
@@ -5741,7 +5764,7 @@ fn recorded_political_tables_decide_country_leader_triggers() {
     );
     put::<tables::CountryLeaderRoles>(
         &mut frame,
-        vec![replay::rows::CountryLeaderRoleRow {
+        vec![replay_data::rows::CountryLeaderRoleRow {
             character: 1,
             country: 10,
             ideology: 2,
@@ -5750,9 +5773,9 @@ fn recorded_political_tables_decide_country_leader_triggers() {
     );
     put::<tables::CharacterRoleTraits>(
         &mut frame,
-        vec![replay::rows::CharacterRoleTraitRow {
+        vec![replay_data::rows::CharacterRoleTraitRow {
             character: 1,
-            kind: replay::rows::CharacterRoleTraitRow::COUNTRY_LEADER,
+            kind: replay_data::rows::CharacterRoleTraitRow::COUNTRY_LEADER,
             role: 2,
             tokens: vec![702],
             definitions: vec![1],
@@ -5813,7 +5836,7 @@ fn recorded_political_tables_decide_country_leader_triggers() {
     let mut wars = frame.clone();
     put::<tables::CountryCivilWars>(
         &mut wars,
-        vec![replay::rows::CountryCivilWarRow {
+        vec![replay_data::rows::CountryCivilWarRow {
             country: 11,
             ordinal: 0,
             target: 10,
@@ -5824,8 +5847,8 @@ fn recorded_political_tables_decide_country_leader_triggers() {
         .unwrap()
         .to_vec();
     for country in [10, 11] {
-        counters.push(replay::rows::CountryCounterInputRow {
-            forward_visibility: replay::rows::Recorded::NotRecorded,
+        counters.push(replay_data::rows::CountryCounterInputRow {
+            forward_visibility: replay_data::rows::Recorded::NotRecorded,
             country,
             owned_state_count: 1,
             ..Default::default()
@@ -5846,14 +5869,14 @@ fn recorded_political_tables_decide_country_leader_triggers() {
     let mut ideas = frame.clone();
     put::<tables::AdvisorTokens>(
         &mut ideas,
-        vec![replay::rows::AdvisorTokenRow {
+        vec![replay_data::rows::AdvisorTokenRow {
             ordinal: 0,
             token: b"advisor_a".to_vec(),
         }],
     );
     put::<tables::HiredAdvisors>(
         &mut ideas,
-        vec![replay::rows::HiredAdvisorRow {
+        vec![replay_data::rows::HiredAdvisorRow {
             country: 11,
             ordinal: 0,
             character: 2,
@@ -5863,7 +5886,7 @@ fn recorded_political_tables_decide_country_leader_triggers() {
     );
     put::<tables::ActiveIdeas>(
         &mut ideas,
-        vec![replay::rows::ActiveIdeaRow {
+        vec![replay_data::rows::ActiveIdeaRow {
             country: 10,
             ordinal: 0,
             token: b"advisor_a".to_vec(),
@@ -5880,7 +5903,7 @@ fn recorded_political_tables_decide_country_leader_triggers() {
     let faction = (7_u64 << 32) | 88;
     put::<tables::FactionMembers>(
         &mut ideas,
-        vec![replay::rows::FactionMemberRow {
+        vec![replay_data::rows::FactionMemberRow {
             country: 10,
             faction,
             ordinal: 0,
@@ -5888,7 +5911,7 @@ fn recorded_political_tables_decide_country_leader_triggers() {
     );
     put::<tables::FactionAdvisors>(
         &mut ideas,
-        vec![replay::rows::FactionAdvisorRow {
+        vec![replay_data::rows::FactionAdvisorRow {
             faction,
             ordinal: 3,
             token: b"advisor_a".to_vec(),
@@ -5899,8 +5922,8 @@ fn recorded_political_tables_decide_country_leader_triggers() {
     let mut controlled = frame.clone();
     put::<tables::CountryCounterInputs>(
         &mut controlled,
-        vec![replay::rows::CountryCounterInputRow {
-            forward_visibility: replay::rows::Recorded::NotRecorded,
+        vec![replay_data::rows::CountryCounterInputRow {
+            forward_visibility: replay_data::rows::Recorded::NotRecorded,
             country: 10,
             owned_state_count: 1,
             controlled_state_count: 3,
@@ -5938,9 +5961,9 @@ fn recorded_political_tables_decide_country_leader_triggers() {
 /// reference, then append that selected raw reference.
 #[test]
 fn countries_with_original_tag_visit_the_recorded_bucket_then_append_the_selected_raw() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::{CountryAppearanceRow, Recorded, ReservedCountryNamingRow};
+    use replay_data::{rows::CountryAppearanceRow, rows::Recorded, rows::ReservedCountryNamingRow};
     let assets = assets();
     let mut frame = positive_frame();
     let mut countries = frame.complete::<tables::Countries>().unwrap().to_vec();
@@ -5984,8 +6007,8 @@ fn countries_with_original_tag_visit_the_recorded_bucket_then_append_the_selecte
         .complete::<tables::CountryCounterInputs>()
         .unwrap()
         .to_vec();
-    counters.push(replay::rows::CountryCounterInputRow {
-        forward_visibility: replay::rows::Recorded::NotRecorded,
+    counters.push(replay_data::rows::CountryCounterInputRow {
+        forward_visibility: replay_data::rows::Recorded::NotRecorded,
         country: 12,
         owned_state_count: 1,
         ..Default::default()
@@ -6109,9 +6132,9 @@ fn countries_with_original_tag_visit_the_recorded_bucket_then_append_the_selecte
 /// scalar form still passes on any touching order.
 #[test]
 fn naval_invasion_preparation_reads_the_recorded_operands() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::rows::InvasionPreparationRow;
+    use replay_data::rows::InvasionPreparationRow;
     let assets = assets();
     let eval = |frame: &DecodedFrame, source: &str| {
         let world = World::new(frame, assets.trigger_content.facts()).unwrap();
@@ -6204,7 +6227,7 @@ fn selector_names_match_as_case_folded_tokens() {
         tags: vec!["Coastal_Guns".into()],
         ..Default::default()
     };
-    let selector = |types: &[&str], tags: &[&str]| installed_content::raids::BuildingSelector {
+    let selector = |types: &[&str], tags: &[&str]| installed_content_raids::raids::BuildingSelector {
         types: types.iter().map(|name| (*name).to_owned()).collect(),
         tags: tags.iter().map(|name| (*name).to_owned()).collect(),
         ..Default::default()

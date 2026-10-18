@@ -5,11 +5,10 @@ use crate::{
     table_conversion::unavailable,
 };
 use collector_observers::building_bombing as producer;
-use engine::{Memory, allocation, walk::Outcome};
-use replay::{
-    frame::TableView,
-    rows::{BuildingBombingDamageRow, TableId, TableRows},
-};
+use engine_allocation as allocation;
+use engine_native::{Memory, walk::Outcome};
+use replay_data::{rows::BuildingBombingDamageRow, rows::TableId, rows::TableRows};
+use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::BuildingBombingDamage];
@@ -109,7 +108,7 @@ mod tests {
             province: Some(88888),
             building_type: 0xf004,
             native_cause: 1,
-            cause: engine::building_damage_sites::Cause::AirNaval,
+            cause: engine_events::building_damage_sites::Cause::AirNaval,
             amount_raw: 9_000_001,
             credited_raw: 3_000_000,
         };
@@ -117,7 +116,7 @@ mod tests {
             id: 12,
             attacker: None,
             native_cause: 99,
-            cause: engine::building_damage_sites::Cause::Unknown,
+            cause: engine_events::building_damage_sites::Cause::Unknown,
             ..first
         };
         let rows = project(&[first, second]).unwrap();
@@ -143,7 +142,7 @@ mod tests {
         assert_eq!(rows[1].native_cause, 99);
         assert_eq!(
             rows[1].cause,
-            replay::rows::BuildingBombingDamageCause::Unknown
+            replay_data::rows::BuildingBombingDamageCause::Unknown
         );
         assert!(project(&[second, first]).is_err());
         assert!(

@@ -52,7 +52,8 @@ use viewer_foundation::builder_pool::Pool;
 use viewer_foundation::parallel::Workers;
 use viewer_foundation::worker_priority::background_priority;
 
-use replay::{BranchId, Hour, container::Replay};
+use replay::container::Replay;
+use replay_data::{BranchId, Hour};
 
 use {
     crate::document::Content, crate::document::Hour as HourView, crate::document::OverlayTables,
@@ -502,7 +503,7 @@ struct DecoderState {
     // Weak entries share frames already held by visible/in-flight maps without
     // retaining a second historical payload cache. One block/current per source
     // is held by Playback; the registry itself owns only bounded metadata.
-    frames: BTreeMap<(BranchId, Hour), Weak<replay::frame::DecodedFrame>>,
+    frames: BTreeMap<(BranchId, Hour), Weak<replay_frame::frame::DecodedFrame>>,
 }
 
 impl SharedDecoder {
@@ -709,18 +710,18 @@ const FRAME_CACHE: usize = 96;
 ///
 /// A decoded hour grows with the recording's countries and units, so a fixed
 /// count of hours is not a fixed amount of memory. Tables are counted at their
-/// own row sizes ([`replay::rows::TableRows::allocated_bytes`]), without the
+/// own row sizes ([`replay_data::rows::TableRows::allocated_bytes`]), without the
 /// strings and lists a row owns on the heap. The cache keeps at most
 /// [`FRAME_CACHE`] hours and, past this budget, only the hours the current
 /// want still reaches (`FrameCache::evict`).
 const FRAME_CACHE_BYTES: u64 = 2 << 30;
 
 /// A decoded table's row allocation in bytes.
-fn table_bytes(table: &replay::frame::TableView) -> u64 {
+fn table_bytes(table: &replay_frame::frame::TableView) -> u64 {
     match table {
-        replay::frame::TableView::Complete(rows)
-        | replay::frame::TableView::Truncated { rows, .. } => rows.allocated_bytes() as u64,
-        replay::frame::TableView::Unavailable { .. } => 0,
+        replay_frame::frame::TableView::Complete(rows)
+        | replay_frame::frame::TableView::Truncated { rows, .. } => rows.allocated_bytes() as u64,
+        replay_frame::frame::TableView::Unavailable { .. } => 0,
     }
 }
 
@@ -728,7 +729,7 @@ fn table_bytes(table: &replay::frame::TableView) -> u64 {
 /// bounded by count and by row bytes.
 ///
 /// Hours share every table that did not change between them
-/// ([`replay::frame::SharedView`]), so the byte count is of distinct tables:
+/// ([`replay_frame::frame::SharedView`]), so the byte count is of distinct tables:
 /// each allocation is counted once however many cached hours hold it.
 #[derive(Default)]
 struct FrameCache {

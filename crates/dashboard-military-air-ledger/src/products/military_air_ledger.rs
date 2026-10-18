@@ -1,6 +1,6 @@
 //! Exact observed aircraft bookkeeping and applied bombing health loss.
 //! AirLossEvents keeps the writer context because its ordinal families
-//! overlap (engine::air_loss_sites). Never sum the daily field array. Bombing
+//! overlap (engine_air_history::air_loss_sites). Never sum the daily field array. Bombing
 //! includes only proved air-mission and air-naval callers of building damage;
 //! other callers are not aircraft bombing. A complete interval certifies an
 //! empty event list. Gaps and unavailable intervals certify nothing.
@@ -8,24 +8,24 @@
 use dashboard_base::products::{Product, country_groups::HourSpan};
 use dashboard_base::{catalogue, ranking, source::Source};
 use dashboard_core::config::LoadContext;
+#[cfg(any(test, feature = "test-support"))]
+use dashboard_text::metadata::validate_campaign;
 use dashboard_text::metadata::{branch_bounds, check_cancel, tagged_countries};
-use replay::{
-    frame::DecodedFrame,
-    rows::{BuildingBombingDamageCause, TableId, tables},
-};
+#[cfg(any(test, feature = "test-support"))]
+use replay::container::Replay;
+use replay_data::{rows::BuildingBombingDamageCause, rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
+#[cfg(any(test, feature = "test-support"))]
+use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::Arc;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     sync::atomic::AtomicBool,
 };
 use ts_rs::TS;
-#[cfg(any(test, feature = "test-support"))]
-use {
-    dashboard_text::metadata::validate_campaign,
-    replay::{container::Replay, frame::FrameDecoder},
-    std::sync::Arc,
-};
 
 pub struct MilitaryAirLedger;
 
@@ -1032,8 +1032,8 @@ fn names(
     let regions = if regions.is_empty() {
         Vec::new()
     } else {
-        let content =
-            installed_content::regions::read(&cat.content.layers).map_err(|error| error.to_string());
+        let content = installed_content_regions::regions::read(&cat.content.layers)
+            .map_err(|error| error.to_string());
         if let Ok(content) = &content {
             warnings.extend(content.notes.iter().cloned());
         }
@@ -1054,7 +1054,7 @@ fn names(
         Vec::new()
     } else {
         let content =
-            installed_content::buildings::read(&cat.content.layers).map_err(|error| error.to_string());
+            installed_content_core::buildings::read(&cat.content.layers).map_err(|error| error.to_string());
         buildings
             .into_iter()
             .map(|id| {
@@ -1071,7 +1071,7 @@ fn names(
 
 fn region_name(
     cat: &catalogue::Catalogue,
-    content: &installed_content::regions::StrategicRegions,
+    content: &installed_content_regions::regions::StrategicRegions,
     id: u32,
 ) -> Result<String, String> {
     let region = content
@@ -1084,7 +1084,7 @@ fn region_name(
 
 fn building_name(
     cat: &catalogue::Catalogue,
-    content: &installed_content::buildings::Buildings,
+    content: &installed_content_core::buildings::Buildings,
     token: &str,
 ) -> Result<String, String> {
     let building = content
@@ -1100,8 +1100,8 @@ pub fn check_content(
     cat: &catalogue::Catalogue,
 ) -> io::Result<Vec<dashboard_core::findings::Finding>> {
     use dashboard_core::findings::{Finding, Kind};
-    let regions = installed_content::regions::read(&cat.content.layers)?;
-    let buildings = installed_content::buildings::read(&cat.content.layers)?;
+    let regions = installed_content_regions::regions::read(&cat.content.layers)?;
+    let buildings = installed_content_core::buildings::read(&cat.content.layers)?;
     let mut findings = Vec::new();
     for id in regions.regions.keys() {
         if let Err(reason) = region_name(cat, &regions, *id) {

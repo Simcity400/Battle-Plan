@@ -46,13 +46,13 @@ fn province_names_keep_emitted_empty_sparse_rows_and_first_nul_prefixes() {
         frame.hour = 1;
         *frame.tables[TableId::ProvinceNames.index()] =
             TableView::Complete(TableRows::ProvinceNames(vec![
-                replay::rows::ProvinceNameRow {
+                replay_data::rows::ProvinceNameRow {
                     province: 2,
                     name: stored.to_vec(),
                 },
             ]));
         save.provinces.get_mut(&2).unwrap().name =
-            Some(installed_content::parser::c_string(stored).to_vec());
+            Some(installed_content_core::parser::c_string(stored).to_vec());
         let mut report = Report::default();
         compare_province_names(&frame, &save, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
@@ -168,7 +168,7 @@ fn air_wing_names_compare_first_nul_and_require_emitted_empty_presence() {
     ] {
         saved.air_wings.get_mut(&wing).unwrap().name = expected;
         *frame.tables[TableId::AirWings.index()] =
-            TableView::Complete(TableRows::AirWings(vec![replay::rows::AirWingRow {
+            TableView::Complete(TableRows::AirWings(vec![replay_data::rows::AirWingRow {
                 id: wing,
                 name: stored,
                 owner: 101,

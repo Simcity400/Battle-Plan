@@ -1,5 +1,5 @@
 //! Allocation-free notifications from the native writers of the unit leader
-//! fields UnitLeaders records ([`engine::unit_leader_mutations`]). A detour
+//! fields UnitLeaders records ([`engine_mutations::unit_leader_mutations`]). A detour
 //! only notifies the shared watch registry ([`WatchRegistry`]) for the
 //! `CUnitLeader` its first argument names, or revokes every certificate for
 //! the two exile sites that name none, counts the call and calls the
@@ -15,10 +15,11 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine::{
-    Memory,
-    unit_leader_mutations::{EXILE_GENERATION, EXILE_REMOVAL, MUTATIONS},
+use engine_mutations::{
+    unit_leader_mutations::EXILE_GENERATION, unit_leader_mutations::EXILE_REMOVAL,
+    unit_leader_mutations::MUTATIONS,
 };
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -266,7 +267,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "unit_leader_changes")
             && MUTATIONS.iter().all(|site| {
-                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [

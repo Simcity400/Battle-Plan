@@ -143,12 +143,12 @@ impl Table {
     /// Off the hook path; `None` when the allocation fails.
     fn new(len: usize, marking: bool) -> Option<Box<Self>> {
         debug_assert!(len.is_power_of_two());
-        let mut slots = engine::allocation::vec(len).ok()?;
+        let mut slots = engine_allocation::vec(len).ok()?;
         slots.resize_with(len, Slot::default);
         let words = if marking { len.div_ceil(MARK_BITS) } else { 0 };
-        let mut marks = engine::allocation::vec(words).ok()?;
+        let mut marks = engine_allocation::vec(words).ok()?;
         marks.resize_with(words, AtomicU64::default);
-        engine::allocation::boxed(Self { slots, marks }).ok()
+        engine_allocation::boxed(Self { slots, marks }).ok()
     }
 
     fn find(&self, address: usize, register: bool) -> Lookup<'_> {
@@ -635,7 +635,7 @@ impl WatchRegistry {
             .checked_mul(SLOTS_PER_WATCH)
             .and_then(|slots| slots.max(MIN_SLOTS).checked_next_power_of_two())
         else {
-            let _ = engine::allocation::oom();
+            let _ = engine_allocation::oom();
             self.failed_offers.fetch_add(1, Relaxed);
             return;
         };

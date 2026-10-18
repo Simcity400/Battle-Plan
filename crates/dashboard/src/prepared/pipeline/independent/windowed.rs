@@ -45,11 +45,10 @@ use crate::{
 };
 use dashboard_base::prepared::pages::Pages;
 use replay::{
-    container::{QuietHours, Replay, SeekResult, TableFields},
-    format::FormatVersion,
-    frame::{DecodedFrame, SharedView, ViewIdentity},
-    rows::{TableId, tables},
+    container::QuietHours, container::Replay, container::SeekResult, container::TableFields,
 };
+use replay_data::{format::FormatVersion, rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::ViewIdentity};
 use std::{
     any::Any,
     io,
@@ -186,7 +185,7 @@ impl Branch for DivisionsBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         self.resume(block)?;
         self.own.observe_hours(
             block.source,
@@ -476,7 +475,7 @@ impl NavalBranch {
         check: &mut dyn FnMut() -> io::Result<()>,
         places: Places,
     ) -> io::Result<Option<i32>> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         if std::mem::take(&mut self.resume)
             && let Some(frame) = before(block)?
         {
@@ -508,7 +507,7 @@ impl NavalBranch {
                 }
             }
             let result = {
-                let _cpu = ::replay::cpu::scope("fold observe", None);
+                let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                 scan.observe_prepared(frame, changes);
                 scan.observe_details_read(
                     block.source,
@@ -541,7 +540,7 @@ impl NavalBranch {
                 block.read_alone(
                     naval_tables(),
                     |raw, frame| {
-                        let _cpu = ::replay::cpu::scope("fold driver", None);
+                        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
                         let changes = tracker.observe_updates(frame, raw, format);
                         step(frame, &changes, true)
                     },
@@ -565,7 +564,7 @@ impl NavalBranch {
                         naval_tables(),
                         last,
                         |raw, frame| {
-                            let _cpu = ::replay::cpu::scope("fold driver", None);
+                            let _cpu = ::replay_frame::cpu::scope("fold driver", None);
                             let changes = tracker.observe_updates(frame, raw, format);
                             if frame.hour == last {
                                 kept = Some(views(frame));
@@ -587,7 +586,7 @@ impl NavalBranch {
                     block.read_alone(
                         tables,
                         |raw, frame| {
-                            let _cpu = ::replay::cpu::scope("fold driver", None);
+                            let _cpu = ::replay_frame::cpu::scope("fold driver", None);
                             if last.is_some_and(|last| frame.hour <= last) {
                                 if Some(frame.hour) == last {
                                     at_last = Some(
@@ -601,7 +600,7 @@ impl NavalBranch {
                             }
                             let carried;
                             let frame = {
-                                let _cpu = ::replay::cpu::scope("fold frame", None);
+                                let _cpu = ::replay_frame::cpu::scope("fold frame", None);
                                 match kept.as_ref().zip(at_last.as_ref()) {
                                     Some((kept, at_last)) => {
                                         let mut handed = frame.clone();
@@ -642,9 +641,9 @@ impl Branch for NavalBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<(Folded, Option<i32>)> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         let facts = {
-            let _cpu = ::replay::cpu::scope("fold facts", None);
+            let _cpu = ::replay_frame::cpu::scope("fold facts", None);
             facts
                 .downcast::<PlaceHours>()
                 .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
@@ -659,7 +658,7 @@ impl Branch for NavalBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
-        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         self.observe_hours(block, observed, check, Places::Every)
     }
 

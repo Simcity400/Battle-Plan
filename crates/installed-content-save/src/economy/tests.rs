@@ -1,5 +1,5 @@
 use super::*;
-use installed_content::parser;
+use installed_content_core::parser;
 
 /// A `fuel_status` body in the writer's layout: the given scalars, one
 /// consumer block per `(priority, received, requested)` and the pending

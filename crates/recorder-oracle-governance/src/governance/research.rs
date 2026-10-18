@@ -1,5 +1,5 @@
 use super::*;
-use replay::rows::ResearchTechnologyRow;
+use replay_data::rows::ResearchTechnologyRow;
 
 pub(super) fn compare_research(
     frame: &DecodedFrame,
@@ -17,7 +17,7 @@ pub(super) fn compare_research(
     // the earlier row check stays. ResearchSlots is a daily table and is
     // compared whenever its slot was read (its group's own carried check). An
     // unreadable table is not stale: its comparison below reports the failure.
-    let tech = replay::rows::TableId::ResearchTechnologies;
+    let tech = replay_data::rows::TableId::ResearchTechnologies;
     let oldest_read = complete::<tables::SliceReads>(frame)
         .ok()
         .and_then(|reads| {
@@ -31,8 +31,9 @@ pub(super) fn compare_research(
         Err(_) => true,
         Ok(_) if report.read_hours.is_some() => report.full_refresh(),
         Ok(rows) => complete::<tables::SliceReads>(frame).is_ok_and(|reads| {
-            rows.iter()
-                .all(|row| replay::sliced::read_hour(reads, tech, row.country) == Some(frame.hour))
+            rows.iter().all(|row| {
+                replay_data::sliced::read_hour(reads, tech, row.country) == Some(frame.hour)
+            })
         }),
     };
     let definitions = complete::<tables::TechnologyDefinitions>(frame)?;
@@ -63,10 +64,10 @@ pub(super) fn compare_research(
             return Err(error);
         };
         let writer = literal(report, "TechnologyDefinitions.handle", writer);
-        let identity = installed_content::tokens::Token::c_str(&row.id);
+        let identity = installed_content_core::tokens::Token::c_str(&row.id);
         if writer != token
             || (identity.is_rejected() && row.technology_handle != 0)
-            || (!identity.is_rejected() && identity != installed_content::tokens::Token::c_str(writer))
+            || (!identity.is_rejected() && identity != installed_content_core::tokens::Token::c_str(writer))
         {
             report.difference(&subject, &row.id, writer);
             return Err(invalid(format!(
@@ -101,7 +102,8 @@ pub(super) fn compare_research(
     // Without read hours (callers that do not scan the branch) a stale
     // ResearchSlots is a limitation, as before; with them, its comparison
     // group reports it carried.
-    let slots_current = report.refresh_is_current(replay::rows::TableId::ResearchSlots, frame.hour);
+    let slots_current =
+        report.refresh_is_current(replay_data::rows::TableId::ResearchSlots, frame.hour);
     let mut complete = true;
     if slots_current || report.read_hours.is_some() {
         complete &= report.attempt("governance ResearchSlots", |report| {
@@ -109,10 +111,13 @@ pub(super) fn compare_research(
         });
     } else {
         report.limitation(
-            &format!("Research family {}", replay::cadence::STAGGER_LIMITATION),
+            &format!(
+                "Research family {}",
+                replay_data::cadence::STAGGER_LIMITATION
+            ),
             format!(
                 "ResearchSlots refreshes on {} (oracle hour {})",
-                replay::cadence::refresh_text(replay::rows::TableId::ResearchSlots),
+                replay_data::cadence::refresh_text(replay_data::rows::TableId::ResearchSlots),
                 frame.hour
             ),
         );
@@ -129,10 +134,15 @@ pub(super) fn compare_research(
         );
     } else {
         report.limitation(
-            &format!("Research family {}", replay::cadence::STAGGER_LIMITATION),
+            &format!(
+                "Research family {}",
+                replay_data::cadence::STAGGER_LIMITATION
+            ),
             format!(
                 "ResearchTechnologies refreshes on {} (oracle hour {})",
-                replay::cadence::refresh_text(replay::rows::TableId::ResearchTechnologies),
+                replay_data::cadence::refresh_text(
+                    replay_data::rows::TableId::ResearchTechnologies
+                ),
                 frame.hour
             ),
         );
@@ -166,7 +176,7 @@ pub(super) fn compare_research_slots(
         if !slot_indices.entry(tag).or_default().insert(row.index) {
             return Err(invalid("duplicate research slot index"));
         }
-        let token = if row.technology_handle == engine::cresearch_slot::IDLE_HANDLE {
+        let token = if row.technology_handle == engine_research::cresearch_slot::IDLE_HANDLE {
             b"empty".as_slice()
         } else {
             let definition = dictionary
@@ -222,7 +232,8 @@ pub(super) fn compare_research_slots(
                             .is_ok_and(|owner| owner == tag.as_slice())
                     })
                     .map(|row| {
-                        let token = if row.technology_handle == engine::cresearch_slot::IDLE_HANDLE
+                        let token = if row.technology_handle
+                            == engine_research::cresearch_slot::IDLE_HANDLE
                         {
                             b"empty".as_slice()
                         } else {

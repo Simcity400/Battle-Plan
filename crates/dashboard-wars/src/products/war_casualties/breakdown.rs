@@ -779,10 +779,10 @@ mod tests {
     #[test]
     fn obsolete_projection_versions_are_replaced_for_the_same_branch_and_tag() {
         use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-        use replay::{
-            frame::TableView,
-            rows::{CountryLinkRow, CountryRow, TableRows, WarRelationRow},
+        use replay_data::{
+            rows::CountryLinkRow, rows::CountryRow, rows::TableRows, rows::WarRelationRow,
         };
+        use replay_frame::frame::TableView;
         let mut frame = source(1, 100, None);
         frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
             CountryRow {

@@ -15,9 +15,10 @@ use crate::prepared::prepass;
 use crate::products::air_superiority::block;
 use dashboard_base::prepared::kept::counted;
 use independent::Own;
-use replay::rows::{
-    AirTheatreGroupRow, AirTheatreMemberRow, AirTheatreRow, AirWingRow, FactionMemberRow,
-    FactionRow, HumanControllerRow, RaidAirScoreRow, WarRelationRow,
+use replay_data::{
+    rows::AirTheatreGroupRow, rows::AirTheatreMemberRow, rows::AirTheatreRow, rows::AirWingRow,
+    rows::FactionMemberRow, rows::FactionRow, rows::HumanControllerRow, rows::RaidAirScoreRow,
+    rows::WarRelationRow,
 };
 
 type Payloads = BTreeMap<(String, u64), Vec<u8>>;
@@ -771,7 +772,7 @@ fn air_superiority_quiet_hours_build_no_frame() {
     ignore = "synthetic content and first-view air presentation"
 )]
 fn cached_air_reply_refreshes_labels_when_language_changes_without_a_publication() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     independent::with_test_hourly(|| {
         let mut fixture = Fixture::new(&scenario(111, false));

@@ -1,6 +1,8 @@
 //! Lit-tree submission selected by the tree graphics setting.
 use eframe::wgpu;
-use installed_content::pdxshader::{DepthStencilState, RasterizerState, program::Stage};
+use installed_content_core::{
+    pdxshader::DepthStencilState, pdxshader::RasterizerState, pdxshader::program::Stage,
+};
 use shader_pipeline::{binding, gpu, library::Effect};
 use std::{collections::BTreeMap, io, sync::Arc};
 

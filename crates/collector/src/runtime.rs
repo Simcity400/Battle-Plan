@@ -1,6 +1,5 @@
 //! Loader worker, spool thread, and restore/drain/self-unload lifecycle.
 
-use replay::identity::IdentityCodec;
 use crate::{
     acquisition_jobs as acquisition, decode,
     history::PreparedCampaigns,
@@ -9,11 +8,10 @@ use crate::{
     spool_phases::Phase,
     spooling::{Distribution, Processor, WallTotals},
 };
-use engine::{
-    PINNED_BUILD, build::hash_executable, cgame_state, country_memory::SeedStatus,
-    memory::LiveMemory, read,
-};
-use replay::{codec::Decoder, identity::SessionStart};
+use engine_executable::{build::PINNED_BUILD, build::hash_executable};
+use engine_native::{cgame_state, country_memory::SeedStatus, memory::LiveMemory, read};
+use replay_data::identity::IdentityCodec;
+use replay_data::{codec::Decoder, identity::SessionStart};
 
 use serde::Deserialize;
 #[cfg(test)]
@@ -210,8 +208,8 @@ pub unsafe extern "system" fn worker(module: *mut c_void) -> u32 {
     }
     finish_worker(&SHARED, witness, |witness| {
         crate::allocation::clear_handle();
-        engine::allocation::set_hooks(None, None);
-        engine::allocation::set_stop_hook(None);
+        engine_allocation::set_hooks(None, None);
+        engine_allocation::set_stop_hook(None);
         drop(witness);
         unsafe {
             FreeLibraryAndExitThread(module, 0);
@@ -249,7 +247,7 @@ fn bootstrap_witness_path(
                 .rposition(|unit| *unit == b'\\' as u16 || *unit == b'/' as u16)
         })
         .ok_or("collector bootstrap has no session directory")?;
-    let filename = replay::witness::WITNESS_FILE_NAME.as_bytes();
+    let filename = replay_data::witness::WITNESS_FILE_NAME.as_bytes();
     let end = bin_separator + 1 + filename.len();
     if end >= path.len() {
         return Err("collector bootstrap witness path truncated");
@@ -277,10 +275,10 @@ fn bootstrap_witness_path(
     if unsafe { GetFileSizeEx(file.as_raw_handle(), &mut length) } == 0 {
         return Err("collector bootstrap witness size unreadable");
     }
-    if length != replay::witness::WITNESS_BYTES as i64 {
+    if length != replay_data::witness::WITNESS_BYTES as i64 {
         return Err("collector bootstrap witness length invalid");
     }
-    let mut bytes = [0u8; replay::witness::WITNESS_BYTES];
+    let mut bytes = [0u8; replay_data::witness::WITNESS_BYTES];
     let mut read = 0;
     while read < bytes.len() {
         match file.read(&mut bytes[read..]) {
@@ -292,7 +290,7 @@ fn bootstrap_witness_path(
     }
     file.seek(io::SeekFrom::Start(0))
         .map_err(|_| "collector bootstrap witness seek failed")?;
-    let (session, process_start) = replay::witness::TerminalWitness::decode_prepared(&bytes)
+    let (session, process_start) = replay_data::witness::TerminalWitness::decode_prepared(&bytes)
         .map_err(|_| "collector bootstrap witness identity invalid")?;
     Ok((file, session, process_start))
 }
@@ -316,10 +314,10 @@ mod bootstrap_witness_tests {
         ));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).unwrap();
-        let witness = directory.join(replay::witness::WITNESS_FILE_NAME);
+        let witness = directory.join(replay_data::witness::WITNESS_FILE_NAME);
         fs::write(
             &witness,
-            replay::witness::TerminalWitness::prepared(1, 1000),
+            replay_data::witness::TerminalWitness::prepared(1, 1000),
         )
         .unwrap();
         let module: Vec<_> = directory
@@ -654,7 +652,7 @@ fn run(
         return Err("collector config executable identity differs from running build");
     }
     // Prepare immutable metadata on this loader worker before publishing hooks.
-    engine::executable_tables::initialize_executable(&executable_path)
+    engine_executable::executable_tables::initialize_executable(&executable_path)
         .map_err(|error| error_reason(error, "collector executable tables preparation failed"))?;
     let dll = hash_executable(
         File::open(&dll_path).map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?,
@@ -802,7 +800,9 @@ fn run(
     crate::politics_changes::resize(
         crate::country_scale::observe_politics_demand(&memory, base, slots).unwrap_or(slots),
         processor
-            .observe_input_demand(engine::politics_sites::lexical_key_demand(&memory, base))
+            .observe_input_demand(engine_events::politics_sites::lexical_key_demand(
+                &memory, base,
+            ))
             .unwrap_or(0),
     );
     crate::relation_changes::presize(slots);
@@ -855,7 +855,7 @@ fn run(
     sizing.extended.air_losses.events = crate::air_losses::capacity();
     sizing.extended.building_bombing = crate::building_bombing::capacity();
     sizing.extended.nuclear_strikes = crate::nuclear_strikes::capacity();
-    sizing.content = engine::cdlc_manager::observe_counts(&memory, base);
+    sizing.content = engine_dlc::cdlc_manager::observe_counts(&memory, base);
     if let Some(rows) = processor
         .observe_input_demand(crate::country_scale::observe_country_intel(&memory, base))
         .flatten()
@@ -1852,7 +1852,7 @@ fn append_event_feed_detach_status(
     if bytes.last() != Some(&b'}') {
         return Err(io::ErrorKind::InvalidData.into());
     }
-    engine::allocation::reserve(bytes, suffix.len())?;
+    engine_allocation::reserve(bytes, suffix.len())?;
     bytes.pop();
     if bytes.len() > 1 {
         bytes.push(b',');
@@ -2256,7 +2256,7 @@ fn install_attach_batch(
         stage.set(families[index].0);
         crate::hook::shared::prepare_refused_family(families[index].0);
         if allocation_failure {
-            let _ = engine::allocation::oom();
+            let _ = engine_allocation::oom();
         }
         return Err(reason);
     }
@@ -2596,8 +2596,8 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "combat_log_prune": crate::combat_log_prune::status(),
         "construction_ic": crate::construction_ic::status(),
         "logistics_balance": crate::logistics_balance::status(),
-        "batch_fallbacks": map(engine::batch_fallback::counts()),
-        "replay_format": replay::FORMAT_VERSION,
+        "batch_fallbacks": map(engine_native::batch_fallback::counts()),
+        "replay_format": replay_data::FORMAT_VERSION,
         "sample_boundary": sampling::SAMPLE_BOUNDARY.name(),
     });
     #[cfg(feature = "callback_profile")]
@@ -2841,7 +2841,7 @@ pub(crate) fn status_allocation_failure_exercise() -> io::Result<()> {
     with_allocations_denied(|| serde_json::to_writer(&mut count, &value))
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
     let mut bytes = Vec::new();
-    engine::allocation::reserve_exact(&mut bytes, count.0)?;
+    engine_allocation::reserve_exact(&mut bytes, count.0)?;
     // Mutating the source between passes must not change the owned snapshot.
     shared.phase_calls.store(30, Ordering::Relaxed);
     shared.join_wait[0].store(420_000, Ordering::Relaxed);
@@ -3263,16 +3263,16 @@ struct RegistryWatch {
     last_air_wing_names: Option<Instant>,
     air_wing_names: usize,
     last_railway_gun_names: Option<Instant>,
-    railway_gun_names: engine::railway_gun_counter_inputs::NameDemand,
+    railway_gun_names: engine_railways::railway_gun_counter_inputs::NameDemand,
     last_map: Option<Instant>,
     last_presentation_census: Option<Instant>,
-    presentation_census: engine::carmy::PresentationDemand,
+    presentation_census: engine_native::carmy::PresentationDemand,
     last_raids: Option<Instant>,
     raids: crate::country_scale::RaidArenas,
     last_characters: Option<Instant>,
     characters: crate::country_scale::CharacterDemand,
     last_saved_targets: Option<Instant>,
-    saved_targets: engine::saved_event_targets::Demand,
+    saved_targets: engine_scripts::saved_event_targets::Demand,
     last_politics: Option<Instant>,
     politics: crate::country_scale::PoliticsDemand,
     last_reserved_visibility: Option<Instant>,
@@ -3291,7 +3291,7 @@ impl RegistryWatch {
 
     fn poll_reserved_visibility(
         &mut self,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
         base: usize,
     ) -> Result<Option<usize>, &'static str> {
         if self
@@ -3312,9 +3312,9 @@ impl RegistryWatch {
 
     fn poll_game_score(
         &mut self,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
         base: usize,
-    ) -> Option<io::Result<engine::game_score_inputs::ArenaSizing>> {
+    ) -> Option<io::Result<engine_native::game_score_inputs::ArenaSizing>> {
         if self
             .last_game_score
             .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
@@ -3333,7 +3333,7 @@ impl RegistryWatch {
     /// Failed hints are offered again; only actual capture latches capacities.
     fn poll_combat_hints(
         &mut self,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
         base: usize,
     ) -> Option<CombatHints> {
         if self
@@ -3350,7 +3350,7 @@ impl RegistryWatch {
     /// roster polls. Load/failure checks in the callbacks remain immediate.
     fn poll_logistics(
         &mut self,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
         base: usize,
     ) -> io::Result<Option<usize>> {
         if self
@@ -3365,7 +3365,7 @@ impl RegistryWatch {
 
     /// Line rosters can grow without the country registry changing. Repeat
     /// the offer even without growth so a failed allocation can be retried.
-    fn poll_lines(&mut self, memory: &impl engine::Memory, base: usize) -> Option<usize> {
+    fn poll_lines(&mut self, memory: &impl engine_native::Memory, base: usize) -> Option<usize> {
         if self
             .last_lines
             .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
@@ -3378,7 +3378,7 @@ impl RegistryWatch {
 
     /// The country slots and strategic regions when either is larger than
     /// any seen before, at most every `INTERVAL`.
-    fn poll(&mut self, memory: &impl engine::Memory, base: usize) -> Option<(usize, usize)> {
+    fn poll(&mut self, memory: &impl engine_native::Memory, base: usize) -> Option<(usize, usize)> {
         if self
             .last
             .is_some_and(|last| last.elapsed() < Self::INTERVAL)
@@ -3399,7 +3399,7 @@ impl RegistryWatch {
     /// `INTEL_INTERVAL`. Intel vectors fill after a save's registry does.
     fn poll_intel(
         &mut self,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
         base: usize,
     ) -> Result<Option<usize>, &'static str> {
         if self
@@ -3420,7 +3420,7 @@ impl RegistryWatch {
 
     fn poll_ace_names(
         &mut self,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
         base: usize,
     ) -> Result<Option<crate::country_scale::AceNamesDemand>, &'static str> {
         if self
@@ -3441,7 +3441,7 @@ impl RegistryWatch {
 
     fn poll_air_wing_names(
         &mut self,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
         base: usize,
     ) -> Result<Option<usize>, &'static str> {
         if self
@@ -3462,9 +3462,9 @@ impl RegistryWatch {
 
     fn poll_railway_gun_names(
         &mut self,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
         base: usize,
-    ) -> Result<Option<engine::railway_gun_counter_inputs::NameDemand>, &'static str> {
+    ) -> Result<Option<engine_railways::railway_gun_counter_inputs::NameDemand>, &'static str> {
         if self
             .last_railway_gun_names
             .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
@@ -3500,7 +3500,7 @@ impl RegistryWatch {
     /// readable floor.
     fn poll_map(
         &mut self,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
         base: usize,
     ) -> Result<Option<crate::country_scale::MapDemand>, &'static str> {
         if self
@@ -3515,9 +3515,9 @@ impl RegistryWatch {
 
     fn poll_presentation_census(
         &mut self,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
         base: usize,
-    ) -> Result<Option<engine::carmy::PresentationDemand>, &'static str> {
+    ) -> Result<Option<engine_native::carmy::PresentationDemand>, &'static str> {
         if self
             .last_presentation_census
             .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
@@ -3541,7 +3541,7 @@ impl RegistryWatch {
     /// reservations fill after a save's registry does; a full hour reads all.
     fn poll_raids(
         &mut self,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
         base: usize,
     ) -> Result<Option<crate::country_scale::RaidArenas>, &'static str> {
         if self
@@ -3575,7 +3575,7 @@ impl RegistryWatch {
     /// its registry does, and a full hour must read them all.
     fn poll_characters(
         &mut self,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
         base: usize,
     ) -> Result<Option<crate::country_scale::CharacterDemand>, &'static str> {
         if self
@@ -3609,9 +3609,9 @@ impl RegistryWatch {
     /// Load and script growth are presized off-thread before a full capture.
     fn poll_saved_targets(
         &mut self,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
         base: usize,
-    ) -> Result<Option<engine::saved_event_targets::Demand>, &'static str> {
+    ) -> Result<Option<engine_scripts::saved_event_targets::Demand>, &'static str> {
         if self
             .last_saved_targets
             .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
@@ -3636,7 +3636,7 @@ impl RegistryWatch {
     /// them all.
     fn poll_politics(
         &mut self,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
         base: usize,
     ) -> Result<Option<crate::country_scale::PoliticsDemand>, &'static str> {
         if self
@@ -3658,13 +3658,14 @@ impl RegistryWatch {
 /// The loaded content's live strategic-region count, zero when unreadable:
 /// the naval-patrol history watches are sized from it, never from a vanilla
 /// count.
-fn strategic_regions(memory: &impl engine::Memory, base: usize) -> usize {
-    engine::cgame_state::read_strategic_region_count(memory, base).map_or(0, |count| count as usize)
+fn strategic_regions(memory: &impl engine_native::Memory, base: usize) -> usize {
+    engine_native::cgame_state::read_strategic_region_count(memory, base)
+        .map_or(0, |count| count as usize)
 }
 
 struct CombatHints {
-    land: Option<engine::cland_combat::DetailDemand>,
-    naval: Option<engine::naval_combat_demand::Demand>,
+    land: Option<engine_native::cland_combat::DetailDemand>,
+    naval: Option<engine_naval_history::naval_combat_demand::Demand>,
     failures: [Option<&'static str>; 2],
 }
 
@@ -3680,7 +3681,7 @@ struct SpoolState {
 }
 
 impl CombatHints {
-    fn observe(memory: &impl engine::Memory, base: usize) -> Self {
+    fn observe(memory: &impl engine_native::Memory, base: usize) -> Self {
         let land = crate::country_scale::observe_land_details(memory, base);
         let naval = crate::country_scale::observe_naval_details(memory, base);
         Self {
@@ -4341,7 +4342,7 @@ struct SizingState {
 struct PendingSizing {
     errors: u64,
     last_error: Option<&'static str>,
-    game_score: Vec<engine::game_score_inputs::ArenaSizing>,
+    game_score: Vec<engine_native::game_score_inputs::ArenaSizing>,
     capacities_hold: WallTotals,
 }
 
@@ -4364,7 +4365,7 @@ struct SizingShared {
     /// thread could not start.
     state: Mutex<Option<SizingState>>,
     /// What encoder commits handed back, freed by the sizing thread.
-    retired: Mutex<Vec<replay::frame::Retired>>,
+    retired: Mutex<Vec<replay_frame::frame::Retired>>,
 }
 
 impl SizingShared {
@@ -4600,7 +4601,7 @@ impl SizingThread {
 impl SizingThread {
     /// Free what a commit handed back on the sizing thread, or here without
     /// one, so the spool thread goes on to its next hour.
-    fn retire(&self, retired: Vec<replay::frame::Retired>) {
+    fn retire(&self, retired: Vec<replay_frame::frame::Retired>) {
         if retired.is_empty() {
             return;
         }
@@ -4612,7 +4613,7 @@ impl SizingThread {
         let mut held = lock(&self.sizing.retired);
         if held.is_empty() {
             *held = retired;
-        } else if engine::allocation::reserve(&mut held, retired.len()).is_ok() {
+        } else if engine_allocation::reserve(&mut held, retired.len()).is_ok() {
             held.extend(retired);
         } else {
             drop(held);
@@ -4845,7 +4846,9 @@ fn sizing_pass(
         crate::politics_changes::resize(
             crate::country_scale::observe_politics_demand(&live, base, slots).unwrap_or(slots),
             sizing
-                .demand(engine::politics_sites::lexical_key_demand(&live, base))
+                .demand(engine_events::politics_sites::lexical_key_demand(
+                    &live, base,
+                ))
                 .unwrap_or(0),
         );
         crate::relation_changes::presize(slots);
@@ -4858,7 +4861,7 @@ fn sizing_pass(
                 map: capacities.map,
                 extended: capacities.extended,
                 country_cells: 0,
-                content: engine::cdlc_manager::Counts::default(),
+                content: engine_dlc::cdlc_manager::Counts::default(),
             };
             raised.raise_for_slots(slots);
             raised.extended.raise_for_regions(regions);
@@ -4962,7 +4965,7 @@ fn sizing_pass(
                 map: capacities.map,
                 extended: capacities.extended,
                 country_cells: 0,
-                content: engine::cdlc_manager::Counts::default(),
+                content: engine_dlc::cdlc_manager::Counts::default(),
             };
             raised.raise_for_map(&demand);
             raised
@@ -5015,7 +5018,7 @@ fn sizing_pass(
         let demand = observed.demand;
         {
             let mut pending = lock(&sizing.pending);
-            engine::allocation::reserve(&mut pending.game_score, 1).map_err(|error| {
+            engine_allocation::reserve(&mut pending.game_score, 1).map_err(|error| {
                 error_reason(error, "game score sizing status allocation failed")
             })?;
             pending.game_score.push(observed);
@@ -5748,7 +5751,7 @@ mod tests {
         sizing.sizing.error("second sizing refusal");
         lock(&sizing.sizing.pending)
             .game_score
-            .push(engine::game_score_inputs::ArenaSizing::default());
+            .push(engine_native::game_score_inputs::ArenaSizing::default());
         let context = crate::allocation::Context {
             failed_hour: Some(7),
             ..Default::default()
@@ -5892,7 +5895,7 @@ mod tests {
         let returning = shared.take_frame(&mut 0).unwrap();
         let wars = lock(&sizing.capacities).core[5] + 8;
         let frame = unsafe { &mut *shared.frames[returning].load(Ordering::Acquire) };
-        frame.wars_result = engine::walk::Outcome::Truncated {
+        frame.wars_result = engine_native::walk::Outcome::Truncated {
             len: 0,
             unread_rows: wars as u32,
         };
@@ -6121,7 +6124,7 @@ mod tests {
     #[derive(Default)]
     struct Registry(std::cell::Cell<u32>, std::cell::Cell<u32>);
 
-    impl engine::Memory for Registry {
+    impl engine_native::Memory for Registry {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             const STATE: usize = 0x1000;
             let mut bytes = [0_u8; 0x400];
@@ -6155,7 +6158,7 @@ mod tests {
     #[test]
     fn logistics_owner_poll_does_no_native_reads_between_bounded_observations() {
         struct Reads(std::cell::Cell<usize>);
-        impl engine::Memory for Reads {
+        impl engine_native::Memory for Reads {
             fn copy(&self, _: usize, _: &mut [u8]) -> bool {
                 self.0.set(self.0.get() + 1);
                 false
@@ -6223,7 +6226,9 @@ mod tests {
 
     #[test]
     fn land_detail_watch_presizes_growth_without_country_registry_changes() {
-        use engine::{cland_combat as combat, cland_combatant as side, cprovince, cterrain_type};
+        use engine_native::{
+            cland_combat as combat, cland_combatant as side, cprovince, cterrain_type,
+        };
 
         struct Combats(Vec<u8>);
         impl Combats {
@@ -6239,13 +6244,13 @@ mod tests {
                 self.put(at + 12, &count.to_le_bytes());
             }
         }
-        impl engine::Memory for Combats {
+        impl engine_native::Memory for Combats {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
                     output.copy_from_slice(&0x1000u64.to_le_bytes());
                     return true;
                 }
-                engine::memory::SliceMemory {
+                engine_native::memory::SliceMemory {
                     base: 0x1000,
                     bytes: &self.0,
                 }
@@ -6379,11 +6384,11 @@ mod tests {
         let mut applied = [CombatHintState::default(); sampling::BUFFERS];
         let before = crate::country_scale::combat_hint_status();
         let hints = CombatHints {
-            land: Some(engine::cland_combat::DetailDemand {
+            land: Some(engine_native::cland_combat::DetailDemand {
                 rows: usize::MAX,
                 ..Default::default()
             }),
-            naval: Some(engine::naval_combat_demand::Demand {
+            naval: Some(engine_naval_history::naval_combat_demand::Demand {
                 rows: usize::MAX,
                 ..Default::default()
             }),
@@ -6407,11 +6412,11 @@ mod tests {
         // A later valid observation is retried, without the failed huge peak.
         let before = shared.pool_bytes.load(Ordering::Relaxed);
         let valid = CombatHints {
-            land: Some(engine::cland_combat::DetailDemand {
+            land: Some(engine_native::cland_combat::DetailDemand {
                 rows: 600,
                 ..Default::default()
             }),
-            naval: Some(engine::naval_combat_demand::Demand {
+            naval: Some(engine_naval_history::naval_combat_demand::Demand {
                 rows: 1,
                 ..Default::default()
             }),
@@ -6433,11 +6438,11 @@ mod tests {
         let capacities = crate::extended::Capacities::default();
         let mut applied = [CombatHintState::default(); sampling::BUFFERS];
         let mut hints = CombatHints {
-            land: Some(engine::cland_combat::DetailDemand {
+            land: Some(engine_native::cland_combat::DetailDemand {
                 rows: 600,
                 ..Default::default()
             }),
-            naval: Some(engine::naval_combat_demand::Demand {
+            naval: Some(engine_naval_history::naval_combat_demand::Demand {
                 rows: 1,
                 ..Default::default()
             }),
@@ -6507,7 +6512,8 @@ mod tests {
 
     #[test]
     fn raid_path_memo_growth_presizes_before_refresh() {
-        use engine::{Memory, craid_system, raid_path_memo};
+        use engine_native::{Memory, craid_system};
+        use engine_raid_inputs::raid_path_memo;
         use std::cell::Cell;
         // Five thousand null country slots, with no raid-parent payloads.
         // The memo buckets are deliberately unreadable: sizing needs headers.
@@ -6660,7 +6666,7 @@ mod tests {
 
     #[test]
     fn racing_political_hint_counts_in_completed_status_without_a_session_warning() {
-        use engine::{Memory, ccountry};
+        use engine_native::{Memory, ccountry};
         use std::cell::Cell;
 
         struct RacingHint {
@@ -6726,8 +6732,8 @@ mod tests {
             process_id: 100,
             process_start_time: 1000,
             qpc_frequency: 1,
-            sample_boundary: replay::identity::SampleBoundary::EndOfHour,
-            identity: replay::identity::Identity {
+            sample_boundary: replay_data::identity::SampleBoundary::EndOfHour,
+            identity: replay_data::identity::Identity {
                 game_version: "fixture".into(),
                 exe_hash: [1; 32],
                 exe_size: 1,
@@ -6738,7 +6744,7 @@ mod tests {
                 language: "english".into(),
                 recorder_version: "fixture".into(),
                 collector_hash: [3; 32],
-                verification: replay::identity::Verification::Unchecked,
+                verification: replay_data::identity::Verification::Unchecked,
             },
         };
         let directory = std::env::temp_dir()
@@ -6755,7 +6761,7 @@ mod tests {
         assert_eq!(memory.roster_reads.get(), 3);
         assert_eq!(
             watch.presentation_census,
-            engine::carmy::PresentationDemand::default(),
+            engine_native::carmy::PresentationDemand::default(),
         );
         // Throttling is not another failure observation.
         assert!(
@@ -6856,7 +6862,7 @@ mod tests {
         add_decode_status(&mut status);
         assert_eq!(status["state"], "recording");
         assert_eq!(status["hours"], 3);
-        assert_eq!(status["replay_format"], replay::FORMAT_VERSION);
+        assert_eq!(status["replay_format"], replay_data::FORMAT_VERSION);
         assert_eq!(status["table_reads_recorded"], true);
         assert_eq!(status["table_reads_frames"], 3);
         assert_eq!(status["table_reads"][0]["bytes"], 42);

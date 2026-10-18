@@ -1,11 +1,9 @@
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{
-        CountryFuelRow, FuelDemandFleet, FuelDemandSite, FuelDemandUnit, FuelDemandWing, TableId,
-        TableRows,
-    },
+use replay_data::{
+    rows::CountryFuelRow, rows::FuelDemandFleet, rows::FuelDemandSite, rows::FuelDemandUnit,
+    rows::FuelDemandWing, rows::TableId, rows::TableRows,
 };
+use replay_frame::frame::TableView;
 
 #[test]
 fn conditional_names_distinguish_omitted_and_emitted_empty_save_text() {

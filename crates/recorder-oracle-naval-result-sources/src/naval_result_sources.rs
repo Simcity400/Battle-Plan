@@ -1,11 +1,8 @@
 //! Branch self-check: the save retains outcomes, never combat provenance.
 use super::{Report, complete};
-use replay::{
-    Hour,
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder, TableView},
-    rows::{NavalResultSourceRow, TableId, tables},
-};
+use replay::container::Replay;
+use replay_data::{Hour, rows::NavalResultSourceRow, rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::FrameDecoder, frame::TableView};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,

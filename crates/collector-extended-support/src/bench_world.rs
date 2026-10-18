@@ -15,13 +15,13 @@
 //! `SliceMemory` and through the production `CountedMemory<LiveMemory>`, whose
 //! guarded copies cost what they cost in the game.
 use crate::read_accounting::TableCounts;
-use engine::{
-    ccountry, cfaction, cfaction_system, cfaction_theater_manager as faction_theatres, cgame_state,
-    corder_instance, corders_group, creference_registry as registry, ctheatre,
-    memory::{CountedMemory, LiveMemory, ReadCounts, SliceMemory},
-    msvc_string, reference_bucket as bucket,
+use engine_land_inputs::cfaction_theater_manager as faction_theatres;
+use engine_native::{
+    ccountry, cfaction, cfaction_system, cgame_state, corder_instance, corders_group,
+    creference_registry as registry, ctheatre, memory::CountedMemory, memory::LiveMemory,
+    memory::ReadCounts, memory::SliceMemory, msvc_string, reference_bucket as bucket,
 };
-use replay::rows::TableId;
+use replay_data::rows::TableId;
 
 /// The game state's offset from the module base.
 const GAME_STATE: usize = 0x10000;

@@ -1,11 +1,11 @@
 //! Allocation-free notifications from the native writers of the relation opinion
 //! (`crelation_status::OPINION`) and of the serializable relation vector
-//! (`crelation_status::SERIALIZABLE_RELATIONS`) ([`engine::opinion_mutations`]). A detour only
+//! (`crelation_status::SERIALIZABLE_RELATIONS`) ([`engine_mutations::opinion_mutations`]). A detour only
 //! records and calls the original; it never changes game behaviour.
 //!
 //! `RecomputeOpinion` appends its status to a log when the opinion it leaves
 //! differs from the one it found; `Reset`, the fifteen relation slot
-//! replacements ([`engine::opinion_mutations::RELATIONS`]) and the war body,
+//! replacements ([`engine_mutations::opinion_mutations::RELATIONS`]) and the war body,
 //! which the stability family patches and forwards ([`relation_replaced`]),
 //! append theirs on every call, since they rewrite the status's relation
 //! vector. The status's owner is then read again, opinions and relation
@@ -28,11 +28,8 @@
 //! fallback, so the collector still attaches and reads every status on every
 //! refresh (`unhooked` and `unobserved_refreshes` in `status.json`).
 use crate::hook::Hook;
-use engine::{
-    Memory,
-    crelation_status::Mark,
-    opinion_mutations::{MUTATIONS, RELATIONS},
-};
+use engine_mutations::{opinion_mutations::MUTATIONS, opinion_mutations::RELATIONS};
+use engine_native::{Memory, crelation_status::Mark};
 use std::{
     ops::Range,
     ptr,
@@ -51,7 +48,7 @@ impl Log {
     /// Off the game thread.
     fn new(len: usize) -> Option<Box<Self>> {
         let slots = || {
-            let mut slots = engine::allocation::vec(len).ok()?;
+            let mut slots = engine_allocation::vec(len).ok()?;
             slots.resize_with(len, || AtomicUsize::new(0));
             Some(slots.into_boxed_slice())
         };
@@ -136,14 +133,14 @@ pub fn invalidate() {
 /// The opinion a live status holds. The receiver is the status the native
 /// writer is about to read and write.
 fn opinion(status: usize) -> i32 {
-    let address = status.wrapping_add(engine::crelation_status::OPINION);
+    let address = status.wrapping_add(engine_native::crelation_status::OPINION);
     unsafe { std::ptr::read_volatile(address as *const i32) }
 }
 
 /// The owning diplomacy of a live status the native writer is writing. Only
-/// the status constructor writes it (`engine::crelation_status::DIPLOMACY_STATUS`).
+/// the status constructor writes it (`engine_native::crelation_status::DIPLOMACY_STATUS`).
 fn diplomacy(status: usize) -> usize {
-    let address = status.wrapping_add(engine::crelation_status::DIPLOMACY_STATUS);
+    let address = status.wrapping_add(engine_native::crelation_status::DIPLOMACY_STATUS);
     unsafe { std::ptr::read_volatile(address as *const usize) }
 }
 
@@ -424,8 +421,8 @@ pub fn store_lent() {
 /// The baseline's cumulative counts after a walk; `previous` is what was
 /// last reported for this baseline.
 pub fn record(
-    counts: engine::crelation_status::BaselineCounts,
-    previous: &mut engine::crelation_status::BaselineCounts,
+    counts: engine_native::crelation_status::BaselineCounts,
+    previous: &mut engine_native::crelation_status::BaselineCounts,
 ) {
     let now = [
         counts.full_walks,
@@ -542,7 +539,7 @@ impl Hooks {
         ];
         let sites = || MUTATIONS.iter().chain(&RELATIONS);
         for site in sites() {
-            if engine::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+            if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
                 return Err("opinion hook sentinel differs");
             }
         }
@@ -890,7 +887,7 @@ mod tests {
     fn unrecognised_prologues_degrade_to_full_reads() {
         let _lock = test_lock();
         let bytes = vec![0_u8; 0x10];
-        let memory = engine::memory::SliceMemory {
+        let memory = engine_native::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         };
@@ -912,13 +909,13 @@ mod tests {
         let _lock = test_lock();
         let mut status = [0_i32; 0x400];
         let address = status.as_mut_ptr() as usize;
-        let at = engine::crelation_status::OPINION / 4;
+        let at = engine_native::crelation_status::OPINION / 4;
         observe_for_test(true);
         install_for_test();
         let mut consumed = cursor();
         let (mut output, mut required) = ([Mark::default(); 4], 0);
         // The status's owning diplomacy, as the constructor stores it.
-        status[engine::crelation_status::DIPLOMACY_STATUS / 4..][..2]
+        status[engine_native::crelation_status::DIPLOMACY_STATUS / 4..][..2]
             .copy_from_slice(&[0x5678, 0x1234]);
         // Other tests may start epochs concurrently: compare the marks only.
         let drained = |consumed: &mut u64, output: &mut [Mark], required: &mut usize| {

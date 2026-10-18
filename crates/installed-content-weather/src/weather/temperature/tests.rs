@@ -227,7 +227,7 @@ fn installed_content_settles_every_province_the_pass_reaches() {
             continue;
         }
         for day in 0..365 {
-            let hour = replay::temperature::EPOCH + 1936 * 8_760 + day * 24;
+            let hour = replay_data::temperature::EPOCH + 1936 * 8_760 + day * 24;
             match content.period(slot as u32, hour) {
                 Ok(Some(_)) => {
                     if let Err(reason) = &province.terrain {

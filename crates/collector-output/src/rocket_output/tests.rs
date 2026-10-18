@@ -1,5 +1,5 @@
 use super::*;
-use replay::rows::RowCodec;
+use replay_data::rows::RowCodec;
 
 const DESIGN: u64 = 0x99_0000_0046;
 const OTHER: u64 = 0x100_0000_0046;
@@ -22,7 +22,7 @@ fn scheduled() -> TableInput {
 
 fn skipped() -> TableInput {
     TableInput::Sampled(TableView::Unavailable {
-        reason: replay::cadence::SKIPPED_REASON.into(),
+        reason: replay_data::cadence::SKIPPED_REASON.into(),
     })
 }
 
@@ -66,7 +66,7 @@ fn first_frame_discards_old_events_and_certifies_complete_empty_without_census()
     assert_eq!(rows(&totals), [row(0, 0, 100)]);
     assert_eq!(
         totals.publication(&skipped()).unwrap(),
-        Err(replay::cadence::SKIPPED_REASON)
+        Err(replay_data::cadence::SKIPPED_REASON)
     );
     sample(&mut totals, 124, 11, &[spending(5001, DESIGN, -175_003, 0)]);
     assert_eq!(find(&totals, 5001, DESIGN).spent_raw, -175_003);

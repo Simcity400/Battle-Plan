@@ -1,7 +1,7 @@
 use super::*;
 
 fn decisions(text: &[u8]) -> io::Result<Decisions> {
-    parse_decisions(&installed_content::parser::parse(text)?.items)
+    parse_decisions(&installed_content_core::parser::parse(text)?.items)
 }
 
 #[test]

@@ -1,9 +1,11 @@
 use super::*;
-use replay::rows::{IndustrialOrganisationRow, LexicalTokenRow, TableId, TableRows};
+use replay_data::{
+    rows::IndustrialOrganisationRow, rows::LexicalTokenRow, rows::TableId, rows::TableRows,
+};
 
 #[test]
 fn organisation_name_uses_event_read_override_owner_scope_and_exact_missing_key() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         "",

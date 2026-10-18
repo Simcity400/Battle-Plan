@@ -2,10 +2,8 @@
 //! call. Its separate factory totals already exclude CIC-bank draws, railway
 //! carries and instant progress; never price completions.
 use super::{ConstructionProject, EndKind, ProjectKind, ScannedLog, UnknownEnd, ended};
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{ConstructionLineOutputRow, Recorded, TableId, tables},
-};
+use replay_data::{rows::ConstructionLineOutputRow, rows::Recorded, rows::TableId, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use ts_rs::TS;
@@ -260,10 +258,8 @@ mod tests {
         CIVILIAN, building_at, building_line, construction_frame, railway_line, timed_scan,
     };
     use dashboard_core::test_fixtures::{CAMPAIGN, records};
-    use replay::{
-        container::Replay,
-        rows::{ConstructionCompletion, TableRows},
-    };
+    use replay::container::Replay;
+    use replay_data::{rows::ConstructionCompletion, rows::TableRows};
     use std::sync::atomic::AtomicBool;
 
     #[test]
@@ -278,7 +274,7 @@ mod tests {
             let frames = (100..=124)
                 .map(|hour| {
                     let read = hour == 100 || hour == 124;
-                    let line = replay::rows::BuildingConstructionRow {
+                    let line = replay_data::rows::BuildingConstructionRow {
                         cost: 1_000_000,
                         produced: if hour < 124 { before } else { after },
                         speed: factory_output.unwrap_or(100_000),

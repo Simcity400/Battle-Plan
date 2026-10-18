@@ -40,18 +40,18 @@ pub enum Kind {
     Offline,
 }
 
-impl From<installed_content::DiagnosticKind> for Kind {
-    fn from(kind: installed_content::DiagnosticKind) -> Self {
+impl From<installed_content_core::DiagnosticKind> for Kind {
+    fn from(kind: installed_content_core::DiagnosticKind) -> Self {
         match kind {
-            installed_content::DiagnosticKind::ParseFailure => Self::ParseFailure,
-            installed_content::DiagnosticKind::Misread => Self::Misread,
-            installed_content::DiagnosticKind::Unsettled => Self::Unsettled,
-            installed_content::DiagnosticKind::Unsupported => Self::Unsupported,
-            installed_content::DiagnosticKind::Refused => Self::Refused,
-            installed_content::DiagnosticKind::Ambiguous => Self::Ambiguous,
-            installed_content::DiagnosticKind::Fallback => Self::Fallback,
-            installed_content::DiagnosticKind::Logged => Self::Logged,
-            installed_content::DiagnosticKind::Warning => Self::Warning,
+            installed_content_core::DiagnosticKind::ParseFailure => Self::ParseFailure,
+            installed_content_core::DiagnosticKind::Misread => Self::Misread,
+            installed_content_core::DiagnosticKind::Unsettled => Self::Unsettled,
+            installed_content_core::DiagnosticKind::Unsupported => Self::Unsupported,
+            installed_content_core::DiagnosticKind::Refused => Self::Refused,
+            installed_content_core::DiagnosticKind::Ambiguous => Self::Ambiguous,
+            installed_content_core::DiagnosticKind::Fallback => Self::Fallback,
+            installed_content_core::DiagnosticKind::Logged => Self::Logged,
+            installed_content_core::DiagnosticKind::Warning => Self::Warning,
         }
     }
 }

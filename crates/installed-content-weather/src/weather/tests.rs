@@ -61,15 +61,26 @@ fn province_modifier_rules_keep_ranges_ceiling_and_classify_first_and_high() {
     assert_eq!(
         rules,
         ProvinceModifierRules {
-            temperature: [[-10_000_000, -2_000_000], [-3_000_000, -500_000], [0, 0], [0, 0]],
+            temperature: [
+                [-10_000_000, -2_000_000],
+                [-3_000_000, -500_000],
+                [0, 0],
+                [0, 0]
+            ],
             ground_snow: [[100_000, 1_000_000], [550_000, 2_000_000]],
             snow_gain_max: 1_200_000,
         }
     );
     // The first interval holding the temperature wins; upper bounds are exclusive
     // and an unset interval holds nothing.
-    assert_eq!(rules.temperature_modifier(-2_500_000), Some("weather_extreme_cold"));
-    assert_eq!(rules.temperature_modifier(-2_000_000), Some("weather_very_cold"));
+    assert_eq!(
+        rules.temperature_modifier(-2_500_000),
+        Some("weather_extreme_cold")
+    );
+    assert_eq!(
+        rules.temperature_modifier(-2_000_000),
+        Some("weather_very_cold")
+    );
     assert_eq!(rules.temperature_modifier(-500_000), None);
     assert_eq!(rules.temperature_modifier(0), None);
     // High wins where both ground snow intervals hold; the sum is capped first.

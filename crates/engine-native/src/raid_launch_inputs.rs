@@ -55,7 +55,7 @@ use crate::{
 /// The modifier keys the launch gate reads, in [`CountryRow::modifiers`] order.
 /// Each getter passes a compiled-in index, so these are fixed built-in keys
 /// (`modifier_keys`), checked once per attachment by the fixed layout
-/// contract (`replay::fixed_layout`'s "raid launch", "command power" and
+/// contract (`replay_derive::fixed_layout`'s "raid launch", "command power" and
 /// "country ace modifiers" families withhold their tables on a mismatch):
 ///
 /// - `air_range_factor`: wing and equipment-variant map range.

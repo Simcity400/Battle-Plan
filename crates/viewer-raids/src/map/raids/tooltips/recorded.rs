@@ -6,12 +6,11 @@ use super::super::{
 };
 use super::{Key, Tooltip, chance, intel, rules, success};
 use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, Link, ScopeVariables};
-use installed_content::localisation::Argument as Arg;
-use installed_content::{localisation::Localisation, raids::RaidType};
-use replay::{
-    frame::DecodedFrame,
-    rows::{RaidRow, RaidScope, RaidTargetRow, tables},
-};
+use installed_content_localisation::localisation::Argument as Arg;
+use installed_content_localisation::localisation::Localisation;
+use installed_content_raids::raids::RaidType;
+use replay_data::{rows::RaidRow, rows::RaidScope, rows::RaidTargetRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use viewer_foundation::map::native_text::FLAG;
@@ -89,7 +88,7 @@ pub fn build_from(input: Inputs<'_>) -> Tooltip {
         nato,
         flag_exists,
         scripted: Default::default(),
-        countries: installed_content::country_names::CountryNames::read(frame, loc),
+        countries: installed_content_country_names::country_names::CountryNames::read(frame, loc),
     };
     let result = match key {
         Key::Raid {
@@ -117,7 +116,7 @@ struct Context<'a, 'w> {
     scripted_content: &'a Result<dashboard_text::scripted_text::ScriptedContent>,
     ours: u32,
     nato: bool,
-    countries: installed_content::country_names::CountryNames<'a>,
+    countries: installed_content_country_names::country_names::CountryNames<'a>,
     flag_exists: &'a dyn Fn(&str) -> bool,
     scripted: OnceCell<dashboard_text::scripted_text::ScriptedText<'a>>,
 }
@@ -282,12 +281,12 @@ impl Context<'_, '_> {
         localise(self.loc, key, &[]).map(Some)
     }
     fn victory_point(&self, province: u32) -> Result<Option<String>> {
-        installed_content::raids::target::victory_point(self.world.frame(), province, |key| {
+        installed_content_raids::raids::target::victory_point(self.world.frame(), province, |key| {
             self.target_localisation(key)
         })
     }
     fn location(&self, scope: &RaidScope) -> Result<String> {
-        installed_content::raids::target::location(
+        installed_content_raids::raids::target::location(
             self.world.frame(),
             scope,
             |key| self.target_localisation(key),

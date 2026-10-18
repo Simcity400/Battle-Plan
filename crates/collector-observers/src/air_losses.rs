@@ -3,8 +3,9 @@ use crate::{
     event_ledger::{Event, EventLedger},
     hook::Hook,
 };
-type Clock = engine::cgame_state::Clock<u64>;
-use engine::{Memory, air_loss_sites as native};
+type Clock = engine_native::cgame_state::Clock<u64>;
+use engine_air_history::air_loss_sites as native;
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::{
@@ -255,7 +256,7 @@ unsafe extern "system" fn pre(
         if LEDGER.poisoned.load(Ordering::SeqCst) || crate::allocation::failed() {
             LEDGER.lost_events_unknown.fetch_add(1, Ordering::Relaxed);
         } else {
-            let memory = unsafe { engine::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native::memory::LiveMemory::new() };
             let base = BASE.load(Ordering::Relaxed);
             let mut token = None;
             let result = (|| {
@@ -267,7 +268,7 @@ unsafe extern "system" fn pre(
                 // resolution; withheld, the serial reads below run once and
                 // refuse exactly where they always did.
                 let gathered = base
-                    .checked_add(engine::cgame_state::SINGLETON_RVA)
+                    .checked_add(engine_native::cgame_state::SINGLETON_RVA)
                     .filter(|_| gather_admitted())
                     .and_then(|singleton| {
                         native::gather(
@@ -296,19 +297,19 @@ unsafe extern "system" fn pre(
                     });
                 }
                 SERIAL_FALLBACKS.fetch_add(1, Ordering::Relaxed);
-                let region_id = engine::cstrategic_region::id(&memory, base, region)?
+                let region_id = engine_native::cstrategic_region::id(&memory, base, region)?
                     .ok_or("air loss region unexpectedly null")?;
                 let claimed = LEDGER.claim((receiver, region_id as usize))?;
                 token = Some(claimed);
                 let game = base
-                    .checked_add(engine::cgame_state::SINGLETON_RVA)
-                    .and_then(|a| engine::read::<u64>(&memory, a))
+                    .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+                    .and_then(|a| engine_native::read::<u64>(&memory, a))
                     .and_then(|p| usize::try_from(p).ok())
                     .filter(|p| *p != 0)
                     .ok_or("air loss game root unreadable")?;
                 let hour = game
-                    .checked_add(engine::cgame_state::CURRENT_HOUR)
-                    .and_then(|a| engine::read::<i32>(&memory, a))
+                    .checked_add(engine_native::cgame_state::CURRENT_HOUR)
+                    .and_then(|a| engine_native::read::<i32>(&memory, a))
                     .ok_or("air loss native hour unreadable")?;
                 let family = native::selected_family(&memory, base, wing, enemy as u8)?;
                 let snapshot = native::before(
@@ -360,11 +361,11 @@ unsafe extern "system" fn post(context: *mut CallContext) {
             {
                 return Err("air loss native world changed during original");
             }
-            let memory = unsafe { engine::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native::memory::LiveMemory::new() };
             let base = BASE.load(Ordering::Relaxed);
             if base
-                .checked_add(engine::cgame_state::SINGLETON_RVA)
-                .and_then(|a| engine::read::<u64>(&memory, a))
+                .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+                .and_then(|a| engine_native::read::<u64>(&memory, a))
                 != Some(observation.game as u64)
             {
                 return Err("air loss game root changed during native call");
@@ -426,7 +427,7 @@ impl Hooks {
         ORIGINAL.store(base + native::WRITER_RVA, Ordering::Release);
         let install = || -> Result<Vec<Hook>, &'static str> {
             for site in native::SITES {
-                if engine::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+                if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
                     return Err("air loss call sentinel differs or unreadable");
                 }
             }

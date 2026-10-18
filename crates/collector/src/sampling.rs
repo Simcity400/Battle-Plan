@@ -24,19 +24,15 @@ pub use collector_extended_support::hourly::BUFFERS;
 use collector_extended_support::hourly::TICKING;
 use crossbeam_queue::ArrayQueue;
 #[cfg(test)]
-use engine::cunit;
-use engine::{
-    Memory,
-    capture_text::Owned,
-    carmy, ccountry, cfaction, cfaction_system,
-    cgame_state::{self, Clock},
-    country_memory::{Cache, SeedStatus},
-    cprovince, cstate, cwar_relation,
-    memory::{CountedMemory, LiveMemory, ReadCounts},
-    save_allocation_counters::{self, AllocationCounters},
-    walk::Outcome,
+use engine_native::cunit;
+use engine_native::{
+    Memory, capture_text::Owned, carmy, ccountry, cfaction, cfaction_system, cgame_state,
+    cgame_state::Clock, country_memory::Cache, country_memory::SeedStatus, cprovince, cstate,
+    cwar_relation, memory::CountedMemory, memory::LiveMemory, memory::ReadCounts,
+    save_allocation_counters, save_allocation_counters::AllocationCounters, walk::Outcome,
 };
-use replay::{frame::TABLE_COUNT, rows::TableId};
+use replay_data::rows::TABLE_COUNT;
+use replay_data::rows::TableId;
 use std::{
     cell::UnsafeCell,
     mem::size_of,
@@ -72,8 +68,8 @@ pub fn raise_for_countries(core: &mut [usize; 12], slots: usize) {
 /// Where the collector samples: at the entry of the hooked hourly tick, before
 /// the trampoline runs, so a frame labelled with the entry hour is the state
 /// at the end of that hour. Recorded in every session so readers know its instant.
-pub const SAMPLE_BOUNDARY: replay::identity::SampleBoundary =
-    replay::identity::SampleBoundary::EndOfHour;
+pub const SAMPLE_BOUNDARY: replay_data::identity::SampleBoundary =
+    replay_data::identity::SampleBoundary::EndOfHour;
 const LOSS_RUNS: usize = 64;
 pub static SHARED: AtomicPtr<Shared> = AtomicPtr::new(ptr::null_mut());
 pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
@@ -219,7 +215,7 @@ impl OrderCounterCapture {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             forced: false,
-            rows: engine::allocation::owned_vec(engine::allocation::default_vec::<
+            rows: engine_allocation::owned_vec(engine_allocation::default_vec::<
                 ccountry::OrderInstanceCounter,
             >(capacity)),
             read: None,
@@ -240,7 +236,7 @@ impl OrderCounterCapture {
     fn capture(
         &mut self,
         force_full: bool,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
         roster: Option<ccountry::AuthenticatedRoster<'_>>,
     ) {
         self.reset();
@@ -507,30 +503,30 @@ impl Captured {
             clock: None,
             clock_spare: Owned::default(),
             counters: None,
-            countries: engine::allocation::default_vec::<ccountry::Row>(capacities[0])?,
+            countries: engine_allocation::default_vec::<ccountry::Row>(capacities[0])?,
             provinces: cprovince::Capture::try_with_capacity(
                 capacities[1],
                 capacities[9],
                 capacities[10],
             )?,
-            states: engine::allocation::default_vec::<cstate::Row>(capacities[3])?,
+            states: engine_allocation::default_vec::<cstate::Row>(capacities[3])?,
             state_inputs: acquisition_states::Inputs::with_capacity(capacities[3])?,
-            state_names: engine::allocation::default_vec(capacities[11])?,
+            state_names: engine_allocation::default_vec(capacities[11])?,
             state_names_len: 0,
             state_names_required: 0,
-            divisions: engine::allocation::default_vec::<carmy::Row>(capacities[4])?,
+            divisions: engine_allocation::default_vec::<carmy::Row>(capacities[4])?,
             division_fallback,
-            wars: engine::allocation::default_vec::<cwar_relation::Row>(capacities[5])?,
+            wars: engine_allocation::default_vec::<cwar_relation::Row>(capacities[5])?,
             wars_snapshot: cwar_relation::OwnedSnapshotScratch::try_with_capacity(capacities[0])?,
             wars_snapshot_sampled: false,
-            factions: engine::allocation::default_vec::<cfaction::Row>(capacities[6])?,
-            faction_names: engine::allocation::default_vec(capacities[8])?,
+            factions: engine_allocation::default_vec::<cfaction::Row>(capacities[6])?,
+            faction_names: engine_allocation::default_vec(capacities[8])?,
             faction_names_len: 0,
             faction_names_required: 0,
-            faction_members: engine::allocation::default_vec::<cfaction_system::MemberRow>(
+            faction_members: engine_allocation::default_vec::<cfaction_system::MemberRow>(
                 capacities[7],
             )?,
-            links: engine::allocation::default_vec::<ccountry::LinkRow>(capacities[2])?,
+            links: engine_allocation::default_vec::<ccountry::LinkRow>(capacities[2])?,
             countries_result: unavailable,
             provinces_result: unavailable,
             states_result: unavailable,
@@ -668,7 +664,7 @@ impl Captured {
 
     /// Only the spool thread grows a frame while it owns that frame's queue index.
     pub fn grow(&mut self, capacities: &mut [usize; 12]) {
-        engine::allocation::advisory(|| self.grow_hints(capacities));
+        engine_allocation::advisory(|| self.grow_hints(capacities));
     }
 
     fn grow_hints(&mut self, capacities: &mut [usize; 12]) {
@@ -1086,7 +1082,7 @@ pub struct Shared {
     weather_carry: UnsafeCell<Option<Box<extended::weather::carry::WeatherCarry>>>,
     /// The held RaidAirScores table, loaned to the Late job each hour. Only
     /// the game thread takes and returns it.
-    raid_air_scores: UnsafeCell<Option<Box<engine::raid_air_scores::Held>>>,
+    raid_air_scores: UnsafeCell<Option<Box<engine_raid_inputs::raid_air_scores::Held>>>,
     raid_air_score_bytes: AtomicU64,
     /// Held CharacterRoleTraits role rows, loaned to the Gated job each hour
     /// with the roster job's role census. Only the game thread takes and
@@ -1172,11 +1168,11 @@ pub struct Shared {
     province_unit_store_bytes: AtomicU64,
     /// Held controller and owner areas, lent to the Provinces job each hour
     /// ([`crate::area_changes`]). Only the game thread takes and returns it.
-    area_store: UnsafeCell<Option<Box<engine::controller_areas::Store>>>,
+    area_store: UnsafeCell<Option<Box<engine_native::controller_areas::Store>>>,
     area_store_bytes: AtomicU64,
     /// Held Provinces rows, lent to the Provinces job each hour
     /// ([`crate::province_changes`]). Only the game thread takes and returns it.
-    province_store: UnsafeCell<Option<Box<engine::cprovince::carry::RowStore>>>,
+    province_store: UnsafeCell<Option<Box<engine_native::cprovince::carry::RowStore>>>,
     province_store_bytes: AtomicU64,
     /// Held AvailableAdvisors and AdvisorTokens rows, loaned to the Slow job
     /// each hour. Only the game thread takes and returns it.
@@ -1214,7 +1210,7 @@ pub struct Shared {
     /// means tokens were appended and the static dictionary is walked again.
     pub lexical_max: AtomicI32,
     /// The attachment's first consistent fixed-layout check.
-    pub fixed_layout: OnceLock<engine::fixed_layout::Report>,
+    pub fixed_layout: OnceLock<engine_fixed_layout::fixed_layout::Report>,
     /// Prepared before hook publication and borrowed only by the hourly callback.
     pub fixed_layout_buffer: UnsafeCell<Vec<u8>>,
     /// The modifier definition table's data pointer and row count at the last
@@ -1279,15 +1275,15 @@ impl Shared {
         sizing: &crate::country_scale::Sizing,
     ) -> std::io::Result<Self> {
         #[cfg(test)]
-        let fixed_layout_bytes = if engine::executable_tables::is_initialized() {
-            engine::fixed_layout::longest_name()
+        let fixed_layout_bytes = if engine_executable::executable_tables::is_initialized() {
+            engine_fixed_layout::fixed_layout::longest_name()
         } else {
             0
         };
         #[cfg(not(test))]
-        let fixed_layout_bytes = engine::fixed_layout::longest_name();
-        let fixed_layout_buffer = engine::allocation::default_vec::<u8>(fixed_layout_bytes)?;
-        let roster = engine::allocation::boxed(Roster::with_counts(sizing.content))?;
+        let fixed_layout_bytes = engine_fixed_layout::fixed_layout::longest_name();
+        let fixed_layout_buffer = engine_allocation::default_vec::<u8>(fixed_layout_bytes)?;
+        let roster = engine_allocation::boxed(Roster::with_counts(sizing.content))?;
         let country_cache = Arc::new(Cache::try_with_capacity(sizing.country_cells)?);
         let country_cells = country_cache.capacity();
         // Frame 0 allocates the CountryIntel buffer; the others borrow it.
@@ -1300,7 +1296,7 @@ impl Shared {
             .country_intel_home()
             .expect("a new frame holds its intel pack");
         let air = &sizing.extended.air;
-        let mut raid_air_scores = Box::new(engine::raid_air_scores::Held::default());
+        let mut raid_air_scores = Box::new(engine_raid_inputs::raid_air_scores::Held::default());
         raid_air_scores.grow(air.scores.regions, air.scores.countries, air.scores.rows)?;
         let raid_air_score_bytes = raid_air_scores.allocated_bytes();
         let pool_bytes = roster.allocated_bytes()
@@ -1351,9 +1347,9 @@ impl Shared {
             ))
         });
         let area_store = cfg!(feature = "area_changes")
-            .then(|| Box::new(engine::controller_areas::Store::new()));
+            .then(|| Box::new(engine_native::controller_areas::Store::new()));
         let province_store = cfg!(feature = "province_changes")
-            .then(|| Box::new(engine::cprovince::carry::RowStore::new()));
+            .then(|| Box::new(engine_native::cprovince::carry::RowStore::new()));
         let mut slice_fingerprints = std::array::from_fn(|_| UnsafeCell::new(None));
         for (family, cell) in slice_fingerprints.iter_mut().enumerate() {
             if !matches!(
@@ -1671,7 +1667,7 @@ impl Shared {
     /// cadence and pending losses; frame queue leases exclude their readers.
     pub(crate) fn prepare_clock_capture(
         &self,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
     ) -> std::io::Result<()> {
         let native = cgame_state::campaign_id_len(memory, self.base).unwrap_or(0);
         let Ok(mut capture) = self.clock_capture.try_lock() else {
@@ -1687,7 +1683,7 @@ impl Shared {
             self.grow_clock_capture(&mut capture, required)
         } else {
             // Startup/wall-clock polling is optional preparation, never terminal.
-            if engine::allocation::advisory(|| self.grow_clock_capture(&mut capture, required))
+            if engine_allocation::advisory(|| self.grow_clock_capture(&mut capture, required))
                 .is_err()
             {
                 self.clock_hint_misses.fetch_add(1, Ordering::Relaxed);
@@ -1742,7 +1738,7 @@ impl Shared {
     /// never prevent that same spool from returning its queue lease.
     fn wait_clock_preparation(
         &self,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
     ) -> std::sync::MutexGuard<'_, ClockCapture> {
         let required = cgame_state::campaign_id_len(memory, self.base).unwrap_or(0);
         self.clock_required.fetch_max(required, Ordering::Release);
@@ -1775,7 +1771,7 @@ impl Shared {
     }
 
     /// Loader only, before any Arc or hook can expose the roster.
-    pub(crate) fn prepare_roster(&mut self, memory: &impl engine::Memory) {
+    pub(crate) fn prepare_roster(&mut self, memory: &impl engine_native::Memory) {
         let roster = self
             .roster
             .get_mut()
@@ -1791,12 +1787,16 @@ impl Shared {
 
     /// Called only by the game thread inside the hook. A failed clock postpones
     /// this once-only read until the next readable hour, free buffer or not.
-    unsafe fn sample_roster(&self, memory: &impl engine::Memory, clock: Option<Clock<&[u8]>>) {
+    unsafe fn sample_roster(
+        &self,
+        memory: &impl engine_native::Memory,
+        clock: Option<Clock<&[u8]>>,
+    ) {
         if self.roster_ready.load(Ordering::Acquire) {
             return;
         }
         if let Some(clock) = clock {
-            let _reads = crate::read_accounting::table(replay::rows::TableId::Players);
+            let _reads = crate::read_accounting::table(replay_data::rows::TableId::Players);
             let roster = unsafe { (&mut *self.roster.get()).as_mut().unwrap() };
             roster.sample(memory, self.base, Some(clock.hour));
             self.roster_ready.store(roster.sampled(), Ordering::Release);
@@ -1929,7 +1929,7 @@ impl ClockCapture {
     }
     fn read(
         &mut self,
-        memory: &impl engine::Memory,
+        memory: &impl engine_native::Memory,
         base: usize,
     ) -> Result<(Clock<&[u8]>, u64), &'static str> {
         let clock = cgame_state::read_clock_prepared(memory, base, &mut self.entry)?;
@@ -2263,7 +2263,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
         dispatched,
     } = dispatch;
     reset_hour_joins();
-    let growths_before = engine::allocation::growths();
+    let growths_before = engine_allocation::growths();
     let memory = CountedMemory::new(unsafe { LiveMemory::new() });
 
     if let Some(index) = index {
@@ -2426,7 +2426,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     Some(report) => Ok(*report),
                     None => {
                         let buffer = unsafe { &mut *shared.fixed_layout_buffer.get() };
-                        engine::fixed_layout::check(&memory, shared.base, buffer)
+                        engine_fixed_layout::fixed_layout::check(&memory, shared.base, buffer)
                             .inspect(|report| _ = shared.fixed_layout.set(*report))
                     }
                 });
@@ -2470,7 +2470,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             let cache_begin = qpc();
             shared.install_offered_country_cache();
             let country_snapshot =
-                crate::read_accounting::with_table(replay::rows::TableId::Countries, || {
+                crate::read_accounting::with_table(replay_data::rows::TableId::Countries, || {
                     Cache::prepare_shared(
                         unsafe { &mut *shared.country_cache.get() },
                         &memory,
@@ -2494,9 +2494,11 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             let cache_prepare_ticks = qpc() - cache_begin;
             let characters_refresh = decode::characters_refresh_hour(clock.hour, force_full);
             let projects_refresh = decode::projects_refresh_hour(clock.hour, force_full);
-            let lexical_max =
-                engine::read::<i32>(&memory, shared.base + engine::cpdx_lexer::MAX_TOKEN_ID_RVA)
-                    .unwrap_or(-1);
+            let lexical_max = engine_native::read::<i32>(
+                &memory,
+                shared.base + engine_native::cpdx_lexer::MAX_TOKEN_ID_RVA,
+            )
+            .unwrap_or(-1);
             let lexical_refresh = decode::lexical_refresh_hour(clock.hour, force_full)
                 || lexical_max != shared.lexical_max.load(Ordering::Relaxed);
             if lexical_refresh {
@@ -2508,8 +2510,8 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             frame.extended.set_new_division_mark(new_division_mark(
                 shared,
                 &memory,
-                replay::cadence::should_walk(
-                    replay::rows::TableId::DivisionEquipment,
+                replay_data::cadence::should_walk(
+                    replay_data::rows::TableId::DivisionEquipment,
                     clock.hour,
                     force_full,
                 ),
@@ -2651,7 +2653,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 row_capacity: frame.divisions.len(),
                 source_capacity: division_source_capacity,
                 detail_capacities,
-                details_active: replay::cadence::should_walk(
+                details_active: replay_data::cadence::should_walk(
                     TableId::DivisionEquipment,
                     clock.hour,
                     force_full,
@@ -2791,7 +2793,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 trait_rows,
                 trait_bytes,
                 active: decode::CHARACTERS
-                    .map(|table| replay::cadence::should_walk(table, clock.hour, force_full)),
+                    .map(|table| replay_data::cadence::should_walk(table, clock.hour, force_full)),
             };
             frame
                 .extended
@@ -2810,7 +2812,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 .any(|part| character_part(part).iter().any(|&value| value))
                 || extended::character_inputs::TABLES
                     .iter()
-                    .any(|&table| replay::cadence::should_walk(table, clock.hour, force_full));
+                    .any(|&table| replay_data::cadence::should_walk(table, clock.hour, force_full));
             let roster_active = character_part(0);
             if characters_refresh && roster_active.iter().any(|&value| value) {
                 characters_pending[0] = Some(queue!(acquisition::Job::Characters(
@@ -3108,38 +3110,44 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 hour: clock.hour,
                 force_full,
             };
-            let air_stats_pending =
-                if replay::cadence::should_walk(TableId::AirStatistics, clock.hour, force_full) {
-                    Some(queue!(acquisition::Job::AirStats(
-                        acquisition::RawRequest {
-                            countries: Arc::clone(&country_snapshot),
-                            context: air_stats_ctx,
-                            payload: decode::acquire_air_stats_job(),
-                        }
-                    )))
-                } else {
-                    frame.extended.air_stats_pilot().stats_raw_mode = false;
-                    None
-                };
+            let air_stats_pending = if replay_data::cadence::should_walk(
+                TableId::AirStatistics,
+                clock.hour,
+                force_full,
+            ) {
+                Some(queue!(acquisition::Job::AirStats(
+                    acquisition::RawRequest {
+                        countries: Arc::clone(&country_snapshot),
+                        context: air_stats_ctx,
+                        payload: decode::acquire_air_stats_job(),
+                    }
+                )))
+            } else {
+                frame.extended.air_stats_pilot().stats_raw_mode = false;
+                None
+            };
             let supremacy_ctx = extended::naval_history::SupremacyCopyContext {
                 base: shared.base,
                 game_state: state,
                 hour: clock.hour,
                 force_full,
             };
-            let supremacy_pending =
-                if replay::cadence::should_walk(TableId::NavalSupremacy, clock.hour, force_full) {
-                    Some(queue!(acquisition::Job::Supremacy(
-                        acquisition::RawRequest {
-                            countries: Arc::clone(&country_snapshot),
-                            context: supremacy_ctx,
-                            payload: decode::acquire_supremacy_job(),
-                        }
-                    )))
-                } else {
-                    frame.extended.supremacy_pilot().supremacy_raw_mode = false;
-                    None
-                };
+            let supremacy_pending = if replay_data::cadence::should_walk(
+                TableId::NavalSupremacy,
+                clock.hour,
+                force_full,
+            ) {
+                Some(queue!(acquisition::Job::Supremacy(
+                    acquisition::RawRequest {
+                        countries: Arc::clone(&country_snapshot),
+                        context: supremacy_ctx,
+                        payload: decode::acquire_supremacy_job(),
+                    }
+                )))
+            } else {
+                frame.extended.supremacy_pilot().supremacy_raw_mode = false;
+                None
+            };
             let sunk_ctx = extended::naval_history::SunkCopyContext {
                 base: shared.base,
                 game_state: state,
@@ -3147,7 +3155,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 force_full,
             };
             let sunk_pending =
-                if replay::cadence::should_walk(TableId::SunkShips, clock.hour, force_full) {
+                if replay_data::cadence::should_walk(TableId::SunkShips, clock.hour, force_full) {
                     Some(queue!(acquisition::Job::Sunk(acquisition::RawRequest {
                         countries: Arc::clone(&country_snapshot),
                         context: sunk_ctx,
@@ -3163,17 +3171,20 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 clock.hour,
                 force_full,
             );
-            let radar_pending =
-                if replay::cadence::should_walk(TableId::RadarCoverage, clock.hour, force_full) {
-                    Some(queue!(acquisition::Job::Radar(acquisition::RawRequest {
-                        countries: Arc::clone(&country_snapshot),
-                        context: radar_ctx,
-                        payload: decode::acquire_radar_job(),
-                    })))
-                } else {
-                    frame.extended.radar_pilot().radar_raw_mode = false;
-                    None
-                };
+            let radar_pending = if replay_data::cadence::should_walk(
+                TableId::RadarCoverage,
+                clock.hour,
+                force_full,
+            ) {
+                Some(queue!(acquisition::Job::Radar(acquisition::RawRequest {
+                    countries: Arc::clone(&country_snapshot),
+                    context: radar_ctx,
+                    payload: decode::acquire_radar_job(),
+                })))
+            } else {
+                frame.extended.radar_pilot().radar_raw_mode = false;
+                None
+            };
             let projects_ctx = extended::projects::ProjectsCopyContext {
                 base: shared.base,
                 game_state: state,
@@ -3208,7 +3219,8 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 force_full,
             };
             let session_pending =
-                if replay::cadence::should_walk(TableId::WorldTension, clock.hour, force_full) {
+                if replay_data::cadence::should_walk(TableId::WorldTension, clock.hour, force_full)
+                {
                     Some(queue!(acquisition::Job::Session(acquisition::RawRequest {
                         countries: Arc::clone(&country_snapshot),
                         context: session_ctx,
@@ -4985,8 +4997,8 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 (&mut frame.countries, &mut frame.countries_result),
             );
             assembly_ticks += qpc() - assembly_begin;
-            ticks[replay::rows::TableId::DivisionStatus.index()] += border_ticks[0];
-            frame.table_ns[replay::rows::TableId::Countries.index()] +=
+            ticks[replay_data::rows::TableId::DivisionStatus.index()] += border_ticks[0];
+            frame.table_ns[replay_data::rows::TableId::Countries.index()] +=
                 shared.ns(border_ticks[1] as i64);
             segment!(11);
             for pending in air_histories_pending.into_iter().flatten() {
@@ -5176,7 +5188,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             }
             // Restore the final independent request before releasing the lease.
             segment!(13);
-            let ships = replay::rows::TableId::ShipModels.index();
+            let ships = replay_data::rows::TableId::ShipModels.index();
             let assembly_begin = qpc();
             ticks[ships] = frame.extended.capture_ship_models(&cached, shared.base);
             assembly_ticks += qpc() - assembly_begin;
@@ -5205,7 +5217,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             }
             for table in extended::TABLES {
                 let index = table.index();
-                let walk = replay::cadence::should_walk(table, clock.hour, force_full);
+                let walk = replay_data::cadence::should_walk(table, clock.hour, force_full);
                 frame.table_ns[index] = exported_table_ticks(table, walk, ticks[index])
                     .map_or(0, |ticks| shared.ns(ticks as i64));
             }
@@ -5473,7 +5485,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 frame.order_counters.capture(
                     true,
                     &memory,
-                    engine::Memory::authenticated_countries(&cached, shared.base, state),
+                    engine_native::Memory::authenticated_countries(&cached, shared.base, state),
                 );
                 frame.order_counters.qpc_begin = begin;
                 frame.order_counters.qpc_end = qpc();
@@ -5536,7 +5548,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 slowest_join: joins.slowest,
                 collect_stalls_over_1ms: joins.collect_stalls_over_1ms,
                 growths: joins
-                    .total_growths(engine::allocation::growths().saturating_sub(growths_before)),
+                    .total_growths(engine_allocation::growths().saturating_sub(growths_before)),
                 first_since_attach,
                 continuous,
                 force_full,
@@ -6104,17 +6116,20 @@ pub(crate) fn acquire_world_request(
 ) -> acquisition::WorldRequest {
     acquisition::WorldRequest {
         countries: Arc::clone(countries),
-        production: replay::cadence::should_walk(TableId::ProductionLines, hour, force_full).then(
-            || acquisition::WorldPart {
+        production: replay_data::cadence::should_walk(TableId::ProductionLines, hour, force_full)
+            .then(|| acquisition::WorldPart {
                 context: extended::production::ProductionRestCopyContext { base, game_state },
                 payload: decode::acquire_production_rest_job(),
-            },
-        ),
-        construction: replay::cadence::should_walk(TableId::StateBaseResources, hour, force_full)
-            .then(|| acquisition::WorldPart {
-                context: extended::construction::ConstructionRestCopyContext { base, game_state },
-                payload: decode::acquire_construction_rest_job(),
             }),
+        construction: replay_data::cadence::should_walk(
+            TableId::StateBaseResources,
+            hour,
+            force_full,
+        )
+        .then(|| acquisition::WorldPart {
+            context: extended::construction::ConstructionRestCopyContext { base, game_state },
+            payload: decode::acquire_construction_rest_job(),
+        }),
     }
 }
 
@@ -6279,8 +6294,8 @@ pub(crate) mod wars_test_kit;
 
 /// Whether the modifier definition table header differs from the previous
 /// hour's; one guarded 16-byte read on the game thread. Records the new value.
-fn modifier_table_moved(shared: &Shared, memory: &impl engine::Memory) -> bool {
-    let observed = engine::modifier_definition::table(memory, shared.base)
+fn modifier_table_moved(shared: &Shared, memory: &impl engine_native::Memory) -> bool {
+    let observed = engine_native::modifier_definition::table(memory, shared.base)
         .map_or([0, u64::MAX], |table| {
             [table.data as u64, u64::from(table.count)]
         });
@@ -6307,10 +6322,10 @@ fn new_division_mark(
     extended::new_divisions::next_mark(
         &shared.division_mark,
         daily,
-        engine::read::<i32>(memory, shared.base + engine::cship::NEXT_ID_RVA),
-        engine::read::<u32>(
+        engine_native::read::<i32>(memory, shared.base + engine_native::cship::NEXT_ID_RVA),
+        engine_native::read::<u32>(
             memory,
-            shared.base + engine::creference_registry::ID_COUNTER_RVA,
+            shared.base + engine_native::creference_registry::ID_COUNTER_RVA,
         ),
     )
 }
@@ -6320,8 +6335,8 @@ fn new_division_mark(
 /// hour when its shared buffer was held (`daily_intel::Loan::borrow`). That
 /// retried walk is a real read, so it keeps its ticks: the oracle tells a
 /// table read at an hour by its measured cost.
-fn exported_table_ticks(table: replay::rows::TableId, walk: bool, ticks: u64) -> Option<u64> {
-    (walk || (table == replay::rows::TableId::CountryIntel && ticks != 0)).then_some(ticks)
+fn exported_table_ticks(table: replay_data::rows::TableId, walk: bool, ticks: u64) -> Option<u64> {
+    (walk || (table == replay_data::rows::TableId::CountryIntel && ticks != 0)).then_some(ticks)
 }
 
 #[cfg(test)]

@@ -28,8 +28,8 @@
 use std::{collections::BTreeSet, io};
 
 use eframe::wgpu;
-use installed_content::map::{MapData, ProvinceKind};
-use replay::rows::tables;
+use installed_content_core::{map::MapData, map::ProvinceKind};
+use replay_data::rows::tables;
 
 use {
     super::{
@@ -129,7 +129,7 @@ impl Zone {
 /// draw a **wrong** one, cutting a zone in half along a boundary the game draws no line on. So
 /// either table being anything but complete leaves the zone empty and the hour states the gap
 /// through `viewer_foundation::map::tables::limitations`.
-pub fn recorded_states(frame: &replay::frame::DecodedFrame) -> io::Result<BTreeSet<u32>> {
+pub fn recorded_states(frame: &replay_frame::frame::DecodedFrame) -> io::Result<BTreeSet<u32>> {
     let flags = rows::<tables::StateFlags>(frame)?;
     let states = rows::<tables::States>(frame)?;
     if !flags.is_complete() || !states.is_complete() {
@@ -525,7 +525,7 @@ pub fn parse_states(value: &str) -> io::Result<BTreeSet<u32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content::map::{CountryColors, ProvinceDefinition};
+    use installed_content_core::{map::CountryColors, map::ProvinceDefinition};
     use std::collections::HashMap;
 
     #[test]
@@ -740,28 +740,28 @@ mod tests {
         assert!(parse_states("").is_err());
     }
 
-    fn frame() -> replay::frame::DecodedFrame {
-        replay::frame::DecodedFrame {
+    fn frame() -> replay_frame::frame::DecodedFrame {
+        replay_frame::frame::DecodedFrame {
             branch: 1,
             hour: 60_832_633,
-            tables: std::array::from_fn(|_| replay::frame::TableView::Unavailable {
+            tables: std::array::from_fn(|_| replay_frame::frame::TableView::Unavailable {
                 reason: "the collector had not grown its buffer yet".into(),
             })
             .map(Into::into),
-            metrics: replay::frame::Metrics::default(),
+            metrics: replay_frame::frame::Metrics::default(),
         }
     }
 
-    fn flag(state: u32, demilitarized: u8) -> replay::rows::StateFlagRow {
-        replay::rows::StateFlagRow {
+    fn flag(state: u32, demilitarized: u8) -> replay_data::rows::StateFlagRow {
+        replay_data::rows::StateFlagRow {
             state,
             demilitarized,
             ..Default::default()
         }
     }
 
-    fn state(id: u32) -> replay::rows::StateRow {
-        replay::rows::StateRow {
+    fn state(id: u32) -> replay_data::rows::StateRow {
+        replay_data::rows::StateRow {
             id,
             ..Default::default()
         }
@@ -771,16 +771,17 @@ mod tests {
     /// table carries the false flags too, so the zone is the non-zero rows.
     #[test]
     fn the_zone_is_every_state_whose_recorded_byte_is_not_zero() {
-        use replay::{frame::TableView, rows::TableRows};
+        use replay_data::rows::TableRows;
+        use replay_frame::frame::TableView;
         let mut frame = frame();
-        *frame.tables[replay::rows::TableId::States.index()] =
+        *frame.tables[replay_data::rows::TableId::States.index()] =
             TableView::Complete(TableRows::States(vec![
                 state(42),
                 state(51),
                 state(64),
                 state(978),
             ]));
-        *frame.tables[replay::rows::TableId::StateFlags.index()] =
+        *frame.tables[replay_data::rows::TableId::StateFlags.index()] =
             TableView::Complete(TableRows::StateFlags(vec![
                 flag(42, 1),
                 flag(51, 1),
@@ -800,29 +801,30 @@ mod tests {
     /// exclusive or, so a half-read table would draw a line the game does not.
     #[test]
     fn an_incomplete_table_draws_no_zone_at_all() {
-        use replay::{frame::TableView, rows::TableRows};
+        use replay_data::rows::TableRows;
+        use replay_frame::frame::TableView;
         let whole_states =
             || TableView::Complete(TableRows::States(vec![state(42), state(51), state(978)]));
         // Unavailable: no rows and no count.
         let mut frame = frame();
-        *frame.tables[replay::rows::TableId::States.index()] = whole_states();
+        *frame.tables[replay_data::rows::TableId::States.index()] = whole_states();
         assert!(recorded_states(&frame).unwrap().is_empty());
         // Truncated: real rows reached, but the rest are unknown.
-        *frame.tables[replay::rows::TableId::StateFlags.index()] = TableView::Truncated {
+        *frame.tables[replay_data::rows::TableId::StateFlags.index()] = TableView::Truncated {
             rows: TableRows::StateFlags(vec![flag(42, 1)]),
             missing: 1_080,
         };
         assert!(recorded_states(&frame).unwrap().is_empty());
         // Whole flags, but no state ids to join them to.
-        *frame.tables[replay::rows::TableId::StateFlags.index()] =
+        *frame.tables[replay_data::rows::TableId::StateFlags.index()] =
             TableView::Complete(TableRows::StateFlags(vec![flag(42, 1)]));
-        *frame.tables[replay::rows::TableId::States.index()] = TableView::Truncated {
+        *frame.tables[replay_data::rows::TableId::States.index()] = TableView::Truncated {
             rows: TableRows::States(vec![state(42)]),
             missing: 1_080,
         };
         assert!(recorded_states(&frame).unwrap().is_empty());
         // Both whole: the zone is drawn.
-        *frame.tables[replay::rows::TableId::States.index()] = whole_states();
+        *frame.tables[replay_data::rows::TableId::States.index()] = whole_states();
         assert_eq!(recorded_states(&frame).unwrap(), BTreeSet::from([42]));
     }
 }

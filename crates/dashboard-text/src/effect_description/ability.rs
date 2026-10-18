@@ -3,7 +3,7 @@
 //! carrier; the communications tail belongs to that caller.
 
 use super::*;
-use installed_content::abilities::Definition;
+use installed_content_abilities::abilities::Definition;
 
 #[cfg(test)]
 mod tests;
@@ -38,7 +38,7 @@ pub fn ability_description(
         .into_iter()
         .zip(&definition.modifiers)
     {
-        if modifiers != &installed_content::modifiers::Modifiers::default() {
+        if modifiers != &installed_content_core::modifiers::Modifiers::default() {
             match renderer.modifier_description_with(
                 modifiers,
                 "",

@@ -1,9 +1,9 @@
 use super::*;
 use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{CountryLinkRow, CountryRow, LexicalTokenRow, NukeRow, TableRows},
+use replay_data::{
+    rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow, rows::NukeRow, rows::TableRows,
 };
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 fn frame(hour: i32, rows: &[(u32, u32, i64, i32)], count: u32) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1));
@@ -449,9 +449,9 @@ fn country_nukes_modded_type_names_come_from_the_content_stack() {
         std::fs::write(path, text).unwrap();
     }
     let layers =
-        installed_content::ResolvedLayers::from_folders(&[(&vanilla, &[][..]), (&modded, &[][..])])
+        installed_content_core::ResolvedLayers::from_folders(&[(&vanilla, &[][..]), (&modded, &[][..])])
             .unwrap();
-    let localisation = installed_content::localisation::read(&layers, "english").unwrap();
+    let localisation = installed_content_localisation::localisation::read(&layers, "english").unwrap();
     let types = type_info(&result, |token| {
         localisation.get(token)?;
         dashboard_text::catalogue::localised(&localisation, token, catalogue::View::Plain).ok()

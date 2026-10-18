@@ -616,7 +616,7 @@ function Invoke-FullSmoke {
             $null=Run-Tool $cargo @('fmt','--all','--','--check') 'format' 2400
             $null=Run-Tool $cargo @('clippy','--workspace','--all-targets','--','-D','warnings') 'clippy' 2400
             $tests=Run-Tool $cargo @('test','--workspace','--no-fail-fast') 'checkpoint' 2400
-            $null=Run-Tool $cargo @('run','-q','--profile','test','-p','dashboard','--bin','export-types','--','--check') 'types' 2400
+            $null=Run-Tool $cargo @('run','-q','--profile','test','-p','dashboard','--features','export-types','--bin','export-types','--','--check') 'types' 2400
             $report.tests_passed=([regex]::Matches($tests,'test result: ok\. (\d+) passed') | ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
             $null=Run-Tool $cargo @('build','-p','recorder','-p','collector','-p','viewer','--release','--target-dir','.cargo-target') 'release' 600
         } else {

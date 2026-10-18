@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn combat_binder_does_not_bind_nested_controls() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut root = window("Main_14");
         let mut background = root.children.remove(0);
@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn unseen_frame_draws_authored_initial_or_last_seen_frame_with_native_children() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut resources = fixture();
         resources.add_sprite("GFX_synthetic_frame", [20, 10], 2);
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn a_withheld_score_background_does_not_invent_a_window_hit() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = window("Main_14");
         let resources = fixture();
@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn unsupported_progress_font_is_refused_by_name_and_counted() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use native_gui::lifecycle::{Admission, Pool};
         let root = window("Unsupported_14");
@@ -444,7 +444,7 @@ mod tests {
 
     #[test]
     fn local_controls_use_authored_terrain_sprite_and_preserve_unchanged_drawable() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = window("Main_14");
         let mut resources = fixture();

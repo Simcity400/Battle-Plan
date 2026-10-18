@@ -1,14 +1,10 @@
 //! Cache selected country names through the current shared native resolver.
 //! Keep the supplying frame intact, including reserved names and raw tag caches.
 use super::operative_rows::{CountryIdentity, country_at};
-use installed_content::{
-    country_names::{CountryNames, Operands},
-    localisation::Localisation,
-};
-use replay::{
-    frame::{DecodedFrame, TableView},
-    rows::{TableSchema, tables},
-};
+use installed_content_country_names::{country_names::CountryNames, country_names::Operands};
+use installed_content_localisation::localisation::Localisation;
+use replay_data::{rows::TableSchema, rows::tables};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::collections::{BTreeMap, BTreeSet};
 
 fn rows<T: TableSchema>(frame: &DecodedFrame) -> &[T::Row] {
@@ -97,7 +93,9 @@ impl CountryNameCache {
                 let name = if present {
                     names
                         .name_with(identity.slot, "_DEF")
-                        .map(|name| installed_content::localisation::crt_case_text(&name, true, true))
+                        .map(|name| {
+                            installed_content_localisation::localisation::crt_case_text(&name, true, true)
+                        })
                         .and_then(|name| dashboard_text::catalogue::plain_text(&name))
                 } else {
                     Err("Country naming identity is unavailable at this hour".into())
@@ -124,9 +122,9 @@ impl CountryNameCache {
 mod tests {
     use super::*;
     use dashboard_base::test_fixtures::source;
-    use replay::rows::{
-        AutonomyRow, CountryAppearanceRow, CountryLinkRow, CountryRow, PoliticalPartyRow,
-        PoliticsRow, TableId, TableRows,
+    use replay_data::{
+        rows::AutonomyRow, rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow,
+        rows::PoliticalPartyRow, rows::PoliticsRow, rows::TableId, rows::TableRows,
     };
     fn naming_frame(tag: &[u8]) -> DecodedFrame {
         let mut frame = source(1, 24000, None);
@@ -291,7 +289,7 @@ mod tests {
             assert!(cache.update(frame, BTreeSet::from([identity]), &localisation));
             let expected = CountryNames::read(frame, &localisation)
                 .name_with(identity.slot, "_DEF")
-                .map(|name| installed_content::localisation::crt_case_text(&name, true, true))
+                .map(|name| installed_content_localisation::localisation::crt_case_text(&name, true, true))
                 .and_then(|name| dashboard_text::catalogue::plain_text(&name));
             assert_eq!(
                 cache
@@ -340,7 +338,7 @@ mod tests {
 
     #[test]
     fn reserved_zero_built_changes_do_not_rebuild_positive_original_empty_names() {
-        use replay::rows::{Recorded, ReservedCountryNamingRow};
+        use replay_data::{rows::Recorded, rows::ReservedCountryNamingRow};
         let mut frame = source(1, 24000, None);
         frame.tables[TableId::ReservedCountryNaming.index()] =
             TableView::Complete(TableRows::ReservedCountryNaming(vec![
@@ -362,7 +360,7 @@ mod tests {
         assert!(cache.update(&frame, BTreeSet::from([identity]), &localisation));
         assert_eq!(cache.name(identity), Ok(""));
         assert_eq!(
-            installed_content::country_names::original_or_own_tag(&frame, 0),
+            installed_content_country_names::country_names::original_or_own_tag(&frame, 0),
             Ok("")
         );
         if let TableView::Complete(TableRows::ReservedCountryNaming(rows)) =
@@ -373,7 +371,7 @@ mod tests {
         assert!(cache.update(&frame, BTreeSet::from([identity]), &localisation));
         assert_eq!(cache.name(identity), Ok("The reserved name"));
         assert_eq!(
-            installed_content::country_names::original_or_own_tag(&frame, 0),
+            installed_content_country_names::country_names::original_or_own_tag(&frame, 0),
             Ok("")
         );
     }

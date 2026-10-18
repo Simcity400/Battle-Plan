@@ -508,12 +508,9 @@ fn aircraft_callbacks_with_geometry(meshed: bool) {
     assert_eq!(library.meshes[slot].native.is_empty(), !meshed);
     assert!(warnings.iter().all(|(_, line)| !line.contains("sound")));
     if !meshed {
-        assert!(
-            warnings
-                .iter()
-                .any(|(kind, line)| *kind == installed_content::DiagnosticKind::Warning
-                    && line.contains("geometry-less entities"))
-        );
+        assert!(warnings.iter().any(|(kind, line)| *kind
+            == installed_content_core::DiagnosticKind::Warning
+            && line.contains("geometry-less entities")));
     }
     let scenario = descriptors.inherit("scenario").unwrap();
     let mut requests = super::super::aircraft_events::scenario_requests(
@@ -1156,19 +1153,19 @@ pub(crate) fn visual_stack(
     )
     .unwrap();
     std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
-    let options = installed_content::ResolveOptions {
+    let options = installed_content_core::ResolveOptions {
         game_dir: root.join("steamapps/common/Game"),
         user_dir: root.join("user"),
         cache_dir: root.join("cache"),
     };
     let base = root.join("base");
     let mut layers = ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
-    let selected = [installed_content::content::visual::Choice {
+    let selected = [installed_content_core::content::visual::Choice {
         id: "mod/art.mod".into(),
         name: "Art".into(),
     }];
     let cancel = std::sync::atomic::AtomicBool::new(false);
-    installed_content::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
+    installed_content_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
     (root, layers)
 }
 

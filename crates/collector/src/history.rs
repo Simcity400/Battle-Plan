@@ -1,13 +1,11 @@
 //! Prepare exact prior branch history before installing the hourly hook.
 
 use crate::spooling::campaign_name;
-use replay::{
-    branches::BranchTracker,
-    codec::invalid,
-    container::Replay,
-    format::FormatVersion,
-    identity::{Identity, SessionStart},
+use replay::container::Replay;
+use replay_data::{
+    codec::invalid, format::FormatVersion, identity::Identity, identity::SessionStart,
 };
+use replay_frame::branches::BranchTracker;
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -29,7 +27,7 @@ struct Prepared {
     event_ledger_sequences: [Option<u64>; 3],
     event_feed_sequence: Option<u64>,
     event_feed_generation: Option<u64>,
-    event_feed_counts: replay::event_feed_rows::EventFeedCounts,
+    event_feed_counts: replay_data::event_feed_rows::EventFeedCounts,
     map_events: (u64, u64),
     lease: File,
 }
@@ -43,7 +41,7 @@ pub struct PreparedCampaigns {
     event_ledger_sequences: [Option<u64>; 3],
     event_feed_sequence: Option<u64>,
     event_feed_generation: Option<u64>,
-    event_feed_counts: replay::event_feed_rows::EventFeedCounts,
+    event_feed_counts: replay_data::event_feed_rows::EventFeedCounts,
     map_events: (u64, u64),
 }
 
@@ -69,7 +67,7 @@ impl PreparedCampaigns {
                 continue;
             };
             if let Ok(id) = campaign_name(stem.as_bytes()) {
-                engine::allocation::reserve(&mut paths, 1)?;
+                engine_allocation::reserve(&mut paths, 1)?;
                 paths.push((id, path));
             }
         }
@@ -80,14 +78,13 @@ impl PreparedCampaigns {
         let mut event_ledger_sequences = [None; 3];
         let mut event_feed_sequence = None;
         let mut event_feed_generation = None;
-        let mut event_feed_counts = replay::event_feed_rows::EventFeedCounts::default();
+        let mut event_feed_counts = replay_data::event_feed_rows::EventFeedCounts::default();
         let mut map_events = (0, 0);
         for (id, path) in paths {
             let deadline = Instant::now() + Duration::from_secs(2);
             let prepared = loop {
                 progress(&id)?;
-                match Self::read(&path, &id, session).map_err(engine::allocation::allocation_error)
-                {
+                match Self::read(&path, &id, session).map_err(engine_allocation::allocation_error) {
                     Err(error)
                         if matches!(error.raw_os_error(), Some(5 | 32 | 33))
                             && Instant::now() < deadline =>
@@ -141,8 +138,8 @@ impl PreparedCampaigns {
             .open(path)?;
         let mut bytes = Vec::new();
         let length =
-            usize::try_from(lease.metadata()?.len()).map_err(|_| engine::allocation::oom())?;
-        engine::allocation::reserve_exact(&mut bytes, length)?;
+            usize::try_from(lease.metadata()?.len()).map_err(|_| engine_allocation::oom())?;
+        engine_allocation::reserve_exact(&mut bytes, length)?;
         let mut chunk = [0_u8; 8192];
         loop {
             let count = match lease.read(&mut chunk) {
@@ -151,7 +148,7 @@ impl PreparedCampaigns {
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error),
             };
-            engine::allocation::reserve(&mut bytes, count)?;
+            engine_allocation::reserve(&mut bytes, count)?;
             bytes.extend_from_slice(&chunk[..count]);
         }
         let replay = Replay::open(bytes)?;
@@ -207,7 +204,7 @@ impl PreparedCampaigns {
     pub fn event_feed_generation(&self) -> Option<u64> {
         self.event_feed_generation
     }
-    pub fn event_feed_counts(&self) -> replay::event_feed_rows::EventFeedCounts {
+    pub fn event_feed_counts(&self) -> replay_data::event_feed_rows::EventFeedCounts {
         self.event_feed_counts
     }
     pub fn campaign_world_generation(&self, id: &str) -> Option<u64> {
@@ -291,10 +288,8 @@ impl PreparedCampaigns {
 }
 
 fn completion_sequence(replay: &Replay) -> io::Result<u64> {
-    use replay::{
-        frame::FrameDecoder,
-        rows::{TableId, tables},
-    };
+    use replay_data::{rows::TableId, rows::tables};
+    use replay_frame::frame::FrameDecoder;
     let selected = [TableId::OperationCompletions];
     let mut maximum = 0;
     for block in &replay.index {
@@ -310,10 +305,8 @@ fn completion_sequence(replay: &Replay) -> io::Result<u64> {
 }
 
 fn map_event_history(replay: &Replay) -> io::Result<(u64, u64)> {
-    use replay::{
-        frame::FrameDecoder,
-        rows::{TableId, tables},
-    };
+    use replay_data::{rows::TableId, rows::tables};
+    use replay_frame::frame::FrameDecoder;
     let selected = [TableId::MapEvents];
     let mut latest = (0, 0);
     for block in &replay.index {
@@ -332,7 +325,8 @@ fn map_event_history(replay: &Replay) -> io::Result<(u64, u64)> {
 }
 
 fn politics_epoch(replay: &Replay) -> io::Result<u64> {
-    use replay::{frame::FrameDecoder, rows::TableId};
+    use replay_data::rows::TableId;
+    use replay_frame::frame::FrameDecoder;
     let selected = crate::extended::politics::TABLES;
     let mut latest = 0;
     for block in &replay.index {
@@ -341,14 +335,14 @@ fn politics_epoch(replay: &Replay) -> io::Result<u64> {
             let decoded = decoder.advance(&frame)?;
             for table in selected {
                 let rows = match &*decoded.tables[table.index()] {
-                    replay::frame::TableView::Complete(rows)
-                    | replay::frame::TableView::Truncated { rows, .. } => rows,
-                    replay::frame::TableView::Unavailable { .. } => continue,
+                    replay_frame::frame::TableView::Complete(rows)
+                    | replay_frame::frame::TableView::Truncated { rows, .. } => rows,
+                    replay_frame::frame::TableView::Unavailable { .. } => continue,
                 };
                 // Every observed row carries the epoch, including refused census intervals.
                 macro_rules! maximum {
                     ($ty:ident) => {
-                        for row in rows.rows::<replay::rows::tables::$ty>().unwrap() {
+                        for row in rows.rows::<replay_data::rows::tables::$ty>().unwrap() {
                             latest = latest.max(row.epoch);
                         }
                     };
@@ -368,10 +362,8 @@ fn politics_epoch(replay: &Replay) -> io::Result<u64> {
 }
 
 fn naval_result_sequence(replay: &Replay) -> io::Result<u64> {
-    use replay::{
-        frame::{FrameDecoder, TableView},
-        rows::{TableId, tables},
-    };
+    use replay_data::{rows::TableId, rows::tables};
+    use replay_frame::{frame::FrameDecoder, frame::TableView};
     let selected = [TableId::NavalResultSources];
     let mut maximum = 0;
     for block in &replay.index {
@@ -392,10 +384,8 @@ fn naval_result_sequence(replay: &Replay) -> io::Result<u64> {
 }
 
 fn event_ledger_sequences(replay: &Replay) -> io::Result<[Option<u64>; 3]> {
-    use replay::{
-        frame::{FrameDecoder, TableView},
-        rows::{TableId, tables},
-    };
+    use replay_data::{rows::TableId, rows::tables};
+    use replay_frame::{frame::FrameDecoder, frame::TableView};
     let selected = [
         TableId::AirLossEvents,
         TableId::BuildingBombingDamage,
@@ -440,8 +430,8 @@ fn event_ledger_sequences(replay: &Replay) -> io::Result<[Option<u64>; 3]> {
 }
 
 fn merge_event_counts(
-    into: &mut replay::event_feed_rows::EventFeedCounts,
-    counts: replay::event_feed_rows::EventFeedCounts,
+    into: &mut replay_data::event_feed_rows::EventFeedCounts,
+    counts: replay_data::event_feed_rows::EventFeedCounts,
 ) {
     into.acquired = into.acquired.max(counts.acquired);
     into.settled = into.settled.max(counts.settled);
@@ -453,16 +443,14 @@ fn event_feed_history(
 ) -> io::Result<(
     Option<u64>,
     Option<u64>,
-    replay::event_feed_rows::EventFeedCounts,
+    replay_data::event_feed_rows::EventFeedCounts,
 )> {
-    use replay::{
-        frame::{FrameDecoder, TableView},
-        rows::{TableId, tables},
-    };
+    use replay_data::{rows::TableId, rows::tables};
+    use replay_frame::{frame::FrameDecoder, frame::TableView};
     let selected = [TableId::EventFeedHistory];
     let mut maximum = None;
     let mut generation = None;
-    let mut counts = replay::event_feed_rows::EventFeedCounts::default();
+    let mut counts = replay_data::event_feed_rows::EventFeedCounts::default();
     for block in &replay.index {
         let mut decoder = FrameDecoder::for_tables(&selected);
         for frame in replay.read_block_selected(block, &selected)? {

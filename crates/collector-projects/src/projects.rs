@@ -8,19 +8,23 @@ use crate::{
     table_capture::{Arena, CaptureRows, bounded, grow_capacity, grow_vec},
     table_conversion::{table, unavailable},
 };
-use engine::allocation::{copy_vec, default_vec, map_slice, owned_vec};
-use engine::raid_tooltip_operands;
-use engine::{
-    Memory, ccountry, ccountry_raid_status, cgame_state, cnuke, cpdx_array::Array,
-    cplayer_status_cache, craid_instance, craid_system, msvc_string, nproject_breakthrough_node,
-    nproject_cbreakthrough_progress, nproject_cprogram, nproject_cprogram_status,
-    nproject_cproject, nproject_sproject_history, peace_conference, raid_equipment,
-    raid_facilities, raid_path_memo, raid_speed_inputs, scientist_roster, walk::Outcome,
+use engine_allocation::{copy_vec, default_vec, map_slice, owned_vec};
+use engine_characters::scientist_roster;
+use engine_events::cnuke;
+use engine_native::raid_tooltip_operands;
+use engine_native::{
+    Memory, ccountry, ccountry_raid_status, cgame_state, cpdx_array::Array, craid_instance,
+    craid_system, msvc_string, raid_equipment, raid_speed_inputs, walk::Outcome,
 };
-use replay::{
-    frame::TableView,
-    rows::{self, TableId, tables},
+use engine_peace::peace_conference;
+use engine_projects::{
+    nproject_breakthrough_node, nproject_cbreakthrough_progress, nproject_cprogram,
+    nproject_cprogram_status, nproject_cproject, nproject_sproject_history,
 };
+use engine_raid_inputs::{raid_facilities, raid_path_memo};
+use engine_visibility::cplayer_status_cache;
+use replay_data::{rows, rows::TableId, rows::tables};
+use replay_frame::frame::TableView;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
@@ -155,9 +159,9 @@ impl Capacities {
 pub struct Captured {
     programs: CaptureRows<nproject_cprogram::Row>,
     facilities: CaptureRows<raid_facilities::Row>,
-    raid_intel: CaptureRows<engine::raid_intel_inputs::Row>,
-    tooltip_operands: CaptureRows<engine::raid_tooltip_operands::Row>,
-    counteroperatives: Arena<engine::raid_intel_inputs::Operative>,
+    raid_intel: CaptureRows<engine_raid_inputs::raid_intel_inputs::Row>,
+    tooltip_operands: CaptureRows<engine_native::raid_tooltip_operands::Row>,
+    counteroperatives: Arena<engine_raid_inputs::raid_intel_inputs::Operative>,
     projects: CaptureRows<nproject_cproject::Row>,
     history: CaptureRows<nproject_sproject_history::Row>,
     breakthroughs: CaptureRows<nproject_cbreakthrough_progress::Row>,
@@ -179,7 +183,7 @@ pub struct Captured {
     raid_equipment_archetype_tokens: Arena<u32>,
     raid_equipment_archetype_amounts: Arena<i64>,
     /// Modifier metadata for the speed inputs' getters, read once per walk.
-    speed_memo: engine::modifier_definition::DefinitionMemo,
+    speed_memo: engine_native::modifier_definition::DefinitionMemo,
     /// This hour's torn memo copies and refused raid rows.
     raid_reads: super::RaidReadCounts,
     raid_type_tokens: Arena<u32>,
@@ -280,7 +284,7 @@ impl Captured {
             raid_equipment_amounts: Arena::new(capacity.raid_equipment_items),
             raid_equipment_archetype_tokens: Arena::new(capacity.raid_equipment_archetypes),
             raid_equipment_archetype_amounts: Arena::new(capacity.raid_equipment_archetypes),
-            speed_memo: engine::modifier_definition::DefinitionMemo::default(),
+            speed_memo: engine_native::modifier_definition::DefinitionMemo::default(),
             raid_reads: super::RaidReadCounts::default(),
             raid_type_tokens: Arena::new(capacity.raid_type_tokens),
             raid_show_for: Arena::new(capacity.raid_show_for),
@@ -471,13 +475,13 @@ impl Captured {
     ) -> [u64; N] {
         self.reset();
         let mut ticks = [0; N];
-        let active = TABLES.map(|table| replay::cadence::should_walk(table, hour, force_full));
+        let active = TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
         let walk = active[0] && !self.raw_mode;
         if self.raw_mode && active[0] {
             // The owned refresh supplies these rows before publication.
         } else if !walk {
             let skipped = Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON,
+                reason: replay_data::cadence::SKIPPED_REASON,
             };
             self.programs.outcome = skipped;
             self.breakthroughs.outcome = skipped;
@@ -511,7 +515,7 @@ impl Captured {
                     ticks[$index] = elapsed(begin);
                 } else {
                     self.$field.outcome = Outcome::Unavailable {
-                        reason: replay::cadence::SKIPPED_REASON,
+                        reason: replay_data::cadence::SKIPPED_REASON,
                     };
                 }
             }};
@@ -545,7 +549,7 @@ impl Captured {
             ticks[5] = elapsed(begin);
         } else {
             self.raid_countries.outcome = Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON,
+                reason: replay_data::cadence::SKIPPED_REASON,
             };
             self.raids.outcome = self.raid_countries.outcome;
             self.raid_cooldowns.outcome = self.raid_countries.outcome;
@@ -562,8 +566,8 @@ impl Captured {
                 memory,
                 base,
                 game_state,
-                engine::walk::Buffer::Growing(&mut self.raid_player.rows),
-                engine::walk::Buffer::GrowingFrom(&mut self.raid_type_tokens.first, start),
+                engine_native::walk::Buffer::Growing(&mut self.raid_player.rows),
+                engine_native::walk::Buffer::GrowingFrom(&mut self.raid_type_tokens.first, start),
                 &mut self.raid_type_memo,
             );
             if let Some(row) = self.raid_player.rows.first_mut() {
@@ -579,7 +583,7 @@ impl Captured {
             ticks[13] = elapsed(begin);
         } else {
             self.raid_player.outcome = Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON,
+                reason: replay_data::cadence::SKIPPED_REASON,
             };
         }
         if active[14] {
@@ -599,7 +603,7 @@ impl Captured {
             ticks[14] = elapsed(begin);
         } else {
             self.raid_speeds.outcome = Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON,
+                reason: replay_data::cadence::SKIPPED_REASON,
             };
         }
         if active[15] {
@@ -637,7 +641,7 @@ impl Captured {
             ticks[15] = elapsed(begin);
         } else {
             self.raid_equipment.outcome = Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON,
+                reason: replay_data::cadence::SKIPPED_REASON,
             };
         }
         plain!(peace, 7, peace_conference);
@@ -645,7 +649,7 @@ impl Captured {
         plain!(tooltip_operands, 18, raid_tooltip_operands);
         if !active[17] {
             self.raid_intel.outcome = Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON,
+                reason: replay_data::cadence::SKIPPED_REASON,
             };
         } else {
             let begin = qpc();
@@ -653,16 +657,16 @@ impl Captured {
             let mut carry = super::raid_intel_carry::begin();
             let (rows, operatives) = (&mut self.raid_intel.rows, &mut self.counteroperatives.first);
             let read = match carry.as_mut() {
-                Some(carry) => engine::raid_intel_inputs::walk_growing(
+                Some(carry) => engine_raid_inputs::raid_intel_inputs::walk_growing(
                     memory, base, game_state, rows, operatives, carry,
                 ),
-                None => engine::raid_intel_inputs::walk_growing(
+                None => engine_raid_inputs::raid_intel_inputs::walk_growing(
                     memory,
                     base,
                     game_state,
                     rows,
                     operatives,
-                    &mut engine::raid_intel_inputs::NoCarry,
+                    &mut engine_raid_inputs::raid_intel_inputs::NoCarry,
                 ),
             };
             if let Some(carry) = carry {
@@ -683,7 +687,7 @@ impl Captured {
             ticks[12] = elapsed(begin);
         } else {
             self.raid_paths.outcome = Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON,
+                reason: replay_data::cadence::SKIPPED_REASON,
             };
         }
         if active[8] {
@@ -712,7 +716,7 @@ impl Captured {
             ticks[8] = elapsed(begin);
         } else {
             self.scientists.outcome = Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON,
+                reason: replay_data::cadence::SKIPPED_REASON,
             };
             self.scientist_skills.outcome = self.scientists.outcome;
         }
@@ -1169,8 +1173,8 @@ impl Captured {
                     memory,
                     base,
                     game_state,
-                    engine::walk::Buffer::Growing(&mut self.projects.rows),
-                    engine::walk::Buffer::Growing(&mut self.history.rows),
+                    engine_native::walk::Buffer::Growing(&mut self.projects.rows),
+                    engine_native::walk::Buffer::Growing(&mut self.history.rows),
                     &mut |id| selection.contains(id),
                 );
                 self.projects.outcome = bounded(projects, self.projects.rows.len());
@@ -1211,11 +1215,11 @@ impl Captured {
         if self.project_links.len() < bytes {
             return Err("country link table allocation failed");
         }
-        if !engine::read_slice(memory, links.data, &mut self.project_links[..bytes]) {
+        if !engine_native::read_slice(memory, links.data, &mut self.project_links[..bytes]) {
             return Err("country link table unreadable");
         }
         self.project_owners.clear();
-        engine::allocation::reserve(&mut self.project_owners, links.count as usize)
+        engine_allocation::reserve(&mut self.project_owners, links.count as usize)
             .map_err(|_| "project owner allocation failed")?;
         for (raw, word) in self.project_links[..bytes]
             .chunks_exact(4)
@@ -1262,7 +1266,7 @@ impl Captured {
                 || raws.iter().any(|&(_, raw)| selection.contains(raw))
             {
                 selection.select(country.id);
-                engine::allocation::reserve(&mut self.project_read, raws.len() + 1)
+                engine_allocation::reserve(&mut self.project_read, raws.len() + 1)
                     .map_err(|_| "project owner allocation failed")?;
                 self.project_read.push((country.id, country.id));
                 for &(_, raw) in raws {

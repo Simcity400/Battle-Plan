@@ -22,13 +22,12 @@
 //! takes what the cache holds and never waits on another request's read: it is
 //! refused at once, to be answered where decodes are allowed.
 use crate::{Source, metadata::check_cancel};
-use replay::{
-    container::{BlockIndex, SeekResult},
-    frame::{
-        DecodedFrame, FrameDecoder, RecordedFrame as Frame, SharedView, TABLE_COUNT, TableUpdate,
-        TableView,
-    },
-    rows::{TableId, TableRows},
+use replay::{container::BlockIndex, container::SeekResult};
+use replay_data::rows::TABLE_COUNT;
+use replay_data::{rows::TableId, rows::TableRows};
+use replay_frame::{
+    frame::DecodedFrame, frame::FrameDecoder, frame::RecordedFrame as Frame, frame::SharedView,
+    frame::TableUpdate, frame::TableView,
 };
 use std::{
     collections::BTreeMap,
@@ -579,7 +578,7 @@ pub(crate) fn update_bytes(update: &TableUpdate) -> usize {
         TableUpdate::Delta {
             changed, deleted, ..
         } => {
-            changed.capacity() * std::mem::size_of::<replay::rows::DeltaRow>()
+            changed.capacity() * std::mem::size_of::<replay_data::rows::DeltaRow>()
                 + changed
                     .iter()
                     .map(|row| row.values.capacity())

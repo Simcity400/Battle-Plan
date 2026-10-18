@@ -1,6 +1,6 @@
 //! The retained regional air-combat records AirRegionCombat records, read
 //! only where the native record updater wrote them
-//! ([`engine::air_record_mutations`]).
+//! ([`engine_air_history::air_record_mutations`]).
 //!
 //! The air-combat record updater is the only run-time
 //! writer of a holder's records. Its detour notes the holder (RCX) in a
@@ -20,7 +20,7 @@
 //! store does not hold is new: it is located through its owner's Table  (air-combat holder
 //! construction copied the owner from the strategic air object) and read whole. Every other holder
 //! is carried: its row is its native state at its last read, which playback prunes
-//! ([`replay::air_region_derive`]).
+//! ([`replay_derive::air_region_derive`]).
 //!
 //! Each hour reads the carried holders of its sampled slice (by country and
 //! region) whole and compares them with the held rows: the fresh records must
@@ -29,11 +29,12 @@
 //! attachment (every later hour reads every holder), and the fresh rows are
 //! published. `air_record_verify` reads every carried holder instead.
 use crate::hook::Hook;
-use engine::{Memory, air_record_mutations::MUTATIONS, cair_region_combat_data as native};
-use replay::{
-    air_region_derive,
-    rows::{AirCombatDamage, AirCombatRecord, AirRegionCombatRow, TableRows},
+use engine_air_history::{air_record_mutations::MUTATIONS, cair_region_combat_data as native};
+use engine_native::Memory;
+use replay_data::{
+    rows::AirCombatDamage, rows::AirCombatRecord, rows::AirRegionCombatRow, rows::TableRows,
 };
+use replay_derive::air_region_derive;
 use std::{
     collections::HashMap,
     ops::Range,
@@ -83,11 +84,11 @@ impl Set {
             .checked_mul(2)
             .and_then(usize::checked_next_power_of_two)?
             .max(MIN_SLOTS);
-        let mut slots = engine::allocation::vec(len).ok()?;
+        let mut slots = engine_allocation::vec(len).ok()?;
         slots.resize_with(len, AtomicUsize::default);
-        let mut claims = engine::allocation::vec(len).ok()?;
+        let mut claims = engine_allocation::vec(len).ok()?;
         claims.resize_with(len, AtomicUsize::default);
-        engine::allocation::boxed(Self {
+        engine_allocation::boxed(Self {
             slots,
             claims,
             claimed: AtomicUsize::new(0),
@@ -180,7 +181,7 @@ impl Touched {
             // SAFETY: the gate is closed and no lease remains.
             if let Some(set) = unsafe { self.set.load(Ordering::SeqCst).as_ref() } {
                 let claimed = set.claimed.swap(0, Ordering::Relaxed).min(set.claims.len());
-                engine::allocation::reserve(out, claimed)
+                engine_allocation::reserve(out, claimed)
                     .map_err(|_| "air region combat touched-holder allocation failed")?;
                 for claim in &set.claims[..claimed] {
                     if let Some(slot) = set.slots.get(claim.load(Ordering::Relaxed)) {
@@ -337,7 +338,7 @@ impl Store {
         let mut holders = Vec::new();
         native::visit_holders(memory, base, state, |root| {
             let holder = native::read_holder(memory, base, root.address, None)?;
-            engine::allocation::reserve(&mut holders, 1)
+            engine_allocation::reserve(&mut holders, 1)
                 .map_err(|_| "air region combat allocation failed")?;
             holders.push(Held {
                 address: root.address,
@@ -472,7 +473,7 @@ impl Store {
         // The game's own timeout bounds what a pass may have removed.
         let cutoff = base
             .checked_add(native::LOG_TIMEOUT_RVA)
-            .and_then(|at| engine::read::<i32>(memory, at))
+            .and_then(|at| engine_native::read::<i32>(memory, at))
             .map(|timeout| air_region_derive::cutoff(air_region_derive::last_pass(hour), timeout));
         let check = crate::sampled_verify::current_burned_in(VERIFY);
         let (verified, mismatches) = self.sample(memory, base, check, cutoff, &touched)?;
@@ -499,13 +500,13 @@ impl Store {
             .iter()
             .filter(|held| !held.row.own.is_empty() || !held.row.foreign.is_empty())
             .count();
-        let mut rows = engine::allocation::vec(len).map_err(failed)?;
+        let mut rows = engine_allocation::vec(len).map_err(failed)?;
         for held in &self.holders {
             if !held.row.own.is_empty() || !held.row.foreign.is_empty() {
                 rows.push(held.row.clone());
             }
         }
-        let rows = engine::allocation::boxed(TableRows::AirRegionCombat(rows))
+        let rows = engine_allocation::boxed(TableRows::AirRegionCombat(rows))
             .map(Arc::from)
             .map_err(failed)?;
         self.published = Some((Arc::clone(&rows), len));
@@ -638,7 +639,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "air_record_changes") {
             let site = &MUTATIONS[0];
-            if engine::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+            if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
                 return Err("air record hook sentinel differs");
             }
             let set = Set::new(0).ok_or("air record touched-holder allocation failed")?;

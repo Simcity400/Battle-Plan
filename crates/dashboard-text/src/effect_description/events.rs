@@ -5,8 +5,8 @@ use crate::{
     scripted_text::{EventObject, EventScope, Link, random},
     triggers::{NULL_STATE, Scope},
 };
-use installed_content::decisions::Decision;
-use replay::rows::{DecisionRow, tables};
+use installed_content_core::decisions::Decision;
+use replay_data::{rows::DecisionRow, rows::tables};
 
 const DECISION_RANDOM_COUNT_GAP: &str =
     "DecisionRandomItems is not complete for this decision-description seed";
@@ -130,7 +130,7 @@ impl Renderer<'_, '_, '_> {
             .filter_map(|item| {
                 item.value
                     .scalar()
-                    .and_then(|value| installed_content::crt::scan_i32(value).stored())
+                    .and_then(|value| installed_content_core::crt::scan_i32(value).stored())
             })
             .next_back()
             .unwrap_or(0);
@@ -160,7 +160,7 @@ impl Renderer<'_, '_, '_> {
         // evaluates the shared bound reader's tree
         // with empty supplied arguments and the caller's scope localiser.
         self.bound_localisation(
-            &installed_content::gui::native::BoundLocalization::from_value(&item.value),
+            &installed_content_core::gui::native::BoundLocalization::from_value(&item.value),
             scopes,
             true,
         )
@@ -287,15 +287,16 @@ impl Renderer<'_, '_, '_> {
         let evaluator = self.evaluator()?;
         if let Some(item) = target {
             let value = item.value.scalar().unwrap_or_default();
-            let text = std::str::from_utf8(installed_content::parser::c_string(value))
+            let text = std::str::from_utf8(installed_content_core::parser::c_string(value))
                 .map_err(|_| "decision target is not UTF-8")?;
             // scope-selector parsing's native event-target fallback includes tooltip
             // targets, unlike a trigger country operand.
             let parsed =
-                installed_content::scope::parse(text, item.quoted(), self.context.world()?.recorded());
+                installed_content_core::scope::parse(text, item.quoted(), self.context.world()?.recorded());
             if matches!(
                 parsed,
-                installed_content::scope::Scope::Keyword(_) | installed_content::scope::Scope::EventTarget { .. }
+                installed_content_core::scope::Scope::Keyword(_)
+                    | installed_content_core::scope::Scope::EventTarget { .. }
             ) {
                 return Ok(
                     match evaluator
@@ -354,7 +355,7 @@ impl Renderer<'_, '_, '_> {
             .find(|row| world.recorded().slot(row.country) == Some(country) && row.id == ruling)
             .ok_or("PoliticalParties lacks decision-name ruling ideology")?;
         let utf8 = |bytes: &[u8]| {
-            std::str::from_utf8(installed_content::parser::c_string(bytes))
+            std::str::from_utf8(installed_content_core::parser::c_string(bytes))
                 .map(str::to_owned)
                 .map_err(|_| "decision-name key is not UTF-8".to_owned())
         };
@@ -615,14 +616,12 @@ impl Renderer<'_, '_, '_> {
 mod politics_days {
     use super::*;
     use crate::{catalogue::tests::folder_catalogue, effect_description::tests::Fixture};
-    use replay::{
-        frame::TableView,
-        rows::{PoliticalPartyRow, PoliticsRow, TableId, TableRows},
-    };
+    use replay_data::{rows::PoliticalPartyRow, rows::PoliticsRow, rows::TableId, rows::TableRows};
+    use replay_frame::frame::TableView;
 
     #[test]
     fn remove_days_uses_caller_title_scope_and_negates_each_branch_without_instance_reads() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut fixture = Fixture::new();
         let (catalogue, _folder) = folder_catalogue(&[
@@ -666,7 +665,7 @@ mod politics_days {
                 reason: "unused decision execution data".into(),
             };
         }
-        let mut database = installed_content::decisions::Database::default();
+        let mut database = installed_content_core::decisions::Database::default();
         database.entries.insert(
             b"syn_decision".to_vec(),
             Decision {

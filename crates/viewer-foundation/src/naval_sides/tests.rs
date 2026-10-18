@@ -1,10 +1,9 @@
 use super::*;
-use replay::{
-    frame::{Metrics, TableView},
-    rows::{
-        NavalCombatDetailsRow, NavalCombatParticipantRow, NavalCombatRow, TableRows, TaskForceRow,
-    },
+use replay_data::{
+    rows::NavalCombatDetailsRow, rows::NavalCombatParticipantRow, rows::NavalCombatRow,
+    rows::TableRows, rows::TaskForceRow,
 };
+use replay_frame::{frame::Metrics, frame::TableView};
 use std::time::Instant;
 
 fn frame() -> DecodedFrame {
