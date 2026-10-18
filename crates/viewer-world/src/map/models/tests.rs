@@ -161,6 +161,29 @@ fn an_empty_authored_actor_roster_keeps_the_content_stack() {
     assert_eq!(empty.decode(), decode);
 }
 
+/// A pass made over a library that has baked nothing yet takes the content stack the library
+/// takes with its first bake, so the entities baked later draw rather than refuse every frame.
+#[test]
+fn a_pass_over_an_empty_library_takes_the_stack_of_its_later_bakes() {
+    let decode = Decode::default();
+    let mut library = ModelLibrary::empty(decode);
+    let mut pass = ModelPass::new(&library, "unit models");
+    assert!(pass.layers.is_none());
+    let mut warnings = Vec::new();
+    library.merge(
+        ModelLibrary::load(
+            &ResolvedLayers::default(),
+            decode,
+            &Descriptors::default(),
+            &[],
+            &mut warnings,
+        )
+        .unwrap(),
+    );
+    pass.replace_field(&library, &mut ModelField::default());
+    assert!(pass.layers.is_some());
+}
+
 /// Every palette index a shard carries is rebased onto the merged palette:
 /// the rig's range and each node's skin and rigid slots. A slot left behind indexes another entity's
 /// joints, and `entity_animation` subtracts `rig.start` from the node's.

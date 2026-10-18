@@ -2,6 +2,7 @@ use super::*;
 use crate::controls::Pad;
 use eframe::egui;
 use std::collections::BTreeSet;
+use std::f32::consts::FRAC_PI_2;
 use viewer_foundation::map::camera::{MapDefines, MapSize};
 
 const SIZE: f32 = 1.2;
@@ -152,47 +153,41 @@ fn the_pointer_moves_the_steering_point_by_its_motion_and_the_aircraft_follows()
 }
 
 #[test]
-fn a_climb_levels_off_after_the_controls_are_let_go() {
+fn a_climb_holds_its_pitch_after_the_controls_are_let_go() {
     let mut flight = level(200.0);
     fly(&mut flight, &keys(&[egui::Key::ArrowUp]), &flat, 0.5);
-    assert!(flight.aim[1] > 0.4 && flight.pitch > 0.2);
-    fly(&mut flight, &idle(), &flat, LEVEL_DELAY + 6.0 * LEVEL_EASE);
-    assert!(flight.aim[1].abs() < 0.01 && flight.pitch.abs() < 0.01);
-    assert!(flight.position[1] > 200.0);
+    let aim = flight.aim[1];
+    assert!(aim > 0.4 && flight.pitch > 0.2);
+    fly(&mut flight, &idle(), &flat, 3.0);
+    assert_eq!(flight.aim[1], aim);
+    assert!((flight.pitch - aim).abs() < 0.01, "{}", flight.pitch);
+    // A dive held the same way flies on down.
+    let mut flight = level(200.0);
+    fly(&mut flight, &keys(&[egui::Key::ArrowDown]), &flat, 0.5);
+    let aim = flight.aim[1];
+    fly(&mut flight, &idle(), &flat, 2.0);
+    assert_eq!(flight.aim[1], aim);
+    assert!(flight.pitch < -0.2 && flight.position[1] < 200.0);
 }
 
 #[test]
-fn flying_level_over_rolling_ground_the_lookahead_keeps_it_clear() {
-    // Just above the highest ridge: only the lookahead keeps it off the next one.
-    let ridge = |x: f32, z: f32| 12.0 + 8.0 * ((x * 0.05).sin() * (z * 0.07).cos()).abs();
-    let mut flight = level(21.5);
-    for _ in 0..1200 {
-        flight.step(&keys(&[egui::Key::W]), &base(), &ridge, &PLANE);
-        assert_eq!(flight.phase, Phase::Flying, "{:?}", flight.position);
-    }
-}
-
-#[test]
-fn it_climbs_over_high_ground_before_it_reaches_it() {
+fn flying_level_into_high_ground_crashes_into_it() {
     let wall = |_: f32, z: f32| if z > 1100.0 { 25.5 } else { WATER_HEIGHT };
-    let start = WATER_HEIGHT + 3.0 * clearance(SIZE);
-    let mut flight = level(start);
-    let mut before = start;
-    let mut ahead = None;
+    let mut flight = level(WATER_HEIGHT + 3.0 * clearance(SIZE));
     for _ in 0..600 {
         flight.step(&idle(), &base(), &wall, &PLANE);
-        if flight.position[2] > 1100.0 {
+        if flight.phase != Phase::Flying {
             break;
         }
-        before = flight.position[1];
-        if ahead.is_none() && flight.position[2] > 1080.0 {
-            ahead = Some(flight.position[1]);
-        }
+        // Nothing lifts it as the high ground nears.
+        assert_eq!(flight.pitch, 0.0);
     }
-    assert!(flight.position[2] > 1100.0, "it reached the high ground");
-    // Twenty units short of it, it is already climbing; at its edge it is above it.
-    assert!(ahead.expect("passed") > start + 2.0);
-    assert!(before > 25.5, "{before}");
+    assert!(
+        matches!(flight.phase, Phase::Crashed { .. }),
+        "{:?}",
+        flight.phase
+    );
+    assert!(flight.position[2] <= 1100.0 + SIZE, "{:?}", flight.position);
 }
 
 #[test]

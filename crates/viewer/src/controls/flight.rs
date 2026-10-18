@@ -1,11 +1,10 @@
 //! The aircraft the flying mode flies, and the camera that follows it.
 //!
 //! Arcade flight: the pilot points where to go and the aircraft follows, banking into its turns.
-//! It cannot stall: it never flies slower than [`SLOWEST`], whatever its attitude. It looks ahead
-//! along its heading and climbs over the ground it would meet, never climbs past the content's
-//! `CAMERA_MAX_HEIGHT` and slides along the map's top and bottom edges; across the east and west
-//! edges it flies on round the world. With nothing held it levels its wings at once and its nose
-//! after a moment.
+//! It cannot stall: it never flies slower than [`SLOWEST`], whatever its attitude. It goes where
+//! it is pointed, into the ground too; it never climbs past the content's `CAMERA_MAX_HEIGHT` and
+//! slides along the map's top and bottom edges; across the east and west edges it flies on round
+//! the world. With nothing held it levels its wings at once and holds the pitch it was given.
 //!
 //! It can crash. Every step sweeps its origin, nose, tail and wingtips (its model's bounding radius
 //! from its origin, along its attitude) along their paths against the drawn ground or water raised
@@ -44,7 +43,7 @@
 use super::{Frame, approach};
 use dashboard::protocol::GamepadButton;
 use eframe::egui::Key;
-use std::f32::consts::{FRAC_PI_2, PI, TAU};
+use std::f32::consts::{PI, TAU};
 use viewer_foundation::map::camera::{Camera, Free, Lens, PITCH_LIMIT, Pose, WATER_HEIGHT};
 use viewer_world::map::aircraft::GroundContact;
 use viewer_world::map::models::ModelInstance;
@@ -70,10 +69,6 @@ pub const STEER_RATE: [f32; 2] = [1.3, 1.0];
 pub const MAX_LEAD: f32 = 1.4;
 /// The steepest climb or dive.
 pub const MAX_PITCH: f32 = 1.2;
-/// Seconds without climbing or diving after which the steering point drifts back to level, and
-/// the time that drift takes.
-pub const LEVEL_DELAY: f32 = 0.8;
-pub const LEVEL_EASE: f32 = 1.5;
 
 /// The fastest turn, in radians per second, and the turn rate per radian the heading is off.
 pub const TURN_RATE: f32 = 1.0;
@@ -85,11 +80,7 @@ pub const PITCH_GAIN: f32 = 3.0;
 pub const MAX_BANK: f32 = 1.05;
 pub const BANK_EASE: f32 = 0.25;
 
-/// Seconds ahead the ground is checked at, along the heading at the current speed.
-pub const LOOKAHEAD: [f32; 3] = [0.5, 1.0, 2.0];
-/// Clearances above the ground ahead the aircraft climbs to keep.
-pub const AVOID_MARGIN: f32 = 2.0;
-/// The clearance the ground checks keep, in model sizes, and its least value.
+/// The clearance a flight starts and respawns by, in model sizes, and its least value.
 pub const CLEARANCE_PER_SIZE: f32 = 1.5;
 pub const LEAST_CLEARANCE: f32 = 0.3;
 /// The size flown with when no model is drawn, in world units.
@@ -223,8 +214,6 @@ pub struct Flight {
     look: [f32; 2],
     /// The chase camera's eye relative to the aircraft, once it has followed a frame.
     chase: Option<[f32; 3]>,
-    /// Seconds since the pilot last climbed or dived.
-    unsteered: f32,
 }
 
 /// What a flight shows: the camera, and the aircraft's model instance when it is drawn.
@@ -251,7 +240,6 @@ impl Flight {
             crashes: 0,
             look: [0.0; 2],
             chase: None,
-            unsteered: 0.0,
         }
     }
 
@@ -333,16 +321,8 @@ impl Flight {
         let climb = (frame.axis(Key::ArrowDown, Key::ArrowUp) + pad.left[1]).clamp(-1.0, 1.0);
         let lead = wrap(self.aim[0] - self.yaw) + turn * STEER_RATE[0] * dt + mouse[0] * MOUSE_AIM;
         self.aim[0] = wrap(self.yaw + lead.clamp(-MAX_LEAD, MAX_LEAD));
-        self.aim[1] += climb * STEER_RATE[1] * dt - mouse[1] * MOUSE_AIM;
-        if climb != 0.0 || mouse[1] != 0.0 {
-            self.unsteered = 0.0;
-        } else {
-            self.unsteered += dt;
-            if self.unsteered > LEVEL_DELAY {
-                self.aim[1] = approach(self.aim[1], 0.0, LEVEL_EASE, dt);
-            }
-        }
-        self.aim[1] = self.aim[1].clamp(-MAX_PITCH, MAX_PITCH);
+        self.aim[1] = (self.aim[1] + climb * STEER_RATE[1] * dt - mouse[1] * MOUSE_AIM)
+            .clamp(-MAX_PITCH, MAX_PITCH);
         // Throttle.
         let throttle =
             (frame.axis(Key::S, Key::W) + pad.triggers[1] - pad.triggers[0]).clamp(-1.0, 1.0);
@@ -377,7 +357,6 @@ impl Flight {
         });
         // Flying, in steps short enough in time and in distance for the ground tests.
         let rows = map.map.y();
-        let clearance = clearance(size);
         let ceiling = map.defines.heights[1];
         let reach = self.speed.max(target_speed) * dt;
         let steps = (dt / LONGEST_SUBSTEP)
@@ -392,7 +371,7 @@ impl Flight {
             let before = self.probes(airframe.size);
             let rate = (wrap(self.aim[0] - self.yaw) * TURN_GAIN).clamp(-TURN_RATE, TURN_RATE);
             self.yaw = wrap(self.yaw + rate * step);
-            let mut pitch = self.aim[1].max(self.avoidance(floor, width, clearance));
+            let mut pitch = self.aim[1];
             if self.position[1] >= ceiling && pitch > 0.0 {
                 pitch = 0.0;
             }
@@ -517,24 +496,6 @@ impl Flight {
             ..Self::new(position, self.yaw, 0.0, 0.0)
         };
         self.speed = speed;
-    }
-
-    /// The pitch that clears the ground ahead by [`AVOID_MARGIN`] clearances.
-    fn avoidance(&self, floor: Floor<'_>, width: f32, clearance: f32) -> f32 {
-        let (sin, cos) = self.yaw.sin_cos();
-        LOOKAHEAD
-            .iter()
-            .map(|seconds| {
-                let reach = self.speed.max(SLOWEST) * seconds;
-                let ahead = ground(
-                    floor,
-                    width,
-                    self.position[0] + sin * reach,
-                    self.position[2] + cos * reach,
-                );
-                (ahead + clearance * AVOID_MARGIN - self.position[1]).atan2(reach)
-            })
-            .fold(-FRAC_PI_2, f32::max)
     }
 
     /// The chase camera's eye relative to the aircraft once it has caught up.
@@ -814,7 +775,7 @@ impl Footprints {
     }
 }
 
-/// The clearance the ground checks keep for an aircraft of `size`.
+/// The clearance above the ground a flight starts and respawns by, for an aircraft of `size`.
 pub fn clearance(size: f32) -> f32 {
     (size * CLEARANCE_PER_SIZE).max(LEAST_CLEARANCE)
 }

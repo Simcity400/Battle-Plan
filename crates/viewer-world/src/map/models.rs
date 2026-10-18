@@ -1986,6 +1986,11 @@ impl ModelPass {
     /// library bakes entities as hours first place them). Every library only
     /// ever appends, so existing slots keep their meaning.
     fn sync(&mut self, library: &ModelLibrary) {
+        // A library built empty takes its content stack with its first bake, after this pass was
+        // made over it; its entities draw from that stack.
+        if self.layers.is_none() {
+            self.layers = library.layers.clone();
+        }
         // Recorded before the mesh arrays are extended below.
         let known_meshes = self.meshes.len();
         if self.meshes.len() < library.meshes.len() {
