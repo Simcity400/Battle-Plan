@@ -830,6 +830,8 @@ fn newest_window_variant_reads_in_parallel_hold_those_read_in_order() {
 /// while the proven window stays queryable with its exact page bytes.
 #[test]
 fn newest_window_survives_a_variant_naming_refusal_in_its_diagnostics() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
     let (_, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[(
         "localisation/mod_l_english.yml",
         "\u{feff}l_english:\n mod_rifle_1:0 \"a\u{a4}b\"\n",

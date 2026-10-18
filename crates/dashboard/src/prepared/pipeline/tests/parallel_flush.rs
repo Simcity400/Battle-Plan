@@ -191,6 +191,10 @@ fn interleaved<'a>() -> Vec<flush::Task<'a>> {
 
 #[test]
 fn parallel_flush_adopts_in_serial_order_and_its_first_serial_error_wins() {
+    independent::with_test_hourly(check_parallel_flush_order);
+}
+
+fn check_parallel_flush_order() {
     let mut fixture = Fixture::new(&recording());
     let source = fixture.source("flush-order");
     let (store, key) = super::super::super::files(&source, None).unwrap();
@@ -264,6 +268,10 @@ fn parallel_flush_adopts_in_serial_order_and_its_first_serial_error_wins() {
 
 #[test]
 fn a_refusal_reaching_another_task_is_refused_rather_than_published() {
+    independent::with_test_hourly(check_dependent_flush_refusal);
+}
+
+fn check_dependent_flush_refusal() {
     // Identities' refusal reaches territory. Serially territory's later step is
     // skipped; in separate tasks it would already have run, so the parallel
     // flush stops instead of publishing what serial flushing would not.

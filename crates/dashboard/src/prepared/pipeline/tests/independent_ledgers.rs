@@ -196,7 +196,7 @@ fn ledger_frame(branch: u64, hour: i32) -> DecodedFrame {
             ordinal: 0,
             country: COUNTRY,
             variant: 10,
-            units: 3 * line_day,
+            units: 3 * (line_day + 1),
             since_hour: BASE - 100,
             observed_since_creation: true,
             exact: true,
@@ -207,7 +207,12 @@ fn ledger_frame(branch: u64, hour: i32) -> DecodedFrame {
     set(
         &mut observed,
         TableId::RocketProductionOutput,
-        TableRows::RocketProductionOutput(Vec::new()),
+        TableRows::RocketProductionOutput(vec![replay::rows::RocketProductionOutputRow {
+            since_hour: BASE - 100,
+            exact: true,
+            units_exact: true,
+            ..Default::default()
+        }]),
     );
     set(
         &mut observed,
@@ -715,12 +720,9 @@ fn economy_ledgers_answer_from_their_own_coverage_while_the_hourly_walk_accepts_
                 !manifest.is_null(),
                 "branch {branch}: the construction manifest answers"
             );
-            assert!(
-                query(&source, "subjects", serde_json::json!({ "branchId": id }))
-                    .unwrap()
-                    .is_null(),
-                "branch {branch}: a family of the hourly walk still waits"
-            );
+            let pending =
+                query(&source, "subjects", serde_json::json!({ "branchId": id })).unwrap();
+            assert_cold_prefix(&source, branch, &pending);
         }
     });
     clear(source);
@@ -850,7 +852,13 @@ fn production_selections_answer_the_prepared_prefix_with_the_hours_still_pending
         // Commits through the second block, then through the branch's end.
         let mut commit = |writer: &mut store::Writer, offsets: &[i32], last: i32, complete| {
             for &offset in offsets {
-                let frame = ledger_frame(1, BASE + offset);
+                let mut frame = ledger_frame(1, BASE + offset);
+                // This comparison needs type identities supplied in the prefix,
+                // at its first output read, before the native variant slot (+22).
+                // Later classifications deliberately revise provisional keys.
+                if offset == 8 {
+                    frame.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
+                }
                 if let Some(page) = state.ingest(format, &frame, naming.named(), &flag).unwrap() {
                     production::publish_endpoint(writer, &mut state, &page).unwrap();
                 }
@@ -901,7 +909,7 @@ fn production_selections_answer_the_prepared_prefix_with_the_hours_still_pending
         assert!(cold["lastHour"].as_i64().unwrap() >= i64::from(BASE + 11));
         assert!(
             !cold["countries"].as_array().unwrap().is_empty(),
-            "the prefix delivered equipment"
+            "the prefix delivered equipment: {cold}"
         );
         // The prefix's countries are those the complete pages give at its last hour.
         let complete = query(&source, "production-select", selection(BASE + 11)).unwrap();

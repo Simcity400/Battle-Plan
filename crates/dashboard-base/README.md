@@ -744,6 +744,9 @@ Research coverage, slot availability, state and progress, and territory's countr
 and regional fact markers carry equal numeric values through accepted hours.
 Starts, unknowns and supplying events retain their ordinary observations;
 publication materializes the held endpoints.
+Research's allocation charges are runtime state, rebuilt from the restored
+collections before their first observation; continuation bytes hold no process's
+vector or string capacities.
 
 Ordered runs of one numeric key can be pushed together with one accumulator
 state and batch lookup. Their canonical runs, counters and saved bytes match

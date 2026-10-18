@@ -394,7 +394,7 @@ fn query(source: &Source, product: &str, params: serde_json::Value) -> serde_jso
     reply["data"].take()
 }
 
-/// The generals leaderboard's default request, the careers, and one
+/// The generals leaderboard's default request, the choices, and one
 /// general's career, on `branch`.
 fn requests(branch: &str) -> Vec<serde_json::Value> {
     let reference = crate::products::unit_leaders::prepared::test_fixtures::reference(2);
@@ -402,7 +402,7 @@ fn requests(branch: &str) -> Vec<serde_json::Value> {
         serde_json::json!({"branchId": branch, "selection": {"kind": "all"},
             "view": "leaderboard", "leaders": "all"}),
         serde_json::json!({"branchId": branch, "selection": {"kind": "all"},
-            "view": "career"}),
+            "view": "choices"}),
         serde_json::json!({"branchId": branch,
             "selection": {"kind": "leader", "reference": reference.to_string()},
             "view": "career"}),

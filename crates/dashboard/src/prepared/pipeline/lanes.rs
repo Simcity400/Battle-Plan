@@ -124,6 +124,8 @@ pub(super) struct Lanes<'scope> {
     #[cfg(test)]
     hook: Option<Hook>,
     #[cfg(test)]
+    trace_coordinator_families: bool,
+    #[cfg(test)]
     injected: Vec<(&'static str, i32)>,
 }
 
@@ -194,6 +196,21 @@ fn process_affinity_masks_determine_lane_parallelism_without_changing_affinity()
 }
 
 impl<'scope> Lanes<'scope> {
+    /// Coordinator-owned families still report their actual observations to
+    /// the test trace, even though they no longer occupy a lane job.
+    #[cfg(test)]
+    pub(super) fn observed_coordinator(
+        &self,
+        name: &str,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+    ) {
+        if self.trace_coordinator_families
+            && let Some(hook) = &self.hook
+        {
+            hook(name, frame, changes);
+        }
+    }
     pub(super) fn start<'env>(
         scope: &'scope Scope<'scope, 'env>,
         mut jobs: Vec<Job<'scope>>,
@@ -208,6 +225,8 @@ impl<'scope> Lanes<'scope> {
         #[cfg(test)]
         let hook = TEST_HOOK.with(|hook| hook.borrow().clone());
         #[cfg(test)]
+        let trace_coordinator_families = TEST_TRACE_COORDINATOR.with(|value| value.get());
+        #[cfg(test)]
         let injected = TEST_REFUSALS.with(|refusals| refusals.borrow().clone());
         if count == 0 {
             return Self {
@@ -216,6 +235,8 @@ impl<'scope> Lanes<'scope> {
                 refusals: Vec::new(),
                 #[cfg(test)]
                 hook,
+                #[cfg(test)]
+                trace_coordinator_families,
                 #[cfg(test)]
                 injected,
             };
@@ -311,6 +332,8 @@ impl<'scope> Lanes<'scope> {
             refusals: Vec::new(),
             #[cfg(test)]
             hook,
+            #[cfg(test)]
+            trace_coordinator_families,
             #[cfg(test)]
             injected,
         }
@@ -507,8 +530,23 @@ pub(super) type Hook = Arc<dyn Fn(&str, &DecodedFrame, &FrameChanges) -> Fault +
 thread_local! {
     static TEST_PARALLELISM: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     static TEST_HOOK: std::cell::RefCell<Option<Hook>> = const { std::cell::RefCell::new(None) };
+    static TEST_TRACE_COORDINATOR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_REFUSALS: std::cell::RefCell<Vec<(&'static str, i32)>> =
         const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Include coordinator-owned observations when testing family ownership;
+/// ordinary lane traces continue to describe lane jobs alone.
+#[cfg(test)]
+pub(super) fn with_test_coordinator_families<T>(run: impl FnOnce() -> T) -> T {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_TRACE_COORDINATOR.with(|value| value.set(self.0));
+        }
+    }
+    let _reset = Reset(TEST_TRACE_COORDINATOR.with(|value| value.replace(true)));
+    run()
 }
 
 /// Tests inject a family's InvalidData refusal of the frame at an hour, on the

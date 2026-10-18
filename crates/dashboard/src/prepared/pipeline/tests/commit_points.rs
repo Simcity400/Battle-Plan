@@ -60,22 +60,27 @@ fn prepare_answering(
     branches: &[&str],
 ) -> Prepared {
     let source = fixture.source(name);
-    let (mut walk, mut groups) = (Vec::new(), Vec::new());
-    prepass::with_test_prepass(1, hook, || {
-        run(&source, None, &AtomicBool::new(false), |accepted| {
-            push(&mut walk, accepted.next_block);
-            // Status rows count a family prepared on its own by its
-            // committed progress.
-            if let Some(row) = accepted
-                .sections
-                .iter()
-                .find(|row| row.id == "country-groups")
-            {
-                push(&mut groups, row.done.parse().unwrap());
+    let mut walk = Vec::new();
+    let groups = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let published = Arc::clone(&groups);
+    // Status may coalesce several family commits. Observe each actual
+    // publication when checking the family's exact batch boundaries.
+    independent::with_test_on_publish(
+        move |family, next| {
+            if family == "groups" {
+                push(&mut published.lock().unwrap(), next);
             }
-        })
-    })
+        },
+        || {
+            prepass::with_test_prepass(1, hook, || {
+                run(&source, None, &AtomicBool::new(false), |accepted| {
+                    push(&mut walk, accepted.next_block);
+                })
+            })
+        },
+    )
     .unwrap();
+    let groups = std::mem::take(&mut *groups.lock().unwrap());
     let payloads = payloads(&source, None);
     let replies = branches
         .iter()

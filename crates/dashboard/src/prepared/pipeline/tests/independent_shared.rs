@@ -473,6 +473,7 @@ fn each_block_is_read_once_for_every_family_observing_it_hour_by_hour() {
             .map(|(_, observed)| prepass::noted(observed))
             .collect();
         let reads = prepass::noted(shared::SHARED_READ);
+        let deposited = prepass::noted(shared::SHARED_DEPOSITED);
         let apart = prepass::noted(shared::SHARED_ALONE);
         prepass::with_test_prepass(workers, None, || {
             prepass::with_test_sequential(|| families(|| plain(&source)))
@@ -493,7 +494,8 @@ fn each_block_is_read_once_for_every_family_observing_it_hour_by_hour() {
             }
         }
         assert_eq!(
-            prepass::noted(shared::SHARED_READ) - reads,
+            prepass::noted(shared::SHARED_READ) - reads + prepass::noted(shared::SHARED_DEPOSITED)
+                - deposited,
             replay.index.len(),
             "{label}: every block read once for all three families"
         );
@@ -555,7 +557,11 @@ fn shared_reads_hold_to_their_budget_and_are_timed_apart() {
     .unwrap();
     let rows = timings.families.expect("a measured run's timing rows");
     let blocks = replay.index.len() as u64;
-    assert_eq!(rows[shared::SHARED_READ].calls, blocks, "shared reads");
+    assert_eq!(
+        rows[shared::SHARED_READ].calls + rows[shared::SHARED_DEPOSITED].calls,
+        blocks,
+        "shared reads, including those deposited by the pre-pass"
+    );
     for row in ["occupation.read"] {
         assert_eq!(rows[row].calls, blocks, "{row}");
     }

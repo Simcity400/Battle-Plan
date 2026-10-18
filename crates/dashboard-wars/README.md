@@ -25,6 +25,8 @@ block folds invalidate the extract's local numbering. The casualty scan
 likewise retains its supplying-pair set until its joined lifetime keys
 change, including across a non-read hour. Hourly counter, unknown-loss and
 coverage steps still run with their original supplying evidence.
+Unknown-loss agreement scratch is local to a read; continuations retain its
+settled total and seen flag, and each new read initializes its own scratch.
 
 `cargo test -p dashboard-wars` builds and runs only these products' tests. The
 `test-support` feature compiles their test oracles, instrumentation and the

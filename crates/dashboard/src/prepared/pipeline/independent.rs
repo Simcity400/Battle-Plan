@@ -2481,6 +2481,12 @@ struct Counts {
     #[cfg(test)]
     notes: BTreeMap<&'static str, usize>,
     #[cfg(test)]
+    kept: BTreeMap<&'static str, (usize, usize)>,
+    #[cfg(test)]
+    economy: BTreeMap<&'static str, economy::Counts>,
+    #[cfg(test)]
+    naval_saves: Vec<usize>,
+    #[cfg(test)]
     groups: (usize, usize),
     #[cfg(test)]
     air_ledger: (usize, usize),
@@ -2493,6 +2499,12 @@ impl Counts {
             #[cfg(test)]
             notes: prepass::notes(),
             #[cfg(test)]
+            kept: dashboard_base::prepared::kept::counts(),
+            #[cfg(test)]
+            economy: economy::all_counts(),
+            #[cfg(test)]
+            naval_saves: windowed::take_naval_saves(),
+            #[cfg(test)]
             groups: country_groups::prepared::counts(),
             #[cfg(test)]
             air_ledger: crate::products::military_air_ledger::prepared::counts(),
@@ -2504,6 +2516,9 @@ impl Counts {
         #[cfg(test)]
         {
             prepass::add_notes(&self.notes);
+            dashboard_base::prepared::kept::add_counts(&self.kept);
+            economy::add_counts(&self.economy);
+            windowed::add_naval_saves(self.naval_saves);
             country_groups::prepared::add_counts(self.groups);
             crate::products::military_air_ledger::prepared::add_counts(self.air_ledger);
         }
@@ -2516,6 +2531,7 @@ impl Counts {
 struct TestContext {
     refusals: Vec<(&'static str, i32)>,
     reload: bool,
+    batch_blocks: Option<usize>,
     registry: TestRegistry,
 }
 
@@ -2553,6 +2569,7 @@ impl TestContext {
         Self {
             refusals: lanes::test_refusals(),
             reload: super::RELOAD_FLUSHED.with(std::cell::Cell::get),
+            batch_blocks: super::TEST_BATCH_BLOCKS.with(std::cell::Cell::get),
             registry: test_registry(),
         }
     }
@@ -2567,6 +2584,7 @@ impl TestContext {
         }
         lanes::set_test_refusals(self.refusals);
         super::RELOAD_FLUSHED.with(|flag| flag.set(self.reload));
+        super::TEST_BATCH_BLOCKS.with(|blocks| blocks.set(self.batch_blocks));
         self.registry.install();
         Installed
     }

@@ -285,6 +285,31 @@ fn incremental_history_budget_matches_full_accounting_over_a_campaign() {
         history_bytes(&country.history)
     );
     let mut countries = BTreeMap::from([("ENG".into(), country)]);
+    let mut scan = super::Scan {
+        countries,
+        ..Default::default()
+    };
+    scan.begin_hour(2_100);
+    let saved = serde_json::to_vec(&scan).unwrap();
+    let mut restored: super::Scan = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(restored.bytes, 0, "allocation charges are process-local");
+    restored.begin_hour(2_101);
+    for country in restored.countries.values() {
+        assert_eq!(
+            country.retained_bytes + 128,
+            history_bytes(&country.history)
+        );
+        assert_eq!(country.budget_bytes, super::country_bytes(country));
+    }
+    assert_eq!(
+        restored.bytes,
+        restored
+            .countries
+            .values()
+            .map(super::country_bytes)
+            .sum::<usize>()
+    );
+    countries = restored.countries;
     countries.get_mut("ENG").unwrap().retained_bytes = MAX_BYTES;
     assert!(check_budget(&countries).is_err());
 }
@@ -939,7 +964,14 @@ fn repeated_handle_assignments_do_not_complete_transfer_or_share_progress() {
         ..Default::default()
     };
     country.read_after = Some(24);
-    country.observe_inputs((7, 7), 48, &[&later], Some(&Inventory::Table(&[former])), Some(&[]), None);
+    country.observe_inputs(
+        (7, 7),
+        48,
+        &[&later],
+        Some(&Inventory::Table(&[former])),
+        Some(&[]),
+        None,
+    );
     let slot = &country.history.slots[0];
     assert_eq!(slot.entries.len(), 2);
     assert_eq!(slot.entries[0].outcome, ResearchOutcome::Switched);
@@ -960,7 +992,14 @@ fn repeated_handle_assignments_do_not_complete_transfer_or_share_progress() {
     let mut idle = later.clone();
     idle.technology_present = 0;
     country.read_after = Some(48);
-    country.observe_inputs((7, 7), 72, &[&idle], Some(&Inventory::Table(&[unrelated])), Some(&[]), None);
+    country.observe_inputs(
+        (7, 7),
+        72,
+        &[&idle],
+        Some(&Inventory::Table(&[unrelated])),
+        Some(&[]),
+        None,
+    );
     assert_eq!(
         country.history.slots[0].entries[0].outcome,
         ResearchOutcome::Switched
@@ -1156,7 +1195,14 @@ fn completed_same_name_occurrence_cannot_supply_former_assignment_progress() {
         progress_raw: 100_000,
         ..Default::default()
     };
-    country.observe_inputs((7, 7), 1, &[&completed], Some(&Inventory::Table(&[former])), Some(&[]), None);
+    country.observe_inputs(
+        (7, 7),
+        1,
+        &[&completed],
+        Some(&Inventory::Table(&[former])),
+        Some(&[]),
+        None,
+    );
     let slot = &country.history.slots[0];
     assert_eq!(slot.entries.len(), 1);
     assert_eq!(slot.entries[0].outcome, ResearchOutcome::Switched);

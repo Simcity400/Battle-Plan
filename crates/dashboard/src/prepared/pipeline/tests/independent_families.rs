@@ -139,6 +139,7 @@ struct Hours {
 
 /// Each fold's family key, thread and observed hours.
 static SEEN: Mutex<Vec<(&'static str, ThreadId, Vec<i32>)>> = Mutex::new(Vec::new());
+static PARITY_TEST: Mutex<()> = Mutex::new(());
 
 fn seen(key: &str) -> Vec<(ThreadId, Vec<i32>)> {
     SEEN.lock()
@@ -528,6 +529,9 @@ fn family_coverage(payloads: &Payloads, family: &str, branch: u64) -> Option<Cov
 
 #[test]
 fn families_prepared_on_their_own_at_once_publish_what_they_publish_one_after_another() {
+    let _test = PARITY_TEST
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let first = recording(2, false);
     let grown = recording(3, true);
     let families = registered(&[&PARITY_ALPHA, &PARITY_BETA]);
@@ -711,14 +715,16 @@ fn a_family_that_fails_or_refuses_leaves_the_others_coverage_and_pages_committed
 
 #[test]
 fn the_registry_decides_what_the_hourly_walk_skips_keeps_and_gates() {
-    // The identities: prepared on their own, still observed hourly for
-    // territory under its names. The groups' reader, air superiority, is
-    // prepared on its own with its own read of them, and every other
-    // registered family is read by no other family in the same hour, so the
-    // walk skips it.
-    let kept = ["identities"];
+    // Every registered family's readers are prepared on their own too,
+    // including territory and the event feed's reads of the identities.
+    // The walk therefore keeps none of these families for another reader.
+    let kept: [&str; 0] = [];
     let names = independent::names();
-    assert!(kept.iter().all(|name| names.contains(name)));
+    assert!(
+        ["identities", "territory"]
+            .iter()
+            .all(|name| names.contains(name))
+    );
     for &name in &names {
         assert!(independent::registered(name));
         assert_eq!(independent::hourly(name), kept.contains(&name), "{name}");
@@ -877,6 +883,9 @@ fn prepared_twice(fixture: &mut Fixture, first: &Replay, grown: &Replay, resume:
 
 #[test]
 fn group_commits_publish_what_each_family_committing_alone_publishes() {
+    let _test = PARITY_TEST
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let first = recording(2, false);
     let grown = recording(3, true);
     let families = registered(&[&PARITY_ALPHA, &PARITY_BETA, &GROUPED_READER]);
@@ -1011,7 +1020,11 @@ fn a_family_failing_inside_a_group_commit_leaves_the_others_batches_committed() 
         let progress = &checkpoint["independent"];
         assert_eq!(progress["alpha"]["next_block"], 4, "{label}");
         assert_eq!(progress["reader"]["next_block"], 1, "{label}");
-        assert!(progress.get("beta").is_none(), "{label}");
+        assert_eq!(
+            progress["beta"],
+            serde_json::to_value(independent::Progress::default()).unwrap(),
+            "{label}: the rejected family remains pending without an accepted batch"
+        );
         // Four store commits: the first held alpha's and the reader's
         // batches, then alpha committed alone at each later block.
         assert_eq!(publications, (4, 5), "{label}");
@@ -1029,6 +1042,9 @@ struct Overlap {
 }
 
 static OVERLAP_TEST: Mutex<()> = Mutex::new(());
+// Deadlock detection for event-order proofs, allowing other pipeline tests to
+// use the shared compile/test machine. This is not a preparation speed bound.
+const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(30);
 
 static OVERLAP: (Mutex<Overlap>, std::sync::Condvar) = (
     Mutex::new(Overlap {
@@ -1051,14 +1067,11 @@ fn hold_second_fold(hour: i32) {
     state.waiting = true;
     changed.notify_all();
     let (state, _) = changed
-        .wait_timeout_while(state, Duration::from_secs(2), |state| {
-            state.walk_commits == 0
-        })
+        .wait_timeout_while(state, HANDSHAKE_DEADLINE, |state| state.walk_commits == 0)
         .unwrap();
-    assert!(
-        state.walk_commits > 0,
-        "the walk waited for the family's second fold"
-    );
+    let committed = state.walk_commits > 0;
+    drop(state);
+    assert!(committed, "the walk waited for the family's second fold");
 }
 
 static OVERLAPPING_ALPHA: Hours = Hours {
@@ -1076,7 +1089,9 @@ static OVERLAPPING_ALPHA: Hours = Hours {
 /// product page matches the families-first reference.
 #[test]
 fn walk_commits_while_a_family_is_still_folding_and_keeps_every_page() {
-    let _test = OVERLAP_TEST.lock().unwrap();
+    let _test = OVERLAP_TEST
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let replay = recording(3, false);
     let mut fixture = Fixture::new(&replay);
     let families = registered(&[&OVERLAPPING_ALPHA]);
@@ -1122,7 +1137,7 @@ fn walk_commits_while_a_family_is_still_folding_and_keeps_every_page() {
                     return;
                 }
                 let (mut state, _) = changed
-                    .wait_timeout_while(state, Duration::from_secs(2), |state| !state.waiting)
+                    .wait_timeout_while(state, HANDSHAKE_DEADLINE, |state| !state.waiting)
                     .unwrap();
                 assert!(
                     state.waiting && !complete,
@@ -1158,7 +1173,9 @@ fn walk_commits_while_a_family_is_still_folding_and_keeps_every_page() {
 /// reopen the recording with or without growth. Count the actual folds and
 /// walk blocks: rebuilding accepted work must fail even if the final pages agree.
 fn resume_separate_prefixes(family_leads: bool, append: bool) {
-    let _test = OVERLAP_TEST.lock().unwrap();
+    let _test = OVERLAP_TEST
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let replay = recording(3, false);
     let mut fixture = Fixture::new(&replay);
     let source = fixture.source("separate-prefixes");
@@ -1192,7 +1209,7 @@ fn resume_separate_prefixes(family_leads: bool, append: bool) {
                     let (state, changed) = &OVERLAP;
                     let state = state.lock().unwrap();
                     let (mut state, _) = changed
-                        .wait_timeout_while(state, Duration::from_secs(2), |state| !state.waiting)
+                        .wait_timeout_while(state, HANDSHAKE_DEADLINE, |state| !state.waiting)
                         .unwrap();
                     assert!(state.waiting);
                     cancelled.store(true, Ordering::Release);
@@ -1357,9 +1374,11 @@ fn wait_for_walk_batch(_: i32) {
         return;
     }
     let (state, _) = changed
-        .wait_timeout_while(state, Duration::from_secs(2), |state| !state.walk_started)
+        .wait_timeout_while(state, HANDSHAKE_DEADLINE, |state| !state.walk_started)
         .unwrap();
-    assert!(state.walk_started, "walk batch never started");
+    let started = state.walk_started;
+    drop(state);
+    assert!(started, "walk batch never started");
 }
 
 static PUBLISHING_ALPHA: Hours = Hours {
@@ -1377,7 +1396,9 @@ static PUBLISHING_ALPHA: Hours = Hours {
 /// An owned writer (or a fork counted throughout preparation) cannot pass.
 #[test]
 fn families_publish_multiple_batches_while_one_walk_batch_is_in_progress() {
-    let _test = OVERLAP_TEST.lock().unwrap();
+    let _test = OVERLAP_TEST
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let replay = recording(3, false);
     let mut fixture = Fixture::new(&replay);
     let families = registered(&[&PUBLISHING_ALPHA]);
@@ -1410,7 +1431,7 @@ fn families_publish_multiple_batches_while_one_walk_batch_is_in_progress() {
                 state.walk_started = true;
                 changed.notify_all();
                 let (state, _) = changed
-                    .wait_timeout_while(state, Duration::from_secs(2), |state| {
+                    .wait_timeout_while(state, HANDSHAKE_DEADLINE, |state| {
                         state.publications.len() < 2
                     })
                     .unwrap();
@@ -1502,7 +1523,9 @@ fn runner_walk_progresses_at_family_priority_while_a_family_is_still_running() {
     use windows_sys::Win32::System::Threading::{
         GetCurrentThread, GetThreadPriority, THREAD_PRIORITY_NORMAL,
     };
-    let _test = OVERLAP_TEST.lock().unwrap();
+    let _test = OVERLAP_TEST
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     *OVERLAP.0.lock().unwrap() = Overlap {
         enabled: true,
         at: 104,
@@ -1542,7 +1565,7 @@ fn runner_walk_progresses_at_family_priority_while_a_family_is_still_running() {
                                 return;
                             }
                             let (mut state, _) = changed
-                                .wait_timeout_while(state, Duration::from_secs(2), |state| {
+                                .wait_timeout_while(state, HANDSHAKE_DEADLINE, |state| {
                                     !state.waiting
                                 })
                                 .unwrap();

@@ -806,7 +806,18 @@ fn cancelled_newest_diagnostics_resume_after_forward_completion() {
     );
     let (saved, _) = checkpoint(&store, &key, None).unwrap().unwrap();
     assert!(saved.forward_complete(replay.index.len()));
-    assert!(land_battles::newest::published(&store, &key, &replay, 1).unwrap());
+    let proven = land_battles::newest::query(
+        &source,
+        "land-battles",
+        1,
+        &json!({"branchId":"1", "window":3}),
+        &store,
+        &key,
+    )
+    .unwrap()
+    .expect("the proven page survives cancellation");
+    assert_eq!(proven["warningsComplete"], false);
+    assert!(!land_battles::newest::published(&store, &key, &replay, 1).unwrap());
     let diagnostics = "land-battle-newest-diagnostics-1";
     assert!(store.read(&key, diagnostics, 0).unwrap().is_none());
     flag.store(false, Ordering::Release);

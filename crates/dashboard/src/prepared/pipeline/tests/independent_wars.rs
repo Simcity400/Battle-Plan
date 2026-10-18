@@ -184,6 +184,7 @@ fn joined_frame(branch: u64, hour: i32) -> DecodedFrame {
                 ..Default::default()
             });
         }
+        rows.sort_by_key(|row| (row.owner, row.ordinal));
     }
     frame
 }

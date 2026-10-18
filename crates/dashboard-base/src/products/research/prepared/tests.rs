@@ -24,9 +24,8 @@ fn cold_and_prefix_research_states_match_prepared_values_at_the_supplying_read()
         })
         .collect();
     let (memory, context) = source_with_content(frames.clone(), &folder.0);
-    let (source, root) = file_source(
-        replay::container::Replay::open(memory.replay_ref().bytes().to_vec()).unwrap(),
-    );
+    let (source, root) =
+        file_source(replay::container::Replay::open(memory.replay_ref().bytes().to_vec()).unwrap());
     let (store, key) = crate::prepared::files(&source, context.content.as_ref()).unwrap();
     let flag = AtomicBool::new(false);
     let params = serde_json::json!({ "branchId": "1", "family": { "kind": "research" }, "reads": [{ "tag": "GER", "hour": 149 }] });
@@ -996,7 +995,10 @@ fn research_rows_observation_matches_whole_tables_and_reference_across_keyframe_
 fn cold_research_keeps_unavailable_slots_instead_of_reporting_no_slots() {
     use crate::test_fixtures::{file_source, source_with_content};
     engine::executable_tables::initialize_for_tests().unwrap();
-    let (_catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[]);
+    let (_catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[(
+        "common/terrain/mod.txt",
+        "categories={mod_ground={movement_cost=1}}",
+    )]);
     let mut frames = vec![
         sliced_research_frame(100, 100, &[Some(1), None]),
         sliced_research_frame(101, 100, &[Some(1), None]),
@@ -1005,9 +1007,8 @@ fn cold_research_keeps_unavailable_slots_instead_of_reporting_no_slots() {
         reason: "synthetic missed inputs".into(),
     };
     let (memory, context) = source_with_content(frames.clone(), &folder.0);
-    let (source, root) = file_source(
-        replay::container::Replay::open(memory.replay_ref().bytes().to_vec()).unwrap(),
-    );
+    let (source, root) =
+        file_source(replay::container::Replay::open(memory.replay_ref().bytes().to_vec()).unwrap());
     let (store, key) = crate::prepared::files(&source, context.content.as_ref()).unwrap();
     let flag = AtomicBool::new(false);
     let params = serde_json::json!({"branchId":"1", "reads":[{"tag":"GER", "hour":101}]});

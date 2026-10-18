@@ -156,6 +156,7 @@ fn history_bytes(history: &ResearchHistory) -> usize {
 #[derive(Default, Serialize, Deserialize)]
 struct Country {
     carry_until: Option<i32>,
+    #[serde(skip)]
     budget_bytes: usize,
     identity: Option<(u32, u32)>,
     continuity_start_hour: i32,
@@ -167,6 +168,7 @@ struct Country {
     samples: BTreeMap<u32, VecDeque<(i32, ProgressSample)>>,
     pending: Vec<(u32, usize, u32, i32, i32)>,
     /// Append-only retained allocations, excluding the fixed history header.
+    #[serde(skip)]
     retained_bytes: usize,
     /// The sample hour of the last observed research read.
     last_read: Option<i32>,
@@ -1371,7 +1373,10 @@ pub(crate) struct Scan {
     countries: BTreeMap<String, Country>,
     last_bad: Option<i32>,
     last_frame: Option<i32>,
+    #[serde(skip)]
     bytes: usize,
+    #[serde(skip)]
+    budget_ready: bool,
     #[serde(skip)]
     country_reads: Option<super::territory::CountryReads>,
     /// How many Countries rows `country_reads` was read from.
@@ -1524,7 +1529,8 @@ impl Scan {
         };
         self.ready = true;
         self.indexed = Some(hour);
-        let slots = slots.ok_or_else(|| io::Error::other("Refreshed research holders are missing"))?;
+        let slots =
+            slots.ok_or_else(|| io::Error::other("Refreshed research holders are missing"))?;
         self.apply(
             hour,
             previous,
@@ -1599,6 +1605,17 @@ impl Scan {
     /// deadlines it reaches, a gap ends every carry, and the hour becomes the
     /// last observed. The hour before it observed, if any.
     fn begin_hour(&mut self, hour: i32) -> Option<i32> {
+        // Allocation capacities belong to this process. Restored vectors need
+        // their own memory charge, without persisting it in the continuation.
+        if !self.budget_ready {
+            self.bytes = 0;
+            for country in self.countries.values_mut() {
+                country.retained_bytes = history_bytes(&country.history) - 128;
+                country.budget_bytes = country_bytes(country);
+                self.bytes += country.budget_bytes;
+            }
+            self.budget_ready = true;
+        }
         self.observed.clear();
         if !self.ready {
             self.deadlines = self

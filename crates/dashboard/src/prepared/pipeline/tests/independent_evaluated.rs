@@ -590,8 +590,8 @@ fn evaluated_families_prepared_on_their_own_refuse_where_hourly_preparation_does
                 let label = format!("{} refused at +{at}", case.family);
                 assert_eq!(
                     sequential(case) - before,
-                    1,
-                    "{label}: the refusing block is observed hour by hour"
+                    usize::from(case.family != OCCUPATION.family),
+                    "{label}: pooled extracts fall back; occupation already reads hour by hour"
                 );
                 let own = payloads(&source, None);
                 assert_same(case, &own, &hourly, &label, true);
@@ -684,12 +684,9 @@ fn evaluated_families_answer_from_their_own_coverage_while_the_hourly_walk_accep
                 let (product, params) = (case.request)(&id);
                 let reply = query(&source, product, params).unwrap();
                 assert!(!reply.is_null(), "{label}: {product} answers");
-                assert!(
-                    query(&source, "subjects", serde_json::json!({ "branchId": id }))
-                        .unwrap()
-                        .is_null(),
-                    "{label}: a family of the hourly walk still waits"
-                );
+                let pending =
+                    query(&source, "subjects", serde_json::json!({ "branchId": id })).unwrap();
+                assert_cold_prefix(&source, branch, &pending);
             }
         });
         clear(source);
@@ -896,16 +893,39 @@ fn research_falls_back_to_the_rest_of_the_block_as_hourly_preparation() {
     let replay = full(&RESEARCH);
     let mut fixture = Fixture::new(&replay);
     let hourly = hourly(&mut fixture, "research-fallback", plain);
+    // This scenario also has an ordinary fallback when its carried read can
+    // no longer prove the worker's index. Count that separately from injection.
+    let ordinary = own(&RESEARCH, || {
+        independent::with_test_one_after_another(|| {
+            let control = fixture.source("research-fallback-control");
+            let before = prepass::noted("research.fallback");
+            prepass::with_test_prepass(2, None, || plain(&control));
+            let count = prepass::noted("research.fallback") - before;
+            assert_same(
+                &RESEARCH,
+                &payloads(&control, None),
+                &hourly,
+                "unforced fallback",
+                false,
+            );
+            clear(control);
+            count
+        })
+    });
     let source = fixture.source("research-fallback");
     let fallbacks = prepass::noted("research.fallback");
     own(&RESEARCH, || {
-        with_forced_fallback(&[BASE + 13, BASE + 26, BASE + 45, BASE + 203], || {
-            prepass::with_test_prepass(2, None, || plain(&source))
+        // The injection belongs to the fold's thread; keep that fold on this
+        // thread while its block extracts still run on the pre-pass workers.
+        independent::with_test_one_after_another(|| {
+            with_forced_fallback(&[BASE + 13, BASE + 26, BASE + 45, BASE + 203], || {
+                prepass::with_test_prepass(2, None, || plain(&source))
+            })
         })
     });
     assert_eq!(
         prepass::noted("research.fallback") - fallbacks,
-        4,
+        ordinary + 4,
         "every forced hour fell back"
     );
     assert_same(
@@ -1079,6 +1099,27 @@ fn special_projects_read_the_trigger_kit_only_where_content_can_evaluate_scoped_
 /// hour and the projects table is not read at +20 to +22.
 fn quiet_projects_at(hour: i32) -> DecodedFrame {
     let mut frame = with_scope_tables(projects_at(1, hour));
+    // Unavailable watched tables are deliberately retried, rather than
+    // proving quiet hours. This scenario has no other trigger-world entities,
+    // scientists or portraits, so record their complete empty tables too.
+    for &table in crate::products::special_projects::prepared::block::tables(true) {
+        if matches!(&*frame.tables[table.index()], TableView::Unavailable { .. }) {
+            let rows = match table {
+                TableId::LocalPlayer => TableRows::LocalPlayer(vec![Default::default()]),
+                TableId::SimulationFeatures => {
+                    TableRows::SimulationFeatures(vec![Default::default()])
+                }
+                TableId::ReservedCountryNaming => {
+                    TableRows::ReservedCountryNaming(vec![Default::default()])
+                }
+                _ => {
+                    assert_ne!(table.key_bits(), 0, "add the {table:?} singleton fixture");
+                    TableRows::empty(table)
+                }
+            };
+            *frame.tables[table.index()] = TableView::Complete(rows);
+        }
+    }
     let first = projects_at(1, BASE);
     for table in [
         TableId::Projects,
@@ -1100,6 +1141,10 @@ fn quiet_projects_at(hour: i32) -> DecodedFrame {
 /// every recorded hour once, and observes quiet hours on the last kept
 /// frame rather than reading them.
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn special_projects_fold_quiet_hours_and_an_equal_dictionary_read_again_as_hourly_preparation() {
     use replay::{frame::TableUpdate, spool::Record};
     engine::executable_tables::initialize_for_tests()
@@ -1508,8 +1553,22 @@ fn occupation_states_and_first_daily_samples_match_preparation_while_identity_hi
             .iter()
             .filter(|block| block.branch == 1)
         {
-            let Some(hour) = (block.first_hour..=block.last_hour)
-                .find(|&hour| occupation_read(offset(1, hour)) == offset(1, hour))
+            // The native daily slot is also a supplying read, even between
+            // this fixture's explicit six-hour acquisitions.
+            let Some(hour) = source
+                .replay_ref()
+                .read_block_selected(block, &[])
+                .unwrap()
+                .iter()
+                .find(|frame| {
+                    crate::metadata::slot_read(
+                        source.replay_ref().format,
+                        &frame.metrics,
+                        TableId::StateResistance,
+                        frame.hour,
+                    )
+                })
+                .map(|frame| frame.hour)
             else {
                 continue;
             };

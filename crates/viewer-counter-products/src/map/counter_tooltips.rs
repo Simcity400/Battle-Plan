@@ -2328,7 +2328,8 @@ mod tests {
     fn division_arrival_words_the_estimate_of_the_stored_route() {
         use installed_content::movement::{MovementMap, Neighbour, ProvinceTerrain};
         use viewer_foundation::movement_timing::{
-            Etas, MovementContent, arrival as movement_timing_arrival,
+            Etas, LandSpeedContent, MovementContent, arrival as movement_timing_arrival,
+            test_support::{neutral_status, neutral_world},
         };
         let land = ProvinceTerrain { flags: 1, index: 1 };
         let content = MovementContent {
@@ -2350,13 +2351,44 @@ mod tests {
             },
             rail: Err("unrelated railway defines".into()),
             task_force_terrain: Err("unrelated task-force terrain".into()),
-            land: Err("unrelated land movement terrain is unavailable".into()),
+            land: Ok(LandSpeedContent {
+                terrain_movement: vec![0],
+                ..Default::default()
+            }),
         };
         let loc = loc();
         let vision = Vision::sharing(1, []);
         let names = installed_content::division_names::Database::default();
         let units = Err("unused".into());
         let mut frame = frame(true);
+        // Arrival composes all recorded speed terms; keep everything but the
+        // base speed neutral while preserving the counter's status text.
+        let status = frame
+            .complete::<tables::DivisionStatus>()
+            .unwrap()
+            .iter()
+            .map(|status| DivisionStatusRow {
+                maximum_organisation: status.maximum_organisation,
+                maximum_hit_points: status.maximum_hit_points,
+                strength_factor: status.strength_factor,
+                name: status.name.clone(),
+                naming: status.naming.clone(),
+                ..neutral_status(status.division, 1)
+            })
+            .collect();
+        put(&mut frame, TableRows::DivisionStatus(status));
+        put(
+            &mut frame,
+            TableRows::Provinces(
+                [3, 4]
+                    .map(|id| ProvinceRow {
+                        id,
+                        ..Default::default()
+                    })
+                    .into(),
+            ),
+        );
+        neutral_world(&mut frame, 11);
         // 2900000 over 100000 per hour is 29 hours; 400000 of progress is
         // 4 hours behind. A slower stat block still moves at the 1 km/h floor.
         for (base_speed, ours, expected) in [
@@ -2383,6 +2415,8 @@ mod tests {
                     path: vec![4],
                     numerator: 400_000,
                     base_speed,
+                    withdrawal: Recorded::Value(Some(0)),
+                    fuel: Recorded::Value(Some(0)),
                     ..Default::default()
                 }]),
             );

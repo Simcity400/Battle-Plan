@@ -115,17 +115,19 @@ fn prepare(
     through_hours: u64,
 ) {
     let hook = other.map(|other| other_consumer(source, options, other));
-    lanes::with_test_lanes(parallelism, hook, || {
-        run_measured_through(
-            source,
-            Some(options),
-            &AtomicBool::new(false),
-            false,
-            Duration::ZERO,
-            Some(through_hours),
-            |_| Ok(()),
-            |_| {},
-        )
+    independent::with_test_hourly(|| {
+        lanes::with_test_lanes(parallelism, hook, || {
+            run_measured_through(
+                source,
+                Some(options),
+                &AtomicBool::new(false),
+                false,
+                Duration::ZERO,
+                Some(through_hours),
+                |_| Ok(()),
+                |_| {},
+            )
+        })
     })
     .unwrap();
     if other.is_some() {
@@ -276,9 +278,10 @@ fn served(
         product: product.into(),
         params,
     };
-    let reply =
+    let reply = independent::with_test_hourly(|| {
         super::super::super::query::query(source, &request, Some(options), &AtomicBool::new(false))
-            .unwrap_or_else(|error| panic!("{product}: {error}"));
+            .unwrap_or_else(|error| panic!("{product}: {error}"))
+    });
     let mut reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
     reply["data"].take()
 }

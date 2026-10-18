@@ -2618,6 +2618,23 @@ fn sections(fixture: &Fixture) -> BTreeMap<(String, u64), Vec<u8>> {
     result
 }
 
+// Joins may defer capture witnesses until a block/publication boundary. Compare
+// their complete materialized state without changing either observer's path.
+fn same_materialized_join(
+    left: &super::super::inputs::Inputs,
+    right: &super::super::inputs::Inputs,
+    hour: i32,
+) -> bool {
+    let (mut left, mut right) = (left.clone(), right.clone());
+    left.materialize_advance();
+    right.materialize_advance();
+    // Advancing captures deliberately remove boundaries that already fired;
+    // a rebuilt join can still retain them. Every future deadline must match.
+    left.deadlines.retain(|&at, _| at > hour);
+    right.deadlines.retain(|&at, _| at > hour);
+    left.same_join(&right)
+}
+
 /// Each country's daily gain of `day`, its native application and cost,
 /// and the political power event it applies.
 fn daily_gain(
@@ -2686,6 +2703,20 @@ fn advancing_hour(
     power: &mut Vec<CountryPowerChangeRow>,
 ) {
     let hour = input.hour;
+    // Quiet allocator names require known naming tables. Unavailable reads
+    // deliberately revisit retained holders even if their amounts did not move.
+    for table in [
+        TableId::Characters,
+        TableId::UnitLeaders,
+        TableId::LexicalTokens,
+    ] {
+        if matches!(
+            &*input.tables[table.index()],
+            replay::frame::TableView::Unavailable { .. }
+        ) {
+            put(input, TableRows::empty(table));
+        }
+    }
     let days: Vec<(u32, u32, i32)> = if hour >= 72 {
         vec![(1, 1, 72), (3, 2, 72)]
     } else if hour >= 48 {
@@ -3185,6 +3216,15 @@ fn assert_daily_changes_observe_only_their_owners(count: u32) {
         }
         days.sort_by_key(|row| row.country);
         costs.sort_by_key(|row| (row.country, row.ordinal));
+        // The recorded daily net must remain the wrapping gross-minus-cost
+        // identity, including this fixture's wrapping cost and zero-cost edits.
+        for day in &mut days {
+            day.pp_net_gain_raw = Some(
+                day.pp_gross_gain_raw
+                    .unwrap()
+                    .wrapping_sub(day.pp_cost_raw.unwrap()),
+            );
+        }
         put(&mut input, TableRows::CountryPowerDaily(days.clone()));
         put(&mut input, TableRows::CountryPowerDailyCosts(costs.clone()));
         for (at, table) in [
@@ -3239,7 +3279,7 @@ fn assert_daily_changes_observe_only_their_owners(count: u32) {
         }
         let [rows, whole] = &observers;
         assert!(
-            rows.scan.inputs.same_join(&whole.scan.inputs),
+            same_materialized_join(&rows.scan.inputs, &whole.scan.inputs, hour),
             "join at {hour}"
         );
         if ![27, 35].contains(&hour) {
@@ -3526,10 +3566,7 @@ fn prepared_accounting_follows_changed_rows_within_one_owners_retained_publicati
             aggregate[index] = observer.scan.inputs.aggregate_visits - joined;
         }
         assert!(
-            observers[0]
-                .scan
-                .inputs
-                .same_join(&observers[1].scan.inputs),
+            same_materialized_join(&observers[0].scan.inputs, &observers[1].scan.inputs, hour),
             "aggregates at {hour}"
         );
         if hour == 25 {
@@ -3692,7 +3729,20 @@ fn retained_daily_projection_keeps_bytes_across_membership_refusals_days_and_res
                 }
                 .into();
         }
-        // Every owner stays dirty, including hours whose daily operands hold.
+        // Changing allocation totals keep every owner dirty, including hours
+        // whose daily operands hold. Capture movement alone is an advance.
+        put(
+            &mut input,
+            TableRows::CountryCommandPower(
+                (1..=4)
+                    .map(|canonical_slot| CountryCommandPowerRow {
+                        canonical_slot,
+                        allocated_command_power_raw: i64::from(hour),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+        );
         put(
             &mut input,
             TableRows::PoliticsCaptureCoverage(
@@ -4086,7 +4136,18 @@ fn shared_tags_slots_and_aliases_keep_ordinary_capture_accounting_bytes() {
                     .for_each(|row| row.tag = b"DUP".to_vec()),
                 1 => links[1].canonical_slot = 1,
                 2 => {
-                    countries[1].canonical_slot = 1;
+                    // The codec refuses duplicate census slots. Keep that
+                    // refusal checked, then exercise the valid cross-slot
+                    // alias through its recorded native links instead.
+                    let mut invalid = input.clone();
+                    let mut duplicate = countries.clone();
+                    duplicate[1].canonical_slot = 1;
+                    put(&mut invalid, TableRows::Countries(duplicate));
+                    let error = replay::frame::FrameEncoder::new()
+                        .encode(invalid, true)
+                        .unwrap_err();
+                    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                    assert!(error.to_string().contains("duplicate canonical slots"));
                     links = vec![CountryLinkRow {
                         id: 2,
                         canonical_slot: 1,

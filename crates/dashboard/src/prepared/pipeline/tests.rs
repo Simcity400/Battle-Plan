@@ -110,6 +110,41 @@ fn complete(
         .is_some_and(|range| range.complete))
 }
 
+/// A first view may sample the tail, but no hour is accepted before its
+/// family's first publication. Every recorded tail hour stays explicitly
+/// approximate or pending, and neither mark invents hours inside a gap.
+fn assert_cold_prefix(source: &Source, branch: u64, reply: &serde_json::Value) {
+    let replay = source.replay_ref();
+    let mut recorded = std::collections::BTreeSet::new();
+    for block in replay.index.iter().filter(|block| block.branch == branch) {
+        recorded.extend(block.first_hour..=block.last_hour);
+    }
+    for gap in replay.gaps.iter().filter(|gap| gap.branch == branch) {
+        for hour in gap.first_hour..=gap.last_hour {
+            recorded.remove(&hour);
+        }
+    }
+    let first = *recorded.first().unwrap();
+    assert_eq!(
+        reply["coverage"],
+        serde_json::json!({"schema": SCHEMA, "firstHour": first,
+            "lastHour": first - 1, "complete": false}),
+        "{reply}"
+    );
+    let mut marked = std::collections::BTreeSet::new();
+    for field in ["approximate", "pending"] {
+        for span in reply[field].as_array().unwrap() {
+            let first = i32::try_from(span["firstHour"].as_i64().unwrap()).unwrap();
+            let last = i32::try_from(span["lastHour"].as_i64().unwrap()).unwrap();
+            assert!(first <= last, "{field}: {span}");
+            for hour in first..=last {
+                assert!(marked.insert(hour), "{field}: overlapping mark at {hour}");
+            }
+        }
+    }
+    assert_eq!(marked, recorded, "{reply}");
+}
+
 #[test]
 #[cfg_attr(
     not(feature = "slow-tests"),
@@ -2565,8 +2600,20 @@ fn prepared_ideas_replace_one_range_and_reload_it_after_append() {
 fn prepared_idea_query_waits_for_its_state_even_with_complete_other_sections() {
     let replay = recording();
     let mut fixture = Fixture::new(&replay);
+    engine::executable_tables::initialize_for_tests().unwrap();
+    std::fs::create_dir_all(fixture.root.join("content/common/defines")).unwrap();
+    std::fs::write(
+        fixture.root.join("content/common/defines/mod.lua"),
+        "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+    )
+    .unwrap();
+    let (bound, context) = crate::test_fixtures::source_with_content(
+        vec![frame(1, 10, 2), frame(1, 11, 2)],
+        &fixture.root.join("content"),
+    );
+    fixture.replace(bound.replay_ref());
     let source = fixture.source("ideas-pending");
-    let (store, key) = super::super::files(&source, None).unwrap();
+    let (store, key) = super::super::files(&source, context.content.as_ref()).unwrap();
     let mut writer = store.replace(key).unwrap();
     json(
         &mut writer,
@@ -2587,10 +2634,28 @@ fn prepared_idea_query_waits_for_its_state_even_with_complete_other_sections() {
         params: serde_json::json!({"branchId":"1","tag":"opaque"}),
     };
     let reply: serde_json::Value = serde_json::from_str(
-        &crate::prepared::query::query(&source, &request, None, &AtomicBool::new(false)).unwrap(),
+        &crate::prepared::query::query(
+            &source,
+            &request,
+            context.content.as_ref(),
+            &AtomicBool::new(false),
+        )
+        .unwrap(),
     )
     .unwrap();
-    assert!(reply["data"].is_null());
+    assert_eq!(
+        reply["data"]["coverage"],
+        serde_json::json!({"schema":SCHEMA,"firstHour":10,"lastHour":9,"complete":false})
+    );
+    assert_eq!(
+        reply["data"]["pending"],
+        serde_json::json!([{"firstHour":10,"lastHour":11}])
+    );
+    // Empty preview spans are omitted by the idea reply's DTO.
+    assert!(reply["data"].get("approximate").is_none());
+    assert_eq!(reply["data"]["spans"], serde_json::json!([]));
+    assert!(reply["data"].get("held").is_none());
+    assert_eq!(reply["data"]["identityStarts"], serde_json::json!([]));
 }
 
 #[test]
@@ -3496,7 +3561,8 @@ fn air_superiority_unprepared_regional_spans_remain_pending_without_a_frame_samp
     let source = fixture.source("air-progressive-pending");
     let flag = AtomicBool::new(false);
     let (store, key) = super::super::files(&source, None).unwrap();
-    // A pending comparison must not try to decode the unprepared tail.
+    // Readable keyframes can supply marked first views; an unreadable tail
+    // must remain pending rather than inventing comparison scores.
     fixture.corrupt_block_preserving_stamp(&replay.index[1]);
     let query = |params: serde_json::Value| {
         let request = crate::transport::ProductRequest {
@@ -3518,15 +3584,36 @@ fn air_superiority_unprepared_regional_spans_remain_pending_without_a_frame_samp
             ("moment", 12, 13),
             ("timeline", 12, 12),
             ("moment", 12, 12),
-            // Even a prepared prefix needs the final historical side anchors.
+            // Historical side anchors remain approximate before completion.
             ("timeline", 10, 11),
         ] {
-            assert!(
-                query(serde_json::json!({"branchId":"1", "view":view,
-                    "firstHour":first, "lastHour":last, "regions":[7000]}))
-                .is_null(),
-                "{view} {first}..{last} must remain pending"
+            let reply = query(serde_json::json!({"branchId":"1", "view":view,
+                "firstHour":first, "lastHour":last, "regions":[7000]}));
+            assert!(!reply.is_null(), "{view} {first}..{last}: {reply}");
+            assert_eq!(
+                reply["coverage"],
+                serde_json::json!({
+                    "schema":SCHEMA,"firstHour":10,"lastHour":9,"complete":false
+                })
             );
+            if last >= 12 {
+                assert!(
+                    reply["pending"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|span| span["firstHour"].as_i64().unwrap()
+                            <= i64::from(12.max(first))
+                            && span["lastHour"].as_i64().unwrap() >= i64::from(last)),
+                    "the unreadable tail remains pending: {reply}"
+                );
+            } else {
+                assert_eq!(reply["pending"], serde_json::json!([]));
+                assert_eq!(
+                    reply["approximate"],
+                    serde_json::json!([{"firstHour":10,"lastHour":11}])
+                );
+            }
         }
     };
     assert_pending();
@@ -4095,6 +4182,11 @@ fn progressive_stability_parts_join_prepared_prefix_and_tail_then_zoom_exactly_w
 
 #[test]
 fn unprepared_research_span_returns_pending_through_the_real_query_path() {
+    independent::with_test_hourly(check_research_pending);
+}
+
+fn check_research_pending() {
+    engine::executable_tables::initialize_for_tests().unwrap();
     use crate::products::research::{prepared, test_fixtures::sliced_research_frame};
 
     let frames = vec![
@@ -4103,9 +4195,18 @@ fn unprepared_research_span_returns_pending_through_the_real_query_path() {
     ];
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
     let mut fixture = Fixture::new(&replay);
+    std::fs::create_dir_all(fixture.root.join("content/common/terrain")).unwrap();
+    std::fs::write(
+        fixture.root.join("content/common/terrain/mod.txt"),
+        "categories={mod_ground={movement_cost=1}}",
+    )
+    .unwrap();
+    let (bound, context) =
+        crate::test_fixtures::source_with_content(frames.clone(), &fixture.root.join("content"));
+    fixture.replace(bound.replay_ref());
     let source = fixture.source("research-pending");
     let flag = AtomicBool::new(false);
-    let (store, key) = super::super::files(&source, None).unwrap();
+    let (store, key) = super::super::files(&source, context.content.as_ref()).unwrap();
     let mut observer = prepared::Prepared::default();
     observer.observe(&frames[0]).unwrap();
     let mut writer = store.replace(key.clone()).unwrap();
@@ -4149,19 +4250,56 @@ fn unprepared_research_span_returns_pending_through_the_real_query_path() {
             params,
         };
         let response: serde_json::Value = serde_json::from_str(
-            &super::super::query::query(&source, &request, None, &flag).unwrap(),
+            &super::super::query::query(&source, &request, context.content.as_ref(), &flag)
+                .unwrap(),
         )
         .unwrap();
         assert_eq!(response["product"], product);
-        assert!(
-            response["data"].is_null(),
-            "{product} must stay pending beyond research coverage: {response}"
-        );
+        let data = &response["data"];
+        if product == "series-summary" {
+            assert!(data.is_null(), "history geometry still waits: {response}");
+        } else {
+            assert_eq!(
+                data["coverage"],
+                serde_json::json!({
+                    "schema":SCHEMA,"firstHour":100,"lastHour":100,"complete":false
+                }),
+                "{response}"
+            );
+            assert_eq!(
+                data["pending"],
+                serde_json::json!([{"firstHour":101,"lastHour":101}])
+            );
+            if product == "series-state" {
+                assert_eq!(
+                    data["states"][0]["slots"][0]["state"]["token"], "tech_2",
+                    "{response}"
+                );
+                assert_eq!(data["states"][0]["slots"][0]["readHour"], 101);
+                assert_eq!(
+                    data["states"][0]["preparing"],
+                    serde_json::json!(["assignment", "breakdown", "stateHistory"])
+                );
+            } else {
+                assert_eq!(
+                    data["history"]["slots"][0]["entries"][0]["token"], "tech_1",
+                    "{response}"
+                );
+                assert!(
+                    !data.to_string().contains("tech_2"),
+                    "unprepared assignments never enter events: {response}"
+                );
+            }
+        }
     }
 }
 
 #[test]
 fn unprepared_peace_deals_span_returns_pending_through_the_real_query_path() {
+    independent::with_test_hourly(check_peace_pending);
+}
+
+fn check_peace_pending() {
     use crate::products::peace_deals::{prepared, test_fixtures as tests};
 
     let frames = vec![
@@ -4210,10 +4348,25 @@ fn unprepared_peace_deals_span_returns_pending_through_the_real_query_path() {
         )
         .unwrap();
         assert_eq!(response["product"], "events-page");
-        assert!(
-            response["data"].is_null(),
-            "unprepared peace outcomes must stay pending, not look like an empty or complete reply: {response}"
+        let data = &response["data"];
+        assert_eq!(
+            data["coverage"],
+            serde_json::json!({
+                "schema":SCHEMA,"firstHour":100,"lastHour":100,"complete":false
+            })
         );
+        assert_eq!(
+            data["pending"],
+            serde_json::json!([{"firstHour":101,"lastHour":101}])
+        );
+        assert_eq!(data["deals"].as_array().unwrap().len(), 1);
+        let deal = &data["deals"][0];
+        assert_eq!(deal["conferenceId"], "9");
+        assert_eq!(deal["lastObservedHour"], 100);
+        assert_eq!(deal["finalized"], false);
+        for field in ["firstFinalizedHour", "firstAbsentHour", "endHour"] {
+            assert!(deal[field].is_null(), "{field}: {response}");
+        }
     }
 }
 
@@ -5675,6 +5828,10 @@ fn prepared_leaders_pipeline_resumes_appended_outcomes_under_the_current_key() {
 
 #[test]
 fn prepared_feed_uses_accepted_live_prefix_and_keeps_unprepared_reads_pending() {
+    independent::with_test_hourly(check_prepared_feed_prefix);
+}
+
+fn check_prepared_feed_prefix() {
     let frames: Vec<_> = (100..=102)
         .map(|hour| {
             let mut frame = crate::products::event_feed::prepared::tests::frame(hour, 3);
@@ -5735,10 +5892,13 @@ fn prepared_feed_uses_accepted_live_prefix_and_keeps_unprepared_reads_pending() 
             .iter()
             .all(|row| row["readHour"].as_i64().unwrap() <= 101)
     );
-    assert!(
-        query(102).is_null(),
-        "unaccepted supplying reads remain pending rather than empty"
+    let pending = query(102);
+    assert_eq!(pending["coverage"], prefix["coverage"]);
+    assert_eq!(
+        pending["pending"],
+        serde_json::json!([{"firstHour": 102, "lastHour": 102}])
     );
+    assert_eq!(pending["reply"]["rows"], prefix["reply"]["rows"]);
     assert_eq!(requests, 2);
 }
 

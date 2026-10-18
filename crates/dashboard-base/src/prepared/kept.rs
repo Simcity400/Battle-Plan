@@ -300,5 +300,24 @@ pub fn counted(family: &str) -> (usize, usize) {
     COUNTS.with(|counts| counts.borrow().get(family).copied().unwrap_or_default())
 }
 
+/// This thread's fold work, for a coordinator joining its family worker.
+#[cfg(any(test, feature = "test-support"))]
+pub fn counts() -> std::collections::BTreeMap<&'static str, (usize, usize)> {
+    COUNTS.with(|counts| counts.borrow().clone())
+}
+
+/// Add a joined worker's fold work to the calling test's counts.
+#[cfg(any(test, feature = "test-support"))]
+pub fn add_counts(other: &std::collections::BTreeMap<&'static str, (usize, usize)>) {
+    COUNTS.with(|counts| {
+        let mut counts = counts.borrow_mut();
+        for (&family, &(observed, frames)) in other {
+            let count = counts.entry(family).or_default();
+            count.0 += observed;
+            count.1 += frames;
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests;

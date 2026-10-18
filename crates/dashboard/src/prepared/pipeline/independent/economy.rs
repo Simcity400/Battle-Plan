@@ -1405,6 +1405,22 @@ pub(in crate::prepared::pipeline) fn counts(family: &str) -> Counts {
 }
 
 #[cfg(test)]
+pub(super) fn all_counts() -> std::collections::BTreeMap<&'static str, Counts> {
+    COUNTS.with(|counts| counts.borrow().clone())
+}
+
+#[cfg(test)]
+pub(super) fn add_counts(other: &std::collections::BTreeMap<&'static str, Counts>) {
+    for (&family, added) in other {
+        count(family, |counts| {
+            counts.frames += added.frames;
+            counts.observed += added.observed;
+            counts.quiet += added.quiet;
+        });
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

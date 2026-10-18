@@ -208,22 +208,52 @@ fn the_status_lists_each_family_own_coverage() {
         let source = fixture.source("status-families");
         let flag = AtomicBool::new(false);
         let mut seen: Vec<(i32, i32, bool)> = Vec::new();
-        let accepted = run(&source, None, &flag, |accepted| {
-            if let Some(coverage) = accepted
-                .families
-                .get("groups")
-                .and_then(|branches| branches.get("1"))
-            {
-                let extent = (coverage.first_hour, coverage.last_hour, coverage.complete);
-                if !seen.contains(&extent) {
-                    seen.push(extent);
+        let committed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let trace = Arc::clone(&committed);
+        let accepted = independent::with_test_on_publish(
+            move |family, next| {
+                if family == "groups" {
+                    trace.lock().unwrap().push(next);
+                }
+            },
+            || {
+                run(&source, None, &flag, |accepted| {
+                    if let Some(coverage) = accepted
+                        .families
+                        .get("groups")
+                        .and_then(|branches| branches.get("1"))
+                    {
+                        let extent = (coverage.first_hour, coverage.last_hour, coverage.complete);
+                        if !seen.contains(&extent) {
+                            seen.push(extent);
+                        }
+                    }
+                })
+            },
+        )
+        .unwrap();
+        let branch: Vec<_> = replay
+            .index
+            .iter()
+            .filter(|block| block.branch == 1)
+            .collect();
+        let mut publications = Vec::new();
+        for &next in committed.lock().unwrap().iter() {
+            let last = next.min(branch.len());
+            if last != 0 {
+                let extent = (
+                    branch[0].first_hour,
+                    branch[last - 1].last_hour,
+                    last == branch.len(),
+                );
+                if publications.last() != Some(&extent) {
+                    publications.push(extent);
                 }
             }
-        })
-        .unwrap();
+        }
         // After branch 1's 1st, 2nd and 4th blocks, and at its end.
         assert_eq!(
-            seen,
+            publications,
             [
                 (100, 103, false),
                 (100, 107, false),
@@ -232,6 +262,19 @@ fn the_status_lists_each_family_own_coverage() {
             ],
             "the groups' coverage as they commit"
         );
+        // Status snapshots may coalesce publications, but every reported extent
+        // must be a committed one, in order, and must reach the final extent.
+        let positions: Vec<_> = seen
+            .iter()
+            .map(|extent| {
+                publications
+                    .iter()
+                    .position(|published| published == extent)
+                    .unwrap()
+            })
+            .collect();
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(seen.last(), publications.last());
 
         let (store, key) = super::super::super::files(&source, None).unwrap();
         let restored = restore(&source, None, &flag).unwrap().expect("prepared");

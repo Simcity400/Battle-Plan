@@ -708,12 +708,13 @@ fn prepared_scoped_project_names_reuse_an_evaluation_whose_inputs_read_the_same(
             prepared.observe(&source, &context, frame, &flag).unwrap();
         }
     };
-    // Without check mode, each name is evaluated at the first hour and
-    // opaque-1's again where its variable changes; every other hour reuses.
+    // The first name evaluates initially and where its variable changes, with
+    // four reuses. The second reads unavailable flag evidence, which must be
+    // retried every hour rather than authenticating the earlier refusal.
     let mut reused = Prepared::new(source.replay_ref(), 1);
     dashboard_text::triggers::inputs::reusing(|| observe(&mut reused));
     let counts = reused.names.reuse;
-    assert_eq!((counts.evaluated, counts.reused, counts.checked), (3, 9, 0));
+    assert_eq!((counts.evaluated, counts.reused, counts.checked), (8, 4, 0));
     // Check mode evaluates every reused name anyway and finds it the same.
     let mut checked = Prepared::new(source.replay_ref(), 1);
     observe(&mut checked);
@@ -725,7 +726,7 @@ fn prepared_scoped_project_names_reuse_an_evaluation_whose_inputs_read_the_same(
             counts.checked,
             counts.mismatched
         ),
-        (3, 9, 9, 0)
+        (8, 4, 4, 0)
     );
     // Both publish what evaluating every name at every hour does.
     for prepared in [&mut reused, &mut checked] {
@@ -2991,7 +2992,7 @@ fn project_change_of_one_owner_visits_its_rows_alone_at_2000_holders() {
             &tables,
             |raw, frame| {
                 if frame.hour == 101 {
-                    before = Some(prepared.work);
+                    before = Some((prepared.work, prepared.values.key_visits));
                 }
                 let changes = tracker.observe_updates(frame, Arc::new(raw), format);
                 prepared.observe_changed(frame, &changes, &flag)
@@ -2999,9 +3000,18 @@ fn project_change_of_one_owner_visits_its_rows_alone_at_2000_holders() {
             || Ok(()),
         )
         .unwrap();
-    let before = before.expect("the second hour");
+    let (before, numeric) = before.expect("the second hour");
     assert_eq!(prepared.work.row_visits - before.row_visits, 1);
-    assert_eq!(prepared.work.emitted - before.emitted, 1);
+    assert_eq!(
+        prepared.values.key_visits - numeric,
+        1,
+        "one progress channel changes"
+    );
+    assert_eq!(
+        prepared.work.emitted - before.emitted,
+        0,
+        "no structural observation changes"
+    );
 }
 
 /// Holders 1 and 2 observed at 100; a recorded update changes only holder
@@ -3088,7 +3098,8 @@ fn equal_project_read_markers_carry_without_numeric_publication() {
     let format = replay::format::FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let mut input = frame(100, true, 64);
-    let mut prepared = Prepared::default();
+    let source = source(&[input.clone()]);
+    let mut prepared = Prepared::new(source.replay_ref(), 1);
     let mut tracker = FrameChangeTracker::new();
     prepared
         .observe_changed(&input, &tracker.observe(&input, format), &flag)

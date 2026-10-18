@@ -982,13 +982,7 @@ fn query_data(
                 // Recorded gaps after the prefix are unobserved however far
                 // preparation has gone.
                 let after = prefix.coverage.last_hour;
-                let mut gaps: Vec<_> = source
-                    .replay_ref()
-                    .gaps
-                    .iter()
-                    .filter(|gap| gap.branch == branch && gap.last_hour > after)
-                    .collect();
-                gaps.sort_by_key(|gap| gap.first_hour);
+                let gaps = super::prefix::gaps_after(source, branch, after);
                 for gap in gaps {
                     crate::products::country_groups::mark_unobserved(
                         &mut reply.unobserved,
@@ -1264,13 +1258,7 @@ fn query_data(
             // Recorded gaps after the prefix are unobserved however far
             // preparation has gone; the other hours there are sampled or pending.
             let after = prefix.coverage.last_hour;
-            let mut gaps: Vec<_> = source
-                .replay_ref()
-                .gaps
-                .iter()
-                .filter(|gap| gap.branch == branch && gap.last_hour > after)
-                .collect();
-            gaps.sort_by_key(|gap| gap.first_hour);
+            let gaps = super::prefix::gaps_after(source, branch, after);
             for spans in [
                 &mut reply.unobserved.humans,
                 &mut reply.unobserved.factions,
@@ -1805,7 +1793,7 @@ fn query_data(
                     crate::products::validate_tag(tag).map_err(crate::invalid)?;
                 }
                 let mut sampled_requested = requested.clone();
-                if family == Some("country-stability") {
+                if matches!(family, Some("country-stability" | "country-experience")) {
                     sampled_requested.extend(requested.iter().map(|(tag, _)| {
                         (
                             tag.clone(),
@@ -1844,7 +1832,7 @@ fn query_data(
                             accepted.as_ref(),
                             tables,
                             replay::cadence::STAGGER_PERIOD,
-                            &requested,
+                            &sampled_requested,
                             &crate::products::country_experience::Sampler::cache_keys(&requested),
                             &hours,
                             &|frame, _, requested| sampler.sample(frame, requested),
@@ -1899,7 +1887,7 @@ fn query_data(
                             accepted.as_ref(),
                             tables,
                             replay::cadence::STAGGER_PERIOD,
-                            &requested,
+                            &sampled_requested,
                             &crate::products::country_experience::Sampler::cache_keys(&requested),
                             window,
                             &|frame, _, requested| sampler.sample(frame, requested),

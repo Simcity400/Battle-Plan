@@ -640,8 +640,10 @@ fn observed_on_its_own(family: Sampled) {
         });
         let source = fixture.source("sampled-hours");
         let prepare = || {
-            lanes::with_test_lanes(2, Some(hook), || {
-                prepass::with_test_prepass(2, None, || plain(&source))
+            lanes::with_test_coordinator_families(|| {
+                lanes::with_test_lanes(2, Some(hook), || {
+                    prepass::with_test_prepass(2, None, || plain(&source))
+                })
             })
         };
         if own {
@@ -908,7 +910,9 @@ fn observes_the_rest_where_its_census_does_not_continue(family: Sampled) {
     let applied = prepass::noted(applied_name);
     let fallback = prepass::noted(&format!("{}.fallback", family.name));
     independent::sampled::with_test_fallback(|| {
-        family.own(|| prepass::with_test_prepass(2, None, || plain(&source)))
+        independent::with_test_one_after_another(|| {
+            family.own(|| prepass::with_test_prepass(2, None, || plain(&source)))
+        })
     });
     assert_eq!(prepass::noted(family.observed) - observed, total);
     assert_eq!(prepass::noted(applied_name), applied);
@@ -1202,12 +1206,18 @@ fn navy_size_ends_a_country_where_it_leaves_and_starts_it_again_where_it_returns
                         &serde_json::json!({"branchId":"1","tags":params.tags,
                             "family":{"kind":"navy-size","measure":measure,
                                 "ownership":ownership,"grouping":grouping,"top":null},
-                            "from":100,"to":105,"width":100}),
+                            "from":100,"to":105,"width":100,"requireParts":true}),
                         &context,
                         &flag,
                     )
                     .unwrap();
                     actual.as_object_mut().unwrap().remove("summaries");
+                    // Completed adapters may omit their empty preview marker;
+                    // neither shape may claim an approximate hour here.
+                    if let Some(approximate) = actual.get("approximate") {
+                        assert_eq!(approximate, &serde_json::json!([]));
+                    }
+                    actual.as_object_mut().unwrap().remove("approximate");
                     let expected = NavySize::load(source, &params, &context, &flag).unwrap();
                     assert_eq!(
                         actual,
@@ -1496,16 +1506,49 @@ fn territory_readers_wait_for_territory_coverage_while_the_branch_is_ahead() {
                 "{product} covers the branch"
             );
         }
+        let mut actual = replies(&source, inside);
+        let mut complete = expected[0].clone();
+        let extent = serde_json::json!({"schema":SCHEMA,"firstHour":BASE,
+            "lastHour":inside,"complete":false});
+        for (index, reply) in actual.iter_mut().take(3).enumerate() {
+            assert_eq!(reply["coverage"], extent, "request {index}");
+            reply.as_object_mut().unwrap().remove("coverage");
+            complete[index].as_object_mut().unwrap().remove("coverage");
+            if index != 0 {
+                assert_eq!(reply["pending"], serde_json::json!([]));
+                reply.as_object_mut().unwrap().remove("pending");
+            }
+        }
         assert_eq!(
-            replies(&source, inside),
-            expected[0],
+            actual, complete,
             "within territory's coverage, as hourly preparation"
         );
         let waiting = replies(&source, past);
-        for (index, reply) in waiting.iter().take(3).enumerate() {
-            assert!(
-                reply.is_null(),
-                "request {index} past territory's coverage waits: {reply}"
+        assert!(waiting[0].is_null(), "territory history still waits");
+        for index in 1..3 {
+            // A moment scoreboard keeps its known identity rows while the
+            // territory cells wait; an index cannot rank those unknown cells.
+            let mut pending = expected[1][index].clone();
+            pending["coverage"] = extent.clone();
+            pending["pending"] = serde_json::json!([
+                {"firstHour":inside+1,"lastHour":BASE+17},
+                {"firstHour":BASE+20,"lastHour":past}
+            ]);
+            pending["preparing"] = serde_json::json!(["territory"]);
+            if index == 1 {
+                pending["data"]["series"] = serde_json::json!([]);
+                pending["maxima"] = serde_json::json!({});
+            } else {
+                for row in pending["data"]["series"].as_array_mut().unwrap() {
+                    for column in row["columns"].as_array_mut().unwrap() {
+                        column["runs"] = serde_json::json!([]);
+                        column["readRuns"] = serde_json::json!([]);
+                    }
+                }
+            }
+            assert_eq!(
+                waiting[index], pending,
+                "request {index} waits for territory"
             );
         }
         assert_eq!(

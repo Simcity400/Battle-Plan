@@ -903,6 +903,10 @@ fn family_lanes_join_all_results_and_select_the_original_call_error() {
     ignore = "slow: runs in the full suite (--features slow-tests)"
 )]
 fn family_lanes_cancel_error_panic_disconnect_discard_the_whole_block_and_resume() {
+    independent::with_test_hourly(check_lane_failures);
+}
+
+fn check_lane_failures() {
     for failure in 0..4 {
         for hour in [20, 21] {
             let mut fixture = Fixture::new(&recording());

@@ -3786,12 +3786,11 @@ fn run_inner(
                                 refused,
                                 "territory",
                                 frame.hour,
-                                time_family!(
-                                    family_timings,
-                                    "territory",
-                                    observe,
+                                time_family!(family_timings, "territory", observe, {
+                                    #[cfg(test)]
+                                    lanes.observed_coordinator("territory", frame, changes);
                                     territory.observe(frame, replay.format, cancelled, changes)
-                                )
+                                })
                             );
                             lanes.serial("occupation", frame, changes, &mut family_timings)?;
                             lanes.serial("casualties", frame, changes, &mut family_timings)?;

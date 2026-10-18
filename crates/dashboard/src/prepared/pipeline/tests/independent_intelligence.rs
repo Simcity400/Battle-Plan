@@ -814,12 +814,8 @@ fn intelligence_answers_from_its_own_coverage_while_the_hourly_walk_accepts_noth
             .collect();
         assert!(actual.iter().all(|reply| !reply.is_null()));
         assert_eq!(actual, expected, "the family answers from its own coverage");
-        assert!(
-            query(&source, "subjects", serde_json::json!({ "branchId": "1" }))
-                .unwrap()
-                .is_null(),
-            "a family of the hourly walk still waits"
-        );
+        let pending = query(&source, "subjects", serde_json::json!({ "branchId": "1" })).unwrap();
+        assert_cold_prefix(&source, 1, &pending);
     });
     clear(source);
 }

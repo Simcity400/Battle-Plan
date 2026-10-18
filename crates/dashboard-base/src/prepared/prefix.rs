@@ -264,6 +264,56 @@ pub fn pending(source: &Source, branch: u64, after: i32, through: Option<i32>) -
     recorded(source, branch, first, through)
 }
 
+/// Missing hours after a prefix, including holes between recorded blocks and
+/// explicit gaps beyond the final block. These remain unobserved even before
+/// preparation reaches them. Like `recorded`, the dashboard treats hours
+/// covered by a loss diagnostic as unobserved even when their frames survived.
+pub fn gaps_after(source: &Source, branch: u64, after: i32) -> Vec<HourSpan> {
+    let Some(first) = after.checked_add(1) else {
+        return Vec::new();
+    };
+    let last = source
+        .block_windows(branch)
+        .iter()
+        .map(|span| span.last_hour)
+        .max();
+    let mut gaps = last
+        .filter(|&last| first <= last)
+        .map_or_else(Vec::new, |last| {
+            subtract(
+                &[HourSpan {
+                    first_hour: first,
+                    last_hour: last,
+                }],
+                &recorded(source, branch, first, Some(last)),
+            )
+        });
+    gaps.extend(
+        source
+            .replay_ref()
+            .gaps
+            .iter()
+            .filter(|gap| gap.branch == branch && first <= gap.last_hour)
+            .map(|gap| HourSpan {
+                first_hour: first.max(gap.first_hour),
+                last_hour: gap.last_hour,
+            }),
+    );
+    gaps.sort_unstable_by_key(|gap| gap.first_hour);
+    let mut joined = Vec::new();
+    for gap in gaps {
+        crate::products::country_groups::mark_unobserved(
+            &mut joined,
+            gap.first_hour,
+            gap.last_hour,
+        );
+    }
+    // The complement above uses the same recorded-hour set as pending and
+    // revisable coverage; the explicit diagnostics come from the same gap
+    // list `without_gaps` subtracts. Their union also preserves terminal gaps.
+    joined
+}
+
 fn recorded(source: &Source, branch: u64, first: i32, through: Option<i32>) -> Vec<HourSpan> {
     let mut windows = source.block_windows(branch).to_vec();
     windows.sort_unstable_by_key(|window| window.first_hour);
@@ -361,6 +411,122 @@ mod tests {
         let mut whole = vec![span(4, 9)];
         Prefix::new(&source, 1, coverage(11, true), None).clip(&mut whole);
         assert_eq!(whole, [span(4, 9)]);
+        assert_eq!(gaps_after(&source, 1, 1), [span(4, 9)]);
+        assert_eq!(gaps_after(&source, 1, 6), [span(7, 9)]);
+        assert!(gaps_after(&source, 1, 11).is_empty());
+        assert!(gaps_after(&source, 1, i32::MAX).is_empty());
+    }
+
+    #[test]
+    fn gaps_after_keeps_a_terminal_gap_beyond_the_last_recorded_frame() {
+        use crate::test_fixtures::{CAMPAIGN, records};
+        use replay::{branches::Gap, container::Replay, spool::Record};
+
+        let mut recorded = records(1, vec![frame(1, 1, None), frame(1, 2, None)]);
+        recorded.push(Record::Gap(Gap {
+            branch: 1,
+            first_hour: 3,
+            last_hour: 3,
+            reason: "terminal frame was not recorded".into(),
+        }));
+        let recording = Replay::from_records(CAMPAIGN.into(), &[recorded]).unwrap();
+        let (source, root) = file_source(recording);
+        let _ = std::fs::remove_dir_all(root);
+
+        assert_eq!(gaps_after(&source, 1, 0), [span(3, 3)]);
+        assert_eq!(gaps_after(&source, 1, 2), [span(3, 3)]);
+        assert!(gaps_after(&source, 1, 3).is_empty());
+        assert_eq!(pending(&source, 1, 0, None), [span(1, 2)]);
+    }
+
+    #[test]
+    fn overlapping_loss_diagnostics_stay_unobserved_in_prefixes_and_dashboard_readers() {
+        use crate::{
+            prepared::query::{keyframes, progressive},
+            test_fixtures::{CAMPAIGN, records},
+        };
+        use replay::{branches::Gap, container::Replay, spool::Record};
+
+        let mut records = records(1, vec![frame(1, 1, Some(1)), frame(1, 2, Some(2))]);
+        records.push(Record::Gap(Gap {
+            branch: 1,
+            first_hour: 2,
+            last_hour: 3,
+            reason: "uncertain flush loss".into(),
+        }));
+        let recording = Replay::from_records(CAMPAIGN.into(), &[records]).unwrap();
+        let (source, root) = file_source(recording);
+        let _ = std::fs::remove_dir_all(root);
+        let flag = AtomicBool::new(false);
+        let accepted = Coverage {
+            first_hour: 1,
+            ..coverage(1, false)
+        };
+        let prefix = Prefix::new(&source, 1, accepted.clone(), None);
+
+        assert_eq!(gaps_after(&source, 1, 1), [span(2, 3)]);
+        assert_eq!(gaps_after(&source, 1, 2), [span(3, 3)]);
+        assert!(gaps_after(&source, 1, 3).is_empty());
+        assert_eq!(recorded(&source, 1, 1, None), [span(1, 1)]);
+        assert!(recorded(&source, 1, 2, Some(2)).is_empty());
+        assert!(prefix.pending.is_empty());
+        assert_eq!(prefix.revisable(&source, 1), [span(1, 1)]);
+
+        let tables = crate::prepared_measure::TABLES;
+        assert!(
+            progressive::frame_at(&source, 1, 1, tables, &flag)
+                .unwrap()
+                .is_some()
+        );
+        for hour in [2, 3] {
+            assert!(
+                progressive::frame_at(&source, 1, hour, tables, &flag)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        let approximate = keyframes::after(
+            &source,
+            "test-diagnostic-overlap",
+            1,
+            1,
+            None,
+            tables,
+            &flag,
+            &|_| -> io::Result<Option<()>> { panic!("a diagnostic hour is not sampled") },
+            &|_| 0,
+            |_, _| panic!("a diagnostic hour is not observed"),
+        )
+        .unwrap();
+        assert!(approximate.is_empty());
+
+        let requested = [("GER".into(), "politicalPower".into())];
+        let exact = progressive::tail(
+            &source,
+            1,
+            Some(&accepted),
+            tables,
+            &requested,
+            (2, 3),
+            &crate::prepared_measure::sample,
+            &flag,
+        )
+        .unwrap();
+        let cached = progressive::tail_cached(
+            &source,
+            "test-diagnostic-overlap",
+            1,
+            Some(&accepted),
+            tables,
+            &requested,
+            &requested,
+            (2, 3),
+            &crate::prepared_measure::sample,
+            &flag,
+        )
+        .unwrap();
+        assert!(exact.0.is_empty() && exact.1.is_empty() && exact.2.is_empty());
+        assert!(cached.0.is_empty() && cached.1.is_empty() && cached.2.is_empty());
     }
 
     #[test]

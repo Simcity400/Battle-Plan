@@ -2137,6 +2137,7 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
+ "engine-executable",
  "installed-content",
  "replay",
  "serde",

@@ -316,17 +316,12 @@ pub fn observe_block(
 }
 
 #[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    static KEPT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(any(test, feature = "test-support"))]
 fn count_kept(hours: usize) {
-    KEPT.with(|count| count.set(count.get() + hours));
+    dashboard_base::prepared::kept::note_frames(FAMILY.name, hours);
 }
 
 /// Kept hours (frames) the folds on this thread observed.
 #[cfg(any(test, feature = "test-support"))]
 pub fn kept_hours() -> usize {
-    KEPT.with(std::cell::Cell::get)
+    dashboard_base::prepared::kept::counted(FAMILY.name).1
 }

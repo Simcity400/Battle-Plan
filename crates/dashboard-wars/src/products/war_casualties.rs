@@ -263,10 +263,15 @@ struct Unknown {
     seen: bool,
     // This read's agreement check. Pairs retain their previous counter and read
     // sequence, replacing a separately allocated map for every country/hour.
+    #[serde(skip)]
     present: bool,
+    #[serde(skip)]
     all_zero: bool,
+    #[serde(skip)]
     delta: Option<i64>,
+    #[serde(skip)]
     valid: bool,
+    #[serde(skip)]
     new_max: i64,
 }
 impl Unknown {

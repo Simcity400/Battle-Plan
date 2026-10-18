@@ -39,6 +39,10 @@ const LAST: i32 = 216;
 /// joins it at 150.
 fn census_frame(branch: u64, hour: i32, unavailable: bool) -> DecodedFrame {
     let mut observed = frame(branch, hour, 4);
+    // A missing dictionary is retried every hour; this fixture tests quiet
+    // numeric acquisitions with a complete, unchanged naming dictionary.
+    *observed.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![]));
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *observed.tables[TableId::Countries.index()]
     {
@@ -987,9 +991,19 @@ fn census_queries_read_only_through_their_joint_coverage_when_one_family_is_ahea
             let source = fixture.source("census-staggered");
             measured(&source);
             stagger(&source, &independent::coverage_section("groups", 1), behind);
+            let mut reached_reply = query(&source, "series-state", state(reached));
             assert_eq!(
-                query(&source, "series-state", state(reached)),
-                complete,
+                reached_reply["coverage"],
+                serde_json::json!({
+                    "schema":SCHEMA,"firstHour":100,"lastHour":behind,"complete":false
+                })
+            );
+            let mut complete = complete.clone();
+            assert_eq!(complete["coverage"]["complete"], true);
+            reached_reply.as_object_mut().unwrap().remove("coverage");
+            complete.as_object_mut().unwrap().remove("coverage");
+            assert_eq!(
+                reached_reply, complete,
                 "{label}: faction totals at {reached}"
             );
             // Past the committed factories, the reached hour answers from its
@@ -1087,7 +1101,7 @@ fn faction_factory_totals_at_a_reached_hour_answer_from_its_frames_as_prepared()
             );
         }
         for extra in [
-            serde_json::json!({"parts": true}),
+            serde_json::json!({"parts": true, "factionId": "42"}),
             serde_json::json!({"membership": "end"}),
             serde_json::json!({"membership": "ever"}),
         ] {

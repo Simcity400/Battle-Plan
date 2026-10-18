@@ -307,8 +307,15 @@ fn chain_dates_order_segments_and_gain_match_focus_history() {
     let replay = prepared.source.replay();
     let hours: Vec<i32> = prepared.frames.iter().map(|frame| frame.hour).collect();
     let mut checked = 0;
-    for index in 0..5_u32 {
-        let tag = String::from_utf8(scale_tag(index)).unwrap();
+    // Country 4 is NEW then takes country 2's tag, while country 2 becomes
+    // OLD. Exercise every recorded tag instead of the never-recorded tag 004.
+    let tags: std::collections::BTreeSet<_> = prepared
+        .frames
+        .iter()
+        .flat_map(|frame| frame.complete::<replay::rows::tables::Countries>().unwrap())
+        .map(|country| String::from_utf8(country.tag.clone()).unwrap())
+        .collect();
+    for tag in tags {
         let history =
             crate::products::national_focus::focus_history(&replay, 1, &tag, &cancelled).unwrap();
         let progress = hourly_progress(&prepared.frames, &tag);

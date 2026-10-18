@@ -75,8 +75,15 @@ fn grouped_frame_headers_cost_bytes_not_a_word_per_table_and_keep_read_hours() {
     let diagnostics = size(&replay, 0, Section::Diagnostics).unwrap();
     // A plain frame header is 37 bytes plus a u64 per table.
     let plain_header = 37 + 8 * TableId::ALL.len() as u64;
+    // By owner decision, the raw allowance scales with registered tables. The
+    // catalogue through RegionalConvoyEfficiency gets the original 100 B/frame.
+    let baseline_tables = TableId::ALL
+        .iter()
+        .filter(|&&table| table <= TableId::RegionalConvoyEfficiency)
+        .count();
+    let raw_allowance = 100.0 / baseline_tables as f64 * TableId::ALL.len() as f64;
     assert!(
-        (header.raw + diagnostics.raw) / 200 < 100,
+        (header.raw + diagnostics.raw) as f64 / (frames.len() as f64) < raw_allowance,
         "{header:?} {diagnostics:?} against {plain_header} plain bytes per frame"
     );
     assert!(

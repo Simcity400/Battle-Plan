@@ -113,7 +113,7 @@ pub(crate) fn fold(
             .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
     };
     #[cfg(test)]
-    FRAMES.with(|count| count.set(count.get() + facts.frames));
+    dashboard_base::prepared::kept::note_frames("focus", facts.frames);
     let Some(last) = facts.last_hour() else {
         return Ok((Folded::Fast, None));
     };
@@ -148,7 +148,7 @@ pub(crate) fn observe_block(
             }
             reached = Some(frame.hour);
             #[cfg(test)]
-            FRAMES.with(|count| count.set(count.get() + 1));
+            dashboard_base::prepared::kept::note_frames("focus", 1);
             let result = {
                 let _cpu = ::replay::cpu::scope("fold observe", None);
                 index.observe_hour(block.branch, bounds, frame, &mut || Ok(()))
@@ -173,15 +173,10 @@ pub(crate) fn observe_block(
     Ok(reached)
 }
 
-#[cfg(test)]
-thread_local! {
-    static FRAMES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
 /// Frames the focus family read on this thread: each block's built frames
 /// when folded from its extract, every hour of a block observed hour by
-/// hour. A family prepared alone runs on the caller's thread.
+/// hour. Joined family workers contribute to the caller's count.
 #[cfg(test)]
 pub(crate) fn frames() -> usize {
-    FRAMES.with(std::cell::Cell::get)
+    dashboard_base::prepared::kept::counted("focus").1
 }

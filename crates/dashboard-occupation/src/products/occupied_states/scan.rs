@@ -791,7 +791,7 @@ impl<'a> Scan<'a> {
         active.retain(|&index| {
             let id = self.result.states[index].state;
             let Some(state) = self.state_slots.get(&id).map(|&slot| &states[slot]) else {
-                if deferred && let Some(hour) = previous_hour {
+                if let Some(hour) = previous_hour {
                     self.result.states[index]
                         .runs
                         .last_mut()
@@ -829,7 +829,7 @@ impl<'a> Scan<'a> {
                 {
                     self.work.history_visits += 1;
                 }
-                if deferred && let Some(before) = previous_hour {
+                if let Some(before) = previous_hour {
                     last.last_hour = before;
                 }
                 let mut value = last.value.clone();
@@ -934,9 +934,7 @@ impl<'a> Scan<'a> {
         self.trend
             .collaboration(self.format, frame, hour, &self.countries.identities, links)?;
         if slot_read(self.format, &frame.metrics, TableId::StateResistance, hour) {
-            if changes.is_some()
-                && let Some(before) = previous_hour
-            {
+            if let Some(before) = previous_hour {
                 for &index in &self.active {
                     self.result.states[index]
                         .runs

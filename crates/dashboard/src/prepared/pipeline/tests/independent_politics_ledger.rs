@@ -806,7 +806,11 @@ fn politics_ledger_folds_dense_blocks_from_worker_joins_as_hourly_preparation_do
         let source = fixture.source("politics-ledger-fold");
         let sequential = prepass::noted("politics_ledger.sequential");
         let ((), [observed, certified, parallel]) = folded(|| {
-            prepass::with_test_prepass(workers, None, || own(|| presented(|| plain(&source))))
+            // Presentation's test policy is local to the fold thread; the
+            // countries it presents still run on their own worker threads.
+            independent::with_test_one_after_another(|| {
+                prepass::with_test_prepass(workers, None, || own(|| presented(|| plain(&source))))
+            })
         });
         let label = format!("{workers} workers");
         assert_same(&payloads(&source, None), &hourly, &label, false);

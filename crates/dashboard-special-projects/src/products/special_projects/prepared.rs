@@ -611,14 +611,19 @@ impl Prepared {
         // after an unavailable interval reopens it even when that value is 1.
         self.values
             .observe_if_changed(0, frame.hour, marker, gap, false);
+        // A fallback decoder can allocate a new view of the same supplying
+        // dictionary. Only a recorded update advances its revision; equal
+        // snapshots still count through the change tracker.
         let lexical_changed = self
             .lexical_view
             .as_ref()
-            .is_none_or(|view| !view.is(&frame.tables[TableId::LexicalTokens.index()]));
+            .is_none_or(|view| !view.is(&frame.tables[TableId::LexicalTokens.index()]))
+            && (self.lexical_view.is_none()
+                || changes.rows_changed[TableId::LexicalTokens.index()]);
         if lexical_changed {
             self.lexical += 1;
-            self.lexical_view = Some(frame.tables[TableId::LexicalTokens.index()].identity());
         }
+        self.lexical_view = Some(frame.tables[TableId::LexicalTokens.index()].identity());
         if lexical_changed || gap {
             self.values
                 .observe(LEXICAL, frame.hour, Some(i128::from(self.lexical)), gap);
@@ -2224,6 +2229,17 @@ pub fn frame_reply(
                         ProjectState::Running | ProjectState::Paused | ProjectState::Unknown
                     )
                 });
+                // Structural observations keep progress in its numeric channel.
+                // Current cards need that channel's value at the requested hour.
+                for (facts, _) in projects {
+                    let key = prepared.countries[&params.tag].progress
+                        [&(facts.local_id, facts.definition_id)];
+                    facts.progress = prepared
+                        .values
+                        .state(key)
+                        .and_then(|state| state.last)
+                        .map_or(0, |run| i32::try_from(run.value).expect("project progress"));
+                }
             }
             let facts = observation
                 .projects

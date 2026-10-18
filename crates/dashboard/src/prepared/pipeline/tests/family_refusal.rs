@@ -181,15 +181,20 @@ fn air_ledger_refusal_stops_only_its_branch_family_and_its_queries_answer_the_or
                 assert_eq!(prepared.to_string(), oracle.to_string());
             }
             // The refusal is branch-scoped: branch 2 serves its oracle reply.
+            let mut prepared = query(
+                &source,
+                "military-air-ledger",
+                serde_json::json!({"branchId": "2", "family": family}),
+            )
+            .unwrap();
             assert_eq!(
-                query(
-                    &source,
-                    "military-air-ledger",
-                    serde_json::json!({"branchId": "2", "family": family}),
-                )
-                .unwrap(),
-                ledger_oracle(&source, "2", family).unwrap()
+                prepared["coverage"],
+                serde_json::json!({"schema":SCHEMA,"firstHour":20,"lastHour":21,"complete":true})
             );
+            assert_eq!(prepared["pending"], serde_json::json!([]));
+            prepared.as_object_mut().unwrap().remove("coverage");
+            prepared.as_object_mut().unwrap().remove("pending");
+            assert_eq!(prepared, ledger_oracle(&source, "2", family).unwrap());
         }
 
         // Every other family's pages equal the control's, whose families match their

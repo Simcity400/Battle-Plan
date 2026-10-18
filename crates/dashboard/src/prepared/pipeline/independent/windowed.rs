@@ -460,6 +460,11 @@ pub(in crate::prepared::pipeline) fn take_naval_saves() -> Vec<usize> {
     NAVAL_SAVES.with(|saves| std::mem::take(&mut *saves.borrow_mut()))
 }
 
+#[cfg(test)]
+pub(super) fn add_naval_saves(other: Vec<usize>) {
+    NAVAL_SAVES.with(|saves| saves.borrow_mut().extend(other));
+}
+
 impl NavalBranch {
     /// Observe the block hour by hour, as hourly preparation does, with the
     /// change facts of the block alone, on frames holding the trigger kit at

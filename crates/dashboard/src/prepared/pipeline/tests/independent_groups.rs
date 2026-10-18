@@ -736,8 +736,10 @@ fn country_groups_read_by_their_changes_keep_a_built_dictionary_until_it_rebuild
         prepass::noted("groups.sequential"),
         prepass::noted("groups.fallback"),
     );
-    prepass::with_test_prepass(2, None, || {
-        run(&source, None, &AtomicBool::new(false), |_| {})
+    independent::with_test_only(&["groups"], || {
+        prepass::with_test_prepass(2, None, || {
+            run(&source, None, &AtomicBool::new(false), |_| {})
+        })
     })
     .unwrap();
     assert_eq!(

@@ -303,7 +303,7 @@ pub fn fold(
             .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
     };
     #[cfg(any(test, feature = "test-support"))]
-    FRAMES.with(|count| count.set(count.get() + facts.frames));
+    crate::prepared::kept::note_frames("identities", facts.frames);
     let mut reached = None;
     for hour in facts.hours {
         let _cpu = ::replay::cpu::scope("fold driver", None);
@@ -312,7 +312,7 @@ pub fn fold(
             Hour::Observed { frame, changes } => {
                 reached = Some(frame.hour);
                 #[cfg(any(test, feature = "test-support"))]
-                OBSERVED.with(|count| count.set(count.get() + 1));
+                crate::prepared::kept::note_observed("identities");
                 observe(scan, &frame, &changes);
                 if !observed(frame.hour, Ok(()))? {
                     return Ok((Folded::Fast, reached));
@@ -371,7 +371,7 @@ pub fn observe_block(
             }
             reached = Some(frame.hour);
             #[cfg(any(test, feature = "test-support"))]
-            OBSERVED.with(|count| count.set(count.get() + 1));
+            crate::prepared::kept::note_observed("identities");
             observe(scan, frame, &facts);
             match observed(frame.hour, Ok(())) {
                 Ok(live) => {
@@ -393,16 +393,10 @@ pub fn observe_block(
     Ok(reached)
 }
 
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    static OBSERVED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static FRAMES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
 /// Hours the coordinator observed on carried histories, on this thread.
 #[cfg(any(test, feature = "test-support"))]
 pub fn observed_hours() -> usize {
-    OBSERVED.with(std::cell::Cell::get)
+    crate::prepared::kept::counted("identities").0
 }
 
 /// Frames the extracts of the blocks folded on this thread were given or
@@ -410,5 +404,5 @@ pub fn observed_hours() -> usize {
 /// observed between them of a block read by its changes.
 #[cfg(any(test, feature = "test-support"))]
 pub fn built_frames() -> usize {
-    FRAMES.with(std::cell::Cell::get)
+    crate::prepared::kept::counted("identities").1
 }
