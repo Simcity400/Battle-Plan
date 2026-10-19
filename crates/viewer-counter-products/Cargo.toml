@@ -36,6 +36,7 @@ viewer-foundation = { path = "../viewer-foundation" }
 dashboard-core.workspace = true
 dashboard-text.workspace = true
 [dev-dependencies]
+mimalloc.workspace = true
 installed-content-abilities = { workspace = true, features = ["test-support"] }
 installed-content-core = { workspace = true, features = ["test-support"] }
 installed-content-country-names = { workspace = true, features = ["test-support"] }

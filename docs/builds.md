@@ -25,8 +25,10 @@ cargo nextest run --workspace
 
 [nextest](https://nexte.st) (`cargo install cargo-nextest --locked`) runs each
 test in its own process and schedules every test binary at once;
-[.config/nextest.toml](../.config/nextest.toml) starts the long scale tests
-first. Installation-dependent tests read `BATTLE_PLAN_GAME_DIR`. Because each test is
+[.config/nextest.toml](../.config/nextest.toml) starts the tests that take tens
+of seconds first, so none of them starts near the end of a run. The dashboard,
+viewer, content and shader crates' unit tests run on mimalloc, the allocator
+the viewer that hosts them ships with. Installation-dependent tests read `BATTLE_PLAN_GAME_DIR`. Because each test is
 its own process, a test sets up everything it reads, such as executable
 metadata, and never relies on another test having run first.
 `cargo check --workspace --all-targets` checks the whole app without generating

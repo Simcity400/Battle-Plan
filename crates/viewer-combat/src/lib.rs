@@ -1,4 +1,10 @@
 //! Game-authored land and naval combat windows, shared by playback and PNG export.
+
+/// Tests run on the allocator the viewer ships with.
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::time::Duration;
 use std::time::Instant;
 #[cfg(test)]

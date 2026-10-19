@@ -12,4 +12,5 @@ installed-content-sound.workspace = true
 cpal = "0.18.2"
 
 [dev-dependencies]
+mimalloc.workspace = true
 installed-content-core = { workspace = true, features = ["layer-fixtures"] }

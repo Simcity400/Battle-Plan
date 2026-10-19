@@ -29,6 +29,7 @@ ts-rs = "11.1"
 zstd = "0.13"
 
 [dev-dependencies]
+mimalloc.workspace = true
 engine-executable.workspace = true
 installed-content-core.workspace = true
 installed-content-localisation.workspace = true

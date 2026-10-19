@@ -30,6 +30,7 @@ ts-rs = "11.1"
 zstd = "0.13"
 
 [dev-dependencies]
+mimalloc.workspace = true
 dashboard-base = { workspace = true, features = ["test-support"] }
 # Prepared files publish without disk flushes, which no test can observe.
 store = { path = "../store", features = ["test-support"] }

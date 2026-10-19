@@ -23,7 +23,9 @@ times (none before the first commit); a commit replaces the manifest and Clear
 removes it, so callers compare identities to notice another writer.
 `read(key, section, range)` returns a `Range` for a zero-based range ordinal: an
 owned handle on the range's pack, positioned at the range and bounded to its
-length, with `Read`, `Seek`, `len` and `id`. It stays valid while held, through
+length, with `Read`, `Seek`, `len` and `id`; reading it to the end sizes the
+buffer for the rest of the range at once (a bounded step at a time), so the
+bytes arrive in one read. It stays valid while held, through
 replacement, Clear and later commits. Producers define range boundaries and
 encode their own data; each saved range is immutable, and a replaced range
 always gets a new `RangeId`. `RangeId::cache_key` exposes its three numeric

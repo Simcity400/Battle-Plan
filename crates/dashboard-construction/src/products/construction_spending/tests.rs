@@ -258,8 +258,11 @@ fn construction_output_reads_only_at_cadence_and_accounts_for_5000_country_owner
     let log = crate::products::construction_log::scan(&replay, 1, &AtomicBool::new(false)).unwrap();
     assert_eq!(log.projects.len(), 5000);
     assert!(log.output_unknown.is_empty());
+    // Group every owner's leaves once; `leaves` regroups the whole log per tag.
+    let mut grouped = all_leaves(&log);
+    assert_eq!(grouped.len(), 5000);
     for id in 1..=5000 {
-        let (leaves, _) = leaves(&log, &format!("synthetic-{id}"));
+        let (leaves, _) = grouped.remove(&format!("synthetic-{id}")).unwrap();
         assert_eq!(leaves[0].spent.len(), 1);
         assert_eq!(leaves[0].spent[0].total_raw, hour.to_string());
     }

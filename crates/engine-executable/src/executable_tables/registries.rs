@@ -60,8 +60,10 @@ impl RegistryTables {
     }
 
     pub(super) fn decode(image: &PeImage, keywords: &KeywordTables) -> io::Result<Self> {
-        let triggers = registrations(image, TRIGGER_REGISTRATION, "triggers")?;
-        let effects = registrations(image, EFFECT_REGISTRATION, "effects")?;
+        let [trigger_sites, effect_sites] =
+            call_sites(image, [TRIGGER_REGISTRATION, EFFECT_REGISTRATION])?;
+        let triggers = registrations(image, TRIGGER_REGISTRATION, trigger_sites, "triggers")?;
+        let effects = registrations(image, EFFECT_REGISTRATION, effect_sites, "effects")?;
         let mut result = Self::default();
         let mut factories = Factories::new(image);
         for (token, entry) in triggers {
@@ -214,24 +216,42 @@ fn direct_target(image: &PeImage, instruction: &Instruction) -> io::Result<Optio
     Ok(None)
 }
 
-fn registrations(image: &PeImage, target: u32, table: &str) -> io::Result<BTreeMap<u32, u32>> {
-    let mut sites = BTreeSet::new();
+/// The sites of every five-byte relative call or jump whose destination is one
+/// of `targets`, by target, from one pass over the executable sections.
+fn call_sites<const N: usize>(
+    image: &PeImage,
+    targets: [u32; N],
+) -> io::Result<[BTreeSet<u32>; N]> {
+    let mut sites = std::array::from_fn(|_| BTreeSet::new());
     for &(start, end) in image.executable_ranges() {
         let bytes = image.bytes(start, (end - start) as usize)?;
-        for (offset, bytes) in bytes.windows(5).enumerate() {
-            if !matches!(bytes[0], 0xE8 | 0xE9) {
-                continue;
-            }
+        // A site is the opcode byte of a whole five-byte instruction in the section.
+        let Some(last) = bytes.len().checked_sub(5) else {
+            continue;
+        };
+        for offset in memchr::memchr2_iter(0xE8, 0xE9, &bytes[..=last]) {
             let site = checked_add(
                 start,
                 u32::try_from(offset).map_err(|_| invalid("registry span overflow"))?,
             )?;
-            let displacement = i32::from_le_bytes(bytes[1..5].try_into().unwrap());
-            if i64::from(site) + 5 + i64::from(displacement) == i64::from(target) {
-                sites.insert(site);
+            let displacement = i32::from_le_bytes(bytes[offset + 1..offset + 5].try_into().unwrap());
+            let destination = i64::from(site) + 5 + i64::from(displacement);
+            for (&target, found) in targets.iter().zip(&mut sites) {
+                if destination == i64::from(target) {
+                    found.insert(site);
+                }
             }
         }
     }
+    Ok(sites)
+}
+
+fn registrations(
+    image: &PeImage,
+    target: u32,
+    sites: BTreeSet<u32>,
+    table: &str,
+) -> io::Result<BTreeMap<u32, u32>> {
     let mut result = BTreeMap::new();
     let mut refused = 0;
     for site in sites {
@@ -989,20 +1009,47 @@ mod tests {
         PeImage::parse(bytes).unwrap()
     }
 
+    fn trigger_registrations(image: &PeImage) -> io::Result<BTreeMap<u32, u32>> {
+        let [sites] = call_sites(image, [TRIGGER_REGISTRATION])?;
+        registrations(image, TRIGGER_REGISTRATION, sites, "synthetic")
+    }
+
     #[test]
     fn registration_requires_the_entry_object_and_current_arguments() {
         let image = registration_fixture(false);
         assert_eq!(
-            registrations(&image, TRIGGER_REGISTRATION, "synthetic").unwrap(),
+            trigger_registrations(&image).unwrap(),
             BTreeMap::from([(42, ENTRY_TABLE)])
         );
         let image = registration_fixture(true);
-        let error = registrations(&image, TRIGGER_REGISTRATION, "synthetic").unwrap_err();
+        let error = trigger_registrations(&image).unwrap_err();
         assert!(
             error
                 .to_string()
                 .contains("1 unsupported registration occurrences")
         );
+    }
+
+    #[test]
+    fn one_pass_finds_each_targets_calls_and_jumps() {
+        // The fixture's factory: a 5-byte size, the allocation call, a 3-byte
+        // move, a 7-byte table address, 11 argument bytes, the helper call, a
+        // 3-byte move and the registration jump.
+        let image = registration_fixture(true);
+        let [allocations, helpers, registrations, unused] = call_sites(
+            &image,
+            [
+                OBJECT_ALLOCATION,
+                CODE_START,
+                TRIGGER_REGISTRATION,
+                EFFECT_REGISTRATION,
+            ],
+        )
+        .unwrap();
+        assert_eq!(allocations, BTreeSet::from([FACTORY_START + 5]));
+        assert_eq!(helpers, BTreeSet::from([FACTORY_START + 31]));
+        assert_eq!(registrations, BTreeSet::from([FACTORY_START + 39]));
+        assert!(unused.is_empty());
     }
 
     #[test]

@@ -51,6 +51,7 @@ serde_json.workspace = true
 shader-pipeline = { path = "../shader-pipeline" }
 
 [dev-dependencies]
+mimalloc.workspace = true
 installed-content-abilities = { workspace = true, features = ["test-support"] }
 installed-content-core = { workspace = true, features = ["test-support"] }
 installed-content-country-names = { workspace = true, features = ["test-support"] }

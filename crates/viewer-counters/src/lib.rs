@@ -1,4 +1,10 @@
 //! Native counters modules with no host or sibling feature dependency.
+
+/// Tests run on the allocator the viewer ships with.
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 pub mod map {
     pub mod air_selection;
     pub mod counters;

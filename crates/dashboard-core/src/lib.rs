@@ -3,6 +3,11 @@
 //! scanner every product reads recordings through. Nothing here names a
 //! product.
 
+/// Tests run on the allocator the viewer ships with.
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 pub mod blocks;
 pub mod config;
 pub mod dto;

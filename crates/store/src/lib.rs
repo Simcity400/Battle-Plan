@@ -1012,6 +1012,9 @@ impl Range {
     }
 }
 
+/// The most [`Range::read_to_end`] sizes its buffer for in one read.
+const READ_TO_END_STEP: u64 = 64 << 20;
+
 impl Read for Range {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         let remaining = self.id.len.saturating_sub(self.position);
@@ -1040,6 +1043,35 @@ impl Read for Range {
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// The rest of the range, read straight into a buffer sized for it rather
+    /// than one grown through a read per doubling. The buffer grows a bounded
+    /// step at a time, so a damaged length claims no more memory than one
+    /// step beyond what its pack holds; as by default, an error keeps the
+    /// bytes read before it.
+    fn read_to_end(&mut self, buffer: &mut Vec<u8>) -> io::Result<usize> {
+        let start = buffer.len();
+        loop {
+            let remaining = self.id.len.saturating_sub(self.position);
+            if remaining == 0 {
+                return Ok(buffer.len() - start);
+            }
+            let step = usize::try_from(remaining.min(READ_TO_END_STEP))
+                .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+            buffer
+                .try_reserve_exact(step)
+                .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+            let filled = buffer.len();
+            buffer.resize(filled + step, 0);
+            match self.read(&mut buffer[filled..]) {
+                Ok(read) => buffer.truncate(filled + read),
+                Err(error) => {
+                    buffer.truncate(filled);
+                    return Err(error);
+                }
             }
         }
     }

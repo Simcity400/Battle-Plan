@@ -26,5 +26,6 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
 [dev-dependencies]
+mimalloc.workspace = true
 engine-executable.workspace = true
 installed-content-core = { workspace = true, features = ["test-support"] }

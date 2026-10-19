@@ -1419,6 +1419,51 @@ fn a_range_reads_and_seeks_only_within_its_own_bytes() {
 }
 
 #[test]
+fn reading_to_the_end_appends_only_the_unread_rest_of_the_range() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    writer.write("pages", &b"abc"[..]).unwrap();
+    writer.write("pages", &b"defgh"[..]).unwrap();
+    writer.write("pages", &b"ijk"[..]).unwrap();
+    writer.commit().unwrap();
+    let mut range = fixture.store.read(&key, "pages", 1).unwrap().unwrap();
+    range.read_exact(&mut [0; 2]).unwrap();
+    let mut buffer = b"xy".to_vec();
+    assert_eq!(range.read_to_end(&mut buffer).unwrap(), 3);
+    assert_eq!(buffer, b"xyfgh");
+    assert_eq!(range.read_to_end(&mut buffer).unwrap(), 0);
+    assert_eq!(buffer, b"xyfgh");
+    assert_eq!(range.seek(SeekFrom::Start(10)).unwrap(), 10);
+    assert_eq!(range.read_to_end(&mut buffer).unwrap(), 0);
+    assert_eq!(buffer, b"xyfgh");
+}
+
+#[test]
+fn reading_a_truncated_range_to_the_end_keeps_its_bytes_and_reserves_only_its_length() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    writer.write("pages", &b"abcdefghij"[..]).unwrap();
+    writer.commit().unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(fixture.range_path(0, 0))
+        .unwrap()
+        .set_len(4)
+        .unwrap();
+    let mut range = fixture.store.read(&key, "pages", 0).unwrap().unwrap();
+    // A full buffer: amortized growth would double it to 32 bytes.
+    let mut buffer = vec![b'x'; 16];
+    let error = range.read_to_end(&mut buffer).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+    assert_eq!(&buffer[..16], &[b'x'; 16]);
+    assert_eq!(&buffer[16..], b"abcd");
+    // The recorded length is reserved exactly, never a doubling past it.
+    assert!(buffer.capacity() <= 16 + 10, "{}", buffer.capacity());
+}
+
+#[test]
 #[ignore = "flushes to disk: commit cost of 5,000 ranges of 2 KB"]
 fn five_thousand_two_kilobyte_ranges_commit_with_one_flush_per_pack() {
     use std::time::Instant;

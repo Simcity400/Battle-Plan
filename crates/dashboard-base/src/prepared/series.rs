@@ -2344,6 +2344,8 @@ fn decode(raw: &[u8], dir: Directory, cancelled: &AtomicBool) -> io::Result<Cach
 }
 /// Decoded blobs a reader keeps before it starts again.
 const DECODED_BLOBS: usize = 256;
+/// The most a blob read reserves before its first read.
+const BLOB_READ_STEP: u64 = 64 << 20;
 
 /// One query's view of a section's batches. It verifies the source key and
 /// reads the manifest once (through a [`store::Session`]); keeps every batch's
@@ -2538,7 +2540,18 @@ impl<'a> Reader<'a> {
                 } else {
                     let file = self.file(batch)?;
                     file.seek(SeekFrom::Start(dir.blob.0))?;
+                    // Sized for the blob, so it arrives in one read; a
+                    // damaged length reserves no more than the batch holds,
+                    // a bounded step at most.
+                    let held = dir
+                        .blob
+                        .1
+                        .min(file.len().saturating_sub(dir.blob.0))
+                        .min(BLOB_READ_STEP);
                     let mut compressed = Vec::new();
+                    compressed
+                        .try_reserve_exact(usize::try_from(held).unwrap_or(0))
+                        .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
                     file.take(dir.blob.1).read_to_end(&mut compressed)?;
                     decompress(&compressed)?
                 };

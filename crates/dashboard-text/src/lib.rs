@@ -8,6 +8,11 @@
 //! The `test-support` feature compiles the fixtures and test instrumentation the
 //! tests of crates above this one use.
 
+/// Tests run on the allocator the viewer ships with.
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 pub mod air_wing_names;
 pub mod catalogue;
 pub mod character_scope;

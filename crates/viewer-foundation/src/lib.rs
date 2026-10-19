@@ -1,5 +1,10 @@
 //! Shared map GUI, GPU, geometry, visibility, engagement and worker contracts.
 
+/// Tests run on the allocator the viewer ships with.
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 pub mod blocks;
 pub mod combat_selection;
 pub mod debug_fields;

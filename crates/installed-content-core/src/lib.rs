@@ -1,5 +1,10 @@
 //! Game content layers, identity hashes, and Rust parsers for the viewer.
 
+/// Tests run on the allocator the viewer ships with.
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 pub mod adjacencies;
 pub mod adjacency_rules;
 pub mod ambient;

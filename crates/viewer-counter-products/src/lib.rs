@@ -1,4 +1,10 @@
 //! Counter and province hover text, fresh route queries and order products.
+
+/// Tests run on the allocator the viewer ships with.
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 pub mod map {
     pub mod counter_content;
     pub mod counter_eta;

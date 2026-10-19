@@ -241,7 +241,12 @@ fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, refusals: bool
         let own = actual
             .get(&(name.clone(), *range))
             .unwrap_or_else(|| panic!("{label}: no {name}"));
-        assert_eq!(branch_state(own), branch_state(bytes), "{label}: {name}");
+        // Equal saved bytes are equal states: decode one copy, which still
+        // checks the saved state, and both only when they differ.
+        let expected = branch_state(bytes);
+        if own != bytes {
+            assert_eq!(branch_state(own), expected, "{label}: {name}");
+        }
         states += 1;
     }
     assert!(states > 0, "{label}: no branch state");

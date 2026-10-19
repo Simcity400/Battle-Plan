@@ -8,6 +8,11 @@
 //! slow decode or device never holds a map frame. Exports and dumps never
 //! create a [`System`].
 
+/// Tests run on the allocator the viewer ships with.
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 pub mod battle;
 pub mod engine;
 pub mod music;

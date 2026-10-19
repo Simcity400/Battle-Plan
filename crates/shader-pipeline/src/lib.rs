@@ -2,6 +2,11 @@
 //! to SPIR-V, naga validates it and emits WGSL for the same wgpu device as the map.
 //! No effect filename selects a substitute program.
 
+/// Tests run on the allocator the viewer ships with.
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::{collections::BTreeMap, path::PathBuf, process::Command};
 
 use installed_content_core::pdxshader::program::{Program, Stage, Technique};

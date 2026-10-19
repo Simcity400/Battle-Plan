@@ -233,9 +233,7 @@ fn equipment_mission_projection(
     let mut dispatch = Dispatch::new(image, EQUIPMENT_MISSION_SELECT, EQUIPMENT_MISSION_RESULT)?;
     let mut terminal = Instruction::new();
     terminal.set_code(iced_x86::Code::Retnq);
-    dispatch
-        .code
-        .insert(image.base + u64::from(EQUIPMENT_MISSION_RESULT), terminal);
+    dispatch.put(image.base + u64::from(EQUIPMENT_MISSION_RESULT), terminal);
     let mut rows = Vec::new();
     let mut bits = BTreeSet::new();
     for &(token, name) in &keywords.names {
@@ -372,21 +370,27 @@ fn selector_projection(
 struct Dispatch<'a> {
     image: &'a PeImage,
     start: u64,
-    code: BTreeMap<u64, Instruction>,
+    /// In increasing address order, as the linear decode yields them.
+    code: Vec<Instruction>,
 }
 
 impl<'a> Dispatch<'a> {
     fn new(image: &'a PeImage, start: u32, end: u32) -> io::Result<Self> {
-        let code = image
-            .instructions(start, end)?
-            .into_iter()
-            .map(|i| (i.ip(), i))
-            .collect();
+        let code = image.instructions(start, end)?;
         Ok(Self {
             image,
             start: image.base + u64::from(start),
             code,
         })
+    }
+
+    /// Puts `instruction` at `address`, in place of what was decoded there.
+    fn put(&mut self, address: u64, mut instruction: Instruction) {
+        instruction.set_ip(address);
+        match self.code.binary_search_by_key(&address, Instruction::ip) {
+            Ok(index) => self.code[index] = instruction,
+            Err(index) => self.code.insert(index, instruction),
+        }
     }
 
     fn select(
@@ -395,7 +399,7 @@ impl<'a> Dispatch<'a> {
         token: u32,
         output: bool,
     ) -> io::Result<(u64, BTreeMap<u64, u64>)> {
-        let mut regs = BTreeMap::new();
+        let mut regs = Registers::default();
         set_register(&mut regs, Register::RSP, STACK)?;
         set_register(&mut regs, input, u64::from(token))?;
         if output {
@@ -404,15 +408,18 @@ impl<'a> Dispatch<'a> {
         let mut writes = BTreeMap::new();
         let mut pc = self.start;
         let mut flags = (false, false, false);
-        let mut visited = BTreeSet::new();
+        // A selector visits few instructions, so a list finds a revisit fastest.
+        let mut visited = Vec::new();
         loop {
-            if !visited.insert(pc) {
+            if visited.contains(&pc) {
                 return Err(invalid("selector: cyclic branch"));
             }
+            visited.push(pc);
             let i = self
                 .code
-                .get(&pc)
-                .ok_or_else(|| invalid("selector: branch leaves decoded instructions"))?;
+                .binary_search_by_key(&pc, Instruction::ip)
+                .map(|index| &self.code[index])
+                .map_err(|_| invalid("selector: branch leaves decoded instructions"))?;
             let mut next = i.next_ip();
             let read = |operand| operand_value(self.image, &regs, &writes, i, operand);
             match i.mnemonic() {
@@ -513,7 +520,7 @@ impl<'a> Dispatch<'a> {
 
 fn operand_value(
     image: &PeImage,
-    regs: &BTreeMap<Register, u64>,
+    regs: &Registers,
     writes: &BTreeMap<u64, u64>,
     i: &Instruction,
     operand: u32,
@@ -584,7 +591,32 @@ fn compare(a: u64, b: u64, width: usize) -> (bool, bool, bool) {
     (a == b, a < b, signed(a, width) < signed(b, width))
 }
 
-fn register_value(regs: &BTreeMap<Register, u64>, register: Register) -> io::Result<u64> {
+/// Known values by full register. An emulation holds a handful at a time,
+/// so a list is faster to search and update than a tree.
+#[derive(Default)]
+struct Registers(Vec<(Register, u64)>);
+
+impl Registers {
+    fn get(&self, register: &Register) -> Option<&u64> {
+        self.0
+            .iter()
+            .find(|(known, _)| known == register)
+            .map(|(_, value)| value)
+    }
+
+    fn insert(&mut self, register: Register, value: u64) {
+        match self.0.iter_mut().find(|(known, _)| *known == register) {
+            Some((_, known)) => *known = value,
+            None => self.0.push((register, value)),
+        }
+    }
+
+    fn remove(&mut self, register: &Register) {
+        self.0.retain(|(known, _)| known != register);
+    }
+}
+
+fn register_value(regs: &Registers, register: Register) -> io::Result<u64> {
     let value = *regs
         .get(&register.full_register())
         .ok_or_else(|| invalid("metadata: register value is unknown"))?;
@@ -600,7 +632,7 @@ fn register_value(regs: &BTreeMap<Register, u64>, register: Register) -> io::Res
 }
 
 fn set_register(
-    regs: &mut BTreeMap<Register, u64>,
+    regs: &mut Registers,
     register: Register,
     value: u64,
 ) -> io::Result<()> {
@@ -628,7 +660,7 @@ fn set_register(
     Ok(())
 }
 
-fn memory_address(regs: &BTreeMap<Register, u64>, i: &Instruction) -> io::Result<u64> {
+fn memory_address(regs: &Registers, i: &Instruction) -> io::Result<u64> {
     if i.is_ip_rel_memory_operand() {
         return Ok(i.ip_rel_memory_address());
     }
@@ -649,7 +681,7 @@ fn memory_address(regs: &BTreeMap<Register, u64>, i: &Instruction) -> io::Result
 
 struct RuleConstruction<'a> {
     image: &'a PeImage,
-    regs: BTreeMap<Register, u64>,
+    regs: Registers,
     vectors: BTreeMap<Register, Vec<u8>>,
     bytes: BTreeMap<u64, u8>,
     strings: BTreeMap<u64, String>,
@@ -661,7 +693,7 @@ impl<'a> RuleConstruction<'a> {
     fn new(image: &'a PeImage) -> Self {
         Self {
             image,
-            regs: BTreeMap::from([(Register::RSP, STACK), (Register::RBP, FRAME)]),
+            regs: Registers(vec![(Register::RSP, STACK), (Register::RBP, FRAME)]),
             vectors: BTreeMap::new(),
             bytes: BTreeMap::new(),
             strings: BTreeMap::new(),

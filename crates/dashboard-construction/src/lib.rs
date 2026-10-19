@@ -6,6 +6,11 @@
 //! own it (dashboard-base, dashboard-text and dashboard-core); the dashboard
 //! re-exports them, registers them and prepares and queries them.
 
+/// Tests run on the allocator the viewer ships with.
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 pub mod products {
     pub mod construction_log;
     pub mod construction_spending;

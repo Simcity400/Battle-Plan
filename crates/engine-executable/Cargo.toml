@@ -13,4 +13,5 @@ doctest = false
 
 [dependencies]
 iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "instr_info"] }
+memchr = "2.8"
 sha2.workspace = true

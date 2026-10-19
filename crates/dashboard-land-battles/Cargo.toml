@@ -28,6 +28,7 @@ store = { path = "../store" }
 ts-rs = "11.1"
 
 [dev-dependencies]
+mimalloc.workspace = true
 installed-content-core = { workspace = true, features = ["test-support"] }
 installed-content-division-names = { workspace = true, features = ["test-support"] }
 engine-executable.workspace = true

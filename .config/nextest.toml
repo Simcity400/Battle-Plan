@@ -4,8 +4,23 @@
 [profile.default]
 fail-fast = false
 
-# The long scale and preparation-parity tests start first so they do not hold
-# up the end of a run.
+# Tests that take tens of seconds start first, wherever their binary falls in
+# the run order, so none of them starts near the end: the scale tests, the
+# replay acceptance campaign and the long scans of other crates.
 [[profile.default.overrides]]
-filter = 'package(dashboard) | test(/5000|5_000|five_thousand/)'
+filter = '''
+test(/5000|5_000|five_thousand/)
+| (package(replay) & test(/^acceptance::/))
+| (package(dashboard-wars) & test(/^products::wars::tests::branch_scan_/))
+| (package(dashboard-air-superiority) & test(/shared_driver/))
+| (package(dashboard-stability) & test(/native_work_is_flat|at_scale/))
+| (package(dashboard-special-projects) & test(/world_variable_names/))
+| (package(dashboard-resource-balance) & test(/whole_world_of_trade/))
+| (package(collector) & test(/oob_entry_tests|oob_root_fields|role_capture_cost/))
+'''
+priority = 60
+
+# The dashboard's preparation-parity tests start next.
+[[profile.default.overrides]]
+filter = 'package(dashboard)'
 priority = 50

@@ -6,6 +6,11 @@
 //! and dashboard-land-battles); the dashboard re-exports them, registers them
 //! and prepares and queries them.
 
+/// Tests run on the allocator the viewer ships with.
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 pub mod products {
     pub mod naval_battles;
     pub mod naval_losses;

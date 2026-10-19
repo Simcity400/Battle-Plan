@@ -301,16 +301,20 @@ fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, refusals: bool
         .iter()
         .filter(|((name, _), _)| name.starts_with("preparation-branch-"))
     {
-        let mut own = branch_state(
-            actual
-                .get(&(name.clone(), *range))
-                .unwrap_or_else(|| panic!("{label}: no {name}")),
-        );
-        let mut expected = branch_state(bytes);
-        own.as_object_mut().unwrap().remove("group_changes");
-        expected.as_object_mut().unwrap().remove("group_changes");
-        assert_eq!(own, expected, "{label}: {name}");
+        let own = actual
+            .get(&(name.clone(), *range))
+            .unwrap_or_else(|| panic!("{label}: no {name}"));
         states += 1;
+        // Equal saved bytes are equal states: decode one copy, which still
+        // checks the saved state's shape, and both only when they differ.
+        let mut expected = branch_state(bytes);
+        expected.as_object_mut().unwrap().remove("group_changes");
+        if own == bytes {
+            continue;
+        }
+        let mut own = branch_state(own);
+        own.as_object_mut().unwrap().remove("group_changes");
+        assert_eq!(own, expected, "{label}: {name}");
     }
     assert!(states > 0, "{label}: no branch state");
     if !refusals {

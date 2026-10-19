@@ -6,6 +6,11 @@
 //! dashboard-core); the dashboard re-exports it, registers it and prepares and
 //! queries it.
 
+/// Tests run on the allocator the viewer ships with.
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 pub mod products {
     pub mod peace_deals;
 
