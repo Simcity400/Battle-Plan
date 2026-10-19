@@ -198,7 +198,7 @@ impl Replay {
         &self,
         index: &BlockIndex,
         selected: Option<&[TableId]>,
-        visit: impl FnMut(Frame) -> io::Result<bool>,
+        visit: &mut dyn FnMut(Frame) -> io::Result<bool>,
     ) -> io::Result<()> {
         self.visit_file_block_with(index, selected, visit, &mut || Ok(()))
     }
@@ -207,8 +207,8 @@ impl Replay {
         &self,
         index: &BlockIndex,
         selected: Option<&[TableId]>,
-        mut visit: impl FnMut(Frame) -> io::Result<bool>,
-        check: &mut impl FnMut() -> io::Result<()>,
+        visit: &mut dyn FnMut(Frame) -> io::Result<bool>,
+        check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
         check()?;
         let mut file = self
@@ -227,7 +227,7 @@ impl Replay {
                 &mut file,
                 index,
                 selected,
-                |_| {
+                &mut |_| {
                     check()?;
                     Ok(true)
                 },
@@ -239,7 +239,7 @@ impl Replay {
             &mut file,
             index,
             selected,
-            |frame| {
+            &mut |frame| {
                 check()?;
                 visit(frame)
             },
@@ -252,7 +252,7 @@ impl Replay {
         file: &mut File,
         index: &BlockIndex,
         selected: Option<&[TableId]>,
-        visit: impl FnMut(Frame) -> io::Result<bool>,
+        visit: &mut dyn FnMut(Frame) -> io::Result<bool>,
         validate: bool,
     ) -> io::Result<()> {
         if index.raw_length > MAX_BLOCK_RAW_BYTES as u64 {

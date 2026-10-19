@@ -1142,7 +1142,7 @@ impl Replay {
         parallel: Option<&Parallel<'_>>,
     ) -> io::Result<Vec<Frame>> {
         let mut frames = Vec::new();
-        self.visit_block_inner(index, Some(tables), parallel, |frame| {
+        self.visit_block_inner(index, Some(tables), parallel, &mut |frame| {
             engine_allocation::reserve(&mut frames, 1)?;
             frames.push(frame);
             Ok(true)
@@ -1163,7 +1163,7 @@ impl Replay {
         }
         if self.file.is_some() {
             let mut frames = Vec::new();
-            self.visit_file_block(index, None, |frame| {
+            self.visit_file_block(index, None, &mut |frame| {
                 engine_allocation::reserve(&mut frames, 1)?;
                 frames.push(frame);
                 Ok(true)
@@ -1231,9 +1231,9 @@ impl Replay {
         &self,
         index: &BlockIndex,
         selected: Option<&[TableId]>,
-        visit: impl FnMut(Frame) -> io::Result<bool>,
+        mut visit: impl FnMut(Frame) -> io::Result<bool>,
     ) -> io::Result<()> {
-        self.visit_block_inner(index, selected, None, visit)
+        self.visit_block_inner(index, selected, None, &mut visit)
     }
 
     fn visit_block_inner(
@@ -1241,7 +1241,8 @@ impl Replay {
         index: &BlockIndex,
         selected: Option<&[TableId]>,
         parallel: Option<&Parallel<'_>>,
-        mut visit: impl FnMut(Frame) -> io::Result<bool>,
+        // One copy of the block walk serves every visitor, rather than one each.
+        visit: &mut dyn FnMut(Frame) -> io::Result<bool>,
     ) -> io::Result<()> {
         if let Some(block) = self.grouped_block(index)? {
             let frames = check_block_frames(
@@ -1292,7 +1293,7 @@ impl Replay {
         raw: &mut Inflated<impl Read>,
         index: &BlockIndex,
         selected: Option<&[TableId]>,
-        mut visit: impl FnMut(Frame) -> io::Result<bool>,
+        visit: &mut dyn FnMut(Frame) -> io::Result<bool>,
     ) -> io::Result<()> {
         let mut word = [0; 4];
         raw.fill(&mut word)?;

@@ -2,8 +2,10 @@
 
 There is one build: plain `cargo build`, `cargo test` and `cargo nextest` all
 use the `dev` profile. Workspace crates are optimized (`opt-level = 1`) and
-compile incrementally, without debug information, with debug assertions and
-overflow checks on. Third-party crates are built once at `opt-level = 3`. Tests,
+compile incrementally, without debug information or cross-unit ThinLTO, with
+debug assertions and overflow checks on. Building every workspace library from
+scratch took 2,854 CPU-seconds without ThinLTO against 3,892 with it, and the
+full suite ran no slower. Third-party crates are built once at `opt-level = 3`. Tests,
 the full suite and the desktop app therefore share one set of artifacts under
 `.cargo-target/debug`. Release builds are for shipping, live capture acceptance
 and performance evidence.
