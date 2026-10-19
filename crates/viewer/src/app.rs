@@ -65,6 +65,7 @@ use {
     viewer_world::map::scene::Request,
 };
 
+mod drop;
 mod embedded;
 mod faction_highlight;
 pub(crate) mod fly;
@@ -407,6 +408,18 @@ pub(crate) fn map_overlay(
         .show(&mut overlay, |ui| {
             add(ui, (rect.height() - 50.0 * points).max(24.0 * points))
         });
+}
+
+/// How to choose where a fly or walk mode chosen from the map starts.
+fn start_prompt(mode: CameraMode) -> &'static str {
+    match mode {
+        CameraMode::Walk => {
+            "Click the map where the walk starts, or press A on a controller to start in the              middle of the view. Escape goes back to the map."
+        }
+        _ => {
+            "Click the map where the flight starts, or press A on a controller to start in the              middle of the view. Escape goes back to the map."
+        }
+    }
 }
 
 pub(crate) fn partial_notice(ui: &mut egui::Ui, replay: &replay::container::Replay) {
@@ -821,6 +834,8 @@ pub struct Viewer {
     /// Whether the fly and walk modes draw the map's interface standing in the world, as the
     /// host's control sets it.
     free_overlays: bool,
+    /// Where a fly or walk mode chosen from the map starts ([`drop`]).
+    start_pick: drop::Pick,
     /// The overlay as a free eye shows it this frame ([`free_icons::present`]).
     free_overlay: Batch,
     /// The icons a free eye shows this frame, which the pointer's hits follow; `None` when the
@@ -1270,6 +1285,7 @@ impl Viewer {
                 CameraMode::Map
             },
             free_overlays: false,
+            start_pick: drop::Pick::Idle,
             free_overlay: Batch::default(),
             looks: None,
             input: crate::controls::Input::default(),
@@ -2082,6 +2098,12 @@ impl Viewer {
         self.orbit.reset();
         self.walk.reset();
         self.flight = None;
+        // A start chosen on the last map is chosen again on this one, with the pointer given back:
+        // the new map's first frame shows the cursor again.
+        if self.start_pick.at().is_some() {
+            self.start_pick = drop::Pick::Choosing;
+            self.input.release();
+        }
         self.fly_clock = None;
         self.fly_footprints = Default::default();
         // names
@@ -2938,8 +2960,10 @@ impl Viewer {
         {
             self.set_camera_mode(self.camera_mode.next(), self.free_overlays, ui.ctx());
         }
-        // A window dump's placed walk walks, and its `--fly` flies, its pinned frame.
+        // A window dump's placed walk walks, and its `--fly` flies, its pinned frame. A mode still
+        // choosing its start shows the map camera.
         let free_mode = self.camera_mode != CameraMode::Map
+            && !self.start_pick.choosing()
             && (pinned.is_none() || placed_walk || self.options.fly.is_some());
         // Whether the map's interface draws: always for the game's camera and its orbit; in fly
         // and walk, a capture's placed walk, flight or free camera, only when asked for.
@@ -2963,8 +2987,9 @@ impl Viewer {
         // too: counters, combat bubbles, the combat window and its lists.
         let extent = ui_scale_extent(pixels, ui_scale);
         // Escape first gives back a pointer held for looking around (the input layer does that);
-        // only a later one reaches the map's interface.
-        if ui.input(|input| input.key_pressed(egui::Key::Escape)) && !held_pointer {
+        // only a later one reaches the map's interface. A mode choosing its start takes it.
+        let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
+        if escape && !held_pointer && !self.start_pick.choosing() {
             // Escape closes the tactics popup before the battle window.
             if self.combat.tactics_open {
                 self.combat.tactics_open = false;
@@ -3112,6 +3137,43 @@ impl Viewer {
         let window_focused = ui.input(|input| input.focused);
         let focused = window_focused && (!self.dashboard_map || owns);
         let pointed = response.hovered() && !over_combat;
+        // A mode chosen from the map starts over the ground clicked next, or under the view's
+        // middle at the controller's South button; Escape goes back to the map.
+        let mut started = false;
+        if self.start_pick.choosing() {
+            let shown = self.orbit.view(*camera);
+            let field = viewer_foundation::map::province_map::HeightField {
+                width: document.map.width,
+                height: document.map.height,
+                values: document.assets.heightmap_texels(),
+            };
+            // The drawn ground the ray meets first, across the east-west wrap too; a click on no
+            // ground, as above the horizon or past the map's top or bottom, chooses nothing.
+            let ground = |screen: [f32; 2]| drop::ground_at(&shown, screen, pixels, &field);
+            let clicked = response
+                .interact_pointer_pos()
+                .filter(|_| response.clicked() && !over_combat)
+                .and_then(|position| ground(frame_point(position)));
+            let south = controls
+                .pad
+                .pressed(dashboard::protocol::GamepadButton::South);
+            let centre = south
+                .then(|| ground([pixels[0] as f32 * 0.5, pixels[1] as f32 * 0.5]))
+                .flatten();
+            match drop::choose(escape, clicked, south, centre, camera.map.x()) {
+                drop::Choice::Wait => {}
+                drop::Choice::Cancel => {
+                    self.set_camera_mode(CameraMode::Map, self.free_overlays, ui.ctx());
+                }
+                drop::Choice::Start(at) => {
+                    self.start_pick = drop::Pick::At(at);
+                    // The press that chose the start is no half of a double tap in the mode.
+                    self.input.forget_pad_taps();
+                    started = true;
+                    ui.ctx().request_repaint();
+                }
+            }
+        }
         // A free mode takes the pointer for looking around when the map is clicked, unless the
         // click lands on a map icon it shows or on the combat window.
         let icon_click = free_mode
@@ -3293,7 +3355,7 @@ impl Viewer {
                             _ => 0.0,
                         };
                         self.fly_clock = time;
-                        let eye = self.fly(document, camera, &scripted.frame(dt));
+                        let eye = self.fly(document, camera, None, &scripted.frame(dt));
                         (eye, if interface { eye } else { camera })
                     }
                     _ => (camera, camera),
@@ -3332,14 +3394,15 @@ impl Viewer {
                         } else {
                             0.0
                         };
-                        // Walking starts on the ground the view looks at, facing the way it faces.
+                        // Walking starts on the ground chosen for it, or the ground the view looks
+                        // at, facing the way the view faces.
                         let world = crate::controls::walker::World::of(&map, &floor);
-                        self.walk
-                            .camera(&controls, wheel, map, camera.center, &world)
+                        let start = self.start_pick.at().unwrap_or(camera.center);
+                        self.walk.camera(&controls, wheel, map, start, &world)
                     } else {
                         // The input layer keeps the keyboard and mouse to a focused map, and the
                         // controller to wherever the host routes it.
-                        self.fly(document, map, &controls)
+                        self.fly(document, map, self.start_pick.at(), &controls)
                     };
                     // Shown, the interface stands in the free eye's world; hidden, it stays laid
                     // out for the map camera the mode left, undrawn.
@@ -3704,8 +3767,10 @@ impl Viewer {
             if raids_only && check_overlay() {
                 self.check_overlay(&now, overlay_camera, pixels, ui_scale, animation_time)?;
             }
-            // Resolve clicks against this hour and camera's newly rebuilt hit regions.
+            // Resolve clicks against this hour and camera's newly rebuilt hit regions; the click
+            // that chose a free mode's start selects nothing.
             if response.clicked()
+                && !started
                 && !over_combat
                 && (!free_mode || icon_click)
                 && let Some(point) = point
@@ -4117,13 +4182,21 @@ impl Viewer {
         let partial = document.playback.replay().is_partial()
             && self.embedded.is_some()
             && !self.dashboard_map;
-        if software || diagnostics || partial {
+        // A fly or walk mode chosen from the map says how to choose where it starts.
+        let start_prompt = self
+            .start_pick
+            .choosing()
+            .then(|| start_prompt(self.camera_mode));
+        if software || diagnostics || partial || start_prompt.is_some() {
             map_overlay(
                 ui,
                 rect.intersect(ui.clip_rect()),
                 "diagnostics",
                 self.interface_points,
                 |ui, height| {
+                    if let Some(prompt) = start_prompt {
+                        ui.colored_label(egui::Color32::WHITE, prompt);
+                    }
                     if partial {
                         partial_notice(ui, document.playback.replay());
                     }
@@ -4173,6 +4246,12 @@ impl Viewer {
             return;
         }
         self.camera_mode = mode;
+        // A free mode chosen from the map waits for the ground it starts over.
+        self.start_pick = if mode == CameraMode::Map {
+            drop::Pick::Idle
+        } else {
+            drop::Pick::Choosing
+        };
         self.walk.leave();
         self.flight = None;
         self.input.release();

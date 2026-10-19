@@ -82,8 +82,8 @@ impl Walk {
     }
 
     /// Advances the walker one frame and gives the camera it is seen through. A new walk
-    /// starts where the command line placed it, or on the ground `map` looks at, facing the
-    /// way `map` faces.
+    /// starts where the command line placed it, or on the ground at world `look_at` (chosen from
+    /// the map, or the ground `map` looks at), facing the way `map` faces.
     pub(super) fn camera(
         &mut self,
         controls: &Frame,

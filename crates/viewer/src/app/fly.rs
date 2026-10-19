@@ -129,8 +129,15 @@ impl Viewer {
     /// One frame of flight over `map`'s map: steps the flight with `controls` and what its
     /// aircraft's player has played as the scene's last frame left it, and returns the camera the
     /// frame draws with. The aircraft's instance waits in `self.flying` for the scene. A flight
-    /// starts where a window dump's `--fly` puts it, or over the ground `map` looks at.
-    pub(super) fn fly(&mut self, document: &Document, map: Camera, controls: &Frame) -> Camera {
+    /// starts where a window dump's `--fly` puts it, over the ground at world `start` chosen from
+    /// the map, or over the ground `map` looks at.
+    pub(super) fn fly(
+        &mut self,
+        document: &Document,
+        map: Camera,
+        start: Option<[f32; 2]>,
+        controls: &Frame,
+    ) -> Camera {
         let field = HeightField {
             width: document.map.width,
             height: document.map.height,
@@ -142,7 +149,12 @@ impl Viewer {
         let scripted = self.options.fly;
         let flight = self.flight.get_or_insert_with(|| match scripted {
             Some(scripted) => scripted.flight(),
-            None => Flight::from_map(&map, &floor, airframe.size),
+            // The map camera moved over the chosen ground keeps its height and heading.
+            None => Flight::from_map(
+                &start.map_or(map, |center| Camera { center, ..map }),
+                &floor,
+                airframe.size,
+            ),
         });
         let played = aircraft.and_then(|slot| {
             self.scene
@@ -293,18 +305,32 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         viewer.set_camera_mode(dashboard::protocol::CameraMode::Fly, false, &ctx);
-        // The host hands the map the controller: the left stick hard right, the right trigger
-        // pulled.
+        // The host hands the map the controller, whose South button starts the flight in the
+        // middle of the view; then the left stick hard right, the right trigger pulled. A button
+        // held as the map takes the controller is held, not pressed, so the press comes after.
         let owner = GamepadOwner {
             viewer: 1,
             handoff: 1,
         };
         let mut state = GamepadState {
+            sticks: [[0.0; 2], [0.0; 2]],
+            triggers: [0.0; 2],
+            buttons: 0,
+        };
+        viewer.input.gamepad(GamepadMessage::Take { owner, state });
+        draw(&mut viewer);
+        assert!(viewer.start_pick.choosing(), "{:?}", viewer.start_pick);
+        state.buttons = GamepadButton::South.bit();
+        viewer.input.gamepad(GamepadMessage::State { owner, state });
+        draw(&mut viewer);
+        assert!(viewer.flight.is_none(), "the flight waits for its start");
+        assert!(viewer.start_pick.at().is_some(), "{:?}", viewer.start_pick);
+        state = GamepadState {
             sticks: [[1.0, 0.0], [0.0; 2]],
             triggers: [0.0, 1.0],
             buttons: 0,
         };
-        viewer.input.gamepad(GamepadMessage::Take { owner, state });
+        viewer.input.gamepad(GamepadMessage::State { owner, state });
         draw(&mut viewer);
         let start = viewer.flight.clone().expect("the flying mode flies");
         let begun = Instant::now();

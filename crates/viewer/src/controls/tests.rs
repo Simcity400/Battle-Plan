@@ -187,6 +187,12 @@ fn double_taps_and_button_presses_are_reported_once() {
     // Too slow a second press starts a new pair.
     assert!(!press(&mut input, 0, 1400).double_tapped(GamepadButton::South));
     assert!(!press(&mut input, south, 1800).double_tapped(GamepadButton::South));
+    // A press the map used for something else, its taps forgotten, is no first half.
+    assert!(!press(&mut input, 0, 2500).double_tapped(GamepadButton::South));
+    assert!(!press(&mut input, south, 2600).double_tapped(GamepadButton::South));
+    input.forget_pad_taps();
+    assert!(!press(&mut input, 0, 2650).double_tapped(GamepadButton::South));
+    assert!(!press(&mut input, south, 2780).double_tapped(GamepadButton::South));
 }
 
 /// A key event with its place on the keyboard.

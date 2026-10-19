@@ -210,6 +210,12 @@ impl Input {
         self.taps.clear();
     }
 
+    /// Forgets the controller's recent presses, so a press the map has used for something else
+    /// starts no double tap.
+    pub fn forget_pad_taps(&mut self) {
+        self.pad_taps.clear();
+    }
+
     /// A controller message from the host, in the order it sent them.
     pub fn gamepad(&mut self, message: GamepadMessage) {
         match message {
