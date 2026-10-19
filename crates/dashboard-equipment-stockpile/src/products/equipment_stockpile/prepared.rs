@@ -84,6 +84,12 @@ fn holder_keys<'a>(
     resolved.get_mut(tag).expect("resolved holder keys")
 }
 
+/// The lexical token spellings read, with the identity of the view they came from.
+type Spellings = (
+    replay_frame::frame::ViewIdentity,
+    BTreeMap<u32, Option<Vec<u8>>>,
+);
+
 /// What the whole tables last said of each holder's rows, kept current from
 /// each hour's changed rows: the holders of each canonical slot, the raw
 /// country references linked to it, each production line's country, and the
@@ -102,10 +108,7 @@ struct RowIndex {
     stale: [BTreeSet<u32>; 2],
     views: [replay_frame::frame::SharedView; 3],
     token_owners: BTreeMap<u32, BTreeSet<u32>>,
-    spellings: Option<(
-        replay_frame::frame::ViewIdentity,
-        BTreeMap<u32, Option<Vec<u8>>>,
-    )>,
+    spellings: Option<Spellings>,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]

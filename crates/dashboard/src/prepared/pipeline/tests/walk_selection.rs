@@ -163,7 +163,6 @@ fn walk_decodes_only_its_union_once_per_block_and_preserves_every_selected_hour(
 }
 
 #[test]
-#[cfg_attr(not(feature = "slow-tests"), ignore = "slow: full preparation parity")]
 fn selected_walk_pages_states_refusals_resume_cancel_and_append_equal_the_all_table_walk() {
     let first = prepass_parity::resources(3, false);
     let grown = prepass_parity::resources(5, true);
@@ -259,7 +258,6 @@ fn selected_walk_pages_states_refusals_resume_cancel_and_append_equal_the_all_ta
 }
 
 #[test]
-#[cfg_attr(not(feature = "slow-tests"), ignore = "slow: full preparation parity")]
 fn selected_walk_matches_hourly_preparation_and_saves_the_same_domain_state() {
     let first = prepass_parity::resources(3, false);
     let grown = prepass_parity::resources(5, true);
@@ -344,10 +342,6 @@ fn selected_walk_matches_hourly_preparation_and_saves_the_same_domain_state() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: 5,000-country preparation parity"
-)]
 fn selected_walk_and_all_table_walk_save_identical_5000_country_pages_and_state() {
     let replay = Replay::from_records(
         CAMPAIGN.into(),
@@ -364,10 +358,6 @@ fn selected_walk_and_all_table_walk_save_identical_5000_country_pages_and_state(
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: full preparation with a 720-hour block"
-)]
 fn walk_reads_map_only_at_checkpoints_and_never_rereads_folded_army_rows() {
     use replay_data::rows::RailCooldownRow;
     let frames = (1000..=1720)

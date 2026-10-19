@@ -304,10 +304,6 @@ mod tests {
     /// Any built-in row, including one no reader uses, fails every fixed key
     /// by its own name, and only the static tokens' consumers survive it.
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn every_builtin_is_verified_and_a_mismatch_fails_every_fixed_key_by_name() {
         let mut fixture = Fixture::new();
         let valid = check(&fixture, 0).unwrap();

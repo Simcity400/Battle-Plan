@@ -28,7 +28,6 @@ fn read(fixture: &Fixture, family: Value, hour: i32) -> Value {
     .unwrap()
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn experience_native_work_is_flat_and_gain_runs_visit_only_supplying_reads() {
     use dashboard_base::prepared::{
@@ -157,7 +156,6 @@ fn experience_native_work_is_flat_and_gain_runs_visit_only_supplying_reads() {
     }
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn stability_native_work_is_flat_over_hours_and_history_and_one_changed_row() {
     use dashboard_base::prepared::{
@@ -464,10 +462,6 @@ fn navigation_unions_requested_measures_with_each_tags_membership_after_resume()
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn five_thousand_countries_keep_runs_and_files_proportional_to_changes_and_batches() {
     let mut fixture = Fixture::new();
     let mut accumulator = StabilityAccumulator::default();
@@ -629,10 +623,6 @@ mod experience {
     use std::sync::atomic::AtomicBool;
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn prepared_experience_matches_native_reads_alias_reuse_gaps_and_resumed_append() {
         use crate::prepared_stability::ExperienceAccumulator;
         use dashboard_base::{prepared::series::tests::Fixture, prepared_measure::query::query};
@@ -756,10 +746,6 @@ mod experience {
     }
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn prepared_experience_five_thousand_countries_preserves_equal_read_boundaries_and_wide_gains()
     {
         use crate::prepared_stability::ExperienceAccumulator;
@@ -1368,7 +1354,6 @@ fn equal_parts_keep_hourly_bytes_read_events_boundaries_and_refusals() {
     equal_parts_carry_numeric_publication(8);
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn equal_parts_do_not_publish_5000_numeric_keys_again_at_each_read() {
     equal_parts_carry_numeric_publication(5000);

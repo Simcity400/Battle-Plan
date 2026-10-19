@@ -1510,10 +1510,6 @@ fn stability_copy_census_keeps_first_observations_and_cuts_repeated_copies() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn stability_copy_faults_at_every_old_operand_byte_keep_the_old_outcome_and_reason() {
     for w in [world(), scaled_world(), secondary_idea_world()] {
         let baseline = Copies::new(&w);
@@ -1709,10 +1705,6 @@ fn scaled_countries(count: u32) -> World {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn stability_batched_copies_match_serial_at_five_thousand_countries() {
     const COUNT: u32 = 5_000;
     let w = scaled_countries(COUNT);

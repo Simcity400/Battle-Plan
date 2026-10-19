@@ -807,15 +807,17 @@ pub(super) fn site_icon_states(frame: &DecodedFrame) -> io::Result<([BTreeSet<u3
 /// province's first strategic location.
 pub(super) const STRATEGIC_LOCATION_SPRITE_PREFIX: &str = "GFX_strategic_location_";
 
+/// Each province's strategic locations, with the notes naming what the hour
+/// does not record.
+type StrategicLocations = (BTreeMap<u32, Vec<u32>>, Vec<String>);
+
 /// Each province's strategic locations, as the game's icon lists them: the
 /// province's own tokens in stored order, then its own state's locations
 /// anchored on it, in stored order. The game gathers a province's state
 /// locations only through the province's state, so a pair anchored in another
 /// state's province is kept out. Provinces with none are left out; notes
 /// name what the hour does not record.
-pub(super) fn strategic_locations(
-    frame: &DecodedFrame,
-) -> io::Result<(BTreeMap<u32, Vec<u32>>, Vec<String>)> {
+pub(super) fn strategic_locations(frame: &DecodedFrame) -> io::Result<StrategicLocations> {
     let mut out: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
     let mut notes = Vec::new();
     let cores = rows::<tables::StateCores>(frame)?;

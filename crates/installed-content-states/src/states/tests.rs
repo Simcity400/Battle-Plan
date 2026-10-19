@@ -923,6 +923,8 @@ fn state_fields_keep_keyword_dispatch_and_failed_boolean_values() {
 #[cfg(feature = "test-support")]
 #[test]
 fn the_loader_reads_resources_and_the_building_cap_from_content() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use std::fs;
     let root = std::env::temp_dir().join(format!(
         "hoi4_installed_content_states_{}_{:?}",

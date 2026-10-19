@@ -222,7 +222,6 @@ fn prepared_roster_filters_replaced_alias_holders_and_refusals() {
     );
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn prepared_roster_handles_five_thousand_countries_without_daily_checkpoint_growth() {
     let mut input = frame(0, true, vec![]);

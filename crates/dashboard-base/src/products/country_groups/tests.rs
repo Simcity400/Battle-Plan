@@ -24,10 +24,6 @@ fn group_source(replay: Replay) -> crate::Source {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn country_groups_keep_every_event_and_run_then_refuse_oversized_replies() {
     use super::{CountryGroupParams, CountryGroups, scan_branch};
     use crate::{
@@ -1960,10 +1956,6 @@ fn five_thousand_country_frame(members: bool) -> DecodedFrame {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn faction_roster_history_keeps_more_than_two_million_recorded_members() {
     let template = five_thousand_country_frame(true);
     let frames = (0..401)
@@ -2497,7 +2489,6 @@ fn prepared_groups_resume_preserves_faction_evidence_and_query_reply() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn prepared_group_roster_continuation_grows_with_changes_not_ten_thousand_hours() {
     use super::Scan;
     let mut frame = group_frame(

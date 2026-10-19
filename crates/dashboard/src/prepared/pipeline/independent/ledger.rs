@@ -275,7 +275,7 @@ impl LedgerBranch {
                     }
                 }
             },
-            || check(),
+            check,
         );
         ledger.end_block();
         if let Some(error) = failure {

@@ -85,6 +85,7 @@ fn checkpoint(frame: &DecodedFrame) -> Vec<u8> {
 /// One step a watch was handed, as compared: a frame with what its read
 /// says of it, or a quiet span with everything it reports per table.
 #[derive(Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)] // A short test log, compared whole.
 enum Step {
     Changed {
         frame: Vec<u8>,

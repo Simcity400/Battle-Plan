@@ -148,7 +148,7 @@ impl BlockExtract {
                     .map(|row| CountryAppearanceRow {
                         country: row.country,
                         original_tag: row.original_tag.clone(),
-                        original_tag_reference: row.original_tag_reference.clone(),
+                        original_tag_reference: row.original_tag_reference,
                         ..Default::default()
                     })
                     .collect()
@@ -308,7 +308,7 @@ pub fn observe_block(
                 }
             }
         },
-        || check(),
+        check,
     );
     if let Some(error) = failure {
         return Err(error);

@@ -368,10 +368,6 @@ fn world_trade_frame(hour: i32, count: u32) -> DecodedFrame {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn a_whole_world_of_trade_fits_one_reply_with_every_flow() {
     use crate::products::trade_flows::{TradeFlowParams, TradeFlows};
     use dashboard_base::products::Product;

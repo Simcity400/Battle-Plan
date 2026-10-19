@@ -51,7 +51,7 @@ fn countries(hour: Hour) -> TableView {
     };
     let rows = [1_u32, 2, 3, 4]
         .into_iter()
-        .filter(|&id| !(id == 2 && t >= 30) && !(id == 4 && t < 20))
+        .filter(|&id| !(id == 2 && t >= 30 || id == 4 && t < 20))
         .map(|id| CountryRow {
             id,
             canonical_slot: id,

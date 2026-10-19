@@ -78,10 +78,6 @@ fn parity(source: &Source, fixture: &Fixture, old: &Builder, last: i32, flag: &A
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_espionage_writes_every_short_block_range_across_empty_days_gaps_and_resume() {
     let chunks: Vec<Vec<_>> = (0..48)
         .map(|ordinal| {
@@ -178,10 +174,6 @@ fn prepared_espionage_writes_every_short_block_range_across_empty_days_gaps_and_
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_espionage_packs_days_crossing_blocks_and_repairs_late_completions_after_append() {
     let frames: Vec<_> = (100..=243)
         .map(|hour| {
@@ -287,10 +279,6 @@ fn prepared_espionage_packs_days_crossing_blocks_and_repairs_late_completions_af
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_espionage_retains_terminal_census_runs_when_a_late_drain_moves_the_end() {
     let frames: Vec<_> = (100..=195)
         .map(|hour| {
@@ -355,7 +343,6 @@ fn prepared_espionage_retains_terminal_census_runs_when_a_late_drain_moves_the_e
     }
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn prepared_espionage_preserves_five_thousand_countries_and_identity_changes() {
     let chunks: Vec<Vec<_>> = (0..2)
@@ -404,7 +391,6 @@ fn prepared_espionage_preserves_five_thousand_countries_and_identity_changes() {
     assert_eq!(state.builder.open.len(), 5_000);
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn prepared_espionage_checkpoint_does_not_retain_daily_runs_or_reads() {
     let chunks: Vec<Vec<_>> = (0..100)
@@ -513,10 +499,6 @@ fn intel_shared_driver_espionage_empty_equal_reads_are_flat_and_exact() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn intel_shared_driver_espionage_one_row_ignores_ten_times_closed_instances() {
     use crate::products::intelligence_prepared::{measured, work};
     use dashboard_base::prepared::observer_tests;

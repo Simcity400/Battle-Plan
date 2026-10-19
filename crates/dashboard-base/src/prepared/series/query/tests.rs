@@ -331,7 +331,6 @@ fn catalogue_and_reply_text_reuse_their_complete_page_identities() {
 }
 
 #[test]
-#[cfg_attr(not(feature = "slow-tests"), ignore = "five-thousand-key page reuse")]
 fn state_reuse_retains_every_one_of_five_thousand_keys() {
     let fixture = Fixture::new();
     let flag = AtomicBool::new(false);

@@ -466,31 +466,31 @@ pub fn query(
             }
         }
     }
-    if params.view == RaidsView::Log && !prefix.coverage.complete {
-        if let Some((newest, span)) =
+    if params.view == RaidsView::Log
+        && !prefix.coverage.complete
+        && let Some((newest, span)) =
             newest::scan(source, branch, content.as_deref(), &key, cancelled)?
-        {
-            let base = scanned.get_or_insert_with(ScannedRaids::default);
-            let mut episodes: BTreeMap<_, _> = std::mem::take(&mut base.episodes)
+    {
+        let base = scanned.get_or_insert_with(ScannedRaids::default);
+        let mut episodes: BTreeMap<_, _> = std::mem::take(&mut base.episodes)
+            .into_iter()
+            .map(|episode| (episode.id.clone(), episode))
+            .collect();
+        episodes.extend(
+            newest
+                .episodes
                 .into_iter()
-                .map(|episode| (episode.id.clone(), episode))
-                .collect();
-            episodes.extend(
-                newest
-                    .episodes
-                    .into_iter()
-                    .map(|episode| (episode.id.clone(), episode)),
-            );
-            base.episodes = episodes.into_values().collect();
-            base.read_hours.extend(newest.read_hours);
-            base.read_hours.sort_unstable();
-            base.read_hours.dedup();
-            base.types.extend(newest.types);
-            base.recording_present |= newest.recording_present;
-            base.warnings.extend(newest.warnings);
-            exact = Some(span.first_hour);
-            prefix.sampled(&[span]);
-        }
+                .map(|episode| (episode.id.clone(), episode)),
+        );
+        base.episodes = episodes.into_values().collect();
+        base.read_hours.extend(newest.read_hours);
+        base.read_hours.sort_unstable();
+        base.read_hours.dedup();
+        base.types.extend(newest.types);
+        base.recording_present |= newest.recording_present;
+        base.warnings.extend(newest.warnings);
+        exact = Some(span.first_hour);
+        prefix.sampled(&[span]);
     }
     check_cancel(cancelled)?;
     let mut data = serde_json::to_value(reply(
@@ -800,10 +800,6 @@ mod tests {
         parity(&fixture, &frames);
     }
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn prepared_raids_keep_5000_country_tallies_and_identity_gaps() {
         let fixture = Fixture::new();
         let flag = AtomicBool::new(false);
@@ -846,10 +842,6 @@ mod tests {
         assert_eq!(scanned.series.len(), 5001);
     }
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn prepared_raids_continuation_retains_open_suffixes_and_no_hourly_history() {
         let fixture = Fixture::new();
         let flag = AtomicBool::new(false);

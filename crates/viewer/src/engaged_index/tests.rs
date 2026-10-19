@@ -5,10 +5,6 @@ use replay_data::rows::NavalProvinceCombatRow;
 /// keep changing but whose flags never do cost one point per side,
 /// however many hours fold.
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn memory_follows_value_changes_not_hours() {
     const COMBATS: u64 = 1_500;
     let links: BTreeMap<u32, u32> = (1..=2 * COMBATS as u32).map(|c| (c, c)).collect();
@@ -873,10 +869,6 @@ fn mp_switch_and_observer_hours_are_checked_with_a_stable_human_roster() {
 
 /// Both tracks and the check at 1,500 combats between 5,000 countries.
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn the_check_folds_fifteen_hundred_combats_of_five_thousand_countries() {
     for countries in [1_500_u32, 5_000] {
         let frame = naval_frame(countries, &[1], &[], 1_500, [0, 0]);

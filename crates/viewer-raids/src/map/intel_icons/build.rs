@@ -60,6 +60,9 @@ struct Gathered<'f> {
 /// What an entry sorts by: its group, then its name's bytes, then a number, then a token.
 type SortKey = (u8, Vec<u8>, i64, u32);
 
+/// Root-out efficiencies after stacking, by owner slot and state.
+type RootOutStacks = BTreeMap<(u32, i32), Result<Vec<(u64, i64)>, String>>;
+
 /// The hour's reads every entry shares.
 pub(super) struct Shared<'h, 'f> {
     pub tables: Tables<'f>,
@@ -69,7 +72,7 @@ pub(super) struct Shared<'h, 'f> {
     /// Each country slot's capital state (`Politics.capital` is a state id).
     capitals: Result<HashMap<u32, i32>, String>,
     /// Root-out efficiencies after stacking, by owner slot and state.
-    root_out: BTreeMap<(u32, i32), Result<Vec<(u64, i64)>, String>>,
+    root_out: RootOutStacks,
 }
 
 impl<'h, 'f> Hour<'h, 'f> {
@@ -145,7 +148,7 @@ impl<'h, 'f> Hour<'h, 'f> {
         // Operatives.
         match &tables.missions {
             Ok(rows) => {
-                let rows: &'f [OperativeMissionRow] = *rows;
+                let rows: &'f [OperativeMissionRow] = rows;
                 for row in rows
                     .iter()
                     .filter(|row| self.slot(row.roster_country) == Some(self.ours))
@@ -375,14 +378,11 @@ impl<'h, 'f> Hour<'h, 'f> {
     }
 
     /// Each owner's root-out operatives in each state, stacked.
-    fn root_out_stacks(
-        &self,
-        tables: &Tables<'f>,
-    ) -> BTreeMap<(u32, i32), Result<Vec<(u64, i64)>, String>> {
+    fn root_out_stacks(&self, tables: &Tables<'f>) -> RootOutStacks {
         let Ok(rows) = tables.missions.clone() else {
             return BTreeMap::new();
         };
-        let mut groups: BTreeMap<(u32, i32), Result<Vec<(u64, i64)>, String>> = BTreeMap::new();
+        let mut groups = RootOutStacks::new();
         for row in rows.iter().filter(|row| {
             row.assignment == ON_MISSION
                 && row.variant == Some(ROOT_OUT)
@@ -412,7 +412,7 @@ impl<'h, 'f> Hour<'h, 'f> {
             .into_iter()
             .map(|(key, group)| {
                 let stacked = group.and_then(|list| {
-                    let factor = factor.clone()?;
+                    let factor = factor?;
                     Ok(values::root_out_stacked(&list, factor))
                 });
                 (key, stacked)

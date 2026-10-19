@@ -426,19 +426,19 @@ fn infos(
             if !cache
                 .content
                 .as_ref()
-                .is_some_and(|cached| Arc::ptr_eq(&cached.catalogue, &catalogue))
+                .is_some_and(|cached| Arc::ptr_eq(&cached.catalogue, catalogue))
             {
                 let mut standing = catalogue.verification.clone();
                 standing.extend(catalogue.warnings.iter().cloned());
                 cache.content = Some(ContentCache {
-                    catalogue: Arc::clone(&catalogue),
+                    catalogue: Arc::clone(catalogue),
                     resources: BTreeMap::new(),
                     warnings: standing,
                 });
             }
             let content = cache.content.as_mut().expect("content cached");
             resource_content(
-                &ContentView::of(&catalogue),
+                &ContentView::of(catalogue),
                 &declarations,
                 &mut content.resources,
                 &mut content.warnings,

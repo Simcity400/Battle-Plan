@@ -456,7 +456,6 @@ fn production_observer_work_is_flat_over_carried_hours_and_retired_holders() {
     );
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn production_endpoint_warning_clock_matches_every_oracle_hour_across_two_commits_resume_append_and_gaps()
  {
@@ -561,7 +560,6 @@ fn production_endpoint_warning_clock_matches_every_oracle_hour_across_two_commit
     }
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn production_observer_carried_hours_stay_flat_at_5000_countries() {
     use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
@@ -1243,7 +1241,6 @@ fn endpoint_leaf_events_restore_identical_pages_after_two_commits_resume_append_
     );
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn endpoint_written_bytes_are_flat_at_n_and_ten_n_blocks_and_retired_leaves_are_not_republished() {
     use crate::prepared::series::{Reader, tests::Fixture};
@@ -1330,7 +1327,6 @@ fn endpoint_written_bytes_are_flat_at_n_and_ten_n_blocks_and_retired_leaves_are_
     );
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn endpoint_changed_payload_stays_flat_when_retired_leaf_history_grows_tenfold() {
     use crate::prepared::series::{Reader, tests::Fixture};
@@ -1877,7 +1873,6 @@ fn presentation_inventory_carries_keys_and_replaces_only_the_changed_holder() {
     presentation_inventory_work_follows_changed_holders(8);
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn presentation_inventory_carries_keys_at_5000_countries() {
     presentation_inventory_work_follows_changed_holders(5000);

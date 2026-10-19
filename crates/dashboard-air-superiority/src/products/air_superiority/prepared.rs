@@ -1210,10 +1210,6 @@ mod tests {
     use replay_frame::frame::TableView;
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "5,000-country observer work and reply parity"
-    )]
     fn superiority_shared_driver_equal_scores_keep_daily_choices_and_native_work_flat() {
         use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
         let measured = observer_tests::scaled_work(8, |hours| {
@@ -1751,10 +1747,6 @@ mod tests {
         assert_eq!(state.pending_choice.as_ref().unwrap().last_hour, 49);
     }
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn prepared_air_superiority_5000_countries_preserve_numeric_and_identity_gaps() {
         let fixture = Fixture::new();
         let flag = AtomicBool::new(false);
@@ -1845,10 +1837,6 @@ mod tests {
         parity(&fixture, &frames, None);
     }
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn prepared_air_superiority_continuation_grows_with_distinct_operands_and_not_days() {
         let fixture = Fixture::new();
         let flag = AtomicBool::new(false);

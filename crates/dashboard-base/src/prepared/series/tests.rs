@@ -56,18 +56,23 @@ impl Fixture {
         self.store.append(&previous, self.key.clone()).unwrap()
     }
     /// Every committed payload by section and range: the store's listing of
-    /// its manifest names them, and each is opened through the real store
-    /// reader.
+    /// its manifest names them, and each is opened through one verified
+    /// session of the real store reader.
     pub fn payloads(&self) -> BTreeMap<(String, u64), Vec<u8>> {
         let listing = store::Listing::open(&self.directory.join("manifest"))
             .unwrap()
             .unwrap();
+        let session = self
+            .store
+            .session(&self.key)
+            .unwrap()
+            .expect("a published manifest");
         let mut payloads = BTreeMap::new();
         for (name, count) in listing.sections() {
             for range in 0..count {
                 let mut bytes = Vec::new();
-                self.store
-                    .read(&self.key, name, range)
+                session
+                    .read(name, range)
                     .unwrap()
                     .unwrap()
                     .read_to_end(&mut bytes)
@@ -233,7 +238,6 @@ fn active_run_unchanged_frames_touch_only_changes_and_publish_dense_bytes() {
     assert!(tenfold <= first * 10);
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn active_run_5000_keys_keep_frame_work_flat_at_tenfold_hours() {
     let first = active_run_work_and_bytes(5_000, 10);
@@ -325,13 +329,13 @@ fn active_run_observe_boundary_matches_explicit_bytes_after_commits_resume_and_a
                 )
                 .unwrap();
             writer.commit().unwrap();
-            *data = serde_json::from_reader(
+            *data = serde_json::from_reader(std::io::BufReader::new(
                 files
                     .store
                     .read(&files.key, "boundary-checkpoint", 0)
                     .unwrap()
                     .unwrap(),
-            )
+            ))
             .unwrap();
         }
         assert_eq!(
@@ -436,13 +440,13 @@ fn active_run_gap_checkpoint_cancel_resume_append_keeps_dense_bytes_and_ordinals
                 )
                 .unwrap();
             writer.commit().unwrap();
-            *data = serde_json::from_reader(
+            *data = serde_json::from_reader(std::io::BufReader::new(
                 files
                     .store
                     .read(&files.key, "active-checkpoint", 0)
                     .unwrap()
                     .unwrap(),
-            )
+            ))
             .unwrap();
         }
         assert_eq!(
@@ -478,13 +482,13 @@ fn active_run_gap_checkpoint_cancel_resume_append_keeps_dense_bytes_and_ordinals
                     .unwrap(),
                 Some(2)
             );
-            sparse = serde_json::from_reader(
+            sparse = serde_json::from_reader(std::io::BufReader::new(
                 sparse_files
                     .store
                     .read(&sparse_files.key, "active-checkpoint", 0)
                     .unwrap()
                     .unwrap(),
-            )
+            ))
             .unwrap();
             assert_eq!(sparse.frontier, Some(7));
         }
@@ -1410,10 +1414,6 @@ fn events_reject_an_ordinal_count_their_batch_does_not_hold() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn files_follow_commits_and_hold_all_five_thousand_keys() {
     let fixture = Fixture::new();
     let mut states: BTreeMap<_, _> = (0..5000).map(|key| (key, KeyState::default())).collect();
@@ -1799,10 +1799,6 @@ fn absolute_contribution_is_exact_across_batches_resume_append_gaps_and_membersh
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn values_at_matches_single_key_reads_across_commits_resume_append_and_gaps_at_5000_keys() {
     let mut fixture = Fixture::new();
     let flag = AtomicBool::new(false);
@@ -2734,10 +2730,6 @@ fn payload_tables_share_only_the_flushes_explicitly_given_the_same_table() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "5,000-country query event frontier"
-)]
 fn event_pages_keep_the_merge_frontier_for_five_thousand_countries() {
     let fixture = Fixture::new();
     let flag = AtomicBool::new(false);
@@ -2797,7 +2789,6 @@ fn event_pages_keep_the_merge_frontier_for_five_thousand_countries() {
 }
 
 #[test]
-#[cfg_attr(not(feature = "slow-tests"), ignore = "5,000-country query run bounds")]
 fn point_queries_reuse_global_bounds_but_authenticate_local_runs_for_five_thousand_countries() {
     let fixture = Fixture::new();
     let flag = AtomicBool::new(false);

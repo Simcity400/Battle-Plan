@@ -173,10 +173,11 @@ fn fly_mode_draws_the_chosen_plane_and_no_aircraft_without_a_choice() {
     use crate::app::fly::placed;
     use viewer_world::map::models::ModelInstance;
     let assets = assets("scene");
-    let view = Some(ModelInstance {
+    let instance = ModelInstance {
         rotation: 1.5,
         ..ModelInstance::default()
-    });
+    };
+    let view = Some(instance);
     let mut fly = FlyAircraft::default();
     fly.poll(Some(&assets), || {});
     assert_eq!(
@@ -188,7 +189,7 @@ fn fly_mode_draws_the_chosen_plane_and_no_aircraft_without_a_choice() {
     let slot = assets.library().slot("plane_entity").unwrap();
     assert_eq!(
         placed(fly.ready(&assets).map(|plane| plane.slot), view),
-        Some((slot, view.unwrap()))
+        Some((slot, instance))
     );
     assert_eq!(assets.library().meshes[slot].name, "plane_entity");
     fly.choose(None);

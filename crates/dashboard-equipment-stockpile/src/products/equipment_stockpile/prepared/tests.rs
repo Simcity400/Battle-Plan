@@ -1100,7 +1100,6 @@ fn stockpile_hour_changing_one_holder_observes_only_that_holder() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn stockpile_hour_changing_one_of_5000_holders_observes_only_that_holder() {
     assert_changed_rows_observe_only_their_holder(5000);
 }
@@ -1695,7 +1694,6 @@ fn snapshot_numeric_changes_select_only_their_holder_at_its_next_read() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn one_changed_stockpile_visits_one_of_five_thousand_holders() {
     sparse_stockpile_holders(5000);
 }

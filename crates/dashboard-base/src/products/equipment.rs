@@ -183,6 +183,9 @@ pub struct VariantVersion {
     pub raw: Option<RawVariant>,
 }
 
+/// The lexical tokens' spellings a variant read held, with the identity of the view they came from.
+type LexicalSpellings = (ViewIdentity, BTreeMap<u32, Option<Vec<u8>>>);
+
 /// A complete variant read's operands for [`VariantCatalogue::observe_built`],
 /// built again only where an input changed since the read before: the
 /// countries' keys, links, appearance and the lexical tokens its names and
@@ -198,7 +201,7 @@ pub(crate) struct VariantReads {
     keys: Option<crate::metadata::CountryKeys>,
     links: Option<SharedView>,
     appearance: Option<SharedView>,
-    lexical: Option<(ViewIdentity, BTreeMap<u32, Option<Vec<u8>>>)>,
+    lexical: Option<LexicalSpellings>,
     definitions: Option<SharedView>,
     modules: Option<SharedView>,
     upgrades: Option<SharedView>,

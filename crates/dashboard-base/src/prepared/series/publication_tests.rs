@@ -1,11 +1,7 @@
 use super::*;
 use crate::prepared::pages::Pages;
 
-const COUNTRIES: u64 = if cfg!(feature = "slow-tests") {
-    5_000
-} else {
-    64
-};
+const COUNTRIES: u64 = 5_000;
 
 #[derive(Default)]
 struct PagesInMemory(Vec<Vec<u8>>);

@@ -476,17 +476,14 @@ impl PreparedIntel {
     ) -> Result<bool, String> {
         let resources: &dyn native_gui::Resources = context.resources;
         let root = windows.root;
-        if !view.containers.contains_key(&icon.state) {
+        if let std::collections::hash_map::Entry::Vacant(e) = view.containers.entry(icon.state) {
             let mut instance = Instance::construct(root, context.viewport, resources)?;
             instance.hide(root, root)?;
             instance.take_held();
-            view.containers.insert(
-                icon.state,
-                Retained {
-                    root: instance,
-                    entries: Vec::new(),
-                },
-            );
+            e.insert(Retained {
+                root: instance,
+                entries: Vec::new(),
+            });
         }
         let retained = view
             .containers

@@ -1414,13 +1414,13 @@ mod tests {
                     .unwrap();
             },
             |fixture| {
-                serde_json::from_reader(
+                serde_json::from_reader(std::io::BufReader::new(
                     fixture
                         .store
                         .read(&fixture.key, "construction-continuation-1", 0)
                         .unwrap()
                         .unwrap(),
-                )
+                ))
                 .unwrap()
             },
         );

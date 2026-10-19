@@ -406,10 +406,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "5,000-country observer work and reply parity"
-    )]
     fn ledger_shared_driver_equal_reads_defer_country_presence_and_match_the_oracle() {
         use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
         let measured = observer_tests::scaled_work(8, |hours| {
@@ -735,10 +731,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn prepared_ledger_continuation_does_not_retain_hourly_event_history() {
         let fixture = Fixture::new();
         let flag = AtomicBool::new(false);

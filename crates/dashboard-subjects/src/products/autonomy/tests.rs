@@ -463,10 +463,6 @@ fn prepared_autonomy_batches_resume_and_keep_exact_runs_metadata_gaps_and_naviga
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn progressive_autonomy_sampler_and_observer_agree_on_every_key_at_5000_countries() {
     use super::{FIELDS, ScannedAutonomy, sample};
     for count in [3, 5_000] {
@@ -988,10 +984,6 @@ fn autonomy_levels_follow_a_mods_autonomy_states_in_their_order_and_count() {
 /// A branch recorded without the Autonomy table is not recorded, which the reply
 /// tells apart from a branch where nobody was a subject.
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn autonomy_never_recorded_is_not_no_subjects() {
     use crate::products::autonomy::{Autonomy, AutonomyParams};
     use dashboard_base::products::Product;
@@ -1048,10 +1040,6 @@ fn autonomy_never_recorded_is_not_no_subjects() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_autonomy_bulk_tail_reads_reuse_open_bands_after_resume_at_5000_countries() {
     use crate::products::autonomy::{AutonomyParams, ScannedAutonomy};
     use dashboard_base::{prepared::series, products::LoadContext};
@@ -1239,10 +1227,6 @@ fn autonomy_changes_keep_quiet_hours_and_closed_history_flat_and_join_only_chang
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn autonomy_deferred_runs_match_oracle_after_quiet_spans_two_commits_resume_and_gap() {
     use super::{AutonomyParams, ScannedAutonomy};
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, series};
@@ -1312,10 +1296,6 @@ fn autonomy_deferred_runs_match_oracle_after_quiet_spans_two_commits_resume_and_
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn autonomy_relation_change_reuses_five_thousand_score_operands_and_observes_only_its_subject() {
     use super::ScannedAutonomy;
     use dashboard_base::prepared::{

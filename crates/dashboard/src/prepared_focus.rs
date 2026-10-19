@@ -1012,9 +1012,9 @@ impl FocusIndex {
         if continues && let Some(frontier) = self.frontier {
             for (tag, track) in &self.tracks {
                 if track.progress.last == frontier
-                    && !tags
+                    && tags
                         .get(tag.as_str())
-                        .is_some_and(|stretches| stretches[0].first == first)
+                        .is_none_or(|stretches| stretches[0].first != first)
                 {
                     calls.push((first, Call::Observe(track.key, None, false)));
                 }

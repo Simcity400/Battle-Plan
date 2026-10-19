@@ -554,7 +554,6 @@ fn logistics_representatives_match_full_evaluator_after_two_commits_resume_and_a
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn stockpile_static_content_resolves_once_before_success_and_refusal_observation() {
     use dashboard_base::prepared::observer_tests::{self, Work};
     engine_executable::executable_tables::initialize_for_tests()
@@ -1175,7 +1174,7 @@ fn one_pass_group_totals_are_each_groups_own_evaluation() {
             stock_known,
             balance_known,
             &retained,
-            &read,
+            read,
         )
         .unwrap();
         for (group, values) in groups.iter().zip(&measured) {

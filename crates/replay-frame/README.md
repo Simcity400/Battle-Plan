@@ -14,5 +14,5 @@ and codecs belong to replay-data.
 Container implementations consume the frame wire and immutable-column APIs;
 they do not mutate reconstruction internals. Test-only counters and historical
 fixtures are exposed through `test-support`, enabled from dev dependencies.
-Run `cargo test -p replay-frame`; long synthetic checks use `slow-tests`.
+Run `cargo nextest run -p replay-frame`.
 Shared rules live in [AGENTS.md](../../AGENTS.md).

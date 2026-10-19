@@ -3344,8 +3344,8 @@ assembly and the registry's declaration entry points; ordinary host builds omit
 them. Unit tests retain the same contract checks without needing the feature.
 
 ```powershell
-cargo run -q --profile test -p dashboard --features export-types --bin export-types
-cargo run -q --profile test -p dashboard --features export-types --bin export-types -- --check
+cargo run -q -p dashboard --features export-types --bin export-types
+cargo run -q -p dashboard --features export-types --bin export-types -- --check
 ```
 
 UI changes also need `npm.cmd run check:ui` and `npm.cmd run test:ui`, as described

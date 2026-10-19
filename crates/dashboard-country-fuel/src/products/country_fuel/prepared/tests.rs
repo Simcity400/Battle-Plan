@@ -246,7 +246,6 @@ fn phase_b_fuel_work_is_flat_over_unchanged_hours_and_retained_history() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn phase_b_fuel_work_is_flat_at_five_thousand_countries() {
     phase_b_scaled_work(5000);
 }
@@ -623,7 +622,6 @@ fn phase_b_shared_views_keep_fresh_reads_gaps_and_dormant_ownership_after_resume
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn progressive_fuel_sampler_matches_observer_on_every_key_at_5000_countries() {
     let mut prepared = Prepared::default();
     let flag = AtomicBool::new(false);
@@ -958,10 +956,6 @@ fn a_gap_settles_country_dates_in_one_shared_batch_after_resume() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn five_thousand_countries_share_each_frame_and_keep_bounded_continuations() {
     use dashboard_base::test_fixtures::scale_frame;
     use replay_data::{
@@ -1075,10 +1069,6 @@ impl Drop for FileFixture {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn detail_products_use_summaries_after_two_commits_resume_and_file_append_without_branch_scan() {
     use super::super::tests::award_row;
     use replay_data::{
@@ -1602,7 +1592,6 @@ fn quiet_fuel_settlement_does_no_per_country_work_between_decisions() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn quiet_fuel_settlement_carries_5000_countries_without_hourly_decisions() {
     check_deferred_fuel_settlement_work(5_000);
 }

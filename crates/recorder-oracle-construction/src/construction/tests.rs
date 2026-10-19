@@ -1895,7 +1895,12 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
             hour,
         )
     };
-    let report = run(&[origin.clone()], &[route.clone()], &[import.clone()], 10);
+    let report = run(
+        std::slice::from_ref(&origin),
+        std::slice::from_ref(&route),
+        std::slice::from_ref(&import),
+        10,
+    );
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["ResourceOrigins"], 1);
     assert_eq!(report.compared_tables["ResourceRights"], 1);
@@ -1903,7 +1908,12 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
     assert_eq!(report.compared_tables["ConvoyClients"], 2);
     let mut reordered = origin.clone();
     reordered.ordinal = 1;
-    let report = run(&[reordered], &[route.clone()], &[import.clone()], 10);
+    let report = run(
+        &[reordered],
+        std::slice::from_ref(&route),
+        std::slice::from_ref(&import),
+        10,
+    );
     assert!(
         report
             .differences
@@ -1913,8 +1923,8 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
     let mut reordered_lend = lend.clone();
     reordered_lend.owner_ordinal = Some(1);
     let report = run_with(
-        &[origin.clone()],
-        &[route.clone()],
+        std::slice::from_ref(&origin),
+        std::slice::from_ref(&route),
         &[import.clone(), reordered_lend],
         &[RegionalConvoyEfficiencyRow {
             country: 5,
@@ -1937,17 +1947,27 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
     moved.path = vec![44];
     let mut slow = import.clone();
     slow.bad = true;
-    let report = run(&[changed], &[moved.clone()], &[slow], 10);
+    let report = run(&[changed], std::slice::from_ref(&moved), &[slow], 10);
     assert_eq!(report.differences.len(), 4, "{:?}", report.differences);
     // Dropping every route or every client must still fail from independently saved membership.
-    let report = run(&[origin.clone()], &[], &[import.clone()], 10);
+    let report = run(
+        std::slice::from_ref(&origin),
+        &[],
+        std::slice::from_ref(&import),
+        10,
+    );
     assert!(
         report
             .differences
             .iter()
             .any(|d| d.contains("TradeRoutes.GER.origin.119"))
     );
-    let report = run(&[origin.clone()], &[route.clone()], &[], 10);
+    let report = run(
+        std::slice::from_ref(&origin),
+        std::slice::from_ref(&route),
+        &[],
+        10,
+    );
     assert!(
         report
             .differences
@@ -1959,8 +1979,8 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
     wrong_lend.convoys_assigned = 0;
     wrong_lend.convoys_required = 0;
     let report = run_with(
-        &[origin.clone()],
-        &[route.clone()],
+        std::slice::from_ref(&origin),
+        std::slice::from_ref(&route),
         &[import.clone(), wrong_lend],
         &[RegionalConvoyEfficiencyRow {
             country: 5,

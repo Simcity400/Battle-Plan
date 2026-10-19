@@ -194,7 +194,7 @@ pub(super) fn rights(
         .collect();
     for right in captured.symmetric_difference(&expected) {
         report.difference(
-            &format!(
+            format!(
                 "ResourceRights.{}.{}",
                 right.0,
                 String::from_utf8_lossy(&right.1)
@@ -217,7 +217,7 @@ pub(super) fn rights(
     for row in rows.rights {
         if !positions.insert((row.state, row.ordinal)) {
             report.difference(
-                &format!("ResourceRights.{}.ordinal", row.state),
+                format!("ResourceRights.{}.ordinal", row.state),
                 row.ordinal,
                 "unique native list position required",
             );
@@ -837,7 +837,7 @@ mod client_tests {
             clients(&rows, &economy, 80_000, &mut report).unwrap();
             report
         };
-        assert!(run(&[row.clone()]).differences.is_empty());
+        assert!(run(std::slice::from_ref(&row)).differences.is_empty());
         let mut missing_positions = row.clone();
         missing_positions.owner_ordinal = None;
         missing_positions.other_ordinal = None;

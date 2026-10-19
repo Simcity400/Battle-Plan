@@ -1066,7 +1066,7 @@ impl Seek for Range {
     }
 }
 
-//// A read-only view of a published manifest, or of a snapshot one wrote
+/// A read-only view of a published manifest, or of a snapshot one wrote
 /// ([`Listing::write_snapshot`]), for measurement tools. Manifests of an
 /// older layout read as absent.
 pub struct Listing(Catalog);

@@ -12,6 +12,7 @@ use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView, fra
 use std::{io, ops::Range, sync::Arc};
 
 /// One hour of a block's facts, in hour order.
+#[allow(clippy::large_enum_variant)] // Each observed hour owns its frame.
 pub enum Hour {
     /// An hour the family observes, with its frame and change facts.
     Observed {
@@ -262,7 +263,7 @@ pub fn observe_hours(
                 }
             }
         },
-        || check(),
+        check,
     );
     if let Some(error) = failure {
         return Err(error);

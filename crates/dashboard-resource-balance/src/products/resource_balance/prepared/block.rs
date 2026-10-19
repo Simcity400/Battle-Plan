@@ -508,11 +508,11 @@ impl Prepared {
                         .deal_hours
                         .first()
                         .is_some_and(|span| span.first_hour == hour)
-                        && !carried
+                        && carried
                             .result
                             .deal_hours
                             .last()
-                            .is_some_and(|span| span.last_hour == hour)
+                            .is_none_or(|span| span.last_hour != hour)
                     {
                         return false;
                     }

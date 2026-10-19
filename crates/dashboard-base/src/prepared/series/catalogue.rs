@@ -552,7 +552,7 @@ fn apply<'a>(
             NEW => {
                 let count = length(take(edits)?)?;
                 let len = length(take(edits)?)?;
-                let all: &'a [u8] = *edits;
+                let all: &'a [u8] = edits;
                 if all.len() < len {
                     return Err(invalid(UNPAIRED));
                 }

@@ -35,8 +35,7 @@ These helpers are absent from ordinary builds. Unit tests exercise round trips,
 display steps, historical prefixes, delta ownership, malformed input and wide
 country lists. [replay-frame](../replay-frame/README.md) owns frame and baseline tests;
 [replay](../replay/README.md) owns recovery and complete recording tests. Run
-`cargo test -p replay-data` for the data contract, or select all three packages
-with `--features slow-tests` for their long synthetic checks.
+`cargo nextest run -p replay-data -p replay-frame -p replay` for all three.
 
 Terminal failure witnesses live in [witness.rs](src/witness.rs), so capture
 helpers can report exact failures without depending on compressed recording I/O.

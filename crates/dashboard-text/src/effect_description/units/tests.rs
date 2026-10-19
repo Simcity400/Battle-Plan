@@ -402,6 +402,8 @@ fn unit_fixture() -> Fixture {
 
 #[test]
 fn unit_carrier_empty_and_organization_table() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = unit_fixture();
     for object in [
         C(1),
@@ -465,6 +467,8 @@ fn unit_carrier_empty_and_organization_table() {
 
 #[test]
 fn unit_carrier_shared_name_and_recording_gap_table() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = unit_fixture();
     for (body, expected) in [
         (
@@ -616,6 +620,8 @@ fn unit_carrier_shared_name_and_recording_gap_table() {
 
 #[test]
 fn unit_carrier_graph_links_keep_operand_scope() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = unit_fixture();
     let mut scopes = EventScopes::new(vec![
         EventScope {
@@ -639,6 +645,8 @@ fn unit_carrier_graph_links_keep_operand_scope() {
 
 #[test]
 fn unit_carrier_format98_naming_table() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let names = installed_content_division_names::division_names::parse(
         br#"SYN_G={prefix="P " ordered={12={"%s/%d %s"}}
             unordered={a={"Literal %d"}} fallback_name="Fallback %d"}
@@ -789,6 +797,8 @@ fn unit_carrier_format98_naming_table() {
 
 #[test]
 fn unit_carrier_name_groups_use_recorded_layers_and_one_cache() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::catalogue::tests::{folder_catalogue, layers_catalogue};
     let (_, base) = folder_catalogue(&[
         (
@@ -852,6 +862,8 @@ fn unit_carrier_name_groups_use_recorded_layers_and_one_cache() {
 
 #[test]
 fn unit_carrier_naming_has_no_country_or_division_cap() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = unit_fixture();
     let countries = crate::effect_description::tests::synthetic_countries(5_000);
     *fixture.frame.tables[TableId::CountryLinks.index()] =
@@ -1217,6 +1229,8 @@ fn navy_unknown_target_uses_reserved_country_name() {
 
 #[test]
 fn units_admission_and_named_refusals() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     if let TableView::Complete(TableRows::Provinces(rows)) =
         &mut *fixture.frame.tables[TableId::Provinces.index()]
@@ -1472,6 +1486,8 @@ fn units_admission_and_named_refusals() {
 
 #[test]
 fn units_have_no_country_count_cap() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = equipment_fixture();
     fixture.set_countries(crate::effect_description::tests::synthetic_countries(5_000));
     let out = render(

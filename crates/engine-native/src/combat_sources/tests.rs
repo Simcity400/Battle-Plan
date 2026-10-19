@@ -932,10 +932,6 @@ fn shared_sources_change_no_output() {
 /// chain and the reinforcement reader alone, with and without the
 /// authenticated roster (whose absence makes country lookups read).
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn shared_sources_fail_as_main_does() {
     let shape = Shape {
         divisions: 40,

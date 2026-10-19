@@ -136,13 +136,13 @@ impl Sources {
             .write_at("resume", 0, &serde_json::to_vec(self).unwrap()[..])
             .unwrap();
         writer.commit().unwrap();
-        *self = serde_json::from_reader(
+        *self = serde_json::from_reader(std::io::BufReader::new(
             fixture
                 .store
                 .read(&fixture.key, "resume", 0)
                 .unwrap()
                 .unwrap(),
-        )
+        ))
         .unwrap();
         self.groups = country_groups::Scan::read(
             fixture
@@ -369,10 +369,6 @@ fn rows<T: serde::de::DeserializeOwned>(
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_feed_sources_equal_their_change_builders_across_commits_resume_append_and_gaps() {
     for countries in [3, 5_000] {
         let cancelled = AtomicBool::new(false);
@@ -727,10 +723,6 @@ pub(crate) fn assert_store_pages(source: &Source, store: &store::Store, key: &st
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_feed_same_date_completions_page_exactly_across_decimal_boundaries_at_5000_rows() {
     for count in [101, 5_000] {
         let mut frames: Vec<_> = [100, 101].map(|hour| frame(hour, 3)).into();
@@ -795,7 +787,6 @@ fn prepared_feed_same_date_completions_page_exactly_across_decimal_boundaries_at
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn prepared_feed_nuclear_increases_match_oracle_after_commits_resume_append_at_5000_countries() {
     let flag = AtomicBool::new(false);
     let context = LoadContext { content: None };
@@ -1106,7 +1097,6 @@ fn prepared_feed_projects_seek_tag_order_with_late_rows_and_withdrawals_at_one_r
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn prepared_feed_project_revisions_match_oracle_after_commits_resume_append_at_5000_countries() {
     const COMPLETION_HISTORY_MARKER: u32 = 0x4c17;
     let flag = AtomicBool::new(false);

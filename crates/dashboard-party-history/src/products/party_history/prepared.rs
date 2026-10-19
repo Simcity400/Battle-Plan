@@ -2037,13 +2037,11 @@ mod tests {
         global_ruling_stream_commits_resume_and_append(4);
     }
 
-    #[cfg(feature = "slow-tests")]
     #[test]
     fn prepared_party_global_ruling_stream_equals_per_tag_union_at_five_thousand_countries() {
         global_ruling_stream_commits_resume_and_append(5000);
     }
 
-    #[cfg(feature = "slow-tests")]
     #[test]
     fn prepared_party_five_thousand_countries_store_runs_and_events_only_on_change() {
         let mut frame = party_census(5000);
@@ -2218,7 +2216,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "slow-tests")]
     #[test]
     fn prepared_party_work_is_flat_over_unchanged_hours_and_retained_catalogues() {
         use dashboard_base::prepared::{

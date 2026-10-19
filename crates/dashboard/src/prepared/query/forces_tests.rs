@@ -44,10 +44,6 @@ mod families {
     use std::sync::atomic::AtomicBool;
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "synthetic content and repeated first-view reply publications"
-    )]
     fn unchanged_suppliers_reuse_one_reply_across_store_epochs() {
         let fixture = Fixture::new();
         let params = json!({"branchId":"1", "family":{"kind":"army-size","measure":"strength","countFor":"owner"},
@@ -400,10 +396,6 @@ mod army {
     use std::sync::atomic::AtomicBool;
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn army_progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing() {
         let fixture = Fixture::new();
         let family = json!({"kind":"army-size", "measure":"strength", "countFor":"owner"});
@@ -563,10 +555,6 @@ mod supply {
     use std::sync::atomic::AtomicBool;
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "synthetic content and progressive supply endpoint"
-    )]
     fn cached_supply_endpoint_refuses_after_unverified_content_is_disabled() {
         crate::prepared::pipeline::with_test_hourly(|| {
             let mut fixture = Fixture::new();
@@ -660,10 +648,6 @@ mod supply {
     }
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn supply_progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing()
     {
         use serde_json::json;

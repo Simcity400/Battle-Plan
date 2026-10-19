@@ -1,0 +1,11 @@
+# `cargo nextest run --workspace` runs every test not marked `#[ignore]`, each in
+# its own process, scheduled across all test binaries at once.
+
+[profile.default]
+fail-fast = false
+
+# The long scale and preparation-parity tests start first so they do not hold
+# up the end of a run.
+[[profile.default.overrides]]
+filter = 'package(dashboard) | test(/5000|5_000|five_thousand/)'
+priority = 50

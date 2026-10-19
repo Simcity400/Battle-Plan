@@ -46,6 +46,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use std::{any::Any, io, ops::Range, sync::atomic::AtomicBool};
 
 /// One hour of a block's facts for a ledger, in hour order.
+#[allow(clippy::large_enum_variant)] // Each observed hour owns its frame.
 enum Hour {
     /// An hour the family observes, with its frame and change facts.
     Observed {
@@ -413,7 +414,7 @@ fn observe_block(
                 }
             }
         },
-        || check(),
+        check,
     );
     if let Some(error) = failure {
         return Err(error);

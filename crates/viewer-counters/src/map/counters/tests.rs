@@ -577,8 +577,7 @@ fn radar_icons_follow_the_viewer_s_search_and_the_state_s_controller() {
                 id: 100 + slot,
                 canonical_slot: slot,
             })
-            .collect::<Vec<_>>()
-            .into(),
+            .collect::<Vec<_>>(),
     ));
     let group = |country, ordinal, state| RadarCoverageRow {
         country,
@@ -586,53 +585,45 @@ fn radar_icons_follow_the_viewer_s_search_and_the_state_s_controller() {
         state: Some(state),
         provinces: Vec::new(),
     };
-    *frame.tables[TableId::RadarCoverage.index()] = TableView::Complete(TableRows::RadarCoverage(
-        vec![
+    *frame.tables[TableId::RadarCoverage.index()] =
+        TableView::Complete(TableRows::RadarCoverage(vec![
             group(100, 0, 9),
             group(101, 0, 7),
             group(101, 1, 10),
             group(102, 0, 8),
             group(103, 0, 11),
-        ]
-        .into(),
-    ));
+        ]));
     let state = |id, controller| StateRow {
         id,
         controller,
         ..Default::default()
     };
-    *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
-        vec![
-            state(7, 101),
-            state(8, 102),
-            state(9, 100),
-            state(10, 102),
-            state(11, 103),
-        ]
-        .into(),
-    ));
+    *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
+        state(7, 101),
+        state(8, 102),
+        state(9, 100),
+        state(10, 102),
+        state(11, 103),
+    ]));
     let member = |country, ordinal| FactionMemberRow {
         country,
         faction: 1,
         ordinal,
     };
     let members = |rows: Vec<FactionMemberRow>, missing: Option<u32>| match missing {
-        None => TableView::Complete(TableRows::FactionMembers(rows.into())),
+        None => TableView::Complete(TableRows::FactionMembers(rows)),
         Some(missing) => TableView::Truncated {
-            rows: TableRows::FactionMembers(rows.into()),
+            rows: TableRows::FactionMembers(rows),
             missing,
         },
     };
     let appearance = |overlord: i32, subjects: Vec<i32>| {
-        TableView::Complete(TableRows::CountryAppearance(
-            vec![CountryAppearanceRow {
-                country: 100,
-                subjects: Recorded::Value(subjects),
-                overlord,
-                ..Default::default()
-            }]
-            .into(),
-        ))
+        TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
+            country: 100,
+            subjects: Recorded::Value(subjects),
+            overlord,
+            ..Default::default()
+        }]))
     };
     *frame.tables[TableId::FactionMembers.index()] =
         members(vec![member(100, 0), member(101, 1)], None);

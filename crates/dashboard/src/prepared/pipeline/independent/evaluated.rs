@@ -182,7 +182,7 @@ fn observe_alone(
                 }
             }
         },
-        || check(),
+        check,
     );
     if let (Some(measured), Some(started)) = (measured, started) {
         measured.read += started.elapsed().saturating_sub(observing);

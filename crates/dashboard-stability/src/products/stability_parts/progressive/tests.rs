@@ -1,5 +1,4 @@
 use super::*;
-#[cfg(feature = "slow-tests")]
 use dashboard_base::test_fixtures::scale_frame;
 use dashboard_base::test_fixtures::{stability_frame, stability_inputs};
 use replay_data::{rows::CountryStabilityLineRow, rows::TableRows};
@@ -15,7 +14,6 @@ fn samples(frame: &DecodedFrame, requested: Option<&[(String, String)]>) -> Samp
     .unwrap()
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn sampler_and_observer_agree_on_every_key_for_5000_countries() {
     let mut frame = scale_frame(1, 100, 5_000);

@@ -50,8 +50,7 @@ const explicitProfile = profileIndex < 0
   : cargoArgs[profileIndex + 1];
 const release = mode === "build" || cliArgs.includes("--release")
   || cargoArgs.includes("--release") || cargoArgs.includes("-r");
-const profile = explicitProfile ?? (release ? "release" : "interactive");
-const defaultProfile = !explicitProfile && !release ? ["--profile", "interactive"] : [];
+const profile = explicitProfile ?? (release ? "release" : "dev");
 
 try {
   await run("cargo", ["build", "-p", "viewer", "--profile", profile]);
@@ -71,7 +70,7 @@ try {
   // Keep both separators and use the same profile for the host and viewer.
   const args = mode === "build"
     ? ["--no-bundle", ...extra]
-    : [...cliArgs, "--", ...defaultProfile, ...runnerArgs];
+    : [...cliArgs, "--", ...runnerArgs];
   await run(process.execPath, [cli, mode, "--config", hooks, ...args], path.join(root, "crates", "desktop"));
   if (mode === "build") {
     // Battle Plan Recorder ships beside the replay app, embeds the same frontend build

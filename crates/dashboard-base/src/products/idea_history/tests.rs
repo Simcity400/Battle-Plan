@@ -1296,10 +1296,6 @@ fn prepared_idea_history_replies_match_topics_after_commits_resume_and_append() 
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_idea_history_five_thousand_countries_state_grows_with_changes_not_hours() {
     use super::Scan;
     use crate::prepared::series::tests::Fixture;
@@ -1520,7 +1516,6 @@ fn prepared_ideas_keep_the_topic_scans_selected_table_refusals() {
     );
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn idea_observer_work_is_flat_over_unchanged_hours_and_history_at_5000_countries() {
     use super::*;
@@ -1742,7 +1737,10 @@ fn restored_idea_history_closes_a_holder_that_vanishes_at_the_first_hour_after_a
             };
             (
                 Scan::read(read("idea-history-1")).unwrap(),
-                serde_json::from_reader(read("idea-changes-continuation-1")).unwrap(),
+                serde_json::from_reader(std::io::BufReader::new(read(
+                    "idea-changes-continuation-1",
+                )))
+                .unwrap(),
             )
         },
     );
@@ -1828,7 +1826,6 @@ fn idea_country_balance_deltas_visit_only_changed_keys() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn idea_country_balance_delta_work_at_5000_countries() {
     check_idea_country_delta_work(5_000);
 }

@@ -388,6 +388,32 @@ pub fn convoy_instances(
     out
 }
 
+/// The high-resolution presentation counter, converted to nanoseconds before narrowing.
+pub(crate) fn presentation_counter() -> u32 {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn QueryPerformanceCounter(value: *mut i64) -> i32;
+            fn QueryPerformanceFrequency(value: *mut i64) -> i32;
+        }
+        let (mut count, mut frequency) = (0_i64, 0_i64);
+        // Both functions write their scalar outputs and do not retain the pointers.
+        unsafe {
+            QueryPerformanceCounter(&mut count);
+            QueryPerformanceFrequency(&mut frequency);
+        }
+        if frequency > 0 {
+            return (i128::from(count) * 1_000_000_000 / i128::from(frequency)) as u32;
+        }
+    }
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_nanos() as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,30 +464,4 @@ mod tests {
         assert!(fleet.convoys[0].active);
         assert_eq!(fleet.convoys[0].distance, 0.);
     }
-}
-
-/// The high-resolution presentation counter, converted to nanoseconds before narrowing.
-pub(crate) fn presentation_counter() -> u32 {
-    #[cfg(windows)]
-    {
-        #[link(name = "kernel32")]
-        unsafe extern "system" {
-            fn QueryPerformanceCounter(value: *mut i64) -> i32;
-            fn QueryPerformanceFrequency(value: *mut i64) -> i32;
-        }
-        let (mut count, mut frequency) = (0_i64, 0_i64);
-        // Both functions write their scalar outputs and do not retain the pointers.
-        unsafe {
-            QueryPerformanceCounter(&mut count);
-            QueryPerformanceFrequency(&mut frequency);
-        }
-        if frequency > 0 {
-            return (i128::from(count) * 1_000_000_000 / i128::from(frequency)) as u32;
-        }
-    }
-    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    START
-        .get_or_init(std::time::Instant::now)
-        .elapsed()
-        .as_nanos() as u32
 }

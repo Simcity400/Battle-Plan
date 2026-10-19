@@ -253,7 +253,8 @@ fn hourly_progress(frames: &[DecodedFrame], tag: &str) -> BTreeMap<i32, (i64, Op
         current: Option<Recorded>,
     }
     let mut last: Option<Seen> = None;
-    let mut run: Option<(i32, i64, Option<(i64, i32, Option<Recorded>)>)> = None;
+    type Run = (i32, i64, Option<(i64, i32, Option<Recorded>)>);
+    let mut run: Option<Run> = None;
     let mut result = BTreeMap::new();
     for frame in frames {
         let Some(observed) = read_hour(frame, Some(tag), &HourRead::default(), false)

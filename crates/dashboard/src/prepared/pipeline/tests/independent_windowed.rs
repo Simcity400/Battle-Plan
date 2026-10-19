@@ -480,7 +480,7 @@ fn commits(family: Windowed) {
             run_measured(source, None, &flag, false, Duration::ZERO, |_| {}).unwrap();
         }
     };
-    let modes: [(&str, &dyn Fn(&Source), bool); 4] = [
+    let modes: [PrepareReloadMode; 4] = [
         ("run", &plain, false),
         ("measured", &measured, false),
         ("measured, reloaded", &measured, true),
@@ -949,10 +949,6 @@ fn naval_family_reads_its_tables_after_the_kit_as_one_read() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "cold, prefix and complete first-view preparation parity"
-)]
 fn sinking_and_loss_queries_answer_prefixes_before_the_branch_is_prepared() {
     let replay = scenario(5, false);
     let mut fixture = Fixture::new(&replay);

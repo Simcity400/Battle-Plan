@@ -349,10 +349,6 @@ fn prepared_naval_leader_source_links_join_late_results_and_permanent_conflicts_
     }
 }
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_leaders_five_thousand_countries_keep_continuation_bounded_by_current_facts() {
     let frames = [frame(100, 5000), frame(101, 5000), frame(103, 5000)];
     let fixture = Fixture::new();
@@ -375,10 +371,6 @@ fn prepared_leaders_five_thousand_countries_keep_continuation_bounded_by_current
     }
 }
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_leader_long_career_moves_closed_commands_and_battles_out_of_continuation() {
     let first = frame(100, 2);
     let replay = replay(std::slice::from_ref(&first));
@@ -763,7 +755,6 @@ fn prepared_leaders_shared_driver_one_changed_admission_is_bounded_after_ten_tim
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn prepared_leaders_shared_driver_five_thousand_current_rows_keep_admission_work_bounded() {
     use dashboard_base::prepared::observer_tests;
     let unchanged =
@@ -782,7 +773,6 @@ fn prepared_leaders_shared_driver_five_thousand_current_rows_keep_admission_work
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn prepared_leaders_shared_driver_configured_content_success_and_failure_never_reload() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");

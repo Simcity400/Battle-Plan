@@ -2152,7 +2152,6 @@ mod tests {
         assert_eq!(prepared.keys.len(), 2);
     }
 
-    #[cfg(feature = "slow-tests")]
     #[test]
     fn trade_preparation_allocates_only_5000_observed_flow_keys_for_5000_countries() {
         let mut frame = resource_frame(100, 0, 9001, &[]);
@@ -2337,10 +2336,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn trade_progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing() {
         use dashboard_base::test_fixtures::file_source;
         use dashboard_core::test_fixtures::continuation_records;
@@ -2783,7 +2778,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "slow-tests")]
     fn trade_hour_changing_one_of_5000_countries_deals_publishes_only_its_flow() {
         assert_rows_observe_only_changed_flows(5000);
     }
@@ -3202,7 +3196,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "slow-tests")]
     fn unchanged_5000_trade_flows_do_no_hourly_integral_work_and_keep_bytes() {
         assert_deferred_trade_integrals(5_000);
     }
@@ -3305,7 +3298,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "slow-tests")]
     fn deferred_5000_trade_flows_use_hourly_publication_budget() {
         assert_trade_budget_publications(5_000, 0);
     }

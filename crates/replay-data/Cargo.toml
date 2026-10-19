@@ -10,7 +10,6 @@ license.workspace = true
 doctest = false
 
 [features]
-slow-tests = []
 # Shared synthetic row fixtures and decode observations for replay integration tests.
 test-support = []
 

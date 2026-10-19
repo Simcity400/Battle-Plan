@@ -1660,7 +1660,6 @@ fn country_key_changes_use_field_masks_and_snapshots_keep_full_comparison() {
     country_key_masks_follow_the_recorded_rows(8);
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn one_country_balance_change_does_not_compare_5000_country_keys() {
     country_key_masks_follow_the_recorded_rows(5000);

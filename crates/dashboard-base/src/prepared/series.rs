@@ -1269,6 +1269,7 @@ pub fn navigate(
     Ok(result.or_else(|| navigation.from.map(|hour| hour.clamp(first, last))))
 }
 type PayloadIdentity = (i32, i32, u8, [u8; 32]);
+type EventRow = (i32, Vec<u8>);
 /// An explicit table owned by one family's flush. Only accumulators passed
 /// this table share numeric payload construction; each key still writes its
 /// ordinary directory, separate payload bytes and continuation.
@@ -1449,6 +1450,7 @@ impl Batch {
             })
             .collect())
     }
+    #[allow(clippy::too_many_arguments)] // The writer's fixed inputs, passed straight through from the caller.
     fn write_keys<'a, W: super::pages::Pages + ?Sized>(
         first: i32,
         last: i32,
@@ -2598,10 +2600,10 @@ impl<'a> Reader<'a> {
         let ordinal = dir.first_run() + index as u64 - 1;
         // Authenticate this hour's local run before reusing its global bounds:
         // an ordinal alone must not fill a gap between publication batches.
-        if let Some(&(held, run)) = self.run_bounds.get(&key) {
-            if held == ordinal {
-                return Ok(Some(run));
-            }
+        if let Some(&(held, run)) = self.run_bounds.get(&key)
+            && held == ordinal
+        {
+            return Ok(Some(run));
         }
         #[cfg(test)]
         RUN_BOUNDS.set(RUN_BOUNDS.get() + 1);
@@ -3067,7 +3069,7 @@ impl<'a> Reader<'a> {
         &mut self,
         keys: &[u64],
         hour: i32,
-    ) -> io::Result<Vec<Option<(i32, Vec<u8>)>>> {
+    ) -> io::Result<Vec<Option<EventRow>>> {
         let end = lower(self.count, |batch| Ok(self.hours(batch)?.0 <= hour))?;
         let mut rows = Vec::with_capacity(keys.len());
         for &key in keys {

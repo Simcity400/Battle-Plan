@@ -9,7 +9,6 @@ use replay_data::{
 use replay_frame::frame::TableView;
 use std::sync::Arc;
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn cold_and_prefix_research_states_match_prepared_values_at_the_supplying_read() {
     use crate::{
@@ -155,10 +154,6 @@ fn research_deadlines_expire_exactly_across_carried_spans_gaps_commits_resume_an
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn research_work_is_flat_over_unchanged_hours_and_retired_holder_history() {
     use crate::prepared::{
         frame_changes::FrameChangeTracker,
@@ -430,10 +425,6 @@ fn scale(hour: i32, count: u32) -> DecodedFrame {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn research_observes_five_thousand_countries_once_and_checkpoints_only_continuation() {
     let fixture = Fixture::new();
     let mut prepared = Prepared::default();
@@ -738,7 +729,6 @@ fn research_hour_reading_one_country_observes_only_that_country() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn research_hour_reading_one_of_5000_countries_observes_only_that_country() {
     assert_one_read_observes_one_country(5_000);
 }

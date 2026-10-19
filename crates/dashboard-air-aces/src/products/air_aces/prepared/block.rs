@@ -306,7 +306,7 @@ pub fn observe_block(
                 }
             }
         },
-        || check(),
+        check,
     );
     if let Some(error) = failure {
         return Err(error);

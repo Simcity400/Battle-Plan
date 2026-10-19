@@ -406,7 +406,7 @@ fn air_ledger_prepared_on_its_own_publishes_and_saves_what_hourly_preparation_do
 fn air_ledger_prepared_on_its_own_commits_resumes_reloads_and_appends_as_hourly_preparation() {
     let first = blocks(3, false, ledger_frame);
     let grown = blocks(6, true, ledger_frame);
-    let modes: [(&str, &dyn Fn(&Source), bool); 4] = [
+    let modes: [PrepareReloadMode; 4] = [
         ("run", &plain, false),
         ("measured", &measured, false),
         ("measured, reloaded", &measured, true),
@@ -486,7 +486,7 @@ fn air_ledger_reads_refused_identities_again_every_hour_as_hourly_preparation() 
 fn air_ledger_prepared_on_its_own_refuses_where_hourly_preparation_does() {
     let replay = blocks(6, true, ledger_repeat_frame);
     let mut fixture = Fixture::new(&replay);
-    let modes: [(&str, &dyn Fn(&Source)); 2] = [("run", &plain), ("measured", &measured)];
+    let modes: [PrepareMode; 2] = [("run", &plain), ("measured", &measured)];
     for (mode, prepare) in modes {
         let (hourly, hourly_refused) = independent::with_test_hourly(|| {
             let source = fixture.source("ledger-refusal");
@@ -710,7 +710,7 @@ fn raids_prepared_on_their_own_publish_and_save_what_hourly_preparation_does() {
 fn raids_prepared_on_their_own_commit_resume_reload_and_append_as_hourly_preparation() {
     let first = blocks(3, false, raids_frame);
     let grown = blocks(6, true, raids_frame);
-    let modes: [(&str, &dyn Fn(&Source), bool); 4] = [
+    let modes: [PrepareReloadMode; 4] = [
         ("run", &plain, false),
         ("measured", &measured, false),
         ("measured, reloaded", &measured, true),
@@ -894,7 +894,7 @@ fn aces_prepared_on_their_own_publish_and_save_what_hourly_preparation_does() {
 fn aces_prepared_on_their_own_commit_resume_reload_and_append_as_hourly_preparation() {
     let first = ace_blocks(3, false);
     let grown = ace_blocks(7, true);
-    let modes: [(&str, &dyn Fn(&Source), bool); 4] = [
+    let modes: [PrepareReloadMode; 4] = [
         ("run", &plain, false),
         ("measured", &measured, false),
         ("measured, reloaded", &measured, true),
@@ -927,10 +927,6 @@ fn aces_answer_from_their_own_coverage_while_the_hourly_walk_accepts_nothing() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "cold, prefix and complete first-view preparation parity"
-)]
 fn air_ledger_cold_and_prefix_replies_never_claim_unprepared_totals() {
     use crate::products::{LoadContext, Product};
     use military_air_ledger::{MilitaryAirLedger, MilitaryAirParams};
@@ -1037,10 +1033,6 @@ fn roster_values(reply: &serde_json::Value, hour: i64) -> serde_json::Value {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "cold, prefix and complete first-view preparation parity"
-)]
 fn aces_cold_roster_matches_prepared_values_and_never_dates_a_first_sighting() {
     let replay = ace_blocks(7, false);
     let mut fixture = Fixture::new(&replay);

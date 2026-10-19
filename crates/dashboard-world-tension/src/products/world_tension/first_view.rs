@@ -482,7 +482,6 @@ mod tests {
         contributor_lookup_work(128);
     }
 
-    #[cfg(feature = "slow-tests")]
     #[test]
     fn contributor_queries_scale_to_five_thousand_native_holders() {
         contributor_lookup_work(5000);

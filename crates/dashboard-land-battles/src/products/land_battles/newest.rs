@@ -1104,7 +1104,7 @@ fn block_variant_reads(
     let mut stale = true;
     replay.read_block_changes(
         index,
-        &fields,
+        fields,
         |change| {
             match change {
                 BlockChange::Changed { frame, .. } => {

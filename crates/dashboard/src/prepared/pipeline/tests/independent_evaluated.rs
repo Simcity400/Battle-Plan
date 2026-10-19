@@ -400,8 +400,8 @@ fn assert_same(case: &Case, actual: &Payloads, hourly: &Payloads, label: &str, r
         payloads
             .iter()
             .filter(|((name, _), _)| {
-                !mode_specific(case, name)
-                    && !(refused && name.starts_with("preparation-coverage-"))
+                !(mode_specific(case, name)
+                    || (refused && name.starts_with("preparation-coverage-")))
             })
             .map(|(key, bytes)| (key.clone(), bytes.clone()))
             .collect()
@@ -522,7 +522,7 @@ fn evaluated_families_prepared_on_their_own_commit_resume_reload_and_append_as_h
                 run_measured(source, None, &flag, false, Duration::ZERO, |_| {}).unwrap();
             }
         };
-        let modes: [(&str, &dyn Fn(&Source), bool); 4] = [
+        let modes: [PrepareReloadMode; 4] = [
             ("run", &plain, false),
             ("measured", &measured, false),
             ("measured, reloaded", &measured, true),
@@ -801,6 +801,8 @@ fn the_hourly_walk_observes_none_of_the_evaluated_families() {
 /// across an appended block, which it would not without binding.
 #[test]
 fn special_projects_prepared_on_their_own_bind_their_content_as_hourly_preparation() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let offsets: Vec<i32> = (0..8).collect();
     let first: Vec<_> = offsets
         .iter()
@@ -1144,10 +1146,6 @@ fn quiet_projects_at(hour: i32) -> DecodedFrame {
 /// every recorded hour once, and observes quiet hours on the last kept
 /// frame rather than reading them.
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn special_projects_fold_quiet_hours_and_an_equal_dictionary_read_again_as_hourly_preparation() {
     use replay::spool::Record;
     use replay_frame::frame::TableUpdate;

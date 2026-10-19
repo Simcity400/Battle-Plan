@@ -1133,7 +1133,7 @@ where
                 }
             }
         },
-        || check(),
+        check,
     );
     if let Some(error) = failure {
         return Err(error);
@@ -1389,7 +1389,7 @@ impl<S: Sampled> SampledBranch<S> {
                     }
                 }
             },
-            || check(),
+            check,
         );
         if let Some(error) = failure {
             return Err(error);

@@ -113,10 +113,6 @@ fn section<'a>(sections: &'a [Section], id: &str) -> &'a Section {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn air_ledger_refusal_stops_only_its_branch_family_and_its_queries_answer_the_oracle_refusal() {
     // The air ledger is prepared on its own; its refusals here are the hourly
     // walk's, with every family in it.
@@ -244,10 +240,6 @@ fn air_ledger_refusal_stops_only_its_branch_family_and_its_queries_answer_the_or
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn refusals_in_a_lane_family_and_a_coordinator_family_give_byte_identical_serial_and_lane_stores() {
     // The air ledger is prepared on its own; its refusals here are the hourly
     // walk's, with every family in it.
@@ -289,10 +281,6 @@ fn refusals_in_a_lane_family_and_a_coordinator_family_give_byte_identical_serial
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn air_ledger_refusal_persists_across_commit_resume_restart_and_append_without_observing_again() {
     // The air ledger is prepared on its own; its refusals here are the hourly
     // walk's, with every family in it.

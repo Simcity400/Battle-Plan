@@ -1332,10 +1332,6 @@ fn stopped_and_full_army_searches_answer_alike() {
 /// evaluation reads changes at random; and every kept row is the
 /// evaluation its batch made.
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn a_complete_cycle_equals_a_full_evaluation_under_random_changes() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -1405,10 +1401,6 @@ fn a_complete_cycle_equals_a_full_evaluation_under_random_changes() {
 /// under them), then paused and cycled until complete, equals a full
 /// evaluation of the paused hour in the same order.
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn a_cycle_carried_across_skipped_hours_equals_a_full_evaluation() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -1625,10 +1617,6 @@ fn split_run(
 /// prefetch (type preparations, memo groups, reachable components) on the
 /// threads first, with the lead army searches run ahead beside them.
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn a_batch_split_across_threads_equals_the_batch_in_order() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");

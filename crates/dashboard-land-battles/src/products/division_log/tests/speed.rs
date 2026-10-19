@@ -34,7 +34,6 @@ fn division_shared_driver_unchanged_frames_skip_native_and_presentation_work() {
 }
 
 #[test]
-#[cfg_attr(not(feature = "slow-tests"), ignore = "5,000 divisions")]
 fn division_shared_driver_5000_divisions_keep_unchanged_work_flat() {
     let work = [
         unchanged_work(3, 8).unwrap(),
@@ -101,7 +100,6 @@ fn division_shared_driver_parity_keeps_equal_read_dates_changes_gaps_and_resume(
 }
 
 #[test]
-#[cfg_attr(not(feature = "slow-tests"), ignore = "5,000 divisions and countries")]
 fn division_shared_driver_5000_divisions_match_oracle_after_commits_resume_and_append() {
     parity(5000);
 }

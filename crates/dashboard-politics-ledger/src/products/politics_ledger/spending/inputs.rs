@@ -8,6 +8,9 @@ use std::sync::LazyLock;
 /// Each country's row positions in table order.
 type Index = BTreeMap<u32, Vec<usize>>;
 
+/// Captures extended to an hour, with the hour they reached.
+type DeferredAdvance = (Arc<[(u32, i32)]>, i32);
+
 #[derive(Clone, Default)]
 pub(super) struct Inputs {
     pub countries: BTreeMap<u32, CountryRow>,
@@ -95,7 +98,7 @@ pub(super) struct Inputs {
     /// Captures extended to an hour by [`Self::refresh_advanced`] whose
     /// witnesses still hold the last hour before: the captures and the hour
     /// they reached. [`Self::materialize_advance`] moves them there.
-    deferred: Option<(Arc<[(u32, i32)]>, i32)>,
+    deferred: Option<DeferredAdvance>,
     #[cfg(any(test, feature = "test-support"))]
     pub row_visits: usize,
 }
@@ -2161,7 +2164,7 @@ impl<'a, T> Iterator for CountryRows<'a, T> {
     fn next(&mut self) -> Option<&'a T> {
         match self {
             Self::Indexed(positions, rows) => {
-                let rows: &'a [T] = *rows;
+                let rows: &'a [T] = rows;
                 positions.next().map(|&position| &rows[position])
             }
             Self::Sorted(rows) => rows.next(),
@@ -2458,7 +2461,6 @@ mod tests {
         assert_carried_windows(8);
     }
 
-    #[cfg(feature = "slow-tests")]
     #[test]
     fn sliding_windows_carry_5000_countries_without_revisiting_expiry_membership() {
         assert_carried_windows(5000);
@@ -2507,7 +2509,6 @@ mod tests {
         assert_carried_expiries(8);
     }
 
-    #[cfg(feature = "slow-tests")]
     #[test]
     fn certified_expiry_buckets_do_not_compare_5000_keys_every_hour() {
         assert_carried_expiries(5000);
@@ -2524,7 +2525,8 @@ mod tests {
         // scheduled; those that began at their last hour, all of whose hours
         // are; and the countries that advance to the hour.
         type Capture = (u32, i32, i32);
-        let cases: [(i32, Vec<Capture>, Vec<Capture>, Vec<u32>); 5] = [
+        type Case = (i32, Vec<Capture>, Vec<Capture>, Vec<u32>);
+        let cases: [Case; 5] = [
             (
                 50,
                 vec![(1, 10, 49), (3, 30, 49)],

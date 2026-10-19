@@ -177,6 +177,7 @@ struct Consumer {
 }
 
 /// How a read for every family ended.
+#[allow(clippy::large_enum_variant)] // The table flags move on into the frames read.
 enum Ended {
     Read(Vec<Arc<Frame>>, [bool; TABLE_COUNT]),
     Failed,
@@ -1725,10 +1726,6 @@ mod tests {
     /// bound throughout, every family completes (none waits for a wake-up
     /// that never comes), and every family's frames are its own read's.
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn a_later_oversized_block_switches_a_busy_shared_reader_to_standalone() {
         let blocks = 10;
         let small_blocks = 4;

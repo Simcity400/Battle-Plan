@@ -670,7 +670,8 @@ pub(crate) fn query(
         } else {
             // The accepted prefix's identities, joined with the sampled frame's
             // own identity join at the moment.
-            let exact: BTreeMap<(String, String), Vec<(i32, i32, u32, u32)>> = sampled
+            type Identities = BTreeMap<(String, String), Vec<(i32, i32, u32, u32)>>;
+            let exact: Identities = sampled
                 .as_ref()
                 .map(|(moment, _)| {
                     moment

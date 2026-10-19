@@ -336,10 +336,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn native_outcomes_decide_ending_independently_of_focus_rises_and_output_exactness() {
         for (railway, linked, completion, since, expected) in [
             (

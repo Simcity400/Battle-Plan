@@ -372,21 +372,21 @@ pub(super) fn query(
     let mut approximate = approximate;
     // A daily cell crossing the prefix boundary uses one sample for the whole
     // cell; mark its prepared part too rather than claim two supplying reads.
-    if let Some(first) = approximate.first_mut() {
-        if after.div_euclid(DAY_HOURS) == first.first_hour.div_euclid(DAY_HOURS) {
-            first.first_hour =
-                source
-                    .block_windows(branch)
-                    .first()
-                    .map_or(first.first_hour, |window| {
-                        window.first_hour.max(
-                            first
-                                .first_hour
-                                .div_euclid(DAY_HOURS)
-                                .saturating_mul(DAY_HOURS),
-                        )
-                    });
-        }
+    if let Some(first) = approximate.first_mut()
+        && after.div_euclid(DAY_HOURS) == first.first_hour.div_euclid(DAY_HOURS)
+    {
+        first.first_hour =
+            source
+                .block_windows(branch)
+                .first()
+                .map_or(first.first_hour, |window| {
+                    window.first_hour.max(
+                        first
+                            .first_hour
+                            .div_euclid(DAY_HOURS)
+                            .saturating_mul(DAY_HOURS),
+                    )
+                });
     }
     data["approximate"] = serde_json::to_value(approximate)?;
     data["rowsApproximate"] = serde_json::Value::Bool(true);

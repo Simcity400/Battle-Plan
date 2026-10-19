@@ -608,10 +608,6 @@ fn truncated_event_tables_preserve_intact_conferences_and_report_lost_events() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn exact_mod_action_names_follow_recorded_content_order() {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../.cargo-target/w4-peace-fixtures")
@@ -1529,10 +1525,6 @@ fn branch_validation_cancellation_and_the_per_source_cache_are_explicit() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn mod_localisation_renames_the_discovered_state_action_and_refuses_unsupported_text() {
     // Fixture files stay inside this worktree's ignored build directory.
     let scratch = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

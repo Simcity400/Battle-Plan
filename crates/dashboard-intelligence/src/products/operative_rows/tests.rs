@@ -239,7 +239,6 @@ fn equal_country_link_reads_do_not_compare_every_link() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn equal_country_link_reads_carry_5000_countries() {
     check_equal_country_link_reads(5_000);
 }

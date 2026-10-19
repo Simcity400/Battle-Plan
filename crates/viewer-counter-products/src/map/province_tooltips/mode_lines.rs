@@ -511,8 +511,7 @@ impl OccupationDefines {
     fn state_vp(&self, victory_points: i64) -> i64 {
         self.state_vp
             .iter()
-            .filter(|(total, _)| victory_points * FIXED5 >= *total)
-            .last()
+            .rfind(|(total, _)| victory_points * FIXED5 >= *total)
             .map_or(0, |(_, modifier)| *modifier)
     }
 }

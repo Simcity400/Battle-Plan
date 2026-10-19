@@ -424,10 +424,6 @@ fn observed_cached_names_survive_generator_failure_and_do_not_load_legacy_conten
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_division_log_matches_oracle_after_commits_resume_append_and_country_scale() {
     use dashboard_base::prepared::series::tests::Fixture;
     let flag = AtomicBool::new(false);

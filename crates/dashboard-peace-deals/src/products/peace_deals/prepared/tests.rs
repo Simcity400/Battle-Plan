@@ -301,10 +301,6 @@ fn peace_events_match_two_commits_resume_append_late_capture_gaps_and_identity_c
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn peace_events_preserve_five_thousand_countries_and_finalized_rows_leave_the_checkpoint() {
     let fixture = Fixture::new();
     let flag = AtomicBool::new(false);

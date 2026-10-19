@@ -158,7 +158,7 @@ mod tests {
         let (source, root) = file_source(replay(vec![frame(1, 0, None)]));
         let content = root.join("content.txt");
         std::fs::write(&content, "first").unwrap();
-        let key = store::SourceKey::capture(source.path(), &[content.clone()]).unwrap();
+        let key = store::SourceKey::capture(source.path(), std::slice::from_ref(&content)).unwrap();
         let flag = AtomicBool::new(false);
         let first: Option<Vec<u32>> =
             cached(&source, "test:proof", 1, 0, &key, &flag, || Ok(None)).unwrap();

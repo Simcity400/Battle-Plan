@@ -76,7 +76,6 @@ fn query_uncached(
         },
         cancelled,
     )?;
-    drop(proof);
     let mut scan = scan.into_inner();
     // The supplying census also needs a dated template read before the
     // window; otherwise its presentation date would be invented.

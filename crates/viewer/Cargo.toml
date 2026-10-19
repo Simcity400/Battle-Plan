@@ -7,10 +7,6 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
-[features]
-# Tests that take more than about two seconds; see AGENTS.md.
-slow-tests = ["viewer-foundation/slow-tests", "viewer-combat/slow-tests", "viewer-raids/slow-tests", "viewer-counters/slow-tests"]
-
 [dependencies]
 replay.workspace = true
 engine-executable.workspace = true

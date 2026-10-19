@@ -10,8 +10,6 @@ license.workspace = true
 doctest = false
 
 [features]
-# Tests that take more than about two seconds; see AGENTS.md.
-slow-tests = []
 # The catalogue and scope fixtures, for the tests of crates above this one.
 test-support = ["dashboard-core/test-support", "installed-content-abilities/test-support", "installed-content-core/test-support", "installed-content-country-names/test-support", "installed-content-division-names/test-support", "installed-content-equipment-graphics/test-support", "installed-content-events/test-support", "installed-content-focus/test-support", "installed-content-gfx/test-support", "installed-content-image/test-support", "installed-content-localisation/test-support", "installed-content-raids/test-support", "installed-content-regions/test-support", "installed-content-scripted-localisation/test-support", "installed-content-settings/test-support", "installed-content-state-categories/test-support", "installed-content-states/test-support", "installed-content-wargoals/test-support"]
 

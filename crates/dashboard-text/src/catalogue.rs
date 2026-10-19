@@ -1002,7 +1002,7 @@ impl Catalogue {
         };
         let mut lines = reporting(|own| texts(&own.texts)).unwrap_or_else(|| {
             texts(
-                &*self
+                &self
                     .refused
                     .lock()
                     .unwrap_or_else(|error| error.into_inner()),

@@ -89,7 +89,7 @@ impl Batches {
 /// with a budget of `blocks`: at every power of two below the budget, then at
 /// every multiple of it.
 fn ends_batch(through: usize, blocks: usize) -> bool {
-    (through < blocks && through.is_power_of_two()) || through % blocks == 0
+    (through < blocks && through.is_power_of_two()) || through.is_multiple_of(blocks)
 }
 
 /// Run `run` with every family prepared hour by hour, for query tests that
@@ -2499,12 +2499,7 @@ fn run_inner(
         leader_content_errors.push(format!("Leader content unavailable: {error}"));
     }
     let leader_content = leader_content.ok().flatten();
-    let mut evaluator = time_family!(
-        family_timings,
-        "focus.construct",
-        observe,
-        FocusEvaluator::default()
-    );
+    let mut evaluator = time_family!(family_timings, "focus.construct", observe, FocusEvaluator);
     if let Some(content) = content
         && let Err(error) = time_family!(
             family_timings,

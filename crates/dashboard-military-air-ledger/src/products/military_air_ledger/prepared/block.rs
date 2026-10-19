@@ -425,7 +425,7 @@ fn continuation(carried: &FamilyScan, entered: &Entered, block: &FamilyScan) -> 
             {
                 last = None;
             }
-            (!last.is_some_and(|last| first <= last)).then_some(at_end)
+            last.is_none_or(|last| first > last).then_some(at_end)
         }
         Some(EntryUse::Event) => None,
     }
@@ -610,7 +610,7 @@ pub fn observe_block(
                 }
             }
         },
-        || check(),
+        check,
     );
     if let Some(error) = failure {
         return Err(error);

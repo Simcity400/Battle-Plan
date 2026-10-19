@@ -486,7 +486,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "slow-tests")]
     fn prepared_native_witnesses_grow_with_changes_not_hours_and_resume_exactly_at_5000_countries()
     {
         native_witness_resume_parity(5_000);

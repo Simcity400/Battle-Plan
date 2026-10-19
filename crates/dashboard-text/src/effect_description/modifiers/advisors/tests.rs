@@ -477,6 +477,8 @@ fn format99_advisor_ideas_render_recorded_tooltips_in_slot_order() {
 /// names its advisor, from the held rows the frame carries.
 #[test]
 fn a_pool_read_earlier_in_the_day_still_names_its_advisor() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let read_at = fixture.frame.hour - 23;
     *fixture.frame.tables[TableId::SliceReads.index()] =

@@ -63,7 +63,7 @@ pub const TABLES: &[TableId] = &[
     TableId::LexicalTokens,
 ];
 
-#[cfg(all(test, feature = "slow-tests"))]
+#[cfg(test)]
 fn sample(
     frame: &DecodedFrame,
     requested: Option<&[(String, String)]>,
@@ -293,7 +293,7 @@ impl Prepared {
         changes: &FrameChanges,
     ) -> io::Result<()> {
         #[cfg(test)]
-        let whole = self.whole_tables.then(|| FrameChanges {
+        let whole = self.whole_tables.then_some(FrameChanges {
             rows_changed: changes.rows_changed,
             table_read: changes.table_read,
             slot_read: changes.slot_read,
@@ -1752,10 +1752,6 @@ mod carried_tests {
     }
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn carried_army_scans_equal_point_scans_at_every_hour_at_5000_countries() {
         carried_scans_equal_point_scans(5_000);
     }

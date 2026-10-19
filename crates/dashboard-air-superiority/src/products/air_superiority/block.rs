@@ -160,6 +160,7 @@ struct Quiet {
 }
 
 /// One hour of a block's facts, in hour order.
+#[allow(clippy::large_enum_variant)] // Each observed hour owns its frame.
 enum Hour {
     /// An hour the groups and air superiority observe, with its frame, change
     /// facts and the worker's score projection where the scores or their
@@ -183,6 +184,8 @@ struct BlockFacts {
     frames: usize,
 }
 
+type PreviousProjection = (Arc<ProjectionMark>, BTreeMap<(String, u32), (i64, i64)>);
+
 /// The score identity air superiority reads, followed as its observer
 /// follows it (`Prepared::observe_scored`), so a worker projects an hour's
 /// scores exactly where and as the observer would, and diffs each projection's
@@ -193,7 +196,7 @@ pub(super) struct ScoreTracker {
     keys: Option<CountryKeys>,
     identity: Option<Arc<ScoreIdentity>>,
     /// The previous projection's mark and pairs.
-    previous: Option<(Arc<ProjectionMark>, BTreeMap<(String, u32), (i64, i64)>)>,
+    previous: Option<PreviousProjection>,
 }
 
 impl ScoreTracker {
@@ -709,10 +712,10 @@ impl OwnBranch {
                     note_observed(FAMILY.name);
                     let outcome = groups_outcome(
                         frame.hour,
-                        changes.observe_changed(&mut **groups, frame, facts, source, context),
+                        changes.observe_changed(groups, frame, facts, source, context),
                     );
                     match outcome {
-                        Ok(()) => prepared.observe_changed(frame, replay, &mut **groups, facts),
+                        Ok(()) => prepared.observe_changed(frame, replay, groups, facts),
                         Err(error) => Err(from_groups(error)),
                     }
                 },

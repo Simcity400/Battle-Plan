@@ -617,10 +617,6 @@ fn owned_subject_walk_matches_the_plain_walk_and_scans_each_owner_once() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn owned_subject_walk_at_census_scale_is_linear_in_relations() {
     // 15,000 countries, one overlord of 14,999 subjects: the plain walk
     // scans the overlord's 14,999-entry vector for every subject from
@@ -787,10 +783,6 @@ fn batched_and_serial(
 /// installed subjects and relations of another type among the entries, in
 /// fewer guarded copies.
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn batched_subjects_match_the_serial_walk_at_scale() {
     use crate::memory::{CountedMemory, ReadCounts};
     const COUNTRIES: usize = 5_000;

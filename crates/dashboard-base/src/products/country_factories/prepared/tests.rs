@@ -1,6 +1,5 @@
 use super::*;
 use crate::test_fixtures::scale_frame;
-#[cfg(feature = "slow-tests")]
 use crate::test_fixtures::{CAMPAIGN, records};
 use replay_data::rows::TableRows;
 use replay_frame::frame::TableView;
@@ -59,7 +58,6 @@ fn frame(hour: i32, count: u32) -> DecodedFrame {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn progressive_factory_sampler_matches_observer_on_every_key_at_5000_countries() {
     let frames = [frame(0, 5000), frame(1, 5000)];
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap();

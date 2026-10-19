@@ -956,10 +956,10 @@ impl Inputs {
                     (Value::View(view), Some(table)) => {
                         *view = frame.tables[table.index()].identity()
                     }
-                    (Value::Digest(digest), _) => {
-                        if checking && reread(&read.key) != Some(*digest) {
-                            missed(&read.key, frame);
-                        }
+                    (Value::Digest(digest), _)
+                        if checking && reread(&read.key) != Some(*digest) =>
+                    {
+                        missed(&read.key, frame);
                     }
                     _ => {}
                 }

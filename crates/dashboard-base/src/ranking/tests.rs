@@ -614,11 +614,7 @@ fn the_top_n_change_where_any_value_changes_and_unknown_values_are_not_ranked() 
 
 #[test]
 fn rank_runs_publish_only_changed_positions() {
-    let count = if cfg!(feature = "slow-tests") {
-        5000
-    } else {
-        128
-    };
+    let count = 5000;
     let series: BTreeMap<_, _> = (0..count)
         .map(|index| {
             (

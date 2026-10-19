@@ -1864,7 +1864,7 @@ impl<'a> ScoreObserver<'a> {
             }
         }
         // Known no-faction needs every membership link resolved.
-        let mut all_factions = unresolved != !held.unresolved_members.is_empty();
+        let mut all_factions = unresolved == held.unresolved_members.is_empty();
         if touches(factions, *FACTION_NAME_FIELDS) || touches(tokens, u64::MAX) {
             if lexical.as_ref().is_none_or(|previous| {
                 !previous
@@ -1877,8 +1877,8 @@ impl<'a> ScoreObserver<'a> {
                 faction_names_at(
                     decoded,
                     *localisation,
-                    *fallback,
-                    *recorded_language,
+                    fallback,
+                    recorded_language,
                     templates.as_ref().copied().map_err(Clone::clone),
                     lexical,
                 )

@@ -777,6 +777,8 @@ mod tests {
 
     #[test]
     fn static_icon_only_product_skips_scoped_titles_at_five_thousand_countries() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::catalogue::texture_tests::from_url;
         let mut frame = focus_scale_frame(100, 5_000, 2_500, &["static"]);
         for table in [TableId::States, TableId::Provinces] {
@@ -858,6 +860,8 @@ mod tests {
 
     #[test]
     fn every_projection_names_a_focus_missing_from_recorded_content() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = focus_scale_frame(100, 4, 2, &["static"]);
         let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
         let (source, context, _folders) = icon_product_source(replay);
@@ -890,6 +894,8 @@ mod tests {
 
     #[test]
     fn conditional_icon_only_product_uses_dated_operands_and_preserves_refusals() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::catalogue::texture_tests::from_url;
         use replay_data::rows::PoliticalPartyRow;
         let mut frames: Vec<_> = (100..103)

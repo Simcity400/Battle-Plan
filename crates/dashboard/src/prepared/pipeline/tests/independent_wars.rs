@@ -558,7 +558,7 @@ fn wars_and_casualties_prepared_on_their_own_commit_resume_reload_and_append_as_
             run_measured(source, None, &flag, false, Duration::ZERO, |_| {}).unwrap();
         }
     };
-    let modes: [(&str, &dyn Fn(&Source), bool); 4] = [
+    let modes: [PrepareReloadMode; 4] = [
         ("run", &plain, false),
         ("measured", &measured, false),
         ("measured, reloaded", &measured, true),
@@ -854,7 +854,7 @@ fn wars_and_casualties_fold_lifetimes_held_and_ended_inside_blocks_from_their_ex
         super::super::RELOAD_FLUSHED.with(|flag| flag.set(false));
         result.unwrap();
     };
-    let modes: [(&str, &dyn Fn(&Source)); 2] = [("run", &plain), ("reloaded", &reloaded)];
+    let modes: [PrepareMode; 2] = [("run", &plain), ("reloaded", &reloaded)];
     let mut fixture = Fixture::new(&replay);
     for (mode, prepare) in modes {
         let hourly = independent::with_test_hourly(|| {

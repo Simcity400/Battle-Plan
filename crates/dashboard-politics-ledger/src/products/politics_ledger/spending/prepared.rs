@@ -2322,6 +2322,9 @@ pub const BLOCK_TABLES: &[TableId] = &[
     TableId::LexicalTokens,
 ];
 
+/// A run of consecutive certified hours: the first and last hour and the captures.
+type CertifiedSpan = (i32, i32, Arc<[(u32, i32)]>);
+
 /// What a pre-pass worker read of one block for the ledger's fold: the join
 /// the block's first hour leaves, and the later hours the join certifies.
 ///
@@ -2345,7 +2348,7 @@ pub struct BlockFacts {
     /// Runs of consecutive certified hours extending the same captures: the
     /// first and last hour and the captures, each with its first hour, in
     /// country order.
-    spans: Vec<(i32, i32, Arc<[(u32, i32)]>)>,
+    spans: Vec<CertifiedSpan>,
     /// Consecutive certified hours with the same sliding widths and membership.
     windows: Vec<(i32, i32, Arc<inputs::WindowAdvance>)>,
 }

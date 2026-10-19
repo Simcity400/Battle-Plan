@@ -582,10 +582,6 @@ fn intelligence_read_by_its_changes_builds_no_frame_for_quiet_hours() {
 /// With every family prepared on its own at once, on threads of their own,
 /// the family's sections are hourly preparation's.
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn intelligence_prepared_with_every_family_on_its_own_publishes_hourly_sections() {
     let replay = scenario(SPANS.len(), true);
     let mut fixture = Fixture::new(&replay);
@@ -620,10 +616,6 @@ fn intelligence_prepared_with_every_family_on_its_own_publishes_hourly_sections(
 /// rule: the espionage log reads back its committed series (and repairs
 /// committed day pages) at the hourly walk's commit boundaries.
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn intelligence_prepared_on_its_own_commits_resumes_reloads_and_appends_as_hourly_preparation() {
     let first = scenario(3, false);
     let grown = scenario(SPANS.len(), true);
@@ -651,7 +643,7 @@ fn intelligence_prepared_on_its_own_commits_resumes_reloads_and_appends_as_hourl
             run_measured(source, None, &flag, false, Duration::ZERO, |_| {}).unwrap();
         }
     };
-    let modes: [(&str, &dyn Fn(&Source), bool); 4] = [
+    let modes: [PrepareReloadMode; 4] = [
         ("run", &plain, false),
         ("measured", &measured, false),
         ("measured, reloaded", &measured, true),
@@ -860,10 +852,6 @@ fn cold_intelligence_histories_answer_marked_prefixes_instead_of_null() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: prepares the five intelligence products"
-)]
 fn intelligence_first_day_values_match_the_prepared_values_and_reasks_reuse_reads() {
     let replay = scenario(SPANS.len(), false);
     let mut fixture = Fixture::new(&replay);

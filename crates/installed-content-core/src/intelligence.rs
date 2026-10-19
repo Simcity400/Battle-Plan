@@ -1051,6 +1051,8 @@ mod tests {
 
     #[test]
     fn intelligence_reused_layers_keep_replace_paths_and_fresh_names() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "hoi4_intelligence_layers_{}_{}_{}",
             std::process::id(),

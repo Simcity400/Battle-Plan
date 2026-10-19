@@ -10,6 +10,9 @@ use super::{
 use installed_content_core::gui::native;
 use std::collections::BTreeMap;
 
+/// Draws the portrait art a window names by its bytes.
+pub type PortraitTextures<'a> = &'a dyn Fn(&[u8]) -> Option<Texture>;
+
 /// What the windows draw from: their resources as the native registry loads them
 /// ([`super::native_resources::GuiResources`]), the recording's localisation, and the hour's countries and flag art
 /// the flags resolve through ([`native_flags::FlagSource`]).
@@ -19,7 +22,7 @@ pub struct GuiAssets<'a> {
     pub localisation: &'a installed_content_localisation::localisation::Localisation,
     pub flags: Option<GuiFlags<'a>>,
     pub physical_viewport: Option<[i32; 2]>,
-    pub portrait_textures: Option<&'a dyn Fn(&[u8]) -> Option<Texture>>,
+    pub portrait_textures: Option<PortraitTextures<'a>>,
 }
 
 /// Flag resolution and the two atlases used by GUI text and shields.

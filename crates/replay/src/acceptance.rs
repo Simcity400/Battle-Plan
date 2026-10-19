@@ -1599,10 +1599,6 @@ fn assert_relations(frame: &DecodedFrame) {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
     let campaign = synthesize();
     assert_eq!(campaign.expected.len() + campaign.missing.len(), HOURS);
@@ -1866,10 +1862,6 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
 /// table is the one unselected view, which each block's decoder shares anew
 /// only at its first hour and then moves on.
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn selected_tables_reconstruct_as_the_whole_decoder_in_every_codec() {
     use crate::frame::{SharedView, TABLE_COUNT, ViewIdentity, count_unselected, not_selected};
     let campaign = synthesize();
@@ -1942,10 +1934,6 @@ fn selected_tables_reconstruct_as_the_whole_decoder_in_every_codec() {
 /// keyframes and the file's earlier keyframes, and every table changes in
 /// every form, so a block whose bytes depended on another's packing differs.
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn the_campaign_packs_to_the_sequential_bytes_on_any_worker_count() {
     use crate::container::PACK_WORKERS;
     let campaign = synthesize();

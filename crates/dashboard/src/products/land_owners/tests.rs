@@ -542,7 +542,6 @@ fn land_owners_prepared_recording_state_matches_after_two_commits_resume_append_
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn land_owners_prepared_five_thousand_countries_retains_no_hour_history() {
     use super::Scan;
     use crate::prepared::{frame_changes::FrameChangeTracker, series::tests::Fixture};

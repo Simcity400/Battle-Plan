@@ -730,6 +730,8 @@ fn by_key_blocks_with_values_without_keys() {
 /// unknown dispatch retain each operand's kind.
 #[test]
 fn a_known_trigger_body_is_read_by_key_never_as_a_list() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let body = |text: &[u8]| {
         read(
             text,
@@ -847,6 +849,8 @@ fn a_string_pair_reads_two_tokens_and_skips_to_its_end() {
 /// on dispatch and is unsettled.
 #[test]
 fn an_untraced_key_without_an_operator_follows_the_stale_value() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let trigger = |text: &[u8]| {
         read(
             text,

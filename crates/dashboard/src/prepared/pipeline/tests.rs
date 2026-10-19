@@ -11,6 +11,11 @@ use std::{
     },
 };
 
+/// A mode a family is prepared in: its name and how it prepares a source.
+type PrepareMode<'a> = (&'a str, &'a dyn Fn(&Source));
+/// A [`PrepareMode`] that may also reload the prepared data before the walk.
+type PrepareReloadMode<'a> = (&'a str, &'a dyn Fn(&Source), bool);
+
 mod casualty_pending;
 mod catalogue_refusals;
 mod cold_defaults;
@@ -144,10 +149,6 @@ fn assert_cold_prefix(source: &Source, branch: u64, reply: &serde_json::Value) {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn measurement_time_box_commits_a_prefix_and_resume_counts_only_new_hours() {
     let replay = recording();
     for serial in [true, false] {
@@ -193,10 +194,6 @@ struct Fixture {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn observer_timing_table_is_filled_only_in_measured_mode() {
     let mut absent: Option<BTreeMap<&'static str, FamilyTimings>> = None;
     let mut calls = 0;
@@ -695,10 +692,6 @@ fn assert_forces(source: &Source, context: &crate::products::LoadContext) {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_forces_match_oracles_across_batches_resume_append_and_aliases() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for composition parity");
@@ -1085,6 +1078,8 @@ fn prepared_pipeline_keeps_other_families_when_raid_buildings_are_missing() {
 
 #[test]
 fn prepared_pipeline_keeps_project_completions_when_advisor_define_is_missing() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use super::super::series::{self, Reader};
     use crate::products::special_projects::{completion_events, prepared::completion_stream};
     use replay_data::{rows::LexicalTokenRow, rows::ProjectRow, rows::ProjectState};
@@ -1294,10 +1289,6 @@ fn prepared_country_identities_match_after_commits_resume_and_append() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_country_identities_keep_all_5000_countries() {
     let replay = Replay::from_records(
         CAMPAIGN.into(),
@@ -1329,10 +1320,6 @@ fn prepared_country_identities_keep_all_5000_countries() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_army_top_first_page_reads_prepared_ranks_at_5000_countries() {
     use crate::products::army_size::*;
     let make = |hour| {
@@ -1415,10 +1402,6 @@ fn prepared_country_identity_state_grows_with_changes_not_hours() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn cancellation_discards_whole_block_and_resume_visits_only_unaccepted_tail() {
     let replay = recording();
     assert_eq!(replay.index.len(), 2);
@@ -1745,10 +1728,6 @@ fn cancelled_initial_block_publishes_no_country_or_day_state() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn recordings_of_the_same_campaign_keep_distinct_prepared_directories_and_clear_held_files() {
     let replay = recording();
     let mut left = Fixture::new(&replay);
@@ -1772,7 +1751,7 @@ fn recordings_of_the_same_campaign_keep_distinct_prepared_directories_and_clear_
             .unwrap()
             .is_none()
     );
-    let old: Coverage = serde_json::from_reader(held).unwrap();
+    let old: Coverage = serde_json::from_reader(std::io::BufReader::new(held)).unwrap();
     assert_eq!(old.last_hour, 11);
     assert_eq!(
         super::super::status(&one, "one", "request").state,
@@ -1781,10 +1760,6 @@ fn recordings_of_the_same_campaign_keep_distinct_prepared_directories_and_clear_
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn unknown_checkpoint_schema_rebuilds_without_refusing_recording() {
     let replay = recording();
     let mut fixture = Fixture::new(&replay);
@@ -1793,7 +1768,8 @@ fn unknown_checkpoint_schema_rebuilds_without_refusing_recording() {
     run(&source, None, &flag, |_| {}).unwrap();
     let (store, key) = super::super::files(&source, None).unwrap();
     let file = store.read(&key, CHECKPOINT, 0).unwrap().unwrap();
-    let mut value: serde_json::Value = serde_json::from_reader(file).unwrap();
+    let mut value: serde_json::Value =
+        serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
     value["schema"] = 999.into();
     let mut writer = store.extend(&key).unwrap();
     writer
@@ -1816,10 +1792,6 @@ fn unknown_checkpoint_schema_rebuilds_without_refusing_recording() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn old_domain_accumulator_schema_rebuilds_completed_cache() {
     let replay = recording();
     let mut fixture = Fixture::new(&replay);
@@ -1925,10 +1897,6 @@ fn source_open_holds_a_file_revision_and_preserves_append_state_from_index_metad
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn queued_cancellation_and_clear_wait_for_the_real_worker_to_release_its_writer() {
     let replay = recording();
     let mut fixture = Fixture::new(&replay);
@@ -1984,10 +1952,6 @@ fn queued_cancellation_and_clear_wait_for_the_real_worker_to_release_its_writer(
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn refused_block_preserves_the_accepted_prefix_and_its_country_pages() {
     let replay = recording();
     let mut fixture = Fixture::new(&replay);
@@ -2077,10 +2041,6 @@ fn changed_old_index_and_compaction_shaped_metadata_rebuild_from_scratch() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn completed_cache_restores_before_queue_admission_and_old_schema_rebuilds() {
     let replay = recording();
     let mut fixture = Fixture::new(&replay);
@@ -2102,7 +2062,8 @@ fn completed_cache_restores_before_queue_admission_and_old_schema_rebuilds() {
     assert_eq!(status.bytes, expected.bytes.to_string());
     let (store, key) = super::super::files(&source, None).unwrap();
     let file = store.read(&key, CHECKPOINT, 0).unwrap().unwrap();
-    let mut value: serde_json::Value = serde_json::from_reader(file).unwrap();
+    let mut value: serde_json::Value =
+        serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
     value["schema"] = 999.into();
     let mut writer = store.extend(&key).unwrap();
     writer
@@ -2152,7 +2113,8 @@ fn cached_raw_and_named_metadata_roundtrip_and_unknown_schema_falls_back() {
     assert_eq!(reopened.metadata(), expected);
     let (store, key) = super::super::files(&reopened, None).unwrap();
     let file = store.read(&key, "source-metadata-v1", 0).unwrap().unwrap();
-    let mut value: serde_json::Value = serde_json::from_reader(file).unwrap();
+    let mut value: serde_json::Value =
+        serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
     value["schema"] = 999.into();
     let mut writer = store.extend(&key).unwrap();
     writer
@@ -2215,10 +2177,6 @@ fn first_preparation_key_refuses_recording_changed_since_source_open() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn one_branch_batches_many_replay_blocks_into_shared_measure_files() {
     let mut replay = Replay::from_records(
         CAMPAIGN.into(),
@@ -2238,20 +2196,21 @@ fn one_branch_batches_many_replay_blocks_into_shared_measure_files() {
     let source = fixture.source("1");
     let flag = AtomicBool::new(false);
     let mut commits = 0;
-    let mut blocks = 0;
-    // The hourly walk's own reports, one per replay block.
+    // The hourly walk reports its position as it reads; how many blocks one
+    // read covers depends on how fast the walk runs, so only its end is fixed.
+    let mut walked = std::collections::BTreeSet::new();
     let result = independent::with_test_hourly(|| {
         run_checked(
             &source,
             None,
             &flag,
             |progress| {
-                if progress
+                if let Some(map) = progress
                     .sections
                     .iter()
-                    .all(|section| section.state == State::Preparing)
+                    .find(|section| section.id == "map" && section.state == State::Preparing)
                 {
-                    blocks += 1;
+                    walked.insert(map.done.parse::<usize>().unwrap());
                 }
             },
             |_| {
@@ -2261,7 +2220,7 @@ fn one_branch_batches_many_replay_blocks_into_shared_measure_files() {
         )
     })
     .unwrap();
-    assert_eq!(blocks, replay.index.len());
+    assert_eq!(walked.last(), Some(&replay.index.len()), "{walked:?}");
     assert_eq!(result.new_blocks, replay.index.len());
     assert!(
         commits < replay.index.len(),
@@ -2305,10 +2264,6 @@ fn accepted_frame_without_focus_observations_publishes_exact_table_refusal() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_groups_replace_one_state_across_commits_cancel_resume_and_append_at_scale() {
     use crate::products::{
         LoadContext, Product,
@@ -2430,10 +2385,6 @@ fn prepared_groups_sample_when_other_prepared_sections_exist_without_group_state
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_combat_queries_wait_for_coverage_and_resume_only_the_appended_tail() {
     use crate::products::{
         BranchParams, LoadContext, Product,
@@ -2663,10 +2614,6 @@ fn prepared_idea_query_waits_for_its_state_even_with_complete_other_sections() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_subjects_keep_changes_across_commits_cancel_resume_append_and_5000_countries() {
     use crate::products::{
         LoadContext, Product,
@@ -2789,10 +2736,6 @@ fn prepared_subjects_keep_changes_across_commits_cancel_resume_append_and_5000_c
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_autonomy_matches_oracle_after_commits_cancel_resume_append_and_5000_countries() {
     use crate::products::{
         LoadContext, Product,
@@ -2932,10 +2875,6 @@ fn prepared_autonomy_matches_oracle_after_commits_cancel_resume_append_and_5000_
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_tension_matches_oracle_after_commits_cancel_resume_append_and_5000_countries() {
     use crate::products::{BranchParams, LoadContext, Product, world_tension::WorldTension};
     fn tension(hour: i32, count: u32) -> DecodedFrame {
@@ -3097,10 +3036,6 @@ fn prepared_tension_matches_oracle_after_commits_cancel_resume_append_and_5000_c
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_wars_match_oracle_after_commits_cancel_resume_append_and_5000_countries() {
     use crate::products::{
         LoadContext, Product,
@@ -3216,10 +3151,6 @@ fn prepared_wars_match_oracle_after_commits_cancel_resume_append_and_5000_countr
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_feed_matches_after_discarded_batch_cancel_resume_and_append() {
     // The hourly walk's own batches; prepared on its own, the feed commits
     // before the walk (`independent_feed`).
@@ -3331,10 +3262,6 @@ fn feed_discarded_batch_cancel_resume_and_append() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn progressive_autonomy_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing() {
     use std::cell::Cell;
     fn sampled(hour: i32) -> DecodedFrame {
@@ -3758,10 +3685,6 @@ fn naval_losses_unprepared_spans_are_pending_not_zero() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing() {
     fn sampled(hour: i32) -> DecodedFrame {
         let mut frame = crate::test_fixtures::source(
@@ -3957,10 +3880,6 @@ fn progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_w
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn progressive_stability_parts_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing() {
     independent::with_test_hourly(
         progressive_stability_parts_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing_hourly,
@@ -4374,10 +4293,6 @@ fn check_peace_pending() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn progressive_fuel_factory_and_nukes_queries_join_prefix_and_tail_then_zoom_exactly_without_writing()
  {
     // The pages and coverage below are those hourly preparation publishes.
@@ -4618,10 +4533,6 @@ fn progressive_fuel_factories_and_nukes() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn progressive_nukes_bind_an_unprepared_origin_outside_the_view_and_keep_unchanged_read_dates() {
     // The pages and coverage below are those hourly preparation publishes.
     independent::with_test_hourly(progressive_nukes_origin);
@@ -4733,10 +4644,6 @@ fn progressive_nukes_origin() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn territory_progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing() {
     independent::with_test_hourly(
         territory_progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing_hourly,
@@ -5055,10 +4962,6 @@ fn territory_progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn unprepared_blocks_detects_same_size_partial_work_and_appended_tail() {
     let replay = recording();
     let mut fixture = Fixture::new(&replay);
@@ -5119,6 +5022,8 @@ fn unprepared_blocks_reads_metadata_without_decoding_recorded_blocks() {
 
 #[test]
 fn game_presence_discards_block_and_library_resume_reads_only_unaccepted_tail() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let replay = recording();
     let mut fixture = Fixture::new(&replay);
     let service = crate::Service::new(Arc::new(|_| true)).unwrap();
@@ -5199,10 +5104,6 @@ fn game_presence_discards_block_and_library_resume_reads_only_unaccepted_tail() 
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_air_force_matches_native_replies_after_two_commits_resume_append_gaps_and_aliases() {
     use crate::products::{LoadContext, Product, air_force::*};
     let make = |hour| {
@@ -5310,10 +5211,6 @@ fn prepared_air_force_matches_native_replies_after_two_commits_resume_append_gap
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_air_force_top_first_page_at_five_thousand_countries_uses_rank_positions() {
     use crate::products::{LoadContext, Product, air_force::*};
     let mut frame = scale_frame(1, 100, 5000);
@@ -5361,10 +5258,6 @@ fn prepared_air_force_top_first_page_at_five_thousand_countries_uses_rank_positi
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_navy_matches_native_after_two_commits_resume_append_gaps_aliases_and_five_thousand_countries()
  {
     use crate::products::{LoadContext, Product, navy::*};
@@ -5492,10 +5385,6 @@ fn prepared_navy_matches_native_after_two_commits_resume_append_gaps_aliases_and
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_country_nukes_matches_native_after_two_commits_resume_append_gaps_aliases_and_five_thousand_countries()
  {
     use crate::products::{LoadContext, Product, country_nukes::*};
@@ -5600,10 +5489,6 @@ fn prepared_country_nukes_matches_native_after_two_commits_resume_append_gaps_al
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_country_factories_matches_native_after_two_commits_resume_append_gaps_aliases_and_five_thousand_countries()
  {
     use crate::products::{LoadContext, Product, country_factories::*};
@@ -6219,10 +6104,6 @@ fn preparation_branch_state_has_a_small_heap_owned_layout() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: full preparation, resume, append and query stack regression"
-)]
 fn production_stack_prepare_resume_append_and_query_roundtrips() {
     let worker = super::super::runner::worker_thread("preparation stack regression")
         .spawn(|| {

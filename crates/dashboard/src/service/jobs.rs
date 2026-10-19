@@ -60,10 +60,13 @@ pub(super) struct Room {
 }
 
 #[cfg(test)]
+type InnerHook = Box<dyn FnOnce(&super::Inner)>;
+
+#[cfg(test)]
 thread_local! {
     /// Run by the scan between reading a store and admitting it, so tests can
     /// change the content binding or the store in between.
-    pub(super) static TEST_AFTER_CHECK: std::cell::RefCell<Option<Box<dyn FnOnce(&super::Inner)>>> =
+    pub(super) static TEST_AFTER_CHECK: std::cell::RefCell<Option<InnerHook>> =
         const { std::cell::RefCell::new(None) };
 }
 

@@ -521,10 +521,6 @@ fn five_thousand_countries_cost_two_copies_each() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn growing_tactic_capture_handles_5000_countries_and_larger_lists_without_a_poll() {
     let mut memory = Fixture::new();
     const COUNT: usize = 5_000;

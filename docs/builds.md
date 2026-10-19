@@ -1,34 +1,35 @@
 # Rust builds and compilation boundaries
 
-Plain `cargo build` and `cargo test` use unoptimized workspace libraries with
-incremental compilation and no debug information. Compatible dependency
-artifacts are reused. `cargo check --workspace --all-targets` checks the whole
-app without generating application machine code; build scripts, procedural
-macros and their native helpers still compile. Select a crate for the everyday edit loop:
+There is one build: plain `cargo build`, `cargo test` and `cargo nextest` all
+use the `dev` profile. Workspace crates are optimized (`opt-level = 1`) and
+compile incrementally, without debug information, with debug assertions and
+overflow checks on. Third-party crates are built once at `opt-level = 3`. Tests,
+the full suite and the desktop app therefore share one set of artifacts under
+`.cargo-target/debug`. Release builds are for shipping, live capture acceptance
+and performance evidence.
+
+No test is behind a feature: every test compiles in every build, and all but the
+`#[ignore]`d ones run. Those are benchmarks or need hardware or inputs a run may not have
+(a GPU, the shader compiler, a release build); run those by hand when you change
+what they measure. Run the tests for what you changed, then the whole suite
+before merging:
 
 ```powershell
-cargo check -p collector-projection --all-targets
-cargo test -p replay-frame
-```
-
-`cargo build --profile interactive` preserves optimized replay loading, native
-readers, content readers and dashboard processing for running the app. The
-desktop development launcher (`npm.cmd run dev`) selects this profile for both
-the host and viewer, keeping their executables together under
-`.cargo-target/interactive`. Third-party dependencies keep the existing settings;
-native zstd decompression stays optimized in every development profile.
-
-```powershell
-cargo build --profile interactive -p viewer -p replay-desktop
+cargo nextest run -p replay-frame
+cargo nextest run -p dashboard event_feed
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --profile full --features slow-tests
+cargo nextest run --workspace
 ```
 
-`full` inherits the interactive optimization settings for the long scale suite.
-Release and release-incremental builds retain their existing purposes; live
-capture acceptance and performance evidence use release builds. Each worktree
-can select its own target directory with `CARGO_TARGET_DIR` without changing
-tracked configuration. Keep timings, captures and other evidence outside Git.
+[nextest](https://nexte.st) (`cargo install cargo-nextest --locked`) runs each
+test in its own process and schedules every test binary at once;
+[.config/nextest.toml](../.config/nextest.toml) starts the long scale tests
+first. Installation-dependent tests read `BATTLE_PLAN_GAME_DIR`. Because each test is
+its own process, a test sets up everything it reads, such as executable
+metadata, and never relies on another test having run first.
+`cargo check --workspace --all-targets` checks the whole app without generating
+machine code. Each worktree can select its own target directory with
+`CARGO_TARGET_DIR`. Keep timings, captures and other evidence outside Git.
 
 ## Dependency ownership
 
@@ -72,15 +73,6 @@ work when an edit leaves public metadata unchanged; the report is a structural
 upper bound rather than a timing prediction. `cargo check --timings` and
 `cargo build --timings` show the actual critical path for the selected command.
 
-The restructuring was measured on this Windows workstation with the pinned
-compiler. A dependency-generating `cargo build -p collector-projection` took
-210 seconds before the change and 56.6 seconds with the fast default profile.
-These observed command times include the deliberate change from optimized to
-unoptimized development code and more cached third-party artifacts in the second
-run; they are not a controlled cold-build comparison or a claim about optimized
-release builds. The initial full workspace check took 114 seconds including
-third-party work, so later warm-cache checks are not directly comparable.
-
 The manifest graph gives a cache-independent measure of narrower rebuilds:
 `engine-decisions` reaches five normal-build crates instead of 163, and
 `installed-content-focus` reaches 38 instead of 92. Shared native foundations and row
@@ -97,7 +89,7 @@ keep the product loaders without retaining the contract generator. Regenerate
 or check the frontend contract explicitly:
 
 ```powershell
-cargo run -q --profile test -p dashboard --features export-types --bin export-types -- --check
+cargo run -q -p dashboard --features export-types --bin export-types -- --check
 ```
 
 ## Linker and shared features
@@ -116,59 +108,3 @@ Workspace Serde dependencies share `alloc`, `derive` and `rc`. These additive
 capabilities keep the library's feature identity consistent when switching
 between a collector crate, viewer and desktop; they do not change existing
 serialized values. Cargo's resolver still separates host build dependencies.
-
-## Experimental options
-
-Keep the pinned stable toolchain as the default. For isolated experiments,
-select a separate target directory so nightly artifacts cannot replace stable
-or release evidence. Compare each setting with the same nightly compiler and
-the same cache state; changing toolchains alone invalidates artifacts.
-
-Cargo's [workspace feature unification](https://doc.rust-lang.org/cargo/reference/unstable.html#feature-unification)
-can prevent more feature-dependent rebuilds between package selections:
-
-```powershell
-$previousUnification = $env:CARGO_RESOLVER_FEATURE_UNIFICATION
-try {
-    $env:CARGO_RESOLVER_FEATURE_UNIFICATION = 'workspace'
-    cargo +nightly -Zfeature-unification check -p replay-frame --target-dir .cargo-target/nightly-check
-} finally {
-    $env:CARGO_RESOLVER_FEATURE_UNIFICATION = $previousUnification
-}
-```
-
-The installed 1.101 nightly also supports a parallel frontend through
-`-Zunstable-options --jobs-frontend=4`; stable 1.96 does not. Try two or four
-frontend jobs in a separate lane and account for Cargo's concurrent crates and
-memory use:
-
-```powershell
-$previousRustflags = $env:RUSTFLAGS
-try {
-    $env:RUSTFLAGS = "$previousRustflags -Zunstable-options --jobs-frontend=4".Trim()
-    cargo +nightly check -p replay-frame --target-dir .cargo-target/nightly-parallel
-} finally {
-    $env:RUSTFLAGS = $previousRustflags
-}
-```
-
-Neither nightly option has been timed on this workspace. They are experiments,
-not promised speedups or release settings.
-If `CARGO_ENCODED_RUSTFLAGS` is set, it takes precedence over `RUSTFLAGS`; append
-the experimental flags there with its unit-separator delimiter instead.
-
-[Headstart](https://github.com/PowderworksCode/headstart) needs patched Cargo and
-rustc, rather than a configuration switch. Its own
-[readiness assessment](https://github.com/PowderworksCode/headstart/blob/main/docs/readiness.md)
-says it is not ready to merge, records an unenforced metadata-swap invariant and
-unbounded paused-compiler memory, and says Windows has not been tested. Keep it
-outside the supported toolchain until those requirements are resolved.
-
-[sccache](https://github.com/mozilla/sccache/blob/main/docs/Rust.md) is useful for
-repeated nonincremental library builds, particularly CI. It cannot cache checks,
-incremental compilation, binaries, proc macros or DLLs. Keep incremental
-compilation enabled for local edits; disabling it globally to obtain cache
-hits can make that loop slower. Additional linker and codegen settings need
-measurements: Cargo already sizes its jobs from logical CPUs and uses 256
-codegen units for incremental builds. Cranelift's Windows unwind limitations
-make it unsuitable for this recorder's default backend.

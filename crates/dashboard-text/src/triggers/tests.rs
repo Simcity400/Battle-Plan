@@ -323,6 +323,8 @@ fn faction_leader_scope_and_boolean_trigger_share_the_first_member() {
 
 #[test]
 fn has_elections_reads_the_recorded_test_and_refuses_older_recordings_by_name() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay_data::rows::PoliticsRow;
     let mut frame = frame(
         &[(100, 1, "GER", 1, "", ""), (200, 2, "SOV", 1, "", "")],
@@ -2968,6 +2970,8 @@ fn roster_visibility_keeps_country_and_selected_character_without_changing_other
 /// (binary searched or indexed), then that in the owner's scope.
 #[test]
 fn leader_visibility_steps_decide_as_the_roster_check() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use installed_content_core::characters::LeaderTemplate;
     use replay_data::{rows::CharacterRow, rows::UnitLeaderRow};
     let path = "common/characters/mod.txt";

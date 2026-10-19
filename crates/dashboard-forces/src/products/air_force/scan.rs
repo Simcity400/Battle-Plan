@@ -1044,12 +1044,15 @@ pub(super) fn scan_with_decode(
     Ok(observer.finish())
 }
 
+/// A track's last run: its counts on both sides and its hour.
+type TrackRun = (Option<Arc<Counts>>, Option<Arc<Counts>>, i32);
+
 /// One active track's state after an hour that decides its next: its last
 /// run's counts and hour, its last known identity and hour, its identity
 /// track and its last identity segment's hour.
 #[derive(PartialEq)]
 struct TrackTail {
-    run: Option<(Option<Arc<Counts>>, Option<Arc<Counts>>, i32)>,
+    run: Option<TrackRun>,
     known: Option<(Identity, i32)>,
     identity: String,
     segment: Option<i32>,

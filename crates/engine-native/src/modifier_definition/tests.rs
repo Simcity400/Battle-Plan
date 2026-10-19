@@ -460,10 +460,6 @@ fn key_by_name_resolves_the_registered_index_through_the_lexer() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn modifier_definitions_grow_rows_and_text_from_original_headers_for_mod_populations() {
     struct Traced<'a> {
         source: &'a Fixture,

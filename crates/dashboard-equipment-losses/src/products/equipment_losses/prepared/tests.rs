@@ -866,10 +866,6 @@ fn only_loss_designs_publish_naming_keys_and_names_resume_exactly() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn five_thousand_countries_create_only_observed_loss_leaf_keys() {
     let frames = vec![
         frame(10, 5000, 100_001, false),
@@ -1037,13 +1033,13 @@ fn retained_holders_are_retagged_while_identity_tables_are_incomplete_and_at_the
                 .unwrap();
         },
         |fixture| {
-            serde_json::from_reader(
+            serde_json::from_reader(std::io::BufReader::new(
                 fixture
                     .store
                     .read(&fixture.key, "equipment-loss-continuation-1", 0)
                     .unwrap()
                     .unwrap(),
-            )
+            ))
             .unwrap()
         },
     );

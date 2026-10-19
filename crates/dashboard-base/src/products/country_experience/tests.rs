@@ -143,7 +143,6 @@ fn banked_reasks_share_first_read_observations_across_measures_and_exact_block_f
     let _ = std::fs::remove_dir_all(root);
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn first_read_observations_scale_to_five_thousand_native_holders() {
     use super::{SAMPLED_MEASURES, Sampler};
@@ -1125,7 +1124,6 @@ fn banked_rows_join_only_changed_slots_and_preserve_aliases_refusals_resume_and_
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn banked_row_changes_among_5000_countries_join_only_their_slots() {
     assert_banked_row_joins(5000);
 }

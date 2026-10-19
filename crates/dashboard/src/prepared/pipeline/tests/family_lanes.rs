@@ -2,8 +2,9 @@ use super::*;
 use std::{io::Read, sync::Mutex, time::Duration};
 
 // Enumerate the manifest's sections through the store's listing, and open
-// every registered payload through the real store reader. UUIDs and physical
-// file names are not payloads.
+// every registered payload through one verified store session: a plain read
+// decodes the whole manifest again for each range. UUIDs and physical file
+// names are not payloads.
 pub(super) fn payloads(
     source: &Source,
     content: Option<&crate::products::ContentOptions>,
@@ -18,12 +19,13 @@ pub(super) fn payloads(
     let listing = store::Listing::open(&directory.join("manifest"))
         .unwrap()
         .unwrap();
+    let session = store.session(&key).unwrap().expect("a published manifest");
     let mut result = BTreeMap::new();
     for (name, count) in listing.sections() {
         for range in 0..count {
             let mut bytes = Vec::new();
-            store
-                .read(&key, name, range)
+            session
+                .read(name, range)
                 .unwrap()
                 .unwrap()
                 .read_to_end(&mut bytes)
@@ -131,10 +133,6 @@ fn compare_fixture(replay: &Replay) {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn family_lanes_fresh_serial_runs_match_every_section() {
     let mut fixture = Fixture::new(&recording());
     let expected = serial_control(&mut fixture, "serial-control", None);
@@ -142,10 +140,6 @@ fn family_lanes_fresh_serial_runs_match_every_section() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn family_lanes_match_every_section_and_keep_the_time_budget() {
     compare_fixture(&recording());
     let first = Replay::from_records(
@@ -548,10 +542,6 @@ fn family_lanes_match_serial_for_every_moved_family_and_detect_a_diverging_lane(
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn family_lanes_feed_sources_match_serial_sections_and_oracle() {
     use crate::products::event_feed::prepared::tests::{assert_store_pages, frame};
     let first = Replay::from_records(
@@ -582,10 +572,6 @@ fn family_lanes_feed_sources_match_serial_sections_and_oracle() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn family_lanes_same_frame_identity_and_membership_change_match_serial() {
     use replay_data::{rows::CountryLinkRow, rows::FactionMemberRow, rows::FactionRow};
     let mut initial = frame(1, 10, 3);
@@ -640,10 +626,6 @@ fn family_lanes_same_frame_identity_and_membership_change_match_serial() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn frame_changes_are_computed_once_and_shared_by_coordinator_and_all_lanes() {
     use crate::prepared::frame_changes::{FrameChanges, observation_count};
     for parallelism in [2, 4] {
@@ -904,10 +886,6 @@ fn family_lanes_join_all_results_and_select_the_original_call_error() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn family_lanes_cancel_error_panic_disconnect_discard_the_whole_block_and_resume() {
     independent::with_test_hourly(check_lane_failures);
 }
@@ -965,10 +943,6 @@ fn check_lane_failures() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn family_lanes_append_and_resume_match_every_serial_section() {
     let first = Replay::from_records(
         CAMPAIGN.into(),
@@ -1037,7 +1011,6 @@ fn family_lanes_measured_work_overlaps_critical_path_without_double_counting_res
     );
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn family_lanes_five_thousand_countries_match_every_section() {
     let replay = Replay::from_records(
@@ -1048,7 +1021,6 @@ fn family_lanes_five_thousand_countries_match_every_section() {
     compare_fixture(&replay);
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn family_lanes_missing_and_modded_content_match_every_section_and_warning_byte() {
     engine_executable::executable_tables::initialize_for_tests()

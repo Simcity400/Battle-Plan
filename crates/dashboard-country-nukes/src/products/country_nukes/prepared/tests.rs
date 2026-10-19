@@ -1,5 +1,4 @@
 use super::*;
-#[cfg(feature = "slow-tests")]
 use dashboard_base::test_fixtures::continuation_records;
 use dashboard_base::test_fixtures::{CAMPAIGN, records, scale_frame};
 use replay_data::rows::TableRows;
@@ -102,7 +101,6 @@ fn a_quiet_hour_steps_to_the_state_observing_it_reaches() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn progressive_nukes_sampler_matches_observer_on_every_key_at_5000_countries() {
     let frames = [frame(0, 5000), frame(1, 5000)];
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap();
@@ -168,7 +166,6 @@ fn progressive_nukes_sampler_preserves_prefix_holes_duplicates_and_absence() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn global_nuclear_increases_match_prepared_mixtures_after_two_commits_resume_and_append_at_5000_countries()
  {
     let make = |hour| {
@@ -430,7 +427,6 @@ fn global_nuclear_increases_keep_the_feed_total_rule_unknowns_segments_and_metad
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn global_nuclear_increases_widen_the_native_signed_total_difference_to_u32() {
     let make = |hour, target: i32| {
         let mut frame = scale_frame(1, hour, 1);

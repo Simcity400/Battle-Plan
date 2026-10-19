@@ -1360,13 +1360,13 @@ fn restored_air_forgets_variant_names_that_stop_being_known_after_a_commit() {
                 .unwrap();
         },
         |fixture| {
-            serde_json::from_reader(
+            serde_json::from_reader(std::io::BufReader::new(
                 fixture
                     .store
                     .read(&fixture.key, "air-continuation-1", 0)
                     .unwrap()
                     .unwrap(),
-            )
+            ))
             .unwrap()
         },
     );

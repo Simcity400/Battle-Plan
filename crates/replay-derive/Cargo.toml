@@ -9,9 +9,6 @@ license.workspace = true
 [lib]
 doctest = false
 
-[features]
-slow-tests = []
-
 [dependencies]
 engine-executable.workspace = true
 engine-fixed-layout.workspace = true

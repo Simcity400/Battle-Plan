@@ -1855,10 +1855,6 @@ fn produced_per_week_needs_the_read_a_week_before_of_the_same_country() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn produced_zero_windows_remain_known_without_any_top_n_member() {
     use crate::products::{
         LoadContext, Product,

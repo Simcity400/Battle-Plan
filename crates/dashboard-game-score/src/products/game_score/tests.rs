@@ -1228,10 +1228,6 @@ fn scale_score_frame(count: u32) -> DecodedFrame {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn game_score_keeps_all_five_thousand_countries_without_player_admission() {
     let first = scale_score_frame(5000);
     let mut second = first.clone();
@@ -1397,10 +1393,6 @@ fn game_score_table_missing_reasons_do_not_depend_on_hour_or_truncation_count() 
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn game_score_disabled_across_block_boundaries_keeps_one_run_and_one_reason() {
     // One initial block and two appended block windows exercise both boundaries.
     let hours = replay_frame::KEYFRAME_INTERVAL as i32 + 2;
@@ -1813,10 +1805,6 @@ fn game_score_sort_hints_preserve_empty_whitespace_and_key_equal_text() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn game_score_oversized_reply_refuses_by_transport_budget_name() {
     let mut first = scale_score_frame(5000);
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
@@ -1918,10 +1906,6 @@ fn assert_prepared_score_at(
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_game_score_matches_history_after_commits_resume_append_gaps_and_identity_changes() {
     let mut first = frame(100);
     let mut second = frame(101);
@@ -1987,22 +1971,18 @@ fn prepared_game_score_matches_history_after_commits_resume_append_gaps_and_iden
         for hour in 100..=frames[end - 1].hour {
             assert_prepared_score_at(&fixture, &reference, hour);
         }
-        state = serde_json::from_reader(
+        state = serde_json::from_reader(std::io::BufReader::new(
             fixture
                 .store
                 .read(&fixture.key, "score-test-resume", 0)
                 .unwrap()
                 .unwrap(),
-        )
+        ))
         .unwrap();
     }
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_game_score_five_thousand_countries_retains_only_open_facts() {
     let first = scale_score_frame(5000);
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first.clone()])]).unwrap();
@@ -2191,7 +2171,6 @@ fn prepared_game_score_balance_only_changes_reuse_native_operands_and_warning_co
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn progressive_game_score_sampler_matches_observer_at_five_thousand_countries() {
     let mut frame = scale_score_frame(5000);
     if let TableView::Complete(TableRows::CountryLinks(rows)) =
@@ -2497,7 +2476,6 @@ fn prepared_game_score_one_changed_country_observes_only_that_country() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn prepared_game_score_one_changed_country_observes_only_it_at_five_thousand_countries() {
     assert_one_country_hour_observes_only_it(5000);
 }

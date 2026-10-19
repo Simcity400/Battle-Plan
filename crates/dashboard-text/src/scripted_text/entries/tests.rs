@@ -107,6 +107,8 @@ pub(super) fn geography_frame() -> DecodedFrame {
 
 #[test]
 fn scripted_political_and_always_titles_leave_geography_unread() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (cat, folder) = geography_catalogue();
     let path = folder.0.join("map/logs/provinces.bmp");
     let bitmap = std::fs::read(&path).unwrap();
@@ -140,6 +142,8 @@ fn scripted_political_and_always_titles_leave_geography_unread() {
 
 #[test]
 fn reached_scripted_geography_preserves_values_diagnostics_and_cache_reuse() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (cat, folder) = geography_catalogue();
     let content = cat.scripted_content().unwrap();
     let frame = geography_frame();
@@ -216,6 +220,8 @@ fn reached_scripted_geography_preserves_values_diagnostics_and_cache_reuse() {
 
 #[test]
 fn reached_geography_caches_missing_and_malformed_map_refusals_without_refusing_titles() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for malformed in [false, true] {
         let (cat, folder) = geography_catalogue();
         let path = folder.0.join("map/logs/provinces.bmp");

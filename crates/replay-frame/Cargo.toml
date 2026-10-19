@@ -10,7 +10,6 @@ license.workspace = true
 doctest = false
 
 [features]
-slow-tests = []
 test-support = []
 
 [dependencies]

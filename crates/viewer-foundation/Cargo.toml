@@ -10,7 +10,6 @@ license.workspace = true
 doctest = false
 
 [features]
-slow-tests = []
 test-support = ["installed-content-core/test-support", "installed-content-country-names/test-support", "installed-content-gfx/test-support", "installed-content-image/test-support", "installed-content-localisation/test-support", "installed-content-raids/test-support", "installed-content-regions/test-support", "installed-content-settings/test-support", "installed-content-states/test-support", "installed-content-unit-path/test-support"]
 
 [dependencies]

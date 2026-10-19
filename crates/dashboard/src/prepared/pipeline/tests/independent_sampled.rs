@@ -540,7 +540,7 @@ fn commits(family: Sampled) {
             run_measured(source, None, &flag, false, Duration::ZERO, |_| {}).unwrap();
         }
     };
-    let modes: [(&str, &dyn Fn(&Source), bool); 4] = [
+    let modes: [PrepareReloadMode; 4] = [
         ("run", &plain, false),
         ("measured", &measured, false),
         ("measured, reloaded", &measured, true),
@@ -1643,10 +1643,6 @@ fn loss_frame(branch: u64, hour: i32) -> DecodedFrame {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: full preparation, resume and append"
-)]
 fn loss_owner_ranges_and_amount_only_drains_publish_and_resume_as_hourly_preparation() {
     let first = scenario_of(3, false, loss_frame);
     let grown = scenario_of(5, true, loss_frame);

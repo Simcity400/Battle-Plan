@@ -63,10 +63,6 @@ fn span(first_hour: i32, last_hour: i32) -> HourSpan {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn faction_prepared_exact_matches_native_oracle_after_commits_resume_append_and_aliases() {
     let flag = AtomicBool::new(false);
     let mut fixture = Fixture::new();
@@ -515,10 +511,6 @@ fn faction_prepared_navigation_skips_cancelling_changes_and_keeps_membership_edg
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn faction_prepared_exact_and_dense_keep_five_thousand_signed_member_values() {
     let flag = AtomicBool::new(false);
     let fixture = Fixture::new();

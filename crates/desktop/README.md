@@ -13,9 +13,8 @@ npm.cmd ci
 npm.cmd run dev
 ```
 
-This builds the viewer, then starts Tauri/Vite. Both use the optimized
-`interactive` Cargo profile and live under `.cargo-target/interactive`; plain
-`cargo build` uses the faster unoptimized development profile. Frontend changes hot reload; desktop Rust rebuilds. Restart development after viewer changes to rebuild its sibling executable. Ctrl+C must stop both host and child. For UI-only layout work use `npm.cmd run dev:ui`; native features need the host.
+This builds the viewer, then starts Tauri/Vite. Both use the workspace's one
+optimized development build under `.cargo-target/debug`. Frontend changes hot reload; desktop Rust rebuilds. Restart development after viewer changes to rebuild its sibling executable. Ctrl+C must stop both host and child. For UI-only layout work use `npm.cmd run dev:ui`; native features need the host.
 
 Viewer arguments pass through both separators:
 

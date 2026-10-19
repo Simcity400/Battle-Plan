@@ -486,10 +486,6 @@ fn a_final_count_in_a_skipped_census_is_not_recorded_never_a_low_total() {
 /// A block of the recording that cannot be read is marked and counted: an output read
 /// may lie in it.
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn an_unreadable_block_is_marked_and_counted() {
     use crate::products::production_lines::scan;
     let frame = |hour: i32| {
@@ -1300,10 +1296,6 @@ fn a_line_ended_before_the_first_complete_census_is_not_given_an_invented_creati
 /// the history, whatever the campaign's length; its reads come a window at a time,
 /// a read holding into a window sent with it.
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn production_history_is_one_step_per_setting_and_its_reads_come_in_windows() {
     use crate::products::production_lines::{DETAIL_HOURS, detail_lines, line_history, scan};
     let days = 60;
@@ -2632,7 +2624,6 @@ fn production_country_lookup_reuses_keys_and_follows_every_intervening_identity_
 }
 
 #[test]
-#[cfg_attr(not(feature = "slow-tests"), ignore = "5000-country production lookup")]
 fn production_country_lookup_reuses_keys_at_5000_countries() {
     country_lookup_reuse(5000);
 }

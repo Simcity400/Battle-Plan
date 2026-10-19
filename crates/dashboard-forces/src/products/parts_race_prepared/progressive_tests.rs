@@ -1,12 +1,8 @@
-#[cfg(feature = "slow-tests")]
 use super::test_fixtures::frame;
 use super::*;
-#[cfg(feature = "slow-tests")]
 use dashboard_base::test_fixtures::{CAMPAIGN, records};
-#[cfg(feature = "slow-tests")]
 use std::sync::Arc;
 
-#[cfg(feature = "slow-tests")]
 fn sampler_matches<F: Family>() {
     let frames = [frame(6, 5000), frame(7, 5000)];
     let replay =
@@ -72,12 +68,10 @@ fn sampler_matches<F: Family>() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn air_force_progressive_sampler_matches_observer_every_key_at_5000_countries() {
     sampler_matches::<crate::products::air_force::prepared::Air>();
 }
 #[test]
-#[cfg(feature = "slow-tests")]
 fn navy_progressive_sampler_matches_observer_every_key_at_5000_countries() {
     sampler_matches::<crate::products::navy::prepared::Navy>();
 }

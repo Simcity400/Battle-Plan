@@ -609,7 +609,6 @@ fn dynamic_part_naming_keeps_hour_dependent_native_refusals_on_held_tables() {
     );
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn prepared_parts_visit_no_unchanged_native_rows_or_history_at_scale() {
     use super::*;
@@ -681,7 +680,6 @@ fn prepared_parts_visit_no_unchanged_native_rows_or_history_at_scale() {
     observer_tests::assert_flat(work);
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn five_thousand_country_continuation_saves_equal_fresh_naming_reads_once() {
     use super::*;

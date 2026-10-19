@@ -79,10 +79,6 @@ fn entry_invocations_detect_cycles_and_render_finite_scope_changes() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn entry_invocations_refuse_growing_history_at_the_backstop_without_stack_overflow() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");

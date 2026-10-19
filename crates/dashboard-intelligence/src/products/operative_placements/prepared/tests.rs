@@ -27,7 +27,6 @@ fn prepared_placements_query_rejects_a_different_parameter_branch() {
     }
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn prepared_placements_keep_five_thousand_countries_and_dated_read_anchors() {
     let fixture = Fixture::new();
@@ -166,7 +165,6 @@ fn prepared_placements_match_commits_resume_append_and_identity_gaps() {
     }
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn prepared_placement_checkpoint_does_not_retain_daily_provenance() {
     let fixture = Fixture::new();

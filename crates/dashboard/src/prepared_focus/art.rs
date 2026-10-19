@@ -401,6 +401,9 @@ pub fn static_text(
 #[derive(Default)]
 struct EventArtState(Option<artwork::Context>);
 
+/// The art the event feed shows, with the content's standing warnings.
+type EventArtReply = (Vec<artwork::ResolvedArt>, Vec<String>);
+
 /// Each completion's art at its own hour, for `requests` of (hour, tag,
 /// token), as the event feed shows it, with the content's standing warnings;
 /// the content's refusal when it does not load.
@@ -410,7 +413,7 @@ pub(crate) fn event_art(
     branch: u64,
     requests: &[(i32, &str, &str)],
     cancelled: &AtomicBool,
-) -> io::Result<Result<(Vec<artwork::ResolvedArt>, Vec<String>), String>> {
+) -> io::Result<Result<EventArtReply, String>> {
     check_cancel(cancelled)?;
     let state = source.state::<EventArtState>();
     let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);

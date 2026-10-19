@@ -425,11 +425,7 @@ mod tests {
     }
     #[test]
     fn finishing_a_663_block_query_inspects_each_column_once_before_lru_fallback() {
-        let tables = if cfg!(feature = "slow-tests") {
-            TableId::ALL.len()
-        } else {
-            32
-        };
+        let tables = TableId::ALL.len();
         let cache = Cache::default();
         cache.enable(true);
         let preparation = cache.consumer(0);

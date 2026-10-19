@@ -238,7 +238,6 @@ fn prepared_shared_driver_unchanged_frames_and_closed_history_keep_work_flat() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn prepared_one_changed_row_and_unrelated_country_balances_bound_native_and_projection_work() {
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
     use replay_data::format::FormatVersion;
@@ -1066,7 +1065,6 @@ fn prepared_payments_match_the_oracle_across_two_commits_resume_and_append() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn prepared_continuation_bytes_do_not_keep_completed_payments() {
     let fixture = Fixture::new();
     let mut prepared = Prepared::default();
@@ -1097,7 +1095,6 @@ fn prepared_continuation_bytes_do_not_keep_completed_payments() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn prepared_observer_and_queries_preserve_five_thousand_countries_without_caps() {
     let fixture = Fixture::new();
     let mut prepared = Prepared::default();
@@ -2019,7 +2016,6 @@ fn prepared_hour_changing_one_country_observes_only_that_country() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn prepared_hour_changing_one_of_5000_countries_observes_only_that_country() {
     assert_hour_observes_only_changed_countries(5000);
 }
@@ -2604,13 +2600,17 @@ fn sections(fixture: &Fixture) -> BTreeMap<(String, u64), Vec<u8>> {
     let listing = store::Listing::open(&fixture.directory.join("manifest"))
         .unwrap()
         .expect("a published manifest");
+    let session = fixture
+        .store
+        .session(&fixture.key)
+        .unwrap()
+        .expect("a published manifest");
     let mut result = BTreeMap::new();
     for (name, count) in listing.sections() {
         for range in 0..count {
             let mut bytes = Vec::new();
-            fixture
-                .store
-                .read(&fixture.key, name, range)
+            session
+                .read(name, range)
                 .unwrap()
                 .unwrap()
                 .read_to_end(&mut bytes)
@@ -3315,7 +3315,6 @@ fn prepared_daily_changes_observe_only_their_owners_and_keep_the_whole_joins_byt
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn prepared_daily_changes_among_5000_countries_observe_only_their_owners() {
     assert_daily_changes_observe_only_their_owners(5000);
 }
@@ -3661,7 +3660,6 @@ fn selected_countries_keep_equal_daily_projections_and_empty_hold_snapshots() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn selected_5000_countries_keep_equal_daily_projections_and_empty_hold_snapshots() {
     unchanged_daily_and_empty_holds_do_not_rebuild(5000);
 }
@@ -4113,7 +4111,6 @@ fn sliding_capture_windows_keep_bytes_across_changes_refusals_gaps_resume_and_ap
     assert_sliding_window_bytes(4, true);
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn sliding_capture_windows_among_5000_countries_do_no_hourly_accounting_or_projection() {
     assert_sliding_window_bytes(5000, false);

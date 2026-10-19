@@ -302,10 +302,6 @@ mod tests {
     use installed_content_core::gui::native::sprites::AnimationData;
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn artwork_loaders_admit_native_dimensions_above_the_former_texel_ceiling() {
         use std::io::Write;
         let (_, folder) = super::super::tests::folder_catalogue(&[]);

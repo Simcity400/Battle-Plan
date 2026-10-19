@@ -172,10 +172,6 @@ fn historical_workload(ships: usize, results: usize, hours: usize, pending: bool
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "5,000 retained rows and 10x history work regression"
-)]
 fn naval_observation_work_is_flat_after_ten_times_history_and_5000_ships() {
     let small_short = historical_workload(1, 1, 50, false);
     let small_long = historical_workload(1, 1, 500, false);
@@ -445,10 +441,6 @@ fn naval_shared_driver_unchanged_reads_keep_native_work_flat_and_read_proof_exac
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "shared 5,000 row and 10x history work driver"
-)]
 fn naval_shared_driver_one_sinking_work_is_flat_after_ten_times_history() {
     for ships in [1, 5000] {
         let work = observer_tests::scaled_work(50, |history| {

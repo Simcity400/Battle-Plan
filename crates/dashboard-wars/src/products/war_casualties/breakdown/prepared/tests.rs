@@ -126,10 +126,6 @@ fn assert_parity(source: &Source, fixture: &Fixture, tags: &[&str]) {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_breakdown_matches_after_two_commits_resume_append_gaps_and_ended_enemy() {
     let mut frames: Vec<_> = [100, 101, 102, 103, 105, 106, 107]
         .into_iter()
@@ -446,10 +442,6 @@ fn selecting_both_endpoints_keeps_the_existing_first_endpoint_priority() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn five_thousand_country_breakdown_uses_the_shared_windows_and_projection() {
     let chunks = vec![
         vec![

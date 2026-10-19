@@ -211,6 +211,7 @@ fn nuke_start(format: FormatVersion) -> Box<dyn Extract> {
 // --- Extract and fold ------------------------------------------------------
 
 /// One hour of a census block's facts, in hour order.
+#[allow(clippy::large_enum_variant)] // Each observed hour owns its frame.
 enum Hour {
     /// An hour the census observes, with its frame and change facts.
     Observed {

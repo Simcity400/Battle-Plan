@@ -855,7 +855,7 @@ pub(crate) fn first_view(
         branch,
         first,
         last,
-        &super::super::intelligence_prepared::TABLES,
+        super::super::intelligence_prepared::TABLES,
         cancelled,
         |frame| {
             if frame.hour == branch_first || super::super::operative_rows::membership_read(frame) {

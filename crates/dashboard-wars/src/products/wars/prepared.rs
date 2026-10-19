@@ -999,14 +999,12 @@ mod query_tests {
     use dashboard_base::prepared::series::tests::Fixture;
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "5,000-country query counter projection"
-    )]
     fn queries_skip_snapshots_and_structure_only_queries_skip_all_counters() {
         let fixture = Fixture::new();
-        let mut state = Observer::default();
-        state.snapshot = vec![1; 5000 * 16];
+        let mut state = Observer {
+            snapshot: vec![1; 5000 * 16],
+            ..Observer::default()
+        };
         for index in 0..5000 {
             state.indices.insert(format!("relation-{index}"), index);
             state.first_reads.push(10);

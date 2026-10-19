@@ -69,6 +69,9 @@ pub(super) fn wanted(source: &Source) -> BTreeSet<(u64, String)> {
     wanted
 }
 
+/// A scan to keep: its branch and the tag it is for.
+type WantedScan = (u64, String);
+
 /// Keeps each of `wanted` through `commit`, then the scans requests read whole
 /// meanwhile, one at a time (a scan a request holds is not read again). A scan
 /// that cannot be read is not kept, nor tried again this session: its products
@@ -77,11 +80,11 @@ fn keep_each(
     source: &Source,
     context: &LoadContext,
     cancelled: &AtomicBool,
-    mut wanted: Vec<(u64, String)>,
-    register: &mut dyn FnMut(&[(u64, String)]) -> io::Result<()>,
+    mut wanted: Vec<WantedScan>,
+    register: &mut dyn FnMut(&[WantedScan]) -> io::Result<()>,
     commit: &mut dyn FnMut(&production_lines::SavedScan) -> io::Result<()>,
 ) -> io::Result<()> {
-    let mut tried: BTreeSet<(u64, String)> = BTreeSet::new();
+    let mut tried: BTreeSet<WantedScan> = BTreeSet::new();
     loop {
         for (branch, tag) in std::mem::take(&mut wanted) {
             check_cancel(cancelled)?;

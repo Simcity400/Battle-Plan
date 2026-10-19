@@ -1,6 +1,5 @@
 use super::*;
 use crate::products::parts_race_prepared::test_fixtures::frame;
-#[cfg(feature = "slow-tests")]
 use crate::products::parts_race_prepared::test_fixtures::tag;
 use dashboard_base::test_fixtures::{CAMPAIGN, records};
 use serde_json::json;
@@ -14,7 +13,6 @@ fn army_prepared_enables_detailed_inventory_when_fresh_and_resumed() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn army_progressive_sampler_matches_observer_every_key_at_5000_countries() {
     let frames = [frame(6, 5000), frame(7, 5000)];
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap();
@@ -336,7 +334,6 @@ fn army_hour_changing_one_division_observes_only_its_country() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn army_hour_changing_one_of_5000_divisions_observes_only_its_country() {
     assert_one_division_hour_observes_only_its_country(5000);
 }
@@ -739,20 +736,19 @@ fn restored_army_mix_resumes_what_continuous_observation_publishes() {
                 .unwrap();
         },
         |fixture| {
-            serde_json::from_reader(
+            serde_json::from_reader(std::io::BufReader::new(
                 fixture
                     .store
                     .read(&fixture.key, "army-continuation-1", 0)
                     .unwrap()
                     .unwrap(),
-            )
+            ))
             .unwrap()
         },
     );
 }
 
 #[test]
-#[cfg_attr(not(feature = "slow-tests"), ignore = "5000-country sampled window")]
 fn unchanged_army_window_reuses_values_warnings_and_compositions_before_its_cut_moves() {
     use dashboard_base::prepared::{
         coverage::{Coverage, SCHEMA},

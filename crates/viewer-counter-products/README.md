@@ -8,4 +8,4 @@ A drawn trade-route hit takes priority over province hover; its transfer tooltip
 
 Hover caches retain content and frame identities. Reached route queries build their whole-frame indexes lazily within each hover or diagnostics batch.
 
-Tests live with their modules. `slow-tests` preserves existing gates; `test-support` enables shared synthetic foundation inputs for consumers. Follow the workspace [working rules](../../AGENTS.md).
+Tests live with their modules. `test-support` enables shared synthetic foundation inputs for consumers. Follow the workspace [working rules](../../AGENTS.md).

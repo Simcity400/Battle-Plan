@@ -312,7 +312,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[cfg(feature = "slow-tests")]
     #[test]
     fn sampled_holdings_match_the_scan_with_five_thousand_countries() {
         use crate::test_fixtures::{scale_frame, scale_tag};
@@ -342,7 +341,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[cfg(feature = "slow-tests")]
     #[test]
     fn idea_first_views_are_non_null_marked_and_keep_the_exact_prefix_and_held_set() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();

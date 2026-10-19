@@ -10,8 +10,6 @@ license.workspace = true
 doctest = false
 
 [features]
-# Tests that take more than about two seconds; see AGENTS.md.
-slow-tests = ["replay-frame/slow-tests"]
 # Count actual grouped-table decodes for consumer tests.
 test-support = ["replay-frame/test-support"]
 

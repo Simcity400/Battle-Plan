@@ -274,7 +274,7 @@ fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, refusals: bool
         payloads
             .iter()
             .filter(|((name, _), _)| {
-                !mode_specific(name) && !(refusals && name.starts_with("preparation-coverage-"))
+                !(mode_specific(name) || (refusals && name.starts_with("preparation-coverage-")))
             })
             .map(|(key, bytes)| (key.clone(), bytes.clone()))
             .collect()
@@ -472,7 +472,7 @@ fn air_superiority_prepared_on_its_own_commits_resumes_reloads_and_appends_as_ho
         flag.store(false, Ordering::Release);
         measured(source);
     };
-    let modes: [(&str, &dyn Fn(&Source), bool); 5] = [
+    let modes: [PrepareReloadMode; 5] = [
         ("run", &plain, false),
         ("measured", &measured, false),
         ("measured, reloaded", &measured, true),
@@ -767,10 +767,6 @@ fn air_superiority_quiet_hours_build_no_frame() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "synthetic content and first-view air presentation"
-)]
 fn cached_air_reply_refreshes_labels_when_language_changes_without_a_publication() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -875,10 +871,6 @@ fn cached_air_reply_refreshes_labels_when_language_changes_without_a_publication
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "cold, prefix and complete first-view preparation parity"
-)]
 fn air_first_views_cache_the_tail_and_replace_complete_days_with_prepared_values() {
     let replay = scenario(LAST, false);
     let mut fixture = Fixture::new(&replay);
@@ -1031,10 +1023,6 @@ fn air_day_values(reply: &serde_json::Value, day: usize) -> serde_json::Value {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "5,000-country sampled air comparison"
-)]
 fn sampled_air_comparison_keeps_five_thousand_countries() {
     let mut first = frame(1, 120, 5000);
     for rows in [

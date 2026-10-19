@@ -1550,7 +1550,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "slow-tests")]
     fn occupation_shared_driver_holds_all_5000_occupiers_without_hourly_work() {
         let format = replay_data::format::FormatVersion::CURRENT;
         let mut prepared = Prepared::default();
@@ -1758,10 +1757,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn occupation_prepared_retains_all_five_thousand_occupiers_with_bounded_continuation() {
         let fixture = Fixture::new();
         let cancelled = AtomicBool::new(false);

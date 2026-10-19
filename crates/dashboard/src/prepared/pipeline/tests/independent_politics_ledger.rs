@@ -248,7 +248,7 @@ fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, refused: bool)
         payloads
             .iter()
             .filter(|((name, _), _)| {
-                !mode_specific(name) && !(refused && name.starts_with("preparation-coverage-"))
+                !(mode_specific(name) || (refused && name.starts_with("preparation-coverage-")))
             })
             .map(|(key, bytes)| (key.clone(), bytes.clone()))
             .collect()
@@ -331,7 +331,7 @@ fn politics_ledger_prepared_on_its_own_commits_resumes_reloads_and_appends_as_ho
             run_measured(source, None, &flag, false, Duration::ZERO, |_| {}).unwrap();
         }
     };
-    let modes: [(&str, &dyn Fn(&Source), bool); 4] = [
+    let modes: [PrepareReloadMode; 4] = [
         ("run", &plain, false),
         ("measured", &measured, false),
         ("measured, reloaded", &measured, true),
@@ -856,7 +856,7 @@ fn politics_ledger_folds_dense_blocks_across_commits_resume_reload_and_append() 
             run_measured(source, None, &flag, false, Duration::ZERO, |_| {}).unwrap();
         }
     };
-    let modes: [(&str, &dyn Fn(&Source), bool); 4] = [
+    let modes: [PrepareReloadMode; 4] = [
         ("run", &plain, false),
         ("measured", &measured, false),
         ("measured, reloaded", &measured, true),

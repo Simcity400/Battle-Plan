@@ -229,7 +229,7 @@ pub fn province_uses(stops: &Stops, uses: &mut BTreeMap<u32, u8>) -> Vec<u8> {
 }
 pub fn overlap_offset(index: u32, max_lines: u32, line_offset: f32) -> f32 {
     let slot = index % max_lines.max(1);
-    (if slot % 2 == 0 {
+    (if slot.is_multiple_of(2) {
         slot as f32
     } else {
         -(slot as f32)

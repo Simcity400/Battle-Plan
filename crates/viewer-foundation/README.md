@@ -12,4 +12,4 @@ Content comes from installed-content and recorded tables from replay. The crate 
 
 Finalized stack-anchor lookup is shared by counter grids and selected movement products, preserving authored slots, victory-point inheritance and seeded defaults.
 
-Synthetic GUI, table, raster, localisation and GPU fixtures used by other viewer crates are available through `test-support`. `slow-tests` preserves the gating of installation and GPU tests. Follow the workspace [working rules](../../AGENTS.md).
+Synthetic GUI, table, raster, localisation and GPU fixtures used by other viewer crates are available through `test-support`. Follow the workspace [working rules](../../AGENTS.md).

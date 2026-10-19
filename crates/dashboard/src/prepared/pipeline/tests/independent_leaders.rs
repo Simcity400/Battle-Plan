@@ -133,7 +133,7 @@ fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, refusals: bool
         payloads
             .iter()
             .filter(|((name, _), _)| {
-                !mode_specific(name) && !(refusals && name.starts_with("preparation-coverage-"))
+                !(mode_specific(name) || (refusals && name.starts_with("preparation-coverage-")))
             })
             .map(|(key, bytes)| (key.clone(), bytes.clone()))
             .collect()
@@ -269,7 +269,7 @@ fn leaders_prepared_on_their_own_commit_resume_reload_and_append_as_hourly_prepa
         flag.store(false, Ordering::Release);
         measured(source);
     };
-    let modes: [(&str, &dyn Fn(&Source), bool); 5] = [
+    let modes: [PrepareReloadMode; 5] = [
         ("run", &plain, false),
         ("measured", &measured, false),
         ("measured, reloaded", &measured, true),
@@ -590,10 +590,6 @@ fn leaders_take_the_block_readers_changes_and_read_only_their_bound_tables() {
 /// Five thousand leaders of as many countries at war publish what hourly
 /// preparation does.
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn leaders_prepared_on_their_own_match_hourly_preparation_at_5000_countries() {
     let replay = scenario_of(160, false, 5000);
     let mut fixture = Fixture::new(&replay);
@@ -628,10 +624,6 @@ fn leader_values(reply: &serde_json::Value, hour: i64) -> serde_json::Value {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "cold, prefix and complete first-view preparation parity"
-)]
 fn leaders_at_a_cold_hour_show_prepared_values_with_battle_counts_pending() {
     let replay = scenario(LAST, false);
     let mut fixture = Fixture::new(&replay);

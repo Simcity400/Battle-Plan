@@ -74,7 +74,7 @@ impl Query {
         let _cpu = replay_frame::cpu::scope_phase("trade:query_flows");
         sample_inputs(frame, requested, &inputs)
     }
-    #[cfg(all(test, feature = "slow-tests"))]
+    #[cfg(test)]
     pub(super) fn visits(&self) -> (usize, usize) {
         let inputs = self.inputs.borrow();
         (inputs.country_visits, inputs.row_visits)

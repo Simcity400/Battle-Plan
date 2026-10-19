@@ -6500,9 +6500,8 @@ mod tests {
         let report = compare_missions(rows.clone(), &pack).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(report.compared_tables["OperativeMissions"], 2);
-        for subject in [
-            "OperativeMissions.pending_variant / pending_country / pending_state / pending_ideology",
-        ] {
+        {
+            let subject = "OperativeMissions.pending_variant / pending_country / pending_state / pending_ideology";
             assert!(
                 report
                     .limitations

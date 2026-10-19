@@ -477,10 +477,6 @@ fn fuel_replies_with_the_engine_scales_and_answers_again_from_the_cache() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn five_thousand_country_requests_share_one_decode_and_ownership_walk() {
     use crate::products::country_fuel::{CountryFuel, CountryFuelConsumption};
     use dashboard_base::products::{CountryParams, Product};

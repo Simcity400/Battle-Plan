@@ -150,10 +150,6 @@ fn compatibility_real_g2_product_impact() {
 /// cadence change cannot redate an older recording. Test modules may name
 /// today's cadence to build their fixtures.
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn products_never_read_todays_cadence_directly() {
     fn visit(directory: &std::path::Path, offenders: &mut Vec<String>) {
         for entry in std::fs::read_dir(directory).unwrap() {

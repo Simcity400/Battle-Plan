@@ -2568,8 +2568,10 @@ mod tests {
         let arena = shader_pipeline::gpu::Arena::new(&device);
         // One upload and draw on the same pass: its pixels, fade pages and runs on each page.
         let frame = |pass: &mut SpritePass, quads: Vec<Quad>| {
-            let mut batch = Batch::default();
-            batch.quads = quads;
+            let batch = Batch {
+                quads,
+                ..Batch::default()
+            };
             arena.reset();
             pass.upload(&device, &queue, &arena, &batch, [16, 16], 1.);
             arena.flush(&queue);
@@ -2658,8 +2660,10 @@ mod tests {
         let mut pass = red_and_green(&device, &queue);
         let arena = shader_pipeline::gpu::Arena::new(&device);
         let sizes = |pass: &mut SpritePass, quads: Vec<Quad>, size: [u32; 2]| {
-            let mut batch = Batch::default();
-            batch.quads = quads;
+            let batch = Batch {
+                quads,
+                ..Batch::default()
+            };
             arena.reset();
             pass.upload(&device, &queue, &arena, &batch, size, 1.);
             pass.fade

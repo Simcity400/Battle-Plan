@@ -1041,7 +1041,8 @@ impl Sampler {
             keys.insert((key.clone(), measure.clone()));
             keys.insert((key.clone(), READ_HOUR.to_owned()));
         }
-        let mut wanted: BTreeMap<String, Vec<((u32, u32), String, String)>> = BTreeMap::new();
+        type Wanted = ((u32, u32), String, String);
+        let mut wanted: BTreeMap<String, Vec<Wanted>> = BTreeMap::new();
         for (key, measure) in &keys {
             let (tag, slot, id): (String, u32, u32) = serde_json::from_str(key)
                 .map_err(|_| crate::invalid("Invalid experience sample key"))?;

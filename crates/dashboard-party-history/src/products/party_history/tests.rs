@@ -672,7 +672,6 @@ fn party_country_balance_deltas_visit_only_changed_keys() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn party_country_balance_delta_work_at_5000_countries() {
     check_party_country_delta_work(5_000);
 }

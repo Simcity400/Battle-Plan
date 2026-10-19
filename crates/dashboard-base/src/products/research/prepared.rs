@@ -179,7 +179,7 @@ impl Prepared {
                 let progress = slot
                     .progress
                     .last()
-                    .filter(|progress| progress.last_hour == hour || current(*progress));
+                    .filter(|progress| progress.last_hour == hour || current(progress));
                 read_only |= progress.is_some_and(|progress| !current(progress));
                 let value = progress
                     .map(|progress| progress.progress_raw.parse::<i128>())
@@ -560,11 +560,11 @@ pub fn state_query(
             let mut slots = Vec::new();
             if observed && let Some(country) = scan.countries.get_mut(&read.tag) {
                 country.materialize(read.hour);
-                if !country
+                if country
                     .history
                     .coverage
                     .last()
-                    .is_some_and(|span| span.last_hour == read.hour)
+                    .is_none_or(|span| span.last_hour != read.hour)
                 {
                     unavailable = country.history.clone();
                     for slot in &mut unavailable.slots {

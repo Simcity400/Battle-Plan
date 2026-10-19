@@ -2602,7 +2602,7 @@ mod tests {
         let tables = crate::prepared_measure::TABLES;
         let (source, flag) = (&source, &flag);
         std::thread::scope(|scope| {
-            let held = frames::hold_hour(&source, 1, 5);
+            let held = frames::hold_hour(source, 1, 5);
             let (ready, started) = channel();
             scope.spawn(move || {
                 let releases = std::cell::Cell::new(0);
@@ -2612,14 +2612,14 @@ mod tests {
                         ready.send(()).unwrap();
                     }
                 })));
-                let result = read_window(&source, 1, 4, 5, tables, &flag);
+                let result = read_window(source, 1, 4, 5, tables, flag);
                 frames::ON_RELEASE.set(None);
                 result.unwrap();
             });
             let started = started.recv_timeout(Duration::from_secs(10));
             let (sent, answers) = channel();
             scope.spawn(move || {
-                sent.send(read_window(&source, 1, 18, 19, tables, &flag))
+                sent.send(read_window(source, 1, 18, 19, tables, flag))
                     .unwrap();
             });
             let answer = answers.recv_timeout(Duration::from_secs(10));
@@ -2633,7 +2633,7 @@ mod tests {
                 [18, 19]
             );
         });
-        assert!(frames::accounted(&source));
+        assert!(frames::accounted(source));
     }
 
     fn renamed_seed_recording() -> Replay {
@@ -3423,10 +3423,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "fourteen-block exact-zoom transition"
-    )]
     fn projected_tails_keep_the_original_keyframe_to_exact_transition() {
         let source = source(14);
         let flag = AtomicBool::new(false);
@@ -3545,10 +3541,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn full_census_keyframes_keep_their_marks_until_the_exact_zoom_transition() {
         let source = source(15);
         let flag = AtomicBool::new(false);
@@ -3930,10 +3922,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "sampled and exact block cache parity"
-    )]
     fn stateless_keyframes_are_shared_until_exact_zoom_replaces_them() {
         let source = source(15);
         let flag = AtomicBool::new(false);
@@ -4027,10 +4015,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn rough_tails_keep_one_identity_span_while_the_holder_is_unchanged() {
         let source = source(15);
         let coverage = Coverage {
@@ -4060,10 +4044,6 @@ mod tests {
         assert_eq!((identities[&key][0].0, identities[&key][0].1), (2, 29));
     }
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn prepared_prefix_and_fourteen_block_tail_are_rough_but_thirteen_block_zoom_is_exact() {
         let source = source(15);
         let coverage = Coverage {
@@ -4096,10 +4076,6 @@ mod tests {
         assert!(read(&source, (0, 29), Some(&complete)).0.is_empty());
     }
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn absent_preparation_reads_keyframes_and_cancellation_reads_nothing() {
         let source = source(14);
         let (runs, approximate) = read(&source, (0, 27), None);
@@ -4267,10 +4243,6 @@ mod tests {
         assert_eq!(identities[&key], vec![(1, 1, 7, 9001), (29, 29, 7, 9001)]);
     }
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn rough_spans_exclude_recorded_gaps_and_interleaved_branches_do_not_count_toward_zoom() {
         let first = records(1, vec![frame(1, 0, Some(0)), frame(1, 1, Some(99))]);
         let context = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&first)).unwrap();
@@ -5010,10 +4982,6 @@ mod sample_cache_tests {
     use std::cell::Cell;
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "5,000-country stateless query projections"
-    )]
     fn unchanged_views_reuse_samples_and_changed_inputs_refuse_or_project_again() {
         let mut frame = crate::test_fixtures::scale_frame(1, 10, 5000);
         let calls = Cell::new(0);

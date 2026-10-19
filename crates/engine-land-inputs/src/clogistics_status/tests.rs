@@ -718,10 +718,6 @@ impl Memory for Scaled {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn native_acquisition_sizes_owners_and_rows_from_five_thousand_countries() {
     let fixture = Scaled::new(5000);
     assert_eq!(owner_capacity(&fixture, BASE, GAME), Ok(5001));

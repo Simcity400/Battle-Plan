@@ -124,7 +124,6 @@ fn country_reads_resolves_shared_links_holders_partners_and_operand_changes() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn country_reads_resolves_5000_holders_without_a_country_pair_product() {
     let frame = frame(0, 5_000, 5_000);
     let reads = CountryReads::new(&frame, frame.complete::<tables::Countries>().unwrap());
@@ -1547,10 +1546,6 @@ fn an_orphan_canonical_holder_without_a_named_country_cannot_supply_a_world_shar
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn recorded_country_slots_and_histories_grow_past_the_former_limits() {
     let mut decoded = frame(100, 65_537, 0);
     let states = decoded.tables[TableId::States.index()].clone();

@@ -144,7 +144,7 @@ enum Hour {
         /// Whether its relations were read again.
         process: bool,
         /// Its naming snapshot, when it named again.
-        renamed: Option<DecodedFrame>,
+        renamed: Option<Box<DecodedFrame>>,
         /// The lifetimes first held there, in the order met, by the extract's
         /// country indices.
         inserted: Vec<PairKey>,
@@ -414,7 +414,7 @@ impl Extract for BlockExtract {
             }
         };
         let renamed = if builder.renamed {
-            builder.name_snapshot.clone()
+            builder.name_snapshot.clone().map(Box::new)
         } else {
             None
         };
@@ -683,7 +683,7 @@ impl Follow {
                     state.observations.advance(hour)?;
                     state.coverage.advance(hour)?;
                     if let Some(snapshot) = renamed {
-                        state.builder.rename(snapshot);
+                        state.builder.rename(*snapshot);
                     }
                     inserted.clear();
                     inserted.extend(
@@ -906,7 +906,7 @@ pub fn observe_block(
                 }
             }
         },
-        || check(),
+        check,
     );
     if let Some(error) = failure {
         return Err(error);

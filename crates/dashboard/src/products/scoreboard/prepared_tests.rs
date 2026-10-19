@@ -440,10 +440,6 @@ fn all_frame(hour: i32) -> DecodedFrame {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn scoreboard_prepared_composes_native_cells_after_two_commits_resume_append_gaps_and_renames() {
     let first = Replay::from_records(
         CAMPAIGN.into(),
@@ -625,10 +621,6 @@ fn scoreboard_prepared_composes_native_cells_after_two_commits_resume_append_gap
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn scoreboard_prepared_top_and_mounted_page_keep_5000_countries_and_unknown_last_in_both_directions()
  {
     let mut first_frame = countries(100, 5000);
@@ -850,22 +842,20 @@ fn scoreboard_factory_moments_answer_beyond_preparation_as_preparation_does() {
     let observe = |source: &Source| -> Vec<Value> {
         let mut replies = Vec::new();
         for hour in 100..=109 {
-            for selection in [&top] {
-                let index = query(source, selection, hour, true, true, Factories, true);
-                assert!(!index.is_null(), "index at {hour}");
-                let order: Vec<_> = index["data"]["series"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|row| row["tag"].clone())
-                    .collect();
-                replies.push(json!([
-                    hour,
-                    order,
-                    index["maxima"],
-                    at(&index["data"], hour)
-                ]));
-            }
+            let index = query(source, &top, hour, true, true, Factories, true);
+            assert!(!index.is_null(), "index at {hour}");
+            let order: Vec<_> = index["data"]["series"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["tag"].clone())
+                .collect();
+            replies.push(json!([
+                hour,
+                order,
+                index["maxima"],
+                at(&index["data"], hour)
+            ]));
             let page = query(source, &pick, hour, false, false, Factories, true);
             assert!(!page.is_null(), "page at {hour}");
             replies.push(json!([hour, at(&page["data"], hour)]));

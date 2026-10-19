@@ -9,10 +9,6 @@ license.workspace = true
 [lib]
 doctest = false
 
-[features]
-# Tests that take more than about two seconds; see AGENTS.md.
-slow-tests = []
-
 [dependencies]
 replay.workspace = true
 engine-native.workspace = true

@@ -1421,10 +1421,6 @@ fn casualty_titles_preserve_empty_and_key_equal_localisations() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn changing_selections_reuses_one_branch_scan_with_content_loaded() {
     let source = opened(research_replay((0..35).map(scale_frame).collect()));
     let (context, _content_folder) = loaded_content(&source);

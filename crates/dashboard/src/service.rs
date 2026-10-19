@@ -45,13 +45,16 @@ pub fn room_for_background(free: u64, total: u64) -> bool {
 }
 
 #[cfg(test)]
+type ServiceHook = Box<dyn FnOnce(&Service)>;
+
+#[cfg(test)]
 thread_local! {
     /// The volume measurement tests choose for the calling thread; unchosen,
     /// the volume has room, so tests never depend on the machine's free space.
     static TEST_ROOM: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
     /// Run by the library scan right after it orders retained work, so tests
     /// can change what the user holds before the admissions.
-    static TEST_AFTER_PARTITION: std::cell::RefCell<Option<Box<dyn FnOnce(&Service)>>> =
+    static TEST_AFTER_PARTITION: std::cell::RefCell<Option<ServiceHook>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -157,6 +160,9 @@ type VisualCatalogue = (
     Vec<installed_content_core::content::visual::InstalledMod>,
 );
 
+#[cfg(test)]
+type RefreshHook = Box<dyn FnOnce(&Inner) + Send>;
+
 struct Inner {
     lease_namespace: uuid::Uuid,
     map_settings: Mutex<map_settings::Store>,
@@ -185,7 +191,7 @@ struct Inner {
     test_revisions_locked: std::sync::atomic::AtomicU64,
     /// Run by a refresh between its store check and its admission.
     #[cfg(test)]
-    test_refresh_checked: Mutex<Option<Box<dyn FnOnce(&Inner) + Send>>>,
+    test_refresh_checked: Mutex<Option<RefreshHook>>,
     /// Refreshes that reached their admission decision.
     #[cfg(test)]
     test_refreshes: std::sync::atomic::AtomicU64,

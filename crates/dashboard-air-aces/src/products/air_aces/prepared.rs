@@ -946,16 +946,11 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "slow-tests")]
     fn aces_unread_hours_do_not_walk_5000_country_keys_after_invalidation() {
         intervening_country_identity(5000);
     }
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "5,000-country observer work and reply parity"
-    )]
     fn aces_shared_driver_equal_reads_defer_roster_and_portrait_dates() {
         use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
         let measured = observer_tests::scaled_work(8, |hours| {
@@ -1438,10 +1433,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn prepared_ace_portrait_operands_grow_with_changes_and_not_reads() {
         let fixture = Fixture::new();
         let mut frame = super::super::tests::frame(0, vec![super::super::tests::ace(1, true)]);

@@ -335,7 +335,7 @@ fn families_reading_together_commit_resume_reload_and_append_as_each_reading_alo
             run_measured(source, None, &flag, false, Duration::ZERO, |_| {}).unwrap();
         }
     };
-    let modes: [(&str, &dyn Fn(&Source), bool); 4] = [
+    let modes: [PrepareReloadMode; 4] = [
         ("run", &plain, false),
         ("measured", &measured, false),
         ("measured, reloaded", &measured, true),
@@ -562,8 +562,7 @@ fn shared_reads_hold_to_their_budget_and_are_timed_apart() {
         blocks,
         "shared reads, including those deposited by the pre-pass"
     );
-    for row in ["occupation.read"] {
-        assert_eq!(rows[row].calls, blocks, "{row}");
-    }
+    let row = "occupation.read";
+    assert_eq!(rows[row].calls, blocks, "{row}");
     clear(source);
 }

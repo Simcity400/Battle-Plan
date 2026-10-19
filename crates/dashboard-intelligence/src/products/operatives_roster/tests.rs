@@ -1146,10 +1146,6 @@ fn operatives_roster_five_thousand_countries_have_sparse_complete_histories_and_
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn operatives_roster_cross_block_content_artwork_is_interned_and_equal_daily_reads_merge() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");

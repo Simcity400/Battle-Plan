@@ -4,4 +4,4 @@ Land and naval combat windows, retained result windows, bindings, calculations a
 
 Native GUI layout, flags, textures, text, visibility and engagement history come from `viewer-foundation`. Combat refresh keeps its demand gates, retained naval contents, list membership order and presentation clocks. Source details are in [the module guide](src/README.md).
 
-`slow-tests` enables the existing long-running cases. `test-support` exposes existing binding and GUI contracts for the viewer host's composition tests; shared synthetic inputs come from foundation's opt-in test support.
+`test-support` exposes existing binding and GUI contracts for the viewer host's composition tests; shared synthetic inputs come from foundation's opt-in test support.

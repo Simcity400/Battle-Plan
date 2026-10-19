@@ -1411,10 +1411,6 @@ fn land_battles_busy_block_sends_changed_losses_far_below_their_full_reads() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_land_matches_oracle_across_commits_resume_append_and_large_census() {
     use dashboard_base::prepared::series::{self, tests::Fixture};
     let flag = AtomicBool::new(false);

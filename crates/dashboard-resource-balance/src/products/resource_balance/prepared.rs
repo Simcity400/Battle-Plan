@@ -1145,7 +1145,6 @@ fn read_pages(
 mod tests {
     use super::*;
     use dashboard_core::test_fixtures::{CAMPAIGN, records, resource_frame};
-    #[cfg(feature = "slow-tests")]
     use replay_data::{
         rows::CountryLinkRow, rows::CountryResourceRow, rows::CountryRow, rows::TableRows,
     };
@@ -1805,7 +1804,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "slow-tests")]
     fn resource_hour_changing_one_of_5000_countries_observes_only_that_country() {
         assert_rows_observe_only_changed_countries(5000);
     }
@@ -2123,7 +2121,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "slow-tests")]
     fn resource_preparation_keeps_5000_countries_and_bounded_continuation() {
         let mut frame = resource_frame(100, 0, 9001, &[]);
         *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
@@ -2177,7 +2174,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "slow-tests")]
     fn resource_sampler_and_observer_agree_on_every_native_field_for_5000_countries() {
         let mut frame = resource_frame(100, 0, 9001, &[]);
         *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(

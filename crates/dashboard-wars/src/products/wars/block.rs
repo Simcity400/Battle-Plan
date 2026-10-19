@@ -634,7 +634,7 @@ fn observe_block(
                 }
             }
         },
-        || check(),
+        check,
     );
     if let Some(error) = failure {
         return Err(error);
@@ -649,7 +649,7 @@ enum Start {
     /// New, with the observer.
     New,
     /// As the last commit published it.
-    Saved(Saved),
+    Saved(Box<Saved>),
     /// Not published: the observer was restored without a published walk.
     Unpublished,
 }
@@ -679,9 +679,8 @@ impl OwnBranch {
         };
         let start = match &restored {
             None => Start::New,
-            Some(_) => {
-                Saved::read(store, key, saved, branch)?.map_or(Start::Unpublished, Start::Saved)
-            }
+            Some(_) => Saved::read(store, key, saved, branch)?
+                .map_or(Start::Unpublished, |saved| Start::Saved(Box::new(saved))),
         };
         Ok(Self {
             observer: Box::new(restored.unwrap_or_default()),
@@ -724,7 +723,7 @@ impl OwnBranch {
         self.walk = match start {
             Start::New => Some(Walk::new(index.branch, first, cat)),
             Start::Saved(saved) if saved.first() == first => {
-                Some(Walk::load(saved, cat, index.branch)?)
+                Some(Walk::load(*saved, cat, index.branch)?)
             }
             Start::Saved(_) | Start::Unpublished => None,
         };

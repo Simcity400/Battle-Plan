@@ -1613,7 +1613,7 @@ pub(crate) struct Scan {
     #[serde(skip)]
     battle_indices: HashMap<(u64, u8, u64), usize>,
     #[serde(serialize_with = "dashboard_core::map_pairs::ordered_map")]
-    battle_hours: HashMap<u64, Vec<(i32, i32, bool, u8, u64, u8)>>,
+    battle_hours: BattleHours,
     #[serde(skip)]
     outcomes: BattleOutcomes,
     #[serde(skip)]
@@ -1672,12 +1672,12 @@ fn same_commanders<R>(
 
 /// The battle tables an hour reads (complete and read at the hour): what the
 /// battle step joins and what each leader's partial coverage depends on.
-pub(crate) fn battle_tables<'f>(
+pub(crate) fn battle_tables(
     format: FormatVersion,
-    decoded: &'f DecodedFrame,
+    decoded: &DecodedFrame,
 ) -> (
-    Option<&'f [LandCombatDetailsRow]>,
-    Option<&'f [NavalCombatDetailsRow]>,
+    Option<&[LandCombatDetailsRow]>,
+    Option<&[NavalCombatDetailsRow]>,
 ) {
     let hour = decoded.hour;
     let land = decoded
@@ -3675,6 +3675,7 @@ fn formation_name<'n>(
 }
 
 type BattleOutcomes = BTreeMap<(u8, u64), Option<(i32, i32, u8)>>;
+type BattleHours = HashMap<u64, Vec<(i32, i32, bool, u8, u64, u8)>>;
 
 /// An hour's combat handles, sorted once for its lookups.
 fn sorted_combats(combats: impl Iterator<Item = u64>) -> Vec<u64> {
@@ -3779,7 +3780,7 @@ fn record_battles(
     leaders: &[LeaderState],
     leader_indices: &HashMap<u64, usize>,
     naval_sources: &BTreeMap<u64, NavalSource>,
-    battle_hours: &mut HashMap<u64, Vec<(i32, i32, bool, u8, u64, u8)>>,
+    battle_hours: &mut BattleHours,
     battle_indices: &mut HashMap<(u64, u8, u64), usize>,
     previous_combats: &mut [Option<(i32, Vec<u64>)>; 2],
     pending_bytes: &mut usize,

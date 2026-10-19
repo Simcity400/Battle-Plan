@@ -228,8 +228,8 @@ The [dashboard architecture](docs/dashboard.md) explains how recordings become d
 
 ## Recording and dependency checks
 
-See [Rust builds](docs/builds.md) for fast default builds, the optimized
-`interactive` profile and the recording compilation layers. Check the workspace
+See [Rust builds](docs/builds.md) for the single optimized development build,
+running the tests and the recording compilation layers. Check the workspace
 boundaries after dependency changes with `python tools/check-build-dependencies.py`.
 
 Shared recordings are untrusted input. The [replay reader](crates/replay/README.md)

@@ -931,6 +931,8 @@ mod tests {
 
     #[test]
     fn research_folders_keep_file_order_triggers_and_refuse_repeats_by_name() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (folders, notes) = parse_folders(
             b"technology_categories = { infantry_weapons }\ntechnology_folders = { infantry_folder = { ledger = army } armour_folder = { ledger = army available = { always = no } } nsb_armour_folder = { available = { always = yes } } infantry_folder = { ledger = navy } }",
             &KeyNames::default(),

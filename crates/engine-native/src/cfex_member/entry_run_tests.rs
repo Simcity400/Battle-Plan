@@ -408,10 +408,6 @@ fn damage_entry(
 
 /// Naval hits: pointer slots, every record span, inline and heap names.
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn naval_hit_runs_keep_the_parent_walks_result_under_every_lasting_fault() {
     check(
         &naval_world(),
@@ -448,10 +444,6 @@ fn damage_runs_keep_the_parent_walks_result_under_every_lasting_fault() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn naval_hit_runs_are_never_harsher_under_faults_that_clear() {
     check_once(
         &naval_world(),

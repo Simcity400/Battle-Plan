@@ -1723,10 +1723,6 @@ mod tests {
     /// committed bytes, the growing arena's length (inline or heap-held group
     /// keys and stored names, over more than one copy chunk) and demand.
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn a_carried_operative_stores_exactly_what_a_fresh_read_stores() {
         use crate::cname_group_member::{FLAG_B, OVERRIDE_NAME};
         let mut memory = world();

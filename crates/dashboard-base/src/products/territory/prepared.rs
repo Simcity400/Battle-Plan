@@ -1718,7 +1718,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "slow-tests")]
     fn territory_sampler_and_observer_agree_on_every_key_at_five_thousand_countries() {
         let flag = AtomicBool::new(false);
         let frame = super::super::tests::frame(100, 5_000, 10_000);
@@ -2099,13 +2098,13 @@ mod tests {
                 .write_at("territory-continuation", 0, saved.as_slice())
                 .unwrap();
             writer.commit().unwrap();
-            prepared = serde_json::from_reader(
+            prepared = serde_json::from_reader(std::io::BufReader::new(
                 fixture
                     .store
                     .read(&fixture.key, "territory-continuation", 0)
                     .unwrap()
                     .unwrap(),
-            )
+            ))
             .unwrap();
             let (tags, _) = series::read_catalogue::<TerritoryReply>(
                 &fixture.store,
@@ -2288,10 +2287,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn territory_prepared_values_keep_every_one_of_five_thousand_countries() {
         let fixture = Fixture::new();
         let cancelled = AtomicBool::new(false);
@@ -2642,7 +2637,6 @@ mod phase_b_tests {
     }
 
     #[test]
-    #[cfg(feature = "slow-tests")]
     fn territory_shared_driver_carries_all_5000_countries_then_publishes_exactly() {
         let format = replay_data::format::FormatVersion::CURRENT;
         let flag = AtomicBool::new(false);

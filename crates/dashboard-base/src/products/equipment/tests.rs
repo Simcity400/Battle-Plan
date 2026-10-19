@@ -851,7 +851,6 @@ fn catalogue_changes_match_whole_reads_across_snapshots_resume_append_gaps_and_r
     catalogue_changes_carry_unchanged_operands(8);
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn catalogue_unchanged_operands_do_not_walk_5000_countries_or_variants() {
     catalogue_changes_carry_unchanged_operands(5000);
@@ -1101,7 +1100,6 @@ fn variant_invalidations_accumulate_through_skipped_reads_and_snapshots() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn two_changed_operands_visit_only_their_variants_at_five_thousand_countries() {
     pending_variant_operands(5000);
 }

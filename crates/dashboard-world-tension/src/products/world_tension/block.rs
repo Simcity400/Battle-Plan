@@ -91,6 +91,7 @@ fn start(format: FormatVersion) -> Box<dyn Extract> {
 }
 
 /// One hour of a block's facts, in hour order.
+#[allow(clippy::large_enum_variant)] // Each observed hour owns its frame.
 enum Hour {
     /// An hour the observer observes, with its frame and change facts.
     Observed {

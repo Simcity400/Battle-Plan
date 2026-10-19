@@ -8,4 +8,4 @@ Shared input, action, status, railway-gun and partial naval-count folds, stack a
 
 The counter-type tint memo includes `WarRelations`, so foreign-country friendship and hostility queries read the recorded war census. An undeclared selected type sprite (including the question mark) is withheld and counted by name: the game keeps the pooled counter's previous drawable, which the recording does not hold.
 
-Tests live with their modules. `slow-tests` preserves existing gates; `test-support` enables shared synthetic foundation inputs for consumers. Follow the workspace [working rules](../../AGENTS.md).
+Tests live with their modules. `test-support` enables shared synthetic foundation inputs for consumers. Follow the workspace [working rules](../../AGENTS.md).

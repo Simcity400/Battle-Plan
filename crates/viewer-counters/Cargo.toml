@@ -10,7 +10,6 @@ license.workspace = true
 doctest = false
 
 [features]
-slow-tests = ["viewer-foundation/slow-tests"]
 test-support = ["viewer-foundation/test-support"]
 
 [dependencies]

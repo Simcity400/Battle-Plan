@@ -583,6 +583,7 @@ pub struct Content {
 }
 
 impl Content {
+    #[allow(clippy::too_many_arguments)] // One argument per content source, read separately by the caller.
     pub fn new(
         defines: &Defines,
         ideologies: Arc<installed_content_core::ideologies::Ideologies>,

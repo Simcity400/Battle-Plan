@@ -384,7 +384,6 @@ fn supply_progressive_sampler_matches_observer_every_key() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn supply_progressive_sampler_matches_observer_every_key_at_5000_countries() {
     check_supply_progressive_sampler_matches_observer(5000);
 }
@@ -722,7 +721,6 @@ fn supply_bucket_deltas_match_full_recounts_through_snapshots_resume_gaps_and_re
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn supply_bucket_delta_work_is_one_division_among_5000() {
     assert_supply_counts_follow_changed_divisions(5000);
 }

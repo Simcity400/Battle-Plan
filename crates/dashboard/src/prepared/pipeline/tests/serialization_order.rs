@@ -286,10 +286,6 @@ fn inspect_tree(root: &Path, failures: &mut Vec<String>) {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn serialized_dashboard_hash_fields_are_ordered() {
     let mut failures = Vec::new();
     // Every dashboard crate (core, text, base and the product crates) persists the same way, so

@@ -450,7 +450,6 @@ fn block_change_facts_alone_equal_the_facts_preparation_observes() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn shared_section_consumers_decode_once_and_publish_the_uncached_hourly_bytes() {
     use replay::container::test_work::table_decodes;
     let replay = crate::products::army_size::prepared::block::test_fixtures::recording();

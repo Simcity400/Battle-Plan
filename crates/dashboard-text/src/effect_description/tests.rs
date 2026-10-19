@@ -10,6 +10,8 @@ use std::{collections::BTreeSet, sync::Arc};
 
 #[test]
 fn effect_key_names_share_the_complete_cached_registry_after_a_source_disappears() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/test.lua",

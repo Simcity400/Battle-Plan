@@ -233,10 +233,6 @@ fn prepared_projects_filter_native_holders_before_creating_episode_ids() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_projects_keep_five_thousand_countries_and_continuation_does_not_grow_with_hours() {
     let flag = AtomicBool::new(false);
     let context = LoadContext { content: None };
@@ -1445,10 +1441,6 @@ fn completion_stream_exact_upgrade_with_missing_native_hour_withdraws_bounded_pr
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: 5,000 completion presentations"
-)]
 fn completion_stream_keeps_five_thousand_countries_and_reads_each_native_block_once() {
     let flag = AtomicBool::new(false);
     let context = LoadContext { content: None };
@@ -2427,10 +2419,6 @@ fn project_lexical_warning_revisions_match_oracle_after_two_commits_resume_and_a
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: 720 accepted frames and 5,000 countries"
-)]
 fn project_unrelated_lexical_changes_publish_one_country_payload_over_720_hours_and_report_size() {
     let initial = frame(100, true, 5000);
     let source = source(std::slice::from_ref(&initial));

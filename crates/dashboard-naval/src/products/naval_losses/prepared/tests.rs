@@ -20,10 +20,6 @@ fn sample(reply: &NavalLossesReply, hour: i32) -> BTreeMap<String, (Option<i64>,
         .collect()
 }
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_naval_losses_match_oracle_after_two_commits_resume_append_bridge_and_5000_countries() {
     let flag = AtomicBool::new(false);
     let first = month_start(1940 * 12).unwrap();

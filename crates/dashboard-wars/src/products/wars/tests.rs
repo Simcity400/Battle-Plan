@@ -1433,10 +1433,6 @@ fn cross_block_branch_reuses_four_overlapping_groups_when_losses_change_hourly()
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn branch_scan_keeps_more_than_half_a_million_runs_when_the_reply_fits() {
     let hours = 125_001;
     let replay = overlapping_branch(hours, false);
@@ -1463,10 +1459,6 @@ fn branch_scan_keeps_more_than_half_a_million_runs_when_the_reply_fits() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn branch_scan_past_the_former_timeline_ceiling_refuses_only_the_reply_bytes() {
     // Four fresh groups each hour exceed the old 100,000-timeline ceiling.
     let replay = overlapping_branch(25_001, true);
@@ -1871,10 +1863,6 @@ fn set_recorded_hour(frame: &mut DecodedFrame, hour: i32) {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_wars_native_projection_keeps_prefix_names_memberships_and_rejects_replacement_holders()
 {
     use dashboard_base::prepared::series;
@@ -2184,10 +2172,6 @@ fn prepared_wars_sparse_casualty_reads_keep_canonical_bounds_and_gaps() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_wars_changes_keep_unchanged_work_flat_and_one_relation_change_bounded() {
     use dashboard_base::prepared::{
         frame_changes::FrameChangeTracker,
@@ -2672,7 +2656,8 @@ fn prepared_wars_resume_points_match_the_whole_walk_and_bound_decoded_inputs() {
             BTreeSet::from([120, 175, 230, last]),
             all.clone(),
         ];
-        let views: [(Option<&str>, Option<&HashSet<(u32, u32)>>); 3] = [
+        type View<'a> = (Option<&'a str>, Option<&'a HashSet<(u32, u32)>>);
+        let views: [View; 3] = [
             (None, None),
             (Some("ONE"), None),
             (Some("ONE"), Some(&selected)),
@@ -2949,10 +2934,10 @@ fn resumable_walks_keep_each_open_wars_continuation_and_not_its_history() {
     }
     for (id, _) in &walk.open {
         let (full, kept) = (&walk.reply.wars[*id], &copy.reply.wars[*id]);
-        assert_eq!(json(&full.casualties.last()), json(&kept.casualties.last()));
+        assert_eq!(json(full.casualties.last()), json(kept.casualties.last()));
         assert_eq!(
-            json(&full.observations.last()),
-            json(&kept.observations.last())
+            json(full.observations.last()),
+            json(kept.observations.last())
         );
         assert_eq!(
             (full.first_hour, full.last_hour),

@@ -659,7 +659,7 @@ pub fn observe_after(
                 }
             }
         },
-        || check(),
+        check,
     );
     if let Some(error) = failure {
         return Err(error);

@@ -504,7 +504,7 @@ impl Content {
             };
             let color = if maximum > 0 {
                 let level = levels.get(&state.id).copied().unwrap_or(0);
-                let t = (level as f32 / maximum as f32).max(0.0).min(1.0);
+                let t = (level as f32 / maximum as f32).clamp(0.0, 1.0);
                 std::array::from_fn(|i| (to[i] - from[i]) * t + from[i])
             } else {
                 NO_MAXIMUM

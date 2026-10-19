@@ -1729,7 +1729,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "slow-tests")]
     fn country_history_shared_driver_keeps_all_5000_native_owned_counters_without_hourly_work() {
         use crate::prepared::{
             frame_changes::FrameChangeTracker,

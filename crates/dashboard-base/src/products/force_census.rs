@@ -233,11 +233,7 @@ mod tests {
 
     #[test]
     fn balance_deltas_skip_country_key_walks_and_other_boundaries_keep_the_join() {
-        let count = if cfg!(feature = "slow-tests") {
-            5000
-        } else {
-            128
-        };
+        let count = 5000;
         let mut input = scale_frame(1, 100, count);
         let mut encoder = FrameEncoder::default();
         let mut decoder = FrameDecoder::default();

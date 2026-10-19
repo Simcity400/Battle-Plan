@@ -535,10 +535,6 @@ fn a_recorded_country_in_two_factions_leaves_both_rosters_incomplete() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn an_empty_recorded_faction_needs_no_country_links_but_an_unread_roster_is_a_gap() {
     let mut frames = vec![recorded(99, &[])];
     for hour in 100..=102 {
@@ -1450,10 +1446,6 @@ fn world_share_proofs_reject_unknown_and_overlapping_fixed_rosters() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn chosen_faction_and_ranked_factions_use_identical_empty_totals_and_lifespans() {
     let cancelled = AtomicBool::new(false);
     let replay = Arc::new(
@@ -1523,10 +1515,6 @@ fn chosen_faction_and_ranked_factions_use_identical_empty_totals_and_lifespans()
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn anyone_ever_refuses_unread_catalogues_before_or_after_the_visible_lifespan() {
     for unread_hour in [100, 102] {
         let mut frames: Vec<_> = (100..=102)
@@ -1600,10 +1588,6 @@ fn rotating_five_thousand_ever_members_share_one_effective_roster() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn global_proof_spans_use_only_the_exact_shared_reply_budget() {
     let mut reply = FactionTotalsReply {
         membership_mode: FactionMembership::Hour,
@@ -1678,10 +1662,6 @@ fn requests_above_thirty_factions_return_all_five_thousand() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn faction_reply_refuses_only_the_shared_serialized_transport_budget() {
     let name = "\"".repeat(5_000_000);
     let reply = empty_faction_reply(&name, 1).unwrap();
@@ -1827,10 +1807,6 @@ fn dissolved_end_members_still_refuse_an_unread_branch_end() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn faction_sweeps_keep_effective_rosters_and_totals_past_the_former_run_ceiling() {
     let mut history = History {
         last_hour: 200,

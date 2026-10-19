@@ -350,10 +350,6 @@ fn compare(cpu: &LayerPlane, gpu: &LayerPlane, label: &str) {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn political_gpu_fallback_exactness() {
     let (width, height) = (258, 130);
     let Some(mut harness) = Harness::fallback(width, height) else {

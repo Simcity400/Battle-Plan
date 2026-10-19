@@ -332,7 +332,7 @@ impl Scanned {
         if !self.certifies_join(frame, changes, day_due) {
             return false;
         }
-        if !self.clock.next.is_some_and(|next| next <= frame.hour) {
+        if self.clock.next.is_none_or(|next| next > frame.hour) {
             return true;
         }
         if let Some(held) = &mut self.clock.window_deadlines
@@ -340,7 +340,7 @@ impl Scanned {
             && held.through.checked_add(1) == Some(frame.hour)
         {
             held.through = frame.hour;
-            return !held.next.is_some_and(|next| next <= frame.hour);
+            return held.next.is_none_or(|next| next > frame.hour);
         }
         let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:window_capture_deadlines");
         let next = self
@@ -363,7 +363,7 @@ impl Scanned {
             through: frame.hour,
             next,
         });
-        !next.is_some_and(|next| next <= frame.hour)
+        next.is_none_or(|next| next > frame.hour)
     }
 
     pub(super) fn inputs_window(
@@ -806,7 +806,6 @@ mod deadline_tests {
         window_deadlines_follow_their_span(8);
     }
 
-    #[cfg(feature = "slow-tests")]
     #[test]
     fn sliding_window_certificates_do_not_revisit_5000_countries_each_hour() {
         window_deadlines_follow_their_span(5000);
@@ -837,7 +836,6 @@ mod deadline_tests {
         advancing_deadlines_follow_their_span(8);
     }
 
-    #[cfg(feature = "slow-tests")]
     #[test]
     fn capture_deadlines_do_not_revisit_5000_captures_each_hour_of_a_span() {
         advancing_deadlines_follow_their_span(5000);

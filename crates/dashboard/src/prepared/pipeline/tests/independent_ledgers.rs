@@ -542,7 +542,7 @@ fn economy_ledgers_prepared_on_their_own_commit_resume_reload_and_append_as_hour
             run_measured(source, None, &flag, false, Duration::ZERO, |_| {}).unwrap();
         }
     };
-    let modes: [(&str, &dyn Fn(&Source), bool); 4] = [
+    let modes: [PrepareReloadMode; 4] = [
         ("run", &plain, false),
         ("measured", &measured, false),
         ("measured, reloaded", &measured, true),
@@ -1381,7 +1381,7 @@ fn fuel_read_by_its_changes_settles_its_days_inside_quiet_hours_as_hourly_prepar
     let replay = fuel_scenario();
     let total = hours(&replay);
     let mut fixture = Fixture::new(&replay);
-    let modes: [(&str, &dyn Fn(&Source), bool); 3] = [
+    let modes: [PrepareReloadMode; 3] = [
         ("run", &plain, false),
         ("measured", &measured, false),
         ("measured, reloaded", &measured, true),
@@ -1447,10 +1447,6 @@ fn fuel_read_by_its_changes_settles_its_days_inside_quiet_hours_as_hourly_prepar
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: full preparation, resume and append"
-)]
 fn experience_gain_runs_publish_and_save_as_hourly_preparation_across_quiet_hours_and_append() {
     let frames = |from: i32, to: i32| -> Vec<DecodedFrame> {
         (from..to)

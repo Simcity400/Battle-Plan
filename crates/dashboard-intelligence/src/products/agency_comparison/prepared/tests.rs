@@ -159,7 +159,6 @@ fn prepared_agencies_match_two_commits_resume_append_gaps_and_identity_changes()
     }
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn prepared_agencies_keep_five_thousand_countries_and_existing_top_projection() {
     let fixture = Fixture::new();
@@ -203,7 +202,6 @@ fn prepared_agencies_keep_five_thousand_countries_and_existing_top_projection() 
     );
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn prepared_agency_checkpoint_retains_changes_without_daily_dates() {
     let fixture = Fixture::new();
@@ -337,7 +335,6 @@ fn intel_shared_driver_agencies_one_row_ignores_ten_times_closed_holders() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn first_view_keeps_all_five_thousand_agencies_and_matches_hourly_values() {
     let source = source(frame(0, 5_000));
     let context = LoadContext { content: None };

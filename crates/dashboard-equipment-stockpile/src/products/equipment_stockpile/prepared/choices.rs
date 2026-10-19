@@ -952,7 +952,7 @@ impl Choices {
             stock_known,
             balance_known,
             retained,
-            &read,
+            read,
         )?;
         // The one-pass totals are each group's own evaluation.
         #[cfg(test)]

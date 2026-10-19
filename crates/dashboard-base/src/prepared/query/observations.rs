@@ -789,7 +789,8 @@ mod tests {
         let (source, root) = file_source(recording);
         let content = root.join("synthetic-content.txt");
         std::fs::write(&content, "one").unwrap();
-        let first = store::SourceKey::capture(source.path(), &[content.clone()]).unwrap();
+        let first =
+            store::SourceKey::capture(source.path(), std::slice::from_ref(&content)).unwrap();
         bind(&source, &first);
         let flag = AtomicBool::new(false);
         let read = || {

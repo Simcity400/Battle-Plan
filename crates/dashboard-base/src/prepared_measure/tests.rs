@@ -432,7 +432,6 @@ fn measure_shared_driver_keeps_unchanged_frames_and_one_change_flat_over_tenfold
     measure_scaled_work(3);
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn measure_shared_driver_keeps_5000_country_work_flat_over_tenfold_hours_and_history() {
     measure_scaled_work(5000);

@@ -949,7 +949,7 @@ fn scan_hour_selected(
     let lines_complete = decoded.complete::<tables::ProductionLines>().is_ok();
     let lines_read = read(TableId::ProductionLines);
     let output_complete = decoded.complete::<tables::ProductionLineOutput>().is_ok();
-    let output_due = read(TableId::ProductionLineOutput).then(|| match country {
+    let output_due = read(TableId::ProductionLineOutput).then_some(match country {
         Some(Country::Absent) => true,
         Some(Country::Found(..)) => lines_read && lines_complete && output_complete,
         Some(Country::Unresolved) | None => false,
@@ -2602,6 +2602,13 @@ fn scanned_lines(
     Ok((catalogue, scanned))
 }
 
+/// A scan for one view: its catalogue, its lines and the hours it does not answer exactly.
+type ScannedView = (
+    Option<Arc<Catalogue>>,
+    Arc<ScannedLines>,
+    Vec<super::country_groups::HourSpan>,
+);
+
 /// As [`scanned_lines`], for `view`: with the hours the scan does not answer
 /// exactly (none for a whole scan).
 fn scanned_view(
@@ -2612,11 +2619,7 @@ fn scanned_view(
     cancelled: &AtomicBool,
     warnings: &mut Vec<String>,
     view: View,
-) -> io::Result<(
-    Option<Arc<Catalogue>>,
-    Arc<ScannedLines>,
-    Vec<super::country_groups::HourSpan>,
-)> {
+) -> io::Result<ScannedView> {
     let state = source.state::<Cache>();
     let (catalogue, icons) = scan_content(source, context, warnings);
     let key: ScanKey = (params.branch(), params.tag.clone(), icons.clone(), holder);

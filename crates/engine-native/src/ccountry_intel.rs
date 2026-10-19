@@ -773,10 +773,6 @@ mod tests {
     /// nonzero records and each owner's last record are kept, and a short
     /// output reports the exact sparse demand rather than the dense count.
     #[test]
-    #[cfg_attr(
-        not(feature = "slow-tests"),
-        ignore = "slow: runs in the full suite (--features slow-tests)"
-    )]
     fn five_thousand_owners_keep_only_nonzero_and_last_records() {
         const N: usize = 5000;
         let countries = 0x3000;

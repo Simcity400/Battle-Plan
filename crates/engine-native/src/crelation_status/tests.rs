@@ -3225,10 +3225,6 @@ impl<M: Memory> Memory for Counting<'_, M> {
 /// mean and worst observed hour (guarded calls, bytes, cache lines). Run
 /// with `--release --nocapture` to measure.
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn sliced_observed_days_equal_the_dense_walk_up_to_five_thousand_countries() {
     for countries in [440, 1_500, 5_000] {
         let world = world::World::new(countries);
@@ -4445,10 +4441,6 @@ fn star_status(target: usize) -> usize {
 /// The gathered candidates give the serial walk's rows and outcome on
 /// healthy memory, up to a hub with 5,000 partners.
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn gathered_relation_candidates_equal_the_serial_walk_at_five_thousand_partners() {
     for partners in [1_500, 5_000] {
         let world = star(partners);

@@ -442,6 +442,7 @@ fn start(_: FormatVersion) -> Box<dyn Extract> {
 }
 
 /// One run of a block's facts, in hour order.
+#[allow(clippy::large_enum_variant)] // Each observed hour owns its frame.
 enum Hour {
     /// An hour observed on its own frame, with its change facts.
     Kept {
@@ -830,7 +831,7 @@ impl State {
                     }
                 }
             },
-            || check(),
+            check,
         );
         if let Some(error) = failure {
             return Err(error);

@@ -591,7 +591,7 @@ fn state_areas_name_each_states_provinces_and_go_close_in() {
     provinces[0].state = 7;
     provinces[1].state = 8;
     frame.tables[TableId::Provinces.index()] =
-        TableView::Complete(TableRows::Provinces(provinces.into())).into();
+        TableView::Complete(TableRows::Provinces(provinces)).into();
     frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
         [7, 8, 9]
             .map(|id| StateRow {

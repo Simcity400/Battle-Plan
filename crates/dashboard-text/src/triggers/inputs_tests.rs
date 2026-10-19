@@ -920,7 +920,7 @@ pub(crate) fn check_mode_reports_each_wrong_declaration(
         let wanted = key.clone();
         let wrong = declaring(
             move |declared| (*declared == wanted).then(|| Some(Vec::new())),
-            || record(),
+            record,
         );
         let right = record();
         let changes = Differing {

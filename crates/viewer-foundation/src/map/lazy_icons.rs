@@ -756,7 +756,7 @@ pub fn flag_set(
     let recorded = layers.without_overlays();
     let read: FlagReader = Arc::new(move |path: &str| {
         let decoded = |stack: &ResolvedLayers| flags::decode(&stack.read(path).ok()?, cell);
-        let mut image = match decoded(&*layers) {
+        let mut image = match decoded(&layers) {
             Some(image) => image,
             None => {
                 let image = decoded(recorded.as_ref()?)?;

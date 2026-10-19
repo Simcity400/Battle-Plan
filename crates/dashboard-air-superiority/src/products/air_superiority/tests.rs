@@ -2348,10 +2348,6 @@ fn air_superiority_new_viewpoints_share_auxiliary_reads_side_catalogue_and_histo
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn air_superiority_within_day_appends_replace_the_prior_partial_snapshot() {
     let cancelled = AtomicBool::new(false);
     let first = recording(vec![air(0, 1)]);

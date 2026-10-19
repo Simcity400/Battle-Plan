@@ -1176,7 +1176,7 @@ static HOLDER_FIELDS: LazyLock<u64> = LazyLock::new(|| {
 });
 
 /// One owner's rows of a table keyed country first.
-fn owned<'a, T>(rows: &'a [T], owner: u32, country: impl Fn(&T) -> u32) -> &'a [T] {
+fn owned<T>(rows: &[T], owner: u32, country: impl Fn(&T) -> u32) -> &[T] {
     let first = rows.partition_point(|row| country(row) < owner);
     let count = rows[first..].partition_point(|row| country(row) == owner);
     &rows[first..first + count]
@@ -1351,11 +1351,14 @@ pub(crate) struct IndexChanges {
     countries: Option<(Arc<HashMap<u32, u32>>, CountryRows)>,
     owners: Option<BTreeMap<u32, Vec<u32>>>,
     dates: Option<BTreeMap<u32, Vec<(u32, i32)>>>,
-    slot_dates: Vec<(u32, Option<Vec<(u32, i32)>>)>,
+    slot_dates: SlotDates,
 }
 
 /// Each canonical slot's holders: their Countries row, id and tag.
 type CountryRows = BTreeMap<u32, Vec<(usize, u32, Vec<u8>)>>;
+
+/// The read hours of the slots whose hours changed, None for a slot with none.
+type SlotDates = Vec<(u32, Option<Vec<(u32, i32)>>)>;
 
 /// A scan's indexes of the frame it last refreshed from ([`Scan::refresh`]),
 /// apart from any country's state.
@@ -1904,7 +1907,7 @@ impl Scan {
                         .copied(),
                 );
                 self.input_dates = dates;
-                if let Some(recorded) = recorded.as_deref_mut() {
+                if let Some(recorded) = recorded {
                     recorded.dates = Some(self.input_dates.clone());
                     recorded.slot_dates.clear();
                 }

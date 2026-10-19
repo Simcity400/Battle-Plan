@@ -544,7 +544,7 @@ impl NavalBranch {
                         let changes = tracker.observe_updates(frame, raw, format);
                         step(frame, &changes, true)
                     },
-                    || check(),
+                    &mut *check,
                 )
             }
             Some(last) => {
@@ -571,7 +571,7 @@ impl NavalBranch {
                             }
                             step(frame, &changes, true)
                         },
-                        || check(),
+                        &mut *check,
                     ),
                     None => Ok(()),
                 };
@@ -618,7 +618,7 @@ impl NavalBranch {
                             let changes = tracker.observe_updates(frame, raw, format);
                             step(frame, &changes, false)
                         },
-                        || check(),
+                        check,
                     )
                 })
             }

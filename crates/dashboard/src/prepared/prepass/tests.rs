@@ -837,7 +837,6 @@ fn follow_releases_replaced_views_before_the_next_delta() {
     follow_copies(32);
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn follow_releases_replaced_views_with_5000_countries() {
     follow_copies(5000);
@@ -980,7 +979,6 @@ fn a_pool_lane_reads_by_its_runs_bound_reads_and_hands_the_readers_changed_table
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn leaders_fold_shared_variable_and_tag_visibility_without_decoding_on_the_family_thread() {
     use crate::products::unit_leaders::{self, Content, prepared::Prepared};
     use dashboard_base::prepared::series::tests::Fixture;

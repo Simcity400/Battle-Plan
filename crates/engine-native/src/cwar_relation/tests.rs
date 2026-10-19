@@ -2463,10 +2463,6 @@ fn owned_walk_at_census_scale_grows_past_former_budgets_and_stays_linear() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn fixed_cold_rescans_complete_above_the_former_country_budget() {
     const COUNTRIES: usize = 6_001;
     let census = war_census(COUNTRIES, COUNTRIES - 1, 0);

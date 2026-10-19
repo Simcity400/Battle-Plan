@@ -292,10 +292,6 @@ pub(super) fn content(root: &std::path::Path, project_name: &str) {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn scoped_world_variable_names_share_one_pass_and_failures_belong_only_to_the_requested_actor() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");

@@ -3,10 +3,6 @@ use super::*;
 use serde_json::{Value, json};
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "all default cold adapters perform independent store and sample reads"
-)]
 fn cold_default_requests_publish_empty_extents_and_pending_hours() {
     independent::with_test_hourly(|| {
         let replay = Replay::from_records(

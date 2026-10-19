@@ -338,10 +338,10 @@ impl Prepared {
                         return false;
                     }
                     if opened(after.segments, extracted.segments.len())
-                        && !carried
+                        && carried
                             .segments
                             .last()
-                            .is_some_and(|segment| segment.last_hour == hour)
+                            .is_none_or(|segment| segment.last_hour != hour)
                     {
                         return false;
                     }

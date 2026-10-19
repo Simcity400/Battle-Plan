@@ -1707,7 +1707,7 @@ pub(super) fn prepare(
                 });
                 // A family whose thread cannot start fails; the others go on.
                 if thread.is_err() {
-                    drop(Finished(&commits));
+                    drop(Finished(commits));
                 }
                 started.push(thread);
             }

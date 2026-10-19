@@ -82,7 +82,6 @@ fn land_shared_driver_unchanged_census_work_stays_flat_with_exact_counter_runs_a
 }
 
 #[test]
-#[cfg_attr(not(feature = "slow-tests"), ignore = "5,000 battles and countries")]
 fn land_shared_driver_5000_battles_keep_unchanged_work_flat() {
     let work = [
         unchanged_work(3, 4, false).unwrap(),
@@ -450,7 +449,6 @@ fn land_shared_driver_prepared_replies_match_oracle_after_skips_two_commits_resu
 }
 
 #[test]
-#[cfg_attr(not(feature = "slow-tests"), ignore = "5,000 battles and countries")]
 fn land_shared_driver_5000_battles_match_oracle_after_commits_resume_and_append() {
     publication_parity(5000);
 }

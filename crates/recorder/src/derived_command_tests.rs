@@ -1,5 +1,3 @@
-#![cfg(feature = "slow-tests")]
-
 use replay::container::Replay;
 use replay::{spool::ControlRecord, spool::Record};
 use replay_data::{day_night, day_night::Clock, rows::Recorded, rows::TableId};

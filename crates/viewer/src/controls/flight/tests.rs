@@ -145,7 +145,7 @@ fn the_pointer_moves_the_steering_point_by_its_motion_and_the_aircraft_follows()
         let lead = wrap(flight.aim[0] - flight.yaw) * f32::signum(pixels);
         // The aircraft turns towards it at most its fastest turn in the frame.
         assert!(
-            lead <= MAX_LEAD + 1e-4 && lead >= MAX_LEAD - TURN_RATE * STEP - 1e-4,
+            (MAX_LEAD - TURN_RATE * STEP - 1e-4..=MAX_LEAD + 1e-4).contains(&lead),
             "{pixels}: {lead}"
         );
         assert_eq!(flight.yaw.signum(), f32::signum(pixels), "{pixels}");
@@ -520,7 +520,7 @@ fn without_an_explode_state_or_content_contact_it_goes_at_once() {
     assert!(flight.sight(base(), &flat, &airframe).aircraft.is_none());
     // Without a model it meets the drawn surface itself and goes at once too.
     assert_eq!(Airframe::NONE.ground.offset, 0.0);
-    assert!(!Airframe::NONE.explodes);
+    const { assert!(!Airframe::NONE.explodes) };
 }
 
 #[test]

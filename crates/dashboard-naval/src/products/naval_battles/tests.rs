@@ -1320,10 +1320,6 @@ fn naval_battles_long_convoy_war_wire_sizes() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_naval_matches_oracle_across_commits_resume_append_and_large_census() {
     use dashboard_base::prepared::series::tests::Fixture;
     let flag = AtomicBool::new(false);

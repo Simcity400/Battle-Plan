@@ -100,10 +100,6 @@ fn packed_on(
 const WORKERS: [usize; 3] = [2, 3, 8];
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn five_thousand_countries_pack_to_the_sequential_bytes_on_any_worker_count() {
     let records = scaled_records(5_000, 3, 5);
     // A bound that splits every five-hour block by size too: its divisions

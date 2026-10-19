@@ -86,6 +86,9 @@ impl Context {
     }
 }
 
+/// Character script tokens to their ids with their countries' slots.
+type CharactersByToken = BTreeMap<String, Vec<(u32, Option<u32>)>>;
+
 /// The recorded facts scopes resolve through, read from one hour. Each map is
 /// built from the hour's tables when a query first needs it.
 #[derive(Clone, Debug, Default)]
@@ -110,7 +113,7 @@ pub struct RecordedScopes {
     /// Character script token, folded as the lexer folds a token (the
     /// lookup is by token ID), to its ids with their countries' slots
     /// (`Characters.name_token_id` through `LexicalTokens`).
-    characters: OnceLock<BTreeMap<String, Vec<(u32, Option<u32>)>>>,
+    characters: OnceLock<CharactersByToken>,
     /// Whether `Characters` and `LexicalTokens` are complete, so a token
     /// no row has names no live character.
     characters_complete: bool,
@@ -483,11 +486,11 @@ impl RecordedScopes {
         })
     }
 
-    fn characters(&self) -> &BTreeMap<String, Vec<(u32, Option<u32>)>> {
+    fn characters(&self) -> &CharactersByToken {
         self.characters.get_or_init(|| {
             let links = self.links();
             let lexical = self.rows::<tables::LexicalTokens>(|views| &views.lexical);
-            let mut by_token: BTreeMap<String, Vec<(u32, Option<u32>)>> = BTreeMap::new();
+            let mut by_token = CharactersByToken::new();
             for row in self.rows::<tables::Characters>(|views| &views.characters) {
                 if let Some(token) = crate::identity::character_script_token(row, lexical) {
                     by_token

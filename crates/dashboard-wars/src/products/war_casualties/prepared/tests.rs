@@ -420,13 +420,13 @@ fn restored_casualties_publish_what_continuous_observation_publishes() {
                 &format!("another family's text {commits}"),
             );
             commits += 1;
-            serde_json::from_reader(
+            serde_json::from_reader(std::io::BufReader::new(
                 fixture
                     .store
                     .read(&fixture.key, "casualty-continuation-1", 0)
                     .unwrap()
                     .unwrap(),
-            )
+            ))
             .unwrap()
         },
     );
@@ -703,10 +703,6 @@ fn observed_spans_survive_actor_order_that_differs_from_observation_order() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn prepared_five_thousand_countries_have_bounded_continuation_and_exact_keys() {
     let frames = vec![
         frame(10, 5000),

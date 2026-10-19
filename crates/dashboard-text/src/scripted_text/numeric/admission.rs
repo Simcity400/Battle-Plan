@@ -267,6 +267,8 @@ mod tests {
 
     #[test]
     fn original_character_fallback_runs_only_after_temp_admission() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder, mut frame) = fixture();
         *frame.tables[TableId::LexicalTokens.index()] =
             TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {

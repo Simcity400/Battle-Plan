@@ -166,7 +166,6 @@ fn territory_breakdown_one_changed_province_skips_closed_region_history() {
 }
 
 #[test]
-#[cfg(feature = "slow-tests")]
 fn territory_breakdown_shared_driver_keeps_all_5000_country_region_keys_without_hourly_work() {
     use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
     let format = replay_data::format::FormatVersion::CURRENT;
@@ -256,13 +255,13 @@ fn territory_breakdown_prepared_reply_matches_after_two_commits_resume_and_appen
             )
             .unwrap();
         writer.commit().unwrap();
-        prepared = serde_json::from_reader(
+        prepared = serde_json::from_reader(std::io::BufReader::new(
             fixture
                 .store
                 .read(&fixture.key, "regional-continuation", 0)
                 .unwrap()
                 .unwrap(),
-        )
+        ))
         .unwrap();
         prepared.regions = Some(regions(3));
         tracker.invalidate();
@@ -849,13 +848,13 @@ fn prepare_regional(
             )
             .unwrap();
         writer.commit().unwrap();
-        prepared = serde_json::from_reader(
+        prepared = serde_json::from_reader(std::io::BufReader::new(
             fixture
                 .store
                 .read(&fixture.key, "regional-continuation", 0)
                 .unwrap()
                 .unwrap(),
-        )
+        ))
         .unwrap();
         prepared.regions = Some(regions(4));
         tracker.invalidate();

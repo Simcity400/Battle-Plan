@@ -230,10 +230,6 @@ fn parity(countries: usize, baseline_step: usize) {
     );
 }
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn changed_occurrences_match_oracle_after_two_commits_resume_append_alias_gaps_months_duplicates_and_wrap()
  {
     for baseline in [0, 1, 4] {
@@ -241,10 +237,6 @@ fn changed_occurrences_match_oracle_after_two_commits_resume_append_alias_gaps_m
     }
 }
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "5,000 country incremental sinking parity"
-)]
 fn changed_occurrences_match_oracle_with_5000_countries_after_two_commits_resume_and_append() {
     parity(5000, 0);
 }

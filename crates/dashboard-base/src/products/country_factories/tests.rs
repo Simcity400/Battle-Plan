@@ -986,10 +986,6 @@ fn factory_selections_follow_the_recorded_country_count() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn a_long_campaign_s_reply_is_bounded_by_the_countries_asked_for() {
     use crate::products::country_factories::{
         FactoriesParams, FactoryCount, FactoryGroupKey, FactoryTop, MAX_REPLY_BYTES,

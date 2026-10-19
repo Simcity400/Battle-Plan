@@ -529,10 +529,6 @@ fn unread_capitulation_hours_and_unattributed_events_have_separate_counts() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn event_feed_diplomacy_observer_resumes_and_appends_without_repeating_relations() {
     for countries in [3, 5_000] {
         let observed = |hour: i32| {

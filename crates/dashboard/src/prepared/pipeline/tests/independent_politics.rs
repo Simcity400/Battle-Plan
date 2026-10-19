@@ -495,7 +495,7 @@ fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, refusals: bool
         payloads
             .iter()
             .filter(|((name, _), _)| {
-                !mode_specific(name) && !(refusals && name.starts_with("preparation-coverage-"))
+                !(mode_specific(name) || (refusals && name.starts_with("preparation-coverage-")))
             })
             .map(|(key, bytes)| (key.clone(), bytes.clone()))
             .collect()
@@ -642,7 +642,7 @@ fn quiet_politics_prepared_on_their_own_commit_resume_reload_and_append_as_hourl
         flag.store(false, Ordering::Release);
         measured(source);
     };
-    let modes: [(&str, &dyn Fn(&Source), bool); 5] = [
+    let modes: [PrepareReloadMode; 5] = [
         ("run", &plain, false),
         ("measured", &measured, false),
         ("measured, reloaded", &measured, true),

@@ -39,4 +39,4 @@ Requests are admitted and cancellable; replies are fragmented. One reply is at m
 
 ## Checks
 
-From the repository root, run `cargo test -p dashboard -p replay-desktop`, `npm.cmd run check:ui` and `npm.cmd run test:ui` for affected changes, and `cargo test -p dashboard -p replay-desktop --features slow-tests` before merging. Frontend tests are pure node tests; Rust tests use synthetic replays. Native map embedding, throughput and memory still need the desktop host exercised on a real recording before a claim about them.
+From the repository root, run `cargo test -p dashboard -p replay-desktop`, `npm.cmd run check:ui` and `npm.cmd run test:ui` for affected changes, and the whole suite before merging. Frontend tests are pure node tests; Rust tests use synthetic replays. Native map embedding, throughput and memory still need the desktop host exercised on a real recording before a claim about them.

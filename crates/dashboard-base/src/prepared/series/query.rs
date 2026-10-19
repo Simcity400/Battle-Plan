@@ -4,6 +4,7 @@ use super::*;
 use std::{cell::RefCell, rc::Rc};
 
 type ValueKey = (std::any::TypeId, Vec<[u64; 3]>, Vec<u8>);
+type TextKey = (TextKind, Vec<[u64; 3]>);
 
 thread_local! {
     static SCOPES: RefCell<Vec<Rc<RefCell<State>>>> = const { RefCell::new(Vec::new()) };
@@ -28,7 +29,7 @@ pub struct SummaryCache {
     folds: BTreeMap<Vec<u8>, Arc<Fold>>,
     blobs: BTreeMap<([u64; 3], u64), Arc<Cached>>,
     tables: BTreeMap<[u64; 3], Arc<Option<Table>>>,
-    texts: BTreeMap<(TextKind, Vec<[u64; 3]>), Arc<Vec<u8>>>,
+    texts: BTreeMap<TextKey, Arc<Vec<u8>>>,
     events: BTreeMap<([u64; 3], u64, u64), Arc<Value>>,
     values: BTreeMap<ValueKey, Arc<Retained>>,
 }
@@ -78,8 +79,8 @@ impl SummaryCache {
                 .sum::<usize>()
             + self
                 .blobs
-                .iter()
-                .map(|(_, blob)| {
+                .values()
+                .map(|blob| {
                     2 * std::mem::size_of::<(([u64; 3], u64), Arc<Cached>)>()
                         + 2 * std::mem::size_of::<usize>()
                         + blob.bytes()
@@ -98,8 +99,8 @@ impl SummaryCache {
                 .sum::<usize>()
             + self
                 .events
-                .iter()
-                .map(|(_, value)| {
+                .values()
+                .map(|value| {
                     2 * std::mem::size_of::<(([u64; 3], u64, u64), Arc<Value>)>()
                         + 2 * std::mem::size_of::<usize>()
                         + crate::prepared::query::observations::json_bytes(value)

@@ -126,7 +126,6 @@ fn prepared_cipher_reply_matches_after_commits_resume_and_append() {
     assert_eq!(actual.pairs[0].runs[0].started, expected.started);
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn prepared_cipher_reply_preserves_five_thousand_countries_and_pair_selection() {
     let fixture = Fixture::new();
@@ -157,7 +156,6 @@ fn prepared_cipher_reply_preserves_five_thousand_countries_and_pair_selection() 
     assert_eq!(actual.pairs[0].target_id, "5000");
 }
 
-#[cfg(feature = "slow-tests")]
 #[test]
 fn prepared_cipher_checkpoint_retains_open_rows_without_daily_history() {
     let fixture = Fixture::new();

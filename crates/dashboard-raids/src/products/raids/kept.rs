@@ -112,6 +112,7 @@ impl<R: PartialEq + Clone> Reduced<R> {
 }
 
 /// One hour, or run of quiet hours, of a block, in hour order.
+#[allow(clippy::large_enum_variant)] // Each observed hour owns its frame.
 pub enum Hour {
     /// An hour the family observes, with its frame and change facts.
     Kept {

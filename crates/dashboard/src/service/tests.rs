@@ -734,10 +734,6 @@ fn failed_delivery_stops_admission_and_shutdown_still_joins() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn air_superiority_source_cache_fork_never_blocks_another_path() {
     use crate::test_fixtures;
     use std::sync::Condvar;
@@ -816,10 +812,6 @@ fn air_superiority_source_cache_fork_never_blocks_another_path() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn damaged_opens_use_sidebar_sentences_and_valid_opens_keep_their_metadata() {
     let (_, folder) = crate::catalogue::tests::folder_catalogue(&[]);
     let valid = Replay::from_records(
@@ -1010,10 +1002,6 @@ impl Drop for PreparationHold {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn library_preparation_waits_for_game_exit_and_prepares_unopened_published_sessions() {
     let fixture = LibraryFixture::new(&["unopened"]);
     let service = Service::new(Arc::new(|_| true)).unwrap();
@@ -1060,10 +1048,6 @@ fn library_preparation_waits_for_game_exit_and_prepares_unopened_published_sessi
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn library_preparation_admits_newest_first_and_retries_a_full_runner() {
     let fixture = LibraryFixture::new(&["oldest", "middle", "newest"]);
     let service = Service::new(Arc::new(|_| true)).unwrap();
@@ -1107,10 +1091,6 @@ fn library_preparation_admits_newest_first_and_retries_a_full_runner() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn library_preparation_suspends_queued_automatic_work_and_resumes_outside_library() {
     let fixture = LibraryFixture::new(&["paused"]);
     let service = Service::new(Arc::new(|_| true)).unwrap();
@@ -1250,10 +1230,6 @@ fn library_action(
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn library_preparation_preserves_disabled_clear_and_cancel_until_manual_start() {
     use crate::prepared::{Action, Progress};
     let fixture = LibraryFixture::new(&["preferences"]);
@@ -1332,10 +1308,6 @@ fn library_preparation_preserves_disabled_clear_and_cancel_until_manual_start() 
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn library_preparation_failed_opens_stop_at_one_attempt_for_5000_inputs() {
     let fixture = LibraryFixture::new(&["failed-open"]);
     let path = &fixture.paths[0];
@@ -2064,11 +2036,15 @@ fn ending_a_session_schedules_its_preparation_ahead_of_the_user() {
     std::fs::remove_file(&session).unwrap();
     let service = Service::new(Arc::new(|_| true)).unwrap();
     let hold = PreparationHold::new(&service);
-    service.prepare_library(&[session.clone()]).unwrap();
+    service
+        .prepare_library(std::slice::from_ref(&session))
+        .unwrap();
     assert!(library_source(&service, &session).is_none());
     // Ending the session publishes the recording whole, as finalization does.
     fixture.append(&session);
-    service.prepare_library(&[session.clone()]).unwrap();
+    service
+        .prepare_library(std::slice::from_ref(&session))
+        .unwrap();
     let source = library_source(&service, &session).expect("the ended session is admitted");
     assert_eq!(
         source.key().revision,
@@ -2087,10 +2063,6 @@ fn ending_a_session_schedules_its_preparation_ahead_of_the_user() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn app_start_prepares_every_recording_behind_its_store_newest_first() {
     // Oldest first.
     let fixture = LibraryFixture::new(&["r0", "r1", "r2", "r3", "r4"]);
@@ -2327,10 +2299,6 @@ fn a_cancel_overrides_a_pause() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn opening_a_newer_revision_takes_over_its_library_preparation() {
     let fixture = LibraryFixture::new(&["continued"]);
     let path = fixture.paths[0].clone();
@@ -2550,10 +2518,6 @@ fn opening_a_recording_the_game_is_pausing_makes_it_the_users() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn a_prepared_recording_opened_while_the_game_runs_is_not_shown_paused() {
     let fixture = LibraryFixture::new(&["prepared"]);
     let path = &fixture.paths[0];
@@ -2612,10 +2576,6 @@ fn claimed(source: &Source) -> bool {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn a_finished_claim_does_not_carry_into_a_later_revision() {
     let fixture = LibraryFixture::new(&["continued"]);
     let path = &fixture.paths[0];
@@ -2702,10 +2662,6 @@ fn a_recording_whose_store_cannot_be_checked_is_prepared_as_library_work() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn a_deferred_recording_completed_by_another_writer_ends_ready() {
     let fixture = LibraryFixture::new(&["deferred"]);
     let path = &fixture.paths[0];
@@ -2731,10 +2687,6 @@ fn a_deferred_recording_completed_by_another_writer_ends_ready() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn a_damaged_store_is_cleared_and_prepared_again() {
     use crate::prepared::Action;
     let fixture = LibraryFixture::new(&["damaged"]);
@@ -2771,10 +2723,6 @@ fn a_damaged_store_is_cleared_and_prepared_again() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn a_complete_store_that_cannot_be_restored_is_prepared_again() {
     let fixture = LibraryFixture::new(&["damaged-branch"]);
     let path = &fixture.paths[0];
@@ -2872,10 +2820,6 @@ fn a_prepare_that_could_not_be_queued_leaves_no_claim() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn a_view_closed_while_the_scan_orders_its_work_leaves_library_work() {
     let fixture = LibraryFixture::new(&["released"]);
     let path = &fixture.paths[0];
@@ -2921,10 +2865,6 @@ fn prepare_elsewhere(path: &Path) {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn a_restore_read_for_replaced_content_is_never_published() {
     let fixture = LibraryFixture::new(&["rebound"]);
     let path = &fixture.paths[0];
@@ -2961,10 +2901,6 @@ fn a_restore_read_for_replaced_content_is_never_published() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn admission_queues_a_store_the_unlocked_check_found_incomplete_without_restoring_again() {
     let fixture = LibraryFixture::new(&["checked-once"]);
     let path = fixture.paths[0].clone();
@@ -3030,17 +2966,15 @@ fn admission_never_measures_the_volume_under_the_admission_lock() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn work_the_user_stops_holding_mid_scan_yields_to_newer_work() {
     let fixture = LibraryFixture::new(&["older", "newer"]);
     let (older, newer) = (fixture.paths[0].clone(), fixture.paths[1].clone());
     let (sent, receive) = mpsc::channel();
     let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
     // The older recording is prepared while the user views it, ending the claim.
-    service.prepare_library(&[older.clone()]).unwrap();
+    service
+        .prepare_library(std::slice::from_ref(&older))
+        .unwrap();
     let earlier = library_source(&service, &older).unwrap();
     let (lease, opened) = open_view(&service, &receive, &older, "older-view");
     wait_library_source(&earlier);
@@ -3079,10 +3013,6 @@ fn work_the_user_stops_holding_mid_scan_yields_to_newer_work() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn a_clear_between_prepares_check_and_admission_makes_it_rebuild() {
     use crate::prepared::Action;
     let fixture = LibraryFixture::new(&["cleared-between"]);
@@ -3126,10 +3056,6 @@ fn a_clear_between_prepares_check_and_admission_makes_it_rebuild() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn a_content_restart_of_the_users_prepare_restarts_it_as_theirs() {
     use crate::prepared::Action;
     let fixture = LibraryFixture::new(&["restarted"]);
@@ -3175,17 +3101,15 @@ fn a_content_restart_of_the_users_prepare_restarts_it_as_theirs() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn work_that_loses_its_view_yields_to_newer_work_already_running() {
     let fixture = LibraryFixture::new(&["older", "newer"]);
     let (older, newer) = (fixture.paths[0].clone(), fixture.paths[1].clone());
     let (sent, receive) = mpsc::channel();
     let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
     // The older recording is prepared while the user views it, ending the claim.
-    service.prepare_library(&[older.clone()]).unwrap();
+    service
+        .prepare_library(std::slice::from_ref(&older))
+        .unwrap();
     let earlier = library_source(&service, &older).unwrap();
     let (lease, opened) = open_view(&service, &receive, &older, "older-view");
     wait_library_source(&earlier);
@@ -3310,10 +3234,6 @@ fn a_refresh_admitted_after_newer_library_work_yields_to_it() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
 fn a_store_cleared_elsewhere_after_its_check_is_not_left_ready() {
     let fixture = LibraryFixture::new(&["cleared-elsewhere"]);
     let path = fixture.paths[0].clone();
